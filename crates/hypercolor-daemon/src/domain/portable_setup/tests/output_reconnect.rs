@@ -3,7 +3,7 @@ use crate::domain::portable_setup::PortableSetupService;
 use crate::domain::portable_setup::journal::RestoreJournal;
 use crate::persistence::PersistenceShutdown;
 use hypercolor_driver_api::{
-    DiscoveredDevice, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
+    DiscoveryBatch, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
     DriverError, DriverHost, DriverModule,
 };
 use hypercolor_types::device::DriverTransportKind;
@@ -40,9 +40,9 @@ impl DiscoveryCapability for CountedNetworkDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         self.0.fetch_add(1, Ordering::AcqRel);
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 

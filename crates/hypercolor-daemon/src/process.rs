@@ -8,6 +8,7 @@ use crate::macos_owner::{
     MacosOwnerStore, MacosOwnerStoreError, acquire_macos_daemon_guard,
     recover_incoming_daemon_owner, try_acquire_macos_daemon_guard,
 };
+use crate::startup::HostPorts;
 use crate::startup::{ParentLifetime, install_signal_handlers};
 use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
@@ -188,7 +189,6 @@ impl DaemonArgs {
             macos_owner_snapshot: None,
             macos_daemon_session_attestation: None,
             service_status: None,
-            session_monitors: None,
             credential_authority: None,
         }
     }
@@ -517,7 +517,7 @@ fn prepare_macos_daemon_with_session(
     owner_record: MacosOwnerRecord,
     instance_guard: MacosDaemonGuard,
 ) -> Result<(daemon::PreparedDaemon, MacosDaemonRuntimeAuthority)> {
-    let mut prepared = runtime.block_on(daemon::prepare(options))?;
+    let mut prepared = runtime.block_on(daemon::prepare(options, HostPorts::native()))?;
     let listener_lease = prepared.take_api_listener_lease()?;
     let mut authority =
         MacosDaemonRuntimeAuthority::new(store, owner_record, instance_guard, listener_lease);
@@ -889,7 +889,13 @@ fn run_daemon(
         // Linux pdeathsig and the Windows job object are armed by the
         // supervisor; the kernel delivers supervisor death to this process.
         let shutdown_rx = install_signal_handlers(ParentLifetime::Kernel);
-        daemon::run_with_extensions(options, shutdown_rx, extension_installers).await
+        daemon::run_with_extensions(
+            options,
+            HostPorts::native(),
+            shutdown_rx,
+            extension_installers,
+        )
+        .await
     })
 }
 
@@ -1513,17 +1519,22 @@ mod tests {
     #[test]
     fn macos_runtime_authority_unwind_clears_visible_session_before_release() {
         let runtime = super::daemon::build_main_runtime().expect("runtime should build");
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let dirs =
+            hypercolor_core::config::paths::IsolatedUserDirs::claim(&directory.path().join("user"));
         let mut prepared = runtime
-            .block_on(super::daemon::prepare(super::DaemonRunOptions {
-                bind: Some("127.0.0.1:0".to_owned()),
-                ..super::DaemonRunOptions::default()
-            }))
+            .block_on(super::daemon::prepare(
+                super::DaemonRunOptions {
+                    bind: Some("127.0.0.1:0".to_owned()),
+                    ..super::DaemonRunOptions::default()
+                },
+                super::HostPorts::isolated(&dirs),
+            ))
             .expect("daemon should prepare its final listener");
         let address = prepared.advertised_bind();
         let listener_lease = prepared
             .take_api_listener_lease()
             .expect("listener lease should transfer once");
-        let directory = tempfile::tempdir().expect("temporary directory should build");
         let guard_path = directory.path().join("daemon.lock");
         let guard = try_acquire_macos_daemon_guard(&guard_path.to_string_lossy())
             .expect("guard acquisition should succeed")

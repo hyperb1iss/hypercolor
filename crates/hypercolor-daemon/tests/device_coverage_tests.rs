@@ -386,6 +386,10 @@ impl DeviceBackend for NativeFixtureBackend {
     async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
         Ok(())
     }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         Ok(())
     }
@@ -602,6 +606,7 @@ async fn coverage_and_unclaimed_routes_answer_complete_lists() {
             device_class: 0,
             interface_classes: vec![3],
             descriptor_driver_id: None,
+            descriptor_experimental: false,
             hid_usage_pages: Vec::new(),
         }]);
 

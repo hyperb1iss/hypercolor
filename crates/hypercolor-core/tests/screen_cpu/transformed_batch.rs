@@ -15,14 +15,14 @@ use hypercolor_core::input::screen::implementer::{
     PhysicalOrigin, PreparedCpuReductionBatch, RawCaptureSurface, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
-    ScreenCursorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
-    ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenRational, ScreenReductionFilter, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
+    CaptureBackendId, InputPublicationDemandRevision, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenPhysicalReductionDescriptor, ScreenPlanBuilder,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenRational, ScreenReductionFilter,
+    ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -84,7 +84,7 @@ fn source(
             CaptureColorimetry::from_known(KnownCaptureColorimetry::SRGB),
             ScreenCursorCapabilities::clean_only(),
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 7,
                 11,

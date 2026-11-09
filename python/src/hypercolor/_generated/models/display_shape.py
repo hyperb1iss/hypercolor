@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DisplayShape(StrEnum):
+class DisplayShape(TolerantStrEnum):
     ROUND = "round"
     SQUARE = "square"
     TALL = "tall"

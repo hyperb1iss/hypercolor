@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::{Read, Write as _};
+use std::io::Read;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Condvar, Mutex, TryLockError};
@@ -49,6 +49,19 @@ impl NativeMacosDirectLaunchdMutator {
             inspector: DeadlineNativeMacosDirectLaunchdInspector,
             commands: NativeLaunchctlBoundary { uid },
         }
+    }
+
+    /// Unload the fixed label whatever it runs, for a caller that has proven
+    /// the running code itself and may hold no owner record for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the unload cannot be submitted.
+    pub fn bootout_unconditional(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        self.controller().bootout_unconditional(timeout)
     }
 
     fn controller(
@@ -251,9 +264,7 @@ impl NativeLaunchctlBoundary {
             LaunchctlAction::PrintDisabled => vec!["print-disabled".into(), domain.into()],
             LaunchctlAction::Enable => vec!["enable".into(), target.into()],
             LaunchctlAction::Disable => vec!["disable".into(), target.into()],
-            LaunchctlAction::Bootstrap => {
-                vec!["bootstrap".into(), domain.into(), "/dev/fd/0".into()]
-            }
+            LaunchctlAction::Bootstrap => vec!["bootstrap".into(), domain.into()],
             LaunchctlAction::Kickstart => vec!["kickstart".into(), "-p".into(), target.into()],
             LaunchctlAction::Bootout => vec!["bootout".into(), "--wait".into(), target.into()],
         }
@@ -264,13 +275,21 @@ impl NativeLaunchctlBoundary {
         action: &LaunchctlAction,
         deadline: Instant,
     ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
+        self.run_arguments(self.arguments(action), deadline)
+    }
+
+    fn run_arguments(
+        &self,
+        arguments: Vec<OsString>,
+        deadline: Instant,
+    ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
         if Instant::now() >= deadline {
             return Err(MacosOwnerExecutionError::new(
                 "launchd mutation deadline expired before command submission",
             ));
         }
         let mut command = Command::new("/bin/launchctl");
-        command.args(self.arguments(action));
+        command.args(arguments);
         let child = command
             .env_clear()
             .env("LANG", "C")
@@ -283,6 +302,9 @@ impl NativeLaunchctlBoundary {
         Ok(reap_submitted_command(child, deadline))
     }
 
+    /// launchd reads a property list itself, so `bootstrap` takes a real path
+    /// and refuses `/dev/fd/0`, piped or not. The path must still name the
+    /// retained file when the command goes in.
     fn run_bootstrap_launchctl(
         &self,
         source: &MacosDirectLaunchdBootstrapSource,
@@ -290,60 +312,19 @@ impl NativeLaunchctlBoundary {
     ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
         let file = source.try_clone_file()?;
         let expectation = source.expectation().clone();
-        let Some(snapshot) = run_deadline_read(deadline, move || {
-            exact_bootstrap_snapshot(&file, &expectation)
-        })?
-        else {
+        let exact = run_deadline_read(deadline, move || {
+            Ok(exact_bootstrap_source_matches(&file, &expectation)?
+                && bootstrap_path_names_source(&expectation))
+        })?;
+        if !exact {
             return Err(MacosOwnerExecutionError::new(
                 "bootstrap property list changed before command submission",
             ));
-        };
-        run_snapshot_stdin_command(
-            "/bin/launchctl",
-            &self.arguments(&LaunchctlAction::Bootstrap),
-            snapshot,
-            deadline,
-        )
+        }
+        let mut arguments = self.arguments(&LaunchctlAction::Bootstrap);
+        arguments.push(source.expectation().path().into());
+        self.run_arguments(arguments, deadline)
     }
-}
-
-fn run_snapshot_stdin_command(
-    program: &str,
-    arguments: &[OsString],
-    snapshot: Vec<u8>,
-    deadline: Instant,
-) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
-    if Instant::now() >= deadline {
-        return Err(MacosOwnerExecutionError::new(
-            "launchd mutation deadline expired before command submission",
-        ));
-    }
-    let mut child = Command::new(program)
-        .args(arguments)
-        .env_clear()
-        .env("LANG", "C")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    let Some(mut stdin) = child.stdin.take() else {
-        kill_and_reap(&mut child);
-        return Ok(SubmittedCommand::Unknown);
-    };
-    let Ok(writer) = std::thread::Builder::new()
-        .name("launchctl-stdin".to_owned())
-        .spawn(move || stdin.write_all(&snapshot))
-    else {
-        kill_and_reap(&mut child);
-        return Ok(SubmittedCommand::Unknown);
-    };
-    Ok(reap_submitted_command_with_writer(
-        child,
-        Some(writer),
-        deadline,
-    ))
 }
 
 impl LaunchctlCommandBoundary for NativeLaunchctlBoundary {
@@ -376,23 +357,13 @@ impl LaunchctlCommandBoundary for NativeLaunchctlBoundary {
     }
 }
 
-fn reap_submitted_command(child: Child, deadline: Instant) -> SubmittedCommand {
-    reap_submitted_command_with_writer(child, None, deadline)
-}
-
-fn reap_submitted_command_with_writer(
-    mut child: Child,
-    mut writer: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-    deadline: Instant,
-) -> SubmittedCommand {
+fn reap_submitted_command(mut child: Child, deadline: Instant) -> SubmittedCommand {
     let Some(stdout) = child.stdout.take() else {
         kill_and_reap(&mut child);
-        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
     let Some(stderr) = child.stderr.take() else {
         kill_and_reap(&mut child);
-        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
     let Ok(stdout_reader) = std::thread::Builder::new()
@@ -400,7 +371,6 @@ fn reap_submitted_command_with_writer(
         .spawn(move || read_bounded(stdout))
     else {
         kill_and_reap(&mut child);
-        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
     let Ok(stderr_reader) = std::thread::Builder::new()
@@ -409,7 +379,6 @@ fn reap_submitted_command_with_writer(
     else {
         kill_and_reap(&mut child);
         let _ = stdout_reader.join();
-        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
 
@@ -432,19 +401,14 @@ fn reap_submitted_command_with_writer(
 
     let stdout = join_reader(stdout_reader);
     let stderr = join_reader(stderr_reader);
-    let input = join_writer(writer);
-    match (status, stdout, stderr, input) {
-        (Some(status), Some(stdout), Some(stderr), Some(())) => SubmittedCommand::Completed {
+    match (status, stdout, stderr) {
+        (Some(status), Some(stdout), Some(stderr)) => SubmittedCommand::Completed {
             status,
             stdout,
             stderr,
         },
         _ => SubmittedCommand::Unknown,
     }
-}
-
-fn join_writer(writer: Option<std::thread::JoinHandle<std::io::Result<()>>>) -> Option<()> {
-    writer.map_or(Some(()), |writer| writer.join().ok()?.ok())
 }
 
 fn kill_and_reap(child: &mut Child) {
@@ -473,23 +437,13 @@ fn exact_bootstrap_source_matches(
     file: &File,
     source: &MacosDirectLaunchdBootstrapExpectation,
 ) -> Result<bool, MacosOwnerExecutionError> {
-    Ok(exact_bootstrap_snapshot(file, source)?.is_some())
-}
-
-fn exact_bootstrap_snapshot(
-    file: &File,
-    source: &MacosDirectLaunchdBootstrapExpectation,
-) -> Result<Option<Vec<u8>>, MacosOwnerExecutionError> {
     let before = file
         .metadata()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
     if !bootstrap_metadata_matches(&before, source) {
-        return Ok(None);
+        return Ok(false);
     }
     let mut hasher = Sha256::new();
-    let mut snapshot = Vec::with_capacity(
-        usize::try_from(source.size()).expect("bounded property-list size fits usize"),
-    );
     let mut buffer = [0_u8; 8 * 1024];
     let mut offset = 0_u64;
     while offset <= source.size() {
@@ -503,22 +457,26 @@ fn exact_bootstrap_snapshot(
             break;
         }
         hasher.update(&buffer[..read]);
-        snapshot.extend_from_slice(&buffer[..read]);
         offset += u64::try_from(read).expect("read length fits u64");
     }
     if offset != source.size() || hex_digest(&hasher.finalize()) != source.sha256() {
-        return Ok(None);
+        return Ok(false);
     }
     let after = file
         .metadata()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    Ok((bootstrap_metadata_matches(&after, source)
+    Ok(bootstrap_metadata_matches(&after, source)
         && before.dev() == after.dev()
         && before.ino() == after.ino()
         && before.mode() == after.mode()
         && before.len() == after.len()
         && before.nlink() == after.nlink())
-    .then_some(snapshot))
+}
+
+/// Whether the path launchd will open is the retained file.
+fn bootstrap_path_names_source(source: &MacosDirectLaunchdBootstrapExpectation) -> bool {
+    std::fs::symlink_metadata(source.path())
+        .is_ok_and(|metadata| bootstrap_metadata_matches(&metadata, source))
 }
 
 fn bootstrap_metadata_matches(
@@ -554,9 +512,8 @@ mod tests {
 
     use super::{
         INSPECTION_WORKER_SLOT, INSPECTION_WORKER_TEST_GATE, LaunchctlAction,
-        NativeLaunchctlBoundary, SubmittedCommand, exact_bootstrap_snapshot,
+        NativeLaunchctlBoundary, SubmittedCommand, bootstrap_path_names_source,
         exact_bootstrap_source_matches, hex_digest, reap_submitted_command, run_deadline_read,
-        run_snapshot_stdin_command,
     };
     use crate::MacosDirectLaunchdBootstrapExpectation;
 
@@ -659,7 +616,7 @@ mod tests {
         );
         assert_eq!(
             boundary.arguments(&LaunchctlAction::Bootstrap),
-            ["bootstrap", "gui/501", "/dev/fd/0"]
+            ["bootstrap", "gui/501"]
         );
     }
 
@@ -710,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_command_reads_only_the_retained_descriptor() {
+    fn bootstrap_path_must_still_name_the_retained_file() {
         let directory = tempfile::tempdir().expect("temporary directory should build");
         let path = directory.path().join("launchd.plist");
         fs::write(&path, b"retained plist").expect("property list should write");
@@ -726,26 +683,15 @@ mod tests {
             metadata.ino(),
         )
         .expect("expectation should build");
-        let retained = fs::File::open(&path).expect("property list should retain");
+        assert!(bootstrap_path_names_source(&expectation));
+
         fs::rename(&path, directory.path().join("retained.plist"))
             .expect("retained path should move");
-        fs::write(&path, b"attacker plist").expect("attacker replacement should write");
-        let snapshot = exact_bootstrap_snapshot(&retained, &expectation)
-            .expect("snapshot should read")
-            .expect("retained source should match");
-        fs::write(directory.path().join("retained.plist"), b"attacker plist")
-            .expect("retained inode should drift after snapshot");
-        let result = run_snapshot_stdin_command(
-            "/bin/cat",
-            &["/dev/fd/0".into()],
-            snapshot,
-            Instant::now() + Duration::from_secs(1),
-        )
-        .expect("fake launchctl should read inherited descriptor");
-        let SubmittedCommand::Completed { status, stdout, .. } = result else {
-            panic!("fake launchctl should complete");
-        };
-        assert_eq!(status, Some(0));
-        assert_eq!(stdout, b"retained plist");
+        assert!(!bootstrap_path_names_source(&expectation));
+        fs::write(&path, b"attacker plist").expect("replacement should write");
+        assert!(
+            !bootstrap_path_names_source(&expectation),
+            "launchd would read the replacement"
+        );
     }
 }

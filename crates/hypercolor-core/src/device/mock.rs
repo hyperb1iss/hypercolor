@@ -104,6 +104,7 @@ struct MockDeviceState {
     last_colors: HashMap<DeviceId, Vec<[u8; 3]>>,
     write_count: u64,
     calls: Vec<MockCall>,
+    retired: bool,
 }
 
 impl MockDeviceBackend {
@@ -215,7 +216,7 @@ impl DeviceBackend for MockDeviceBackend {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.calls.push(MockCall::Connect(*id));
 
-        if self.fail_connect {
+        if self.fail_connect || state.retired {
             return Err(DeviceError::connection(id, "mock connect failure"));
         }
         if state.connected.contains(id) {
@@ -228,6 +229,14 @@ impl DeviceBackend for MockDeviceBackend {
             });
         }
         state.connected.insert(*id);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.retired = true;
+        state.connected.clear();
+        state.last_colors.clear();
         Ok(())
     }
 

@@ -82,6 +82,7 @@ jobs:
           ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test effect_factory_tests
           ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test builtin_effect_tests
           ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test html_loader_tests
+          ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test servo_integration_tests
 
       - name: Warm core Servo clippy artifacts
         run: >-

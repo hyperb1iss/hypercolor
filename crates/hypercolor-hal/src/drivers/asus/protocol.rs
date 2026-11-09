@@ -15,8 +15,8 @@ use hypercolor_types::device::{
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::types::{
@@ -355,11 +355,15 @@ impl Protocol for AuraUsbProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = self.normalize_frame_colors(colors);
         if normalized.is_empty() {
             commands.clear();
-            return;
+            return FrameBatch::from_commands(commands);
         }
 
         let topology = self
@@ -401,6 +405,7 @@ impl Protocol for AuraUsbProtocol {
         }
 
         command_buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

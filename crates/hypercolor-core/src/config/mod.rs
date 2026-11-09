@@ -29,7 +29,8 @@ use tracing::{debug, info, warn};
 use crate::bus::HypercolorBus;
 use crate::persistence::{AtomicFileWriter, AtomicWriteCommitResult};
 use hypercolor_types::config::{
-    CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, default_driver_configs,
+    CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, OLDEST_MIGRATED_SCHEMA_VERSION,
+    default_driver_configs,
 };
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
@@ -1176,13 +1177,6 @@ fn migrate_v6_to_v7(document: &mut toml::Value) -> Result<()> {
     );
     Ok(())
 }
-
-/// The oldest schema [`ConfigManager::parse_toml`] upgrades in memory.
-///
-/// The hand-migration for anything older lands the file here rather than
-/// on [`CURRENT_SCHEMA_VERSION`], so every migration in the chain still
-/// runs on it.
-const OLDEST_MIGRATED_SCHEMA_VERSION: u32 = 4;
 
 /// The refusal text for a config file this build cannot read.
 ///

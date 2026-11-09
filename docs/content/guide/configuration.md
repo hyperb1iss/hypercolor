@@ -29,6 +29,10 @@ hypercolor config path
 
 The daemon creates the file on first run from compile-time defaults, then reads and writes that single file. There is no system-wide layering or include-merge step; every setting lives in one TOML document. CLI flags like `--listen`, `--port`, and `--bind` override the file for a single launch without rewriting it.
 
+### Schema versions
+
+The file's top-level `schema_version` records the shape it was written in; the current schema is `7`. Hypercolor reads every schema from `4` through the current one, upgrading an older file in memory when it loads and writing the current schema on the next save. Schema 4 is the floor: a file that declares anything older is refused with the exact hand edit that brings it to schema 4, and a file from a newer Hypercolor is refused with a message to upgrade. A refused file is never rewritten. [Stability & versioning](@/api/stability.md#config-files) lists which releases wrote each schema; the floor only moves at a major release.
+
 ---
 
 ## Top-level sections
@@ -387,7 +391,7 @@ Disable a driver entirely:
 enabled = false
 ```
 
-Driver IDs correspond to the names registered in the driver registry. Available IDs include `govee`, `hue`, `nanoleaf`, `wled`, plus compile-time HAL driver IDs for USB/HID families.
+Driver IDs correspond to the names registered in the driver registry; `hypercolor drivers list` prints every ID this build knows.
 
 ---
 

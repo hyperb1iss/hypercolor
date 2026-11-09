@@ -8,17 +8,11 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.apply_impact_type_0 import ApplyImpactType0
-from ..models.apply_impact_type_1 import ApplyImpactType1
-from ..models.apply_impact_type_2 import ApplyImpactType2
-from ..models.apply_impact_type_3 import ApplyImpactType3
-from ..models.apply_impact_type_4 import ApplyImpactType4
-from ..models.apply_impact_type_5 import ApplyImpactType5
-from ..models.apply_impact_type_6 import ApplyImpactType6
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.action_confirmation import ActionConfirmation
-    from ..models.apply_impact_type_7 import ApplyImpactType7
+    from ..models.apply_impact_type_1 import ApplyImpactType1
     from ..models.control_action_descriptor_availability import (
         ControlActionDescriptorAvailability,
     )
@@ -37,8 +31,7 @@ class ControlActionDescriptor:
     """Action descriptor for one-shot commands.
 
     Attributes:
-        apply_impact (ApplyImpactType0 | ApplyImpactType1 | ApplyImpactType2 | ApplyImpactType3 | ApplyImpactType4 |
-            ApplyImpactType5 | ApplyImpactType6 | ApplyImpactType7): Dynamic impact required to apply a control change.
+        apply_impact (ApplyImpactType0 | ApplyImpactType1): Dynamic impact required to apply a control change.
         availability (ControlActionDescriptorAvailability): Availability expression before daemon resolution.
         id (str):
         input_fields (list[ControlObjectField]): Typed input fields.
@@ -51,16 +44,7 @@ class ControlActionDescriptor:
         result_type (ControlActionDescriptorResultTypeType0 | None | Unset): Optional typed result.
     """
 
-    apply_impact: (
-        ApplyImpactType0
-        | ApplyImpactType1
-        | ApplyImpactType2
-        | ApplyImpactType3
-        | ApplyImpactType4
-        | ApplyImpactType5
-        | ApplyImpactType6
-        | ApplyImpactType7
-    )
+    apply_impact: ApplyImpactType0 | ApplyImpactType1
     availability: ControlActionDescriptorAvailability
     id: str
     input_fields: list[ControlObjectField]
@@ -80,15 +64,7 @@ class ControlActionDescriptor:
         )
 
         apply_impact: dict[str, Any] | str
-        if (
-            isinstance(self.apply_impact, ApplyImpactType0)
-            or isinstance(self.apply_impact, ApplyImpactType1)
-            or isinstance(self.apply_impact, ApplyImpactType2)
-            or isinstance(self.apply_impact, ApplyImpactType3)
-            or isinstance(self.apply_impact, ApplyImpactType4)
-            or isinstance(self.apply_impact, ApplyImpactType5)
-            or isinstance(self.apply_impact, ApplyImpactType6)
-        ):
+        if isinstance(self.apply_impact, ApplyImpactType0):
             apply_impact = self.apply_impact.value
         else:
             apply_impact = self.apply_impact.to_dict()
@@ -163,7 +139,7 @@ class ControlActionDescriptor:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.action_confirmation import ActionConfirmation
-        from ..models.apply_impact_type_7 import ApplyImpactType7
+        from ..models.apply_impact_type_1 import ApplyImpactType1
         from ..models.control_action_descriptor_availability import (
             ControlActionDescriptorAvailability,
         )
@@ -175,18 +151,7 @@ class ControlActionDescriptor:
 
         d = dict(src_dict)
 
-        def _parse_apply_impact(
-            data: object,
-        ) -> (
-            ApplyImpactType0
-            | ApplyImpactType1
-            | ApplyImpactType2
-            | ApplyImpactType3
-            | ApplyImpactType4
-            | ApplyImpactType5
-            | ApplyImpactType6
-            | ApplyImpactType7
-        ):
+        def _parse_apply_impact(data: object) -> ApplyImpactType0 | ApplyImpactType1:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
@@ -195,59 +160,11 @@ class ControlActionDescriptor:
                 return componentsschemas_apply_impact_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_apply_impact_type_1 = ApplyImpactType1(data)
-
-                return componentsschemas_apply_impact_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_apply_impact_type_2 = ApplyImpactType2(data)
-
-                return componentsschemas_apply_impact_type_2
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_apply_impact_type_3 = ApplyImpactType3(data)
-
-                return componentsschemas_apply_impact_type_3
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_apply_impact_type_4 = ApplyImpactType4(data)
-
-                return componentsschemas_apply_impact_type_4
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_apply_impact_type_5 = ApplyImpactType5(data)
-
-                return componentsschemas_apply_impact_type_5
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_apply_impact_type_6 = ApplyImpactType6(data)
-
-                return componentsschemas_apply_impact_type_6
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_apply_impact_type_7 = ApplyImpactType7.from_dict(data)
+            componentsschemas_apply_impact_type_1 = ApplyImpactType1.from_dict(data)
 
-            return componentsschemas_apply_impact_type_7
+            return componentsschemas_apply_impact_type_1
 
         apply_impact = _parse_apply_impact(d.pop("apply_impact"))
 

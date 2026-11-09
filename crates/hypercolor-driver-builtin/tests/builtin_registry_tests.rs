@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "hal")]
 use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
-use hypercolor_driver_builtin::build_driver_module_registry;
+use hypercolor_driver_builtin::{build_driver_module_registry, normalize_driver_config_entries};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -29,17 +29,8 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
     )
     .expect("registry should build");
     let ids = registry.ids();
-    #[cfg(not(any(feature = "network", feature = "hal")))]
+    #[cfg(not(feature = "hal"))]
     let _ = &ids;
-
-    #[cfg(feature = "network")]
-    {
-        assert!(ids.contains(&"wled".to_owned()));
-        assert!(ids.contains(&"govee".to_owned()));
-        assert!(ids.contains(&"hue".to_owned()));
-        assert!(ids.contains(&"nanoleaf".to_owned()));
-        assert!(ids.contains(&"openrgb".to_owned()));
-    }
 
     #[cfg(feature = "hal")]
     {
@@ -47,19 +38,34 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         assert!(ids.contains(&"prismrgb".to_owned()));
     }
 
-    #[cfg(feature = "network")]
-    for driver_id in ["wled", "govee", "hue", "nanoleaf"] {
-        let driver = registry
-            .get(driver_id)
-            .expect("network driver should be registered");
-        let descriptor = driver.module_descriptor();
-        assert!(descriptor.capabilities.config);
-        assert!(descriptor.capabilities.controls);
-        driver
-            .config()
-            .expect("config provider should be present")
-            .validate_config(&driver.config().expect("config provider").default_config())
-            .expect("default config should validate");
+    for driver_id in &ids {
+        let driver = registry.get(driver_id).expect("listed driver resolves");
+        if let Some(config) = driver.config() {
+            config
+                .validate_config(&config.default_config())
+                .expect("default config should validate");
+        }
+    }
+
+    // Registration and config seeding read one table, so they cannot disagree.
+    let mut config = HypercolorConfig::default();
+    normalize_driver_config_entries(&mut config);
+    for driver_id in &ids {
+        if let Some(entry) = config.drivers.get(driver_id) {
+            let driver = registry.get(driver_id).expect("listed driver resolves");
+            assert_eq!(entry.enabled, driver.module_descriptor().default_enabled);
+        }
+    }
+
+    #[cfg(feature = "hal")]
+    {
+        let dygma = registry
+            .get("dygma")
+            .expect("Dygma HAL family should resolve");
+        assert!(!dygma.module_descriptor().default_enabled);
+        assert!(!dygma.descriptor().default_enabled);
+        assert!(!config.drivers["dygma"].enabled);
+        assert!(config.drivers["nollie"].enabled);
     }
 
     #[cfg(feature = "openrgb")]
@@ -133,4 +139,20 @@ fn register_driver_modules_appends_to_existing_registry() {
     assert!(registry.get("openrgb").is_some());
     #[cfg(feature = "hal")]
     assert!(registry.get("nollie").is_some());
+}
+
+#[cfg(feature = "pixel")]
+#[test]
+fn normalize_seeds_an_enabled_pixel_entry_with_no_devices() {
+    let mut config = HypercolorConfig::default();
+    hypercolor_driver_builtin::normalize_driver_config_entries(&mut config);
+    let entry = config
+        .drivers
+        .get("pixel")
+        .expect("pixel driver entry should be seeded");
+    assert!(entry.enabled);
+    assert!(
+        !entry.settings.contains_key("devices"),
+        "a default install configures no pixel controllers"
+    );
 }

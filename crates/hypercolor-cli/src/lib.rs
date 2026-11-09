@@ -8,11 +8,10 @@ pub mod client;
 pub mod commands;
 pub mod config;
 #[cfg(unix)]
-#[doc(hidden)]
-pub use hypercolor_install as install;
-#[cfg(unix)]
 mod install_command;
 pub mod output;
+#[cfg(windows)]
+mod windows_install;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -254,7 +253,7 @@ pub struct InstallReleaseArgs {
     install_dir: std::path::PathBuf,
 
     #[arg(long, value_parser = install_command::parse_manifest_digest)]
-    expected_manifest_sha256: install::UnitId,
+    expected_manifest_sha256: hypercolor_install::UnitId,
 
     #[arg(long)]
     no_service: bool,
@@ -267,7 +266,7 @@ pub struct InstallReleaseArgs {
     #[arg(
         long,
         value_name = "SECONDS",
-        default_value_t = install::DEFAULT_PROBATION_WINDOW.as_secs(),
+        default_value_t = hypercolor_install::DEFAULT_PROBATION_WINDOW.as_secs(),
         value_parser = install_command::parse_probation_seconds
     )]
     probation_seconds: u64,
@@ -349,6 +348,17 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()> {
+    // An installation's launcher is a copy of this program; see the role.
+    #[cfg(target_os = "macos")]
+    if let Some(status) = hypercolor_install::macos_bundle::run_macos_bundle_launcher_role() {
+        std::process::exit(status);
+    }
+    #[cfg(windows)]
+    match windows_install::parse_invocation(std::env::args_os()) {
+        Some(Ok(args)) => return windows_install::execute(&args),
+        Some(Err(error)) => error.exit(),
+        None => {}
+    }
     #[cfg(unix)]
     match parse_install_release_invocation(std::env::args_os()) {
         Some(Ok(args)) => return install_command::execute(&args),

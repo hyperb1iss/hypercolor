@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::protocol::Protocol;
 use crate::registry::{
@@ -55,6 +55,7 @@ static PUSH2_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: DriverStability::Stable,
     }]
 });
 

@@ -12,7 +12,8 @@ use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
 use hypercolor_daemon::path_migration::MigrationOutcome;
 use hypercolor_daemon::simulators::SimulatedDisplayExt;
-use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
+use hypercolor_daemon::simulators::activate_simulated_displays;
+use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -35,8 +36,8 @@ fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
     (state, tempdir)
 }
 
-fn display_config(name: &str) -> SimulatedDisplayConfig {
-    SimulatedDisplayConfig {
+fn display_config(name: &str) -> SimulatedDisplay {
+    SimulatedDisplay {
         id: DeviceId::from_uuid(Uuid::now_v7()),
         name: name.to_owned(),
         width: 480,

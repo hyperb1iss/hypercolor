@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::device::{DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction};
-use hypercolor_driver_api::{DiscoveryRequest, DriverConfigView, DriverError};
+use hypercolor_driver_api::{
+    DiscoveryBatch, DiscoveryObservation, DiscoveryRequest, DriverConfigView, DriverError,
+};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DriverTransportKind};
@@ -314,21 +316,23 @@ struct TargetScanOutcome {
     /// The target's observation epoch this scan left behind, or `None` when
     /// its scanner failed and nothing was observed.
     observation: Option<u64>,
+    /// Whether every gap names its device, so absence means something for
+    /// the rest of the target.
+    covered: bool,
     found: Vec<DeviceRef>,
     new_devices: Vec<DeviceRef>,
     reappeared_devices: Vec<DeviceRef>,
     seen_ids: HashSet<DeviceId>,
     vanished_devices: Vec<String>,
     scanner_reports: Vec<ScannerScanReport>,
-    failed: bool,
 }
 
 /// Scan `targets` and apply the results without touching the shared
 /// in-progress slot.
 ///
 /// Targets scan concurrently, each in its own lane, and each retires its
-/// own departures from its own scanner's outcome, so one driver failing
-/// never keeps another driver's vanished devices connected.
+/// own departures from its own scanner's coverage, so one driver falling
+/// short never keeps another driver's vanished devices connected.
 #[allow(clippy::too_many_lines)]
 async fn run_discovery_scan(
     runtime: DiscoveryRuntime,
@@ -445,7 +449,7 @@ async fn run_discovery_scan(
             };
         }
 
-        let scan_had_errors = outcomes.iter().any(|(_, outcome)| outcome.failed);
+        let every_target_covered = outcomes.iter().all(|(_, outcome)| outcome.covered);
         let mut found = Vec::new();
         let mut new_devices = Vec::new();
         let mut reappeared_devices = Vec::new();
@@ -505,7 +509,7 @@ async fn run_discovery_scan(
         // target, so a newer lane scan may have seen that target since. Only
         // devices whose observation is still the newest take part.
         let current_ids = still_current_observations(&runtime, &observed_by, &seen_ids);
-        let bindings_migrated = if complete_sweep && !scan_had_errors {
+        let bindings_migrated = if complete_sweep && every_target_covered {
             match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
                 &runtime.device_registry,
                 &runtime.lifecycle_manager,
@@ -596,7 +600,8 @@ async fn known_devices_before_shutdown(runtime: &DiscoveryRuntime) -> usize {
 }
 
 /// Scan one target while holding its lane: discover, apply what it found,
-/// then retire the target's devices it no longer reports.
+/// then, unless a gap covers the whole target, retire the target's devices it
+/// no longer reports.
 ///
 /// Returns `None` for a target with no discovery driver behind it.
 #[allow(clippy::too_many_lines)]
@@ -637,7 +642,7 @@ async fn scan_target(
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     orchestrator.add_source(display_name, async move {
         let Some(capability) = driver.discovery() else {
-            return Ok::<_, DriverError>(Vec::new());
+            return Ok::<_, DriverError>(DiscoveryBatch::complete([]));
         };
         // Native SMBus probing and bridge discovery both open the same
         // I2C adapters; letting them overlap corrupted DRAM LED counts.
@@ -646,7 +651,7 @@ async fn scan_target(
         } else {
             None
         };
-        let mut devices = capability
+        let mut batch = capability
             .discover(
                 host.as_ref(),
                 &request,
@@ -657,12 +662,15 @@ async fn scan_target(
             )
             .await?;
         drop(probe_guard);
-        devices.retain(|device| {
+        batch.observations.retain(|observation| {
+            let DiscoveryObservation::Device(device) = observation else {
+                return true;
+            };
             let device_driver_id = device.info.driver_id();
             !registered_driver_ids.contains(device_driver_id)
                 || enabled_driver_ids.contains(device_driver_id)
         });
-        Ok(devices)
+        Ok(batch)
     });
 
     let incremental = Arc::new(Mutex::new(IncrementalDiscoveryState::default()));
@@ -688,30 +696,42 @@ async fn scan_target(
             new_devices,
             reappeared_devices,
         } = incremental.lock().await.clone();
+        // A device a gap holds counts as seen, so one unverified device costs
+        // nothing beyond its own retirement.
         let seen_ids: HashSet<DeviceId> = report
             .new_devices
             .iter()
             .chain(report.reappeared_devices.iter())
+            .chain(report.held_devices.iter())
             .copied()
             .collect();
         let failed = report
             .scanner_reports
             .iter()
             .any(|scanner| scanner.error.is_some());
-        let vanished_devices = if failed {
-            let failed_scanners = report
-                .scanner_reports
-                .iter()
-                .filter_map(|scanner| scanner.error.as_ref().map(|_| scanner.scanner.clone()))
-                .collect::<Vec<_>>();
+        let covered = report
+            .scanner_reports
+            .iter()
+            .all(ScannerScanReport::covers_target);
+        let incomplete = report
+            .scanner_reports
+            .iter()
+            .filter(|scanner| !scanner.is_complete());
+        for scanner in incomplete {
             warn!(
                 target = target.as_str(),
-                failed_scanners = ?failed_scanners,
-                "discovery of this target was incomplete; preserving its device mappings"
+                scanner = %scanner.scanner,
+                gaps = scanner.gaps.len(),
+                first_gap = scanner.gaps.first().map(tracing::field::display),
+                error = scanner.error.as_deref(),
+                retiring = covered,
+                "discovery of this target was incomplete; preserving what it could not verify"
             );
-            Vec::new()
-        } else {
+        }
+        let vanished_devices = if covered {
             retire_target_departures(runtime, target, &report.vanished_devices, &seen_ids).await
+        } else {
+            Vec::new()
         };
         let observation = (!failed).then(|| {
             *lane = lane.wrapping_add(1);
@@ -722,13 +742,13 @@ async fn scan_target(
         Some(TargetScanOutcome {
             target: target.clone(),
             observation,
+            covered,
             found,
             new_devices,
             reappeared_devices,
             seen_ids,
             vanished_devices,
             scanner_reports: report.scanner_reports,
-            failed,
         })
     };
     tokio::select! {
@@ -1189,9 +1209,12 @@ fn map_scanner_reports(reports: &[ScannerScanReport]) -> Vec<DiscoveryScannerRes
             discovered: report.discovered,
             status: if report.error.is_some() {
                 "error".to_owned()
-            } else {
+            } else if report.gaps.is_empty() {
                 "ok".to_owned()
+            } else {
+                "partial".to_owned()
             },
+            gaps: report.gaps.iter().map(ToString::to_string).collect(),
             error: report.error.clone(),
         })
         .collect()

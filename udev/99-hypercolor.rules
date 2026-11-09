@@ -5,8 +5,11 @@
 # conservative fallback group/mode for the supported vendor families.
 # A replug or reboot is required after installation for existing devices.
 #
-# USB rules are vendor-wide for the brands Hypercolor supports so newly added
-# product IDs do not require a udev update just to gain device-node access.
+# hidraw rules name the products Hypercolor registers, never a whole vendor,
+# and on keyboards, mice, and headsets they grant only the HID interface
+# Hypercolor opens, since the other interfaces carry keystrokes and pointer
+# input. A new product ID needs its own hidraw rule here; the tests in
+# crates/hypercolor-hal/tests/udev_rules_tests.rs fail until it has one.
 # SMBus access is granted generically via `/dev/i2c-*` because bus nodes are
 # host-controller devices, not vendor-scoped endpoints.
 #
@@ -14,12 +17,333 @@
 # usb rules use ATTR + DEVTYPE filter to match the /dev/bus/usb/ device node directly.
 
 # ─── Razer ────────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1532", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1532", MODE="0660", GROUP="users", TAG+="uaccess"
+# Scoped per product and lighting interface, never vendor-wide. Razer
+# keyboards, mice, and headsets expose keystroke, pointer, and media-key
+# collections as hidraw nodes beside the lighting one, so a vendor-wide grant
+# hands every member of the fallback group a keystroke feed.
+#
+# Each rule matches the USB interface's modalias, which carries the vendor,
+# product, and interface number on one parent, so one line pins all three.
+# A modalias match also never reaches a device plugged in behind a hub,
+# which an ATTRS{idVendor} match does. None of these products gets a
+# usb_device grant: Hypercolor reaches them through hidraw only, and write
+# access to the USB device node is enough to detach usbhid from a keyboard.
+#
+# Interface 0: mice, mousepads, and accessories. On a mouse the lighting
+# reports ride the mouse collection, so the grant also exposes pointer
+# motion and buttons, never keystrokes; the keyboard collections mice use
+# for macros sit on other interfaces and stay root-only.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0044d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0045d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0046d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p004Cd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0050d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0053d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0059d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p005Ad*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p005Cd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0060d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0064d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0065d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0068d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0069d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p006Ad*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p006Bd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p006Cd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p006Ed*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p006Fd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0070d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0071d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0072d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0073d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0078d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p007Ad*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p007Bd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p007Cd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p007Dd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p007Ed*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0084d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0085d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0086d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0088d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p008Ad*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p008Cd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p008Dd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p008Fd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0090d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0091d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0093d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0098d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00A3d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00A4d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00A7d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00A8d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00AAd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00ABd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00AFd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00B0d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00B9d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00CCd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00CDd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00D6d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00D7d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0215d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0517d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0518d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p054Ad*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0C00d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0C01d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0C02d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0C04d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0C05d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0C06d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0C08d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F03d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F07d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F08d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F0Dd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F12d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F17d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F1Dd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F20d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F26d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F2Bd*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Interface 1: the Kraken Kitty Edition headset.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F19d*ic03isc*ip*in01", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Interface 2: the older keyboards and keypads, the Chroma kits and cases,
+# and the Leviathan V2. On the keyboards the lighting reports ride the mouse
+# collection on interface 2, and keystrokes arrive on interfaces 0 and 1,
+# which stay root-only.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0203d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0204d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0208d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0209d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0211d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0216d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p021Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p021Ed*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0221d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0226d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0227d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p022Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p022Bd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0243d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0257d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p025Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0290d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0296d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p02B4d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0532d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0A24d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F09d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F0Ed*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F13d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F1Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Interface 3: the Huntsman V2 generation and later keyboards, the Basilisk
+# V3, Krakens, and Seirens. On the Huntsman V2 and Basilisk V3 this interface
+# holds one consumer collection with feature reports and no input. The
+# Seiren V3 Chroma shares it with its consumer-control input (mute and
+# volume), which the grant therefore exposes.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0099d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p00CBd*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p024Ed*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0258d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p025Cd*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0266d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p026Bd*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p026Cd*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0271d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0282d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0287d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p028Dd*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0292d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0295d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0298d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p02A6d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p02A7d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p02B3d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0504d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0510d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0520d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0527d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0560d*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p056Fd*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F1Bd*ic03isc*ip*in03", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Thunderbolt 4 and 5 docks: the descriptor selects the lighting collection
+# by usage page alone, and no descriptor dump pins its interface, so every
+# HID interface of the dock's own lighting device is granted. A dock has no
+# keys or pointer, and the modalias match never reaches the keyboards and
+# mice plugged into it.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F21d*ic03isc*ip*in*", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F52d*ic03isc*ip*in*", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Blade and Book laptops: the lighting report rides the mouse collection of
+# interface 2, a live HID input interface, so the grant exposes its pointer
+# reports. The built-in keyboard's interfaces 0 and 1 stay root-only.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0205d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p020Fd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0210d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0220d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0224d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0225d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p022Dd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p022Fd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0232d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0233d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0234d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0239d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p023Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p023Bd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0240d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0245d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0246d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p024Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p024Cd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p024Dd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0252d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0253d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0255d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0256d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0259d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0268d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p026Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p026Dd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p026Fd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0270d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0276d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0279d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p027Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p028Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p028Cd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p029Dd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F1Fd*ic03isc*ip*in01", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Corsair ──────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", MODE="0660", GROUP="users", TAG+="uaccess"
+# Scoped per product, never vendor-wide. Corsair keyboards and mice expose
+# their boot-keyboard, NKRO, and pointer collections as hidraw nodes too, and
+# a vendor-wide hidraw rule would hand every member of the fallback group a
+# keystroke feed. ATTRS also walks up through hubs, so a vendor-wide match can
+# catch any device plugged into a hub that reports Corsair's vendor ID.
+#
+# Fan, LCD, and Lighting Node controllers have no input collections and claim
+# their HID interface directly, so they get hidraw and USB device access.
+# iCUE LINK System Hub
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c3f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c3f", MODE="0660", GROUP="users", TAG+="uaccess"
+# Elite Capellix LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c39", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c39", MODE="0660", GROUP="users", TAG+="uaccess"
+# Elite Capellix LCD (alt)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c33", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c33", MODE="0660", GROUP="users", TAG+="uaccess"
+# iCUE LINK LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c4e", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c4e", MODE="0660", GROUP="users", TAG+="uaccess"
+# Nautilus RS LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c55", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c55", MODE="0660", GROUP="users", TAG+="uaccess"
+# XC7 RGB Elite LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c42", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c42", MODE="0660", GROUP="users", TAG+="uaccess"
+# XD6 Elite LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c43", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c43", MODE="0660", GROUP="users", TAG+="uaccess"
+# Lighting Node Pro
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c0b", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c0b", MODE="0660", GROUP="users", TAG+="uaccess"
+# Lighting Node Core
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c1a", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c1a", MODE="0660", GROUP="users", TAG+="uaccess"
+# Commander Pro
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c10", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c10", MODE="0660", GROUP="users", TAG+="uaccess"
+# LS100 Starter Kit
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c1e", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c1e", MODE="0660", GROUP="users", TAG+="uaccess"
+# LT100 Tower
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c23", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c23", MODE="0660", GROUP="users", TAG+="uaccess"
+# 1000D Obsidian
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1d00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="1d00", MODE="0660", GROUP="users", TAG+="uaccess"
+# Spec Omega RGB
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1d04", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="1d04", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Peripherals: Hypercolor reaches the lighting collection through hidraw and
+# never opens the USB device node, so these get no usb_device grant (write
+# access to that node is enough to detach usbhid). Each product is tagged
+# with its lighting interface first, then only the hidraw node on that
+# interface is granted. The two steps are needed because idProduct lives on
+# the USB device and bInterfaceNumber on the USB interface, and the ATTRS
+# keys of one rule must all match the same parent.
+#
+# Bragi keyboards, mice, and mousepads: vendor-only interface 1.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1ba4", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1ba0", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bad", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b8d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b83", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc7", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bed", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1baf", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b73", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bb9", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc4", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bb3", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bd4", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b0a", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bff", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bfd", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b01", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b89", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7c", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc5", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b4b", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b5e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b4c", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b70", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b93", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bba", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bac", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b9e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bb5", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bf0", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1be3", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b9b", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc9", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}=="01", ATTRS{bInterfaceNumber}=="01", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# NXP/CUE keyboards and mice: interface 1, only while it has both an IN and an
+# OUT endpoint. Current firmware puts the vendor-only command interface there;
+# older firmware puts an IN-only keyboard interface there instead, and that
+# node must stay root-only.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b3d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b17", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b37", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b13", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b33", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b49", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b11", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b2d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b20", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b12", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b1e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}=="01-io", ATTRS{bInterfaceNumber}=="01", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# NXP/CUE desk accessories: interface 0. The Polaris carries a keyboard
+# collection on interface 1, which stays root-only.
+# MM800 RGB Polaris
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b3b", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="00"
+# ST100 RGB
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0a34", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="00"
+SUBSYSTEM=="hidraw", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}=="00", ATTRS{bInterfaceNumber}=="00", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── PrismRGB / Nollie / GCS ──────────────────────────────────────────────────
 # Scope permissions to known supported product IDs for each vendor.
@@ -81,24 +405,56 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d2", ATTR{idPro
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d3", ATTRS{idProduct}=="0001", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d3", ATTR{idProduct}=="0001", MODE="0660", GROUP="users", TAG+="uaccess"
 
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4711", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4712", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4714", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4716", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4711", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4712", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4714", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4716", MODE="0660", GROUP="users", TAG+="uaccess"
 
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="uaccess"
+# Prism S and Prism Mini. 16d0 is a vendor ID many small makers share, so
+# only these two products.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="1294", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="1407", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", ATTR{idProduct}=="1294", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", ATTR{idProduct}=="1407", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Dygma ────────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
+# Serial only. Hypercolor talks to Dygma keyboards over their serial port,
+# and their HID interface carries keyboard, mouse, consumer, and
+# system-control input, so it gets no grant. Neither does the USB device
+# node, since write access to it is enough to detach usbhid from that
+# interface.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── ASUS Aura ────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0b05", MODE="0660", GROUP="users", TAG+="uaccess"
+# Scoped to the Aura USB controllers' lighting interface. ROG keyboards and
+# mice share vendor ID 0b05 and expose keystroke and pointer collections as
+# hidraw nodes, and motherboards hang other HID functions (USB audio
+# controls) off it too. Hypercolor reaches the controllers through hidraw
+# only, so they get no usb_device grant.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1867d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1872d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1889d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p18A3d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p18A5d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p18F3d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1939d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p19AFd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1AA6d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1BEDd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Lian Li ──────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", MODE="0660", GROUP="users", TAG+="uaccess"
+# TL Fan Hub (7372) and the L-Wireless controller's TX (8040) and RX (8041),
+# scoped to the products: 0416 is Winbond's vendor ID, which unrelated HID
+# hardware reports too. The wireless controller is reached through its USB
+# device nodes only.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="7372", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", ATTR{idProduct}=="7372", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", ATTR{idProduct}=="8040", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", ATTR{idProduct}=="8041", MODE="0660", GROUP="users", TAG+="uaccess"
 
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0cf2", MODE="0660", GROUP="users", TAG+="uaccess"
 
@@ -115,25 +471,110 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idPro
 # Universal Screen 8.8" in LCD mode (a088), same vendor ID, same scoping.
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="a088", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# ─── NZXT ─────────────────────────────────────────────────────────────────────
+# Scoped to the lighting controllers and Kraken AIOs Hypercolor drives. A
+# vendor-wide hidraw rule would also open the Function keyboard and Lift
+# mouse report nodes to the fallback group, which exposes keystrokes.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2001", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2002", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2005", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2006", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2007", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2009", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="200a", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="200b", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="200c", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="200d", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="200e", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="200f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2010", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2011", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2012", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2014", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2016", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2017", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2019", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="201b", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="201d", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="201f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2020", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2021", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2022", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="3008", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="3012", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2001", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2002", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2005", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2006", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2007", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2009", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="200a", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="200b", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="200c", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="200d", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="200e", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="200f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2010", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2011", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2012", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2014", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2016", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2017", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2019", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="201b", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="201d", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="201f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2020", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2021", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="2022", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="3008", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idProduct}=="3012", MODE="0660", GROUP="users", TAG+="uaccess"
+
 # ─── Ableton ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2982", MODE="0660", GROUP="users", TAG+="uaccess"
 
-# ─── QMK community implementation keyboards ───────────────────────────────────────────────
+# ─── QMK community implementation keyboards ───────────────────────────────────
+# Scoped per product to the raw HID interface, the only one Hypercolor
+# opens. QMK builds it as a non-boot HID interface with an IN and an OUT
+# endpoint, while its keyboard, NKRO, mouse, and media-key interfaces have an
+# IN endpoint only and stay root-only. The rules match that shape instead of
+# an interface number, which shifts with the features a firmware enables.
+# Older firmware gave the debug console interface an OUT endpoint as well,
+# so a build with the console enabled also exposes its debug text. None of
+# these gets a usb_device grant: Hypercolor never opens that node, and write
+# access to it is enough to detach usbhid from the keyboard.
+#
 # Keychron
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0110d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0120d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0130d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0150d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0160d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0310d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ZSA (Moonlander, Voyager)
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3297", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3297", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3297p0791d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3297p1969d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # Drop / OLKB
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="feed", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="feed", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:vFEEDp6060d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # Glorious (GMMK)
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v320Fp5044d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# ─── Wooting ──────────────────────────────────────────────────────────────────
+# Keyboards, so each rule is scoped to the configuration interface the
+# lighting rides on and to nothing else. A product-wide hidraw rule would
+# also open the keyboard, analog, and mouse report nodes to the fallback
+# group, which exposes keystrokes, and a usb_device rule would let a group
+# member detach the keyboard's input driver, so neither exists here
+# (Spec 90 section 8.3). A rule exists only where a published descriptor
+# dump places the configuration collection on interface 2: the Two HE (ARM)
+# and the 60HE (ARM), both with gamepad emulation disabled. The modalias
+# match also demands a non-boot HID interface. Every other Wooting board
+# and mode gets no rule here; Wooting's own udev rules cover them.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1232d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1312d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Input event nodes ────────────────────────────────────────────────────────
 # Host keyboard/mouse capture lives in 70-hypercolor-input.rules, which MUST

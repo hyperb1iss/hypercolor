@@ -328,7 +328,7 @@ pub fn WiringPanel(
                                                             let did = did_for_identify.clone();
                                                             view! {
                                                                 <button
-                                                                    class="w-5 h-5 flex items-center justify-center rounded shrink-0
+                                                                    class="touch-reveal touch-hit relative w-5 h-5 flex items-center justify-center rounded shrink-0
                                                                            opacity-0 group-hover/slot:opacity-100 transition-opacity
                                                                            text-fg-tertiary/40 hover:text-accent btn-press"
                                                                     title="Identify channel"
@@ -696,7 +696,7 @@ pub fn WiringPanel(
                                                                         // Identify — only enabled once the row has been saved
                                                                         // (and therefore has a real binding_index to target).
                                                                         <button
-                                                                            class="w-5 h-5 flex items-center justify-center rounded shrink-0
+                                                                            class="touch-reveal touch-hit relative w-5 h-5 flex items-center justify-center rounded shrink-0
                                                                                    opacity-0 group-hover/row:opacity-100 transition-opacity
                                                                                    text-fg-tertiary/40 hover:text-accent btn-press
                                                                                    disabled:opacity-0 disabled:pointer-events-none"
@@ -726,7 +726,7 @@ pub fn WiringPanel(
 
                                                                         // Delete
                                                                         <button
-                                                                            class="w-5 h-5 flex items-center justify-center rounded shrink-0
+                                                                            class="touch-reveal touch-hit relative w-5 h-5 flex items-center justify-center rounded shrink-0
                                                                                    opacity-0 group-hover/row:opacity-100 transition-opacity
                                                                                    text-fg-tertiary/40 hover:text-status-error btn-press"
                                                                             on:click=move |_| {

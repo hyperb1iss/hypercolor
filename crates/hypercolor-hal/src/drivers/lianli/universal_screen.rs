@@ -34,8 +34,8 @@ use super::common::nul_terminated_ascii;
 use super::winusb::{WINUSB_HEADER_LEN, WinUsbHeaderBuilder};
 use crate::display::{ChunkCommandPolicy, DisplayEncodeError, encode_prefixed_display_frame_into};
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponsePlan,
-    ResponseStatus, ResponseTolerance, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponsePlan, ResponseStatus, ResponseTolerance, TransferType,
 };
 
 /// Vendor ID the panel borrows (Luminary Micro / TI).
@@ -328,9 +328,14 @@ impl Protocol for UniversalScreenProtocol {
         Vec::new()
     }
 
-    fn encode_frame_into(&self, _colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        _colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         // The panel has no LEDs; its ring is a separate USB device.
         commands.clear();
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_display_payload_into(

@@ -1,0 +1,16 @@
+# Tests that need a host-wide resource declare it here, because nextest runs
+# every test in its own process and an in-process lock serializes nothing.
+
+[test-groups]
+# Art-Net's fixed source port, UDP 6454, can be bound by one process at a time.
+artnet-port = { max-threads = 1 }
+# The Hue entertainment stream always targets UDP 2100 on the bridge.
+hue-stream-port = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "package(hypercolor-driver-pixel)"
+test-group = "artnet-port"
+
+[[profile.default.overrides]]
+filter = "binary(hue_backend_tests) | binary(hue_session_tests)"
+test-group = "hue-stream-port"

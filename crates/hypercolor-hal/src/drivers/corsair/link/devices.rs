@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::drivers::corsair::CORSAIR_VID;
 use crate::drivers::corsair::framing::LINK_WRITE_BUF_SIZE;
@@ -47,6 +47,7 @@ static LINK_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: DriverStability::Stable,
     }]
 });
 

@@ -89,7 +89,9 @@ pub(super) use shared::{
 pub(super) use shared::{
     acquire_servo_worker, poison_shared_servo_worker_if_fatal, servo_worker_is_fatal_error,
 };
-pub use shared::{servo_memory_report_snapshot, shutdown_servo_runtime};
+pub use shared::{
+    servo_memory_report_snapshot, servo_runtime_poison_reason, shutdown_servo_runtime,
+};
 use wake::{ServoEventLoopWaker, ServoWakeSignal, WakingSender};
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
@@ -254,6 +256,18 @@ fn elapsed_micros(start: Instant) -> u64 {
     start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
 }
 
+/// Servo throttles a webview while it is hidden: every pipeline in it stops
+/// animations and runs timers at a heavily limited rate, and paint leaves
+/// it out of the display list until it is shown again. A parked page is
+/// never read back, so hiding it is the throttle.
+fn apply_webview_throttle(webview: &WebView, throttled: bool) {
+    if throttled {
+        webview.hide();
+    } else {
+        webview.show();
+    }
+}
+
 fn log_servo_render_stage_timings(
     session_id: ServoSessionId,
     width: u32,
@@ -323,7 +337,7 @@ struct ServoSession {
     last_canvas: Option<Canvas>,
     consecutive_no_ready_frames: u32,
     /// Mirror of the webview's throttle state so render ticks only pay the
-    /// embedder `set_throttled` call when the state actually changes.
+    /// embedder show or hide call when the state actually changes.
     throttled: bool,
 }
 
@@ -635,7 +649,7 @@ impl ServoWorkerRuntime {
             .delegate(delegate)
             .url(url)
             .build();
-        webview.set_throttled(true);
+        apply_webview_throttle(&webview, true);
         webview
     }
 
@@ -675,11 +689,11 @@ impl ServoWorkerRuntime {
         if session.throttled == throttled {
             return Ok(());
         }
-        session
+        let webview = session
             .webview
             .as_ref()
-            .ok_or_else(|| anyhow!("Servo webview is not initialized"))?
-            .set_throttled(throttled);
+            .ok_or_else(|| anyhow!("Servo webview is not initialized"))?;
+        apply_webview_throttle(webview, throttled);
         session.throttled = throttled;
         Ok(())
     }
@@ -854,6 +868,11 @@ impl ServoWorkerRuntime {
                 .saturating_add(1);
             self.session_mut(session_id)?.renders_since_load = renders_since_load;
 
+            // Show a parked page before this tick's evaluations reach it. A
+            // page that received them while still hidden could stay unpainted
+            // after showing, and every later readback came back empty.
+            self.set_webview_throttled(session_id, false)?;
+
             if update_count > 0 {
                 let evaluate_scripts_start = Instant::now();
                 self.evaluate_render_updates(session_id, scripts, frame_payloads)?;
@@ -864,7 +883,6 @@ impl ServoWorkerRuntime {
             // Starting the frame first releases any readiness Servo is holding
             // for the refresh driver, so this spin reports it on this tick.
             let event_loop_start = Instant::now();
-            self.set_webview_throttled(session_id, false)?;
             self.session(session_id)?.frame_clock.start_frame();
             self.servo.spin_event_loop();
             timings.event_loop_us = elapsed_micros(event_loop_start);
@@ -1023,7 +1041,7 @@ impl ServoWorkerRuntime {
                 .map_err(|error| anyhow!("Servo memory report callback failed: {error:?}"));
             response_tx.send(result);
         })
-        .context("failed to create Servo memory report callback")?;
+        .map_err(|error| anyhow!("failed to create Servo memory report callback: {error}"))?;
 
         self.servo.create_memory_report(callback);
 

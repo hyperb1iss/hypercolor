@@ -16,8 +16,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::types::{Command, PACKET_SIZE, ProtocolRevision, SPEED_NORMAL, STATUS_FAILURE};
@@ -261,8 +261,13 @@ impl Protocol for QmkProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         self.encode_direct_frame_into(colors, commands);
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

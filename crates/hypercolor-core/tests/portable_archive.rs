@@ -250,3 +250,41 @@ fn failed_output_is_reported_and_a_damaged_source_is_not_exported() {
         .expect("portable backup fixture should be valid");
     assert!(write_archive(Vec::new(), &manifest, &blobs).is_err());
 }
+
+#[test]
+fn an_archive_from_a_newer_build_is_refused_with_an_upgrade_message() {
+    use hypercolor_core::portable_setup::archive::BackupArchiveError;
+    use hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION;
+
+    let dir = tempfile::tempdir().expect("portable backup fixture should be valid");
+    let blobs = SetupBlobStore::open(dir.path()).expect("portable backup fixture should be valid");
+    let mut manifest =
+        serde_json::to_value(backup()).expect("portable backup fixture should be valid");
+    manifest["schema_version"] = (PORTABLE_BACKUP_SCHEMA_VERSION + 1).into();
+    manifest["written_by_a_future_release"] = serde_json::json!({ "anything": true });
+    let mut archive = tar::Builder::new(Vec::new());
+    append(
+        &mut archive,
+        "manifest.json",
+        &serde_json::to_vec(&manifest).expect("portable backup fixture should be valid"),
+    );
+    let bytes = archive
+        .into_inner()
+        .expect("portable backup fixture should be valid");
+    for result in [
+        read_configuration_archive(bytes.as_slice()),
+        read_archive(bytes.as_slice(), &blobs),
+    ] {
+        match result {
+            Err(BackupArchiveError::Manifest(error)) => {
+                assert_eq!(error.path, "schema_version");
+                assert!(
+                    error.message.contains("Upgrade Hypercolor"),
+                    "{}",
+                    error.message
+                );
+            }
+            other => panic!("expected a schema refusal, got {other:?}"),
+        }
+    }
+}

@@ -10,9 +10,10 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::network::{config_key_touches_drivers, reconcile_driver_output_backends};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
-    DriverHost, DriverModule, OutputBinding,
+    BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView,
+    DriverContext, DriverContextProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    OutputBinding,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -67,7 +68,7 @@ impl DriverModule for FixtureDriver {
 impl DeviceBackendFactory for FixtureDriver {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
         if config.entry.settings.contains_key("fail_build") {
@@ -111,6 +112,10 @@ impl DeviceBackend for FixtureBackend {
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
         self.counters.disconnects.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
         Ok(())
     }
 
@@ -159,9 +164,9 @@ impl DiscoveryCapability for CountingDiscoveryDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         self.scans.fetch_add(1, Ordering::Relaxed);
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 
@@ -273,10 +278,7 @@ async fn retained_runtime_reconnects_idle_devices_without_a_frame_failure() {
         .device_registry
         .set_state(&device_id, DeviceState::Connected)
         .await;
-    let retained = state
-        .driver_host()
-        .runtime_handle()
-        .expect("owned runtime handle");
+    let retained = state.driver_host().driver_context("fixture-bridge").runtime;
 
     assert!(
         retained
@@ -367,7 +369,7 @@ async fn retained_runtime_reconnects_idle_devices_without_a_frame_failure() {
 async fn retained_runtime_does_not_keep_daemon_state_alive() {
     let (state, _tmp) = isolated_state(DriverModuleRegistry::new());
     let host = Arc::clone(state.driver_host());
-    let retained = host.runtime_handle().expect("owned runtime handle");
+    let retained = host.driver_context("fixture-bridge").runtime;
     let backend_manager = Arc::downgrade(&host.discovery_runtime().backend_manager);
     drop(state);
     drop(host);
@@ -391,10 +393,7 @@ async fn retained_runtime_requests_a_driver_scoped_discovery() {
         })
         .expect("counting driver should register");
     let (state, _tmp) = isolated_state(registry);
-    let retained = state
-        .driver_host()
-        .runtime_handle()
-        .expect("owned runtime handle");
+    let retained = state.driver_host().driver_context("fixture-bridge").runtime;
 
     retained
         .request_discovery("counting-discovery")
@@ -803,10 +802,7 @@ async fn reconnect_snapshot_mismatch_still_reconnects_and_known_refresh_publishe
         .lock()
         .await
         .on_discovered_with_behavior(id, &info, None, DiscoveryConnectBehavior::Deferred);
-    let handle = state
-        .driver_host()
-        .runtime_handle()
-        .expect("runtime handle");
+    let handle = state.driver_host().driver_context("fixture-bridge").runtime;
     let mut events = state.event_bus.subscribe_all();
     let mut refresh = discovery;
     refresh.info.id = id;

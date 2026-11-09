@@ -18,8 +18,8 @@ use crate::drivers::corsair::types::{
     EP_GET_DEVICES, EP_SET_COLOR, EndpointConfig, LinkCommand, LinkDeviceType,
 };
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -270,18 +270,22 @@ impl Protocol for CorsairLinkProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let expected = match self.validate_color_count(colors) {
             Ok(expected) => expected,
             Err(error) => {
                 warn!(%error, "corsair LINK encode_frame rejected frame");
                 commands.clear();
-                return;
+                return FrameBatch::from_commands(commands);
             }
         };
         if expected == 0 {
             commands.clear();
-            return;
+            return FrameBatch::from_commands(commands);
         }
 
         let rgb = colors
@@ -326,6 +330,7 @@ impl Protocol for CorsairLinkProtocol {
             .unwrap_or_else(PoisonError::into_inner)
             .last_frame_commands
             .clone_from(commands);
+        FrameBatch::from_commands(commands)
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {

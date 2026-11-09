@@ -66,10 +66,21 @@ Windows only, via `[target.'cfg(target_os = "windows")'.dependencies]`).
 
 - `run_smbus_service() -> anyhow::Result<()>` — Windows Service entry point
   called by the `hypercolor-smbus-service` binary. The broker's IPC protocol
-  is internal. As a service it logs to `logs\smbus-broker.log` beside its
-  executable (`broker_log_path`): the PawnIO runtime and modules it found,
+  is internal. As a service it logs to `smbus-broker.log` in
+  `%ProgramData%\Hypercolor\logs` (`broker_log_path`), outside the
+  immutable release it runs from: the PawnIO runtime and modules it found,
   every state it reports, why it stopped, panics, and the first request
-  failure of each kind.
+  failure of each kind. It opens that directory through handles that
+  refuse links and any component a standard user could change, creating
+  what is missing owned by Administrators with a protected DACL.
+  `--prepare-log-directory` does only that, for the elevated hardware setup
+  to keep its transcript there, and `--remove-machine-directory` removes
+  `%ProgramData%\Hypercolor` under the same checks, for the uninstaller.
+- `machine_log_directory() -> Option<PathBuf>` — that directory, where the
+  broker and the hardware setup keep their logs.
+- `prepare_machine_update_directory() -> io::Result<PathBuf>` — the same
+  judged open for `%ProgramData%\Hypercolor\update`, where the installer
+  keeps the release records.
 - `broker_service_status() -> PawnIoResult<BrokerServiceStatus>` — what the
   Service Control Manager reports for `HypercolorSmBus` (state, Win32 and
   service-specific exit codes, start type, executable, log path) plus a

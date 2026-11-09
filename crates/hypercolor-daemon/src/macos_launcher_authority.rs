@@ -166,7 +166,8 @@ const fn owner_name(owner: MacosDaemonOwner) -> &'static str {
 fn current_process_parent(current_pid: u32) -> Result<(u32, PathBuf)> {
     let mut system = System::new_with_specifics(
         RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-    );
+    )
+    .context("process table is unavailable for launcher inspection")?;
     system.refresh_processes(ProcessesToUpdate::All, true);
     let current = system
         .process(Pid::from_u32(current_pid))

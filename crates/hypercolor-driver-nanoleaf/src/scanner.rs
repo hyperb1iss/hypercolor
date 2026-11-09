@@ -1,6 +1,7 @@
 //! Nanoleaf discovery scanner.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,22 +9,30 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tracing::warn;
 
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
-use hypercolor_driver_support::{CredentialStore, MdnsBrowser};
+use hypercolor_driver_api::{DiscoveryBatch, DiscoveryConnectBehavior};
+use hypercolor_driver_support::discovery::{
+    DEFAULT_PROBE_CONCURRENCY, ProbeBudget, Probed, ScanOutcome, probe_candidates,
+};
+use hypercolor_driver_support::{CredentialStore, MdnsBrowser, MdnsScope};
+use hypercolor_types::device::DeviceFingerprint;
 use hypercolor_types::portable::PortableIdentityClaim;
 
 use super::fetch_device_info;
 use super::fetch_panel_layout;
 use super::streaming::DEFAULT_NANOLEAF_API_PORT;
 use super::types::{
-    NanoleafDiscoveredDevice, NanoleafPanelLayout, build_device_info, panel_ids_from_layout,
+    NanoleafDiscoveredDevice, NanoleafPanelLayout, build_device_info, fingerprint_for_key,
+    panel_ids_from_layout,
 };
 
 const NANOLEAF_SERVICE_TYPE: &str = "_nanoleafapi._tcp.local.";
 const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(2);
+/// One device probe at worst: two HTTP reads at the client's 5 s timeout,
+/// plus a moment so a probe's own timeout lands before the scan deadline.
+const PROBE_ROUND: Duration = Duration::from_secs(11);
 
 /// Persistable hint for a known Nanoleaf device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,10 +93,25 @@ impl NanoleafKnownDevice {
     }
 }
 
+/// One device a scan will probe.
+struct NanoleafCandidate {
+    device: NanoleafKnownDevice,
+    /// mDNS vouched for this address, so it counts as seen even when its
+    /// HTTP API does not answer.
+    advertised: bool,
+}
+
+impl fmt::Display for NanoleafCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.device.ip)
+    }
+}
+
 /// Nanoleaf `mDNS` + HTTP discovery scanner.
 pub struct NanoleafScanner {
     scan_timeout: Duration,
     known_devices: Vec<NanoleafKnownDevice>,
+    tracked: HashMap<IpAddr, DeviceFingerprint>,
     mdns_enabled: bool,
     credential_store: Arc<CredentialStore>,
 }
@@ -99,6 +123,7 @@ impl NanoleafScanner {
         Self {
             scan_timeout: DEFAULT_SCAN_TIMEOUT,
             known_devices: Vec::new(),
+            tracked: HashMap::new(),
             mdns_enabled: true,
             credential_store,
         }
@@ -115,9 +140,18 @@ impl NanoleafScanner {
         Self {
             scan_timeout: timeout,
             known_devices,
+            tracked: HashMap::new(),
             mdns_enabled,
             credential_store,
         }
+    }
+
+    /// Name the devices the host tracks, so a scan that cannot read one
+    /// renews it instead of replacing what the host verified.
+    #[must_use]
+    pub fn with_tracked(mut self, tracked: HashMap<IpAddr, DeviceFingerprint>) -> Self {
+        self.tracked = tracked;
+        self
     }
 
     /// Create a scanner seeded with persisted/known-device hints.
@@ -152,21 +186,37 @@ impl NanoleafScanner {
     ///
     /// # Errors
     ///
-    /// Returns an error when the shared `mDNS` browse helper cannot execute.
-    pub async fn scan_devices(&mut self) -> Result<Vec<NanoleafDiscoveredDevice>> {
-        let mut candidates: HashMap<IpAddr, NanoleafKnownDevice> = self
+    /// Returns an error when `mDNS` cannot run and no known device gives
+    /// the scan anything else to look at.
+    pub async fn scan_devices(&mut self) -> Result<ScanOutcome<NanoleafDiscoveredDevice>> {
+        let started = Instant::now();
+        let known_hosts: Vec<IpAddr> = self.known_devices.iter().map(|device| device.ip).collect();
+        let mut candidates: HashMap<IpAddr, NanoleafCandidate> = self
             .known_devices
             .iter()
             .cloned()
-            .map(|device| (device.ip, device))
+            .map(|device| {
+                (
+                    device.ip,
+                    NanoleafCandidate {
+                        device,
+                        advertised: false,
+                    },
+                )
+            })
             .collect();
+        let mut gaps = Vec::new();
 
         if self.mdns_enabled {
-            let browser = MdnsBrowser::new()?;
-            let services = browser
-                .browse(NANOLEAF_SERVICE_TYPE, self.scan_timeout)
-                .await?;
-            for service in services {
+            let browse = MdnsBrowser::scan(
+                MdnsScope::Network,
+                NANOLEAF_SERVICE_TYPE,
+                self.scan_timeout,
+                &known_hosts,
+            )
+            .await?;
+            gaps = browse.gaps;
+            for service in browse.found {
                 let mdns_id = service.txt.get("id").cloned().unwrap_or_default();
                 let discovered = NanoleafKnownDevice {
                     device_id_is_identifier: !mdns_id.is_empty(),
@@ -195,52 +245,72 @@ impl NanoleafScanner {
 
                 candidates
                     .entry(discovered.ip)
-                    .and_modify(|existing| existing.merge_from(&discovered))
-                    .or_insert(discovered);
+                    .and_modify(|existing| {
+                        existing.device.merge_from(&discovered);
+                        existing.advertised = true;
+                    })
+                    .or_insert(NanoleafCandidate {
+                        device: discovered,
+                        advertised: true,
+                    });
             }
         }
 
-        let mut tasks = JoinSet::new();
-        for candidate in candidates.into_values() {
+        // Known devices go first, so the deadline falls on unsolicited ones.
+        let mut candidates: Vec<NanoleafCandidate> = candidates.into_values().collect();
+        candidates.sort_by_key(|candidate| !known_hosts.contains(&candidate.device.ip));
+        let budget = ProbeBudget {
+            deadline: started + self.scan_timeout + PROBE_ROUND,
+            in_flight: DEFAULT_PROBE_CONCURRENCY,
+        };
+        let mut outcome = probe_candidates(candidates, budget, |candidate: NanoleafCandidate| {
             let credential_store = Arc::clone(&self.credential_store);
-            tasks.spawn(async move { build_discovered_device(candidate, credential_store).await });
-        }
+            let tracked = self.tracked.get(&candidate.device.ip).cloned();
+            async move { build_discovered_device(candidate, tracked, credential_store).await }
+        })
+        .await;
+        outcome.gaps.extend(gaps);
 
-        let mut devices = Vec::new();
-        while let Some(task) = tasks.join_next().await {
-            match task {
-                Ok(Ok(device)) => devices.push(device),
-                Ok(Err(error)) => {
-                    warn!(error = %error, "Nanoleaf device probe failed");
-                }
-                Err(error) => {
-                    warn!(error = %error, "Nanoleaf scanner task failed");
-                }
-            }
-        }
-
-        devices.sort_by(|left, right| left.info.name.cmp(&right.info.name));
-        Ok(devices)
+        outcome
+            .found
+            .sort_by(|left, right| left.info.name.cmp(&right.info.name));
+        Ok(outcome)
     }
 }
 
 impl NanoleafScanner {
     /// Discover configured and mDNS-visible Nanoleaf devices.
-    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        Ok(self
-            .scan_devices()
-            .await?
-            .into_iter()
-            .map(NanoleafDiscoveredDevice::into_discovered)
-            .collect())
+    ///
+    /// # Errors
+    ///
+    /// See [`NanoleafScanner::scan_devices`].
+    pub async fn scan(&mut self) -> Result<DiscoveryBatch> {
+        let outcome = self.scan_devices().await?;
+        Ok(outcome.into_batch(NanoleafDiscoveredDevice::into_discovered))
     }
 }
 
+/// Probe one device.
+///
+/// A paired device nothing advertised that does not answer has not been
+/// seen, so it holds the device tracked at its address and leaves its
+/// siblings free to retire. A device the host tracks that answers but cannot
+/// be read keeps what the host verified. An unpaired device has nothing to
+/// probe, so it stays visible as a deferred record that pairing can act on.
 async fn build_discovered_device(
-    candidate: NanoleafKnownDevice,
+    candidate: NanoleafCandidate,
+    tracked: Option<DeviceFingerprint>,
     credential_store: Arc<CredentialStore>,
-) -> Result<NanoleafDiscoveredDevice> {
+) -> Result<Probed<NanoleafDiscoveredDevice>> {
+    let NanoleafCandidate {
+        device: candidate,
+        advertised,
+    } = candidate;
     let provisional_device_key = normalized_device_key(&candidate, None);
+    // A live id naming another controller means this address changed hands,
+    // so nothing here speaks for the controller tracked at it.
+    let tracked =
+        tracked.filter(|fingerprint| *fingerprint == fingerprint_for_key(&provisional_device_key));
     let auth_token =
         load_auth_token(&credential_store, &provisional_device_key, candidate.ip).await;
     let mut name = candidate.name.clone();
@@ -248,6 +318,7 @@ async fn build_discovered_device(
     let mut firmware = candidate.firmware.clone();
     let mut serial_no = String::new();
     let mut panels: Vec<NanoleafPanelLayout> = Vec::new();
+    let mut global_orientation = 0.0;
     let connect_behavior = if let Some(auth_token) = auth_token {
         match fetch_device_info(candidate.ip, candidate.port, &auth_token).await {
             Ok(device_info) => {
@@ -266,7 +337,8 @@ async fn build_discovered_device(
 
                 match fetch_panel_layout(candidate.ip, candidate.port, &auth_token).await {
                     Ok(layout) => {
-                        panels = layout.position_data;
+                        panels = layout.layout.position_data;
+                        global_orientation = layout.global_orientation.value;
                         DiscoveryConnectBehavior::AutoConnect
                     }
                     Err(error) => {
@@ -275,9 +347,16 @@ async fn build_discovered_device(
                             error = %error,
                             "failed to load Nanoleaf panel layout during discovery"
                         );
+                        if let Some(fingerprint) = tracked {
+                            return Ok(Probed::Present(fingerprint));
+                        }
                         DiscoveryConnectBehavior::Deferred
                     }
                 }
+            }
+            // The request error names its URL, and the URL holds the token.
+            Err(_) if !advertised => {
+                return Ok(Probed::silent(tracked, "device did not answer"));
             }
             Err(error) => {
                 warn!(
@@ -285,6 +364,9 @@ async fn build_discovered_device(
                     error = %error,
                     "failed to load Nanoleaf device info during discovery"
                 );
+                if let Some(fingerprint) = tracked {
+                    return Ok(Probed::Present(fingerprint));
+                }
                 DiscoveryConnectBehavior::Deferred
             }
         }
@@ -320,6 +402,7 @@ async fn build_discovered_device(
         (!model.is_empty()).then_some(model.as_str()),
         (!firmware.is_empty()).then_some(firmware.as_str()),
         panels.as_slice(),
+        global_orientation,
     );
     let panel_ids = panel_ids_from_layout(panels.as_slice());
 
@@ -337,7 +420,7 @@ async fn build_discovered_device(
         metadata.insert("firmware".to_owned(), firmware.clone());
     }
 
-    Ok(NanoleafDiscoveredDevice {
+    Ok(Probed::Described(NanoleafDiscoveredDevice {
         device_key,
         ip: candidate.ip,
         api_port: candidate.port,
@@ -346,7 +429,7 @@ async fn build_discovered_device(
         connect_behavior,
         metadata,
         claim,
-    })
+    }))
 }
 
 pub(super) async fn load_auth_token(

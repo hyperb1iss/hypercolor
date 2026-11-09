@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_driver_api::{
-    DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice, OutputCadence,
+    DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
@@ -26,21 +26,25 @@ impl BackendIo {
         Self { backend }
     }
 
+    pub(super) fn is_backed_by(&self, backend: &BackendHandle) -> bool {
+        Arc::ptr_eq(&self.backend, backend)
+    }
+
     /// Connect a device once using its already-adopted backend inventory.
     ///
-    /// Returns the backend's preferred output cadence for the connected device.
+    /// Returns the backend's output policy for the connected device.
     ///
     /// # Errors
     ///
     /// Returns an error if the backend connect call fails.
-    pub async fn connect(&self, device_id: DeviceId) -> Result<OutputCadence, DeviceError> {
+    pub async fn connect(&self, device_id: DeviceId) -> Result<OutputPolicy, DeviceError> {
         self.connect_inner(device_id, None).await
     }
 
     /// Connect a device, applying timeout only to backend operations after
     /// this handle acquires the backend lock.
     ///
-    /// Returns the backend's preferred output cadence for the connected device.
+    /// Returns the backend's output policy for the connected device.
     ///
     /// # Errors
     ///
@@ -49,7 +53,7 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         timeout: Duration,
-    ) -> Result<OutputCadence, DeviceError> {
+    ) -> Result<OutputPolicy, DeviceError> {
         self.connect_inner(device_id, Some(timeout)).await
     }
 
@@ -57,10 +61,10 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         timeout: Option<Duration>,
-    ) -> Result<OutputCadence, DeviceError> {
+    ) -> Result<OutputPolicy, DeviceError> {
         run_backend_operation(timeout, self.backend.connect(&device_id)).await?;
 
-        Ok(self.backend.output_cadence(&device_id).unwrap_or_default())
+        Ok(self.backend.output_policy(&device_id).unwrap_or_default())
     }
 
     /// Adopt a discovery result into backend-owned inventory.

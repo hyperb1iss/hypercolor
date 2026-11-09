@@ -66,6 +66,11 @@ pub struct DeviceSummary {
     /// Bridge route facts; present only when `origin.transport` is `bridge`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge: Option<BridgeDeviceSummary>,
+    /// Whether the driver module or protocol driving this device is labeled
+    /// experimental: nobody has run it on real hardware yet (Spec 89).
+    /// Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub experimental: bool,
 }
 
 /// How an out-of-process bridge (OpenRGB) reaches one device.
@@ -131,6 +136,9 @@ pub struct SegmentSummary {
     pub topology: String,
     #[serde(default)]
     pub topology_hint: Option<SegmentTopologySummary>,
+    /// Device-declared physical geometry for faithful initial placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_hint: Option<crate::device::SegmentLayoutHint>,
 }
 
 /// Structured topology hint for a device segment.
@@ -355,7 +363,11 @@ pub struct DiscoveryScannerResult {
     pub scanner: String,
     pub duration_ms: u64,
     pub discovered: usize,
+    /// `ok`, `partial` when the scan may have missed devices, or `error`.
     pub status: String,
+    /// What a `partial` scan may have missed. Its devices stay tracked.
+    #[serde(default)]
+    pub gaps: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -459,6 +471,10 @@ pub struct UnclaimedDevice {
     pub interface_classes: Vec<u8>,
     #[serde(default)]
     pub claimable_by: Option<String>,
+    /// Whether the descriptor `claimable_by` refers to is labeled
+    /// experimental: nobody has run it on real hardware yet (Spec 89).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub experimental: bool,
 }
 
 impl UnclaimedDevice {

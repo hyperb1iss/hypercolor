@@ -74,12 +74,33 @@ the firmware split applies only to the original AL.
 
 ---
 
-## Corsair Bragi wireless dongles: enumerated but not routed
+## Corsair NXP/CUE keyboards and mice: firmware layout
 
-Corsair wireless peripherals connect to the host via a USB receiver dongle. Hypercolor
-enumerates these dongles and lists them in the device database, but **child routing is not
-yet enabled**. This means the dongle itself appears in `hypercolor devices list` as a
-researched device, but the wireless peripheral connected through it will not receive color
+The older Corsair generation (K65, K70, and K95 RGB, the Lux and MK.2 boards, K95
+Platinum, Strafe RGB, K55, M65, Scimitar, the MM800 Polaris, and the ST100) is
+driven through its vendor command interface over hidraw, so the keyboard or mouse
+keeps working while Hypercolor sets its lighting. Hypercolor never detaches the
+kernel input driver from these devices. Nobody has run these on hardware with
+Hypercolor yet, so reports are welcome.
+
+That interface only exists as a hidraw node on firmware with the two-interface
+layout, seen on 3.x firmware. Some 2.0x firmware (seen on a K95 RGB, a Strafe RGB,
+and an M65) puts the command interface on an OUT-only endpoint that the kernel does
+not bind, so Hypercolor cannot reach the lighting and the device stays unlit. If
+newer firmware exists for your model, updating it with Corsair's software may move
+it to the two-interface layout.
+
+The K66 has no backlight, and the legacy K65, K70, K90, and K95 boards and the M95
+take only USB vendor control requests, which no input-safe path carries. They stay
+**Researched**.
+
+---
+
+## Corsair Bragi wireless dongles: not routed
+
+Corsair wireless peripherals connect to the host via a USB receiver dongle.
+Hypercolor lists these dongles in the device database, but it does not register
+them, so the wireless peripheral connected through one does not receive color
 output.
 
 Affected dongles (all `status = "researched"`, sourced from `data/drivers/vendors/corsair.toml`):
@@ -100,9 +121,10 @@ entry of your specific model. The Harpoon, Ironclaw, and Dark Core RGB Pro SE al
 supported wired-mode entries in the Bragi peripheral list.
 
 {% <callout type="info"> %}
-Child routing (the dongle forwarding Hypercolor color packets to the wireless peripheral)
-is the feature that is not yet implemented, not the Bragi protocol itself. Wired Bragi
-devices work fully. This is a protocol engineering gap, not a hardware limitation.
+Hypercolor already builds the routed packets a dongle forwards to its paired device.
+What is missing is protocol knowledge: how a dongle answers a query for an empty slot,
+how it reports a paired device going to sleep, and how a paired device should appear as
+its own Hypercolor device. Wired Bragi devices work fully.
 {% </callout> %}
 
 ---
@@ -121,8 +143,9 @@ what each means from a user perspective:
 | **Blocked** | A driver skeleton exists on Hypercolor's side, but the device itself prevents control, typically a firmware limitation outside Hypercolor's reach. |
 | **Known** | The device is in the database but protocol research has not started. |
 
-The Corsair Bragi dongles above are marked **Researched**: the protocol is understood,
-but the child-routing feature has not been built yet.
+The Corsair Bragi dongles above are marked **Researched**: the protocol is mostly
+understood, but the parts that route color to a paired device are not yet documented
+well enough to build on.
 
 ---
 

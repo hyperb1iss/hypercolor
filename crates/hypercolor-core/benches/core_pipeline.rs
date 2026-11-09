@@ -13,8 +13,8 @@ use hypercolor_core::effect::builtin::{
     register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectPool, EffectRegistry, EffectRenderer, FrameInput};
-use hypercolor_core::input::InputSource;
 use hypercolor_core::input::InteractionData;
+use hypercolor_core::input::ManagedSource;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
@@ -71,6 +71,10 @@ impl DeviceBackend for NullBenchBackend {
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 

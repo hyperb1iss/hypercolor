@@ -745,7 +745,7 @@ impl ScreenData {
     }
 }
 
-// ── InputSource ────────────────────────────────────────────────────────────
+// ── ManagedSource ────────────────────────────────────────────────────────────
 
 /// A live data source that feeds the effect pipeline.
 ///
@@ -884,8 +884,6 @@ pub trait ManagedSource: Send {
         }
     }
 }
-
-pub use ManagedSource as InputSource;
 
 /// Audio-specific source contract.
 pub trait AudioSource: ManagedSource + SourceRoleBinding<Role = AudioSourceRole> {

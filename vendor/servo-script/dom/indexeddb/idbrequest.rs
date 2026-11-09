@@ -2,18 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::Heap;
-use js::jsval::{DoubleValue, JSVal, ObjectValue, UndefinedValue};
+use js::jsval::{DoubleValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
 use script_bindings::reflector::{DomObject, reflect_dom_object_with_cx};
 use serde::{Deserialize, Serialize};
-use servo_base::generic_channel::GenericSend;
+use servo_base::generic_channel::{GenericSend, SendError};
 use storage_traits::indexeddb::{
     AsyncOperation, AsyncReadOnlyOperation, BackendError, BackendResult, IndexedDBKeyType,
     IndexedDBRecord, IndexedDBThreadMsg, IndexedDBTxnMode, PutItemResult, SyncOperation,
@@ -242,6 +244,8 @@ impl RequestListener {
                                     .set(ObjectValue(*cursor.reflector().get_jsobject()));
                             },
                         }
+                    } else {
+                        answer.handle_mut().set(NullValue());
                     }
                 },
                 IdbResult::None => {
@@ -448,6 +452,10 @@ impl IDBRequest {
         self.transaction.set(None);
     }
 
+    pub fn unset_done_flag(&self) {
+        self.ready_state.set(IDBRequestReadyState::Pending);
+    }
+
     fn is_done(&self) -> bool {
         self.ready_state.get() == IDBRequestReadyState::Done
     }
@@ -508,7 +516,7 @@ impl IDBRequest {
             .database_access_task_source()
             .to_sendable();
 
-        let closure = move |message: Result<BackendResult<T>, ipc_channel::IpcError>| {
+        let closure = move |message: Result<BackendResult<T>, SendError>| {
             let response_listener = response_listener.clone();
             task_source.queue(task!(request_callback: move |cx| {
                 response_listener.handle_async_request_finished(
@@ -521,8 +529,7 @@ impl IDBRequest {
                 );
             }));
         };
-        let callback = GenericCallback::new(global.time_profiler_chan().clone(), closure)
-            .expect("Could not create callback");
+        let callback = GenericCallback::new(closure).expect("Could not create callback");
         let operation = operation_fn(callback);
 
         if matches!(

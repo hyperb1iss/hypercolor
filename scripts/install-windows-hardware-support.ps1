@@ -2,6 +2,7 @@ param(
     [string]$AssetRoot = "",
     [string]$BrokerExe = "",
     [string]$ModuleDestination = "",
+    [switch]$NoUserModules,
     [switch]$ForcePawnIo,
     [switch]$Silent,
     [switch]$ReinstallService,
@@ -56,6 +57,9 @@ if (-not (Test-IsAdministrator)) {
         "-ModuleDestination",
         $ModuleDestination
     )
+    if ($NoUserModules) {
+        $arguments += "-NoUserModules"
+    }
     if ($ForcePawnIo) {
         $arguments += "-ForcePawnIo"
     }
@@ -77,30 +81,54 @@ if (-not (Test-IsAdministrator)) {
 $pawnIoInstaller = Join-Path $PSScriptRoot "install-bundled-pawnio.ps1"
 $serviceInstaller = Join-Path $PSScriptRoot "install-windows-smbus-service.ps1"
 
-# Keep a transcript beside the broker's own log. The installer only shows
-# this script's output in its details pane, which is gone once the wizard
+# Keep a transcript beside the broker's own log, in the machine log
+# directory outside the installed release. The installer only shows this
+# script's output in its details pane, which is gone once the wizard
 # closes; the diagnostics bundle collects this directory. The previous run
 # is kept once the log passes a megabyte.
-$transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) "logs\hardware-support.log"
+#
+# Every user may add folders to ProgramData, so this elevated script never
+# trusts the path alone: the broker creates the directory locked down, or
+# checks the one there, without following a link, and exits non-zero when a
+# standard user could change it. Once it passes, nobody but an
+# administrator can replace what this script writes through.
+$logDirectory = Join-Path $env:ProgramData "Hypercolor\logs"
+$transcriptPath = Join-Path $logDirectory "hardware-support.log"
 $transcribing = $false
+$logDirectoryReady = $false
+# The broker says why it refused on standard error, which lands in the
+# installer's details pane through this script's output.
+$prepareErrors = $null
 try {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $transcriptPath) | Out-Null
-} catch {
-    Write-Host "Could not create the setup log directory: $($_.Exception.Message)"
-}
-try {
-    if ((Test-Path -LiteralPath $transcriptPath) -and (Get-Item -LiteralPath $transcriptPath).Length -gt 1MB) {
-        Move-Item -LiteralPath $transcriptPath -Destination "$transcriptPath.1" -Force
+    $prepareErrors = [System.IO.Path]::GetTempFileName()
+    $prepare = Start-Process -FilePath $BrokerExe -ArgumentList "--prepare-log-directory" -NoNewWindow -Wait -PassThru -RedirectStandardError $prepareErrors
+    $logDirectoryReady = $prepare.ExitCode -eq 0
+    if (-not $logDirectoryReady) {
+        $reason = "$(Get-Content -LiteralPath $prepareErrors -Raw -ErrorAction SilentlyContinue)".Trim()
+        Write-Host "Not keeping a setup log: the broker refused $logDirectory (exit code $($prepare.ExitCode)): $reason"
     }
 } catch {
-    # A log that cannot be rotated just keeps growing; this run still logs.
-    Write-Host "Could not rotate ${transcriptPath}: $($_.Exception.Message)"
+    Write-Host "Could not prepare the setup log directory: $($_.Exception.Message)"
+} finally {
+    if ($prepareErrors) {
+        Remove-Item -LiteralPath $prepareErrors -Force -ErrorAction SilentlyContinue
+    }
 }
-try {
-    Start-Transcript -LiteralPath $transcriptPath -Append | Out-Null
-    $transcribing = $true
-} catch {
-    Write-Host "Could not keep a setup log at ${transcriptPath}: $($_.Exception.Message)"
+if ($logDirectoryReady) {
+    try {
+        if ((Test-Path -LiteralPath $transcriptPath) -and (Get-Item -LiteralPath $transcriptPath).Length -gt 1MB) {
+            Move-Item -LiteralPath $transcriptPath -Destination "$transcriptPath.1" -Force
+        }
+    } catch {
+        # A log that cannot be rotated just keeps growing; this run still logs.
+        Write-Host "Could not rotate ${transcriptPath}: $($_.Exception.Message)"
+    }
+    try {
+        Start-Transcript -LiteralPath $transcriptPath -Append | Out-Null
+        $transcribing = $true
+    } catch {
+        Write-Host "Could not keep a setup log at ${transcriptPath}: $($_.Exception.Message)"
+    }
 }
 
 $pawnIoExit = 0
@@ -122,6 +150,9 @@ try {
     $pawnIoArgs = @{
         AssetRoot         = $AssetRoot
         ModuleDestination = $ModuleDestination
+    }
+    if ($NoUserModules) {
+        $pawnIoArgs["NoUserModules"] = $true
     }
     if ($ForcePawnIo) {
         $pawnIoArgs["Force"] = $true

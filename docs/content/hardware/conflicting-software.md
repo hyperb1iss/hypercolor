@@ -221,6 +221,15 @@ SignalRGB, Polychromatic, and similar tools running via Wine or natively follow 
 pattern: one owner per USB interface. Whichever application connects first wins; the rest
 see a failure.
 
+### Wootility
+
+Wootility does not conflict with Hypercolor. Wooting's firmware accepts several
+applications on the keyboard at once, and Wootility leaves per-key lighting to
+whichever SDK application took it until that application hands it back, which
+Hypercolor does when it disconnects. Another application that drives Wooting
+lighting through the RGB SDK at the same time is a different story: both writes
+land, and the keys show whichever frame arrived last.
+
 ### macOS
 
 Vendor RGB suites are rare on macOS. The usual conflict there is another instance of an

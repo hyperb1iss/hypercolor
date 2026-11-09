@@ -92,7 +92,7 @@ pub async fn list_control_surfaces(
             .into_response();
     }
 
-    envelope::ok(ControlSurfaceListResponse { surfaces })
+    envelope::ok(ControlSurfaceListResponse::complete(surfaces))
 }
 
 /// `GET /api/v1/drivers/{id}/controls` - Return a driver-level control surface.

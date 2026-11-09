@@ -8,7 +8,7 @@ use hypercolor_daemon::domain::hardware_broker_diagnostics::{
 use hypercolor_types::host_software::{HardwareBrokerReport, HardwareBrokerState};
 
 const REMEDY: &str = "Start it with Start-Service HypercolorSmBus.";
-const LOG: &str = r"C:\Program Files\Hypercolor\tools\logs\smbus-broker.log";
+const LOG: &str = r"C:\ProgramData\Hypercolor\logs\smbus-broker.log";
 
 fn report(state: HardwareBrokerState) -> HardwareBrokerReport {
     HardwareBrokerReport {
@@ -111,12 +111,15 @@ fn a_daemon_that_opens_buses_directly_needs_no_broker() {
 
 #[tokio::test]
 async fn hosts_without_a_broker_report_no_check() {
-    let check = smbus_broker_check().await;
+    assert!(smbus_broker_check(|| None).await.is_none());
+}
 
-    if cfg!(target_os = "windows") {
-        let check = check.expect("Windows always reports the SMBus broker");
-        assert_eq!(check.name, "smbus_broker");
-    } else {
-        assert!(check.is_none());
-    }
+#[tokio::test]
+async fn hosts_with_a_broker_report_its_state() {
+    let check = smbus_broker_check(|| Some(report(HardwareBrokerState::NotNeeded)))
+        .await
+        .expect("a reported broker becomes a check");
+
+    assert_eq!(check.name, "smbus_broker");
+    assert_eq!(check.status, "pass");
 }

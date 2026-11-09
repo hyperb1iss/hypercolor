@@ -108,7 +108,7 @@ fn a_short_receiver_absence_requires_a_new_probe_and_its_observation_budget() {
         pacer
             .stall_verdict(start + Duration::from_millis(5_100))
             .is_none(),
-        "a missing receiver cannot justify resetting the transmitter"
+        "a missing receiver cannot justify a resync"
     );
 
     let returned = start + Duration::from_millis(5_200);
@@ -127,7 +127,7 @@ fn a_short_receiver_absence_requires_a_new_probe_and_its_observation_budget() {
     );
     pacer.observe(0, probe, almost_due);
     assert!(pacer.stall_verdict(almost_due).is_none());
-    assert!(!pacer.reset_requested());
+    assert!(!pacer.silenced());
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn a_single_table_omission_preserves_send_and_poll_grace() {
 }
 
 #[test]
-fn cached_zero_tags_and_later_probes_do_not_postpone_reset_forever() {
+fn cached_zero_tags_and_later_probes_do_not_postpone_a_resync_forever() {
     let (mut pacer, start, echo) = warm_window();
     send(&mut pacer, 1_000, start);
     let expired = start + Duration::from_millis(3_100);
@@ -169,14 +169,14 @@ fn cached_zero_tags_and_later_probes_do_not_postpone_reset_forever() {
     assert_eq!(send(&mut pacer, 1_002, deadline).1, SendKind::Resend);
     let verdict = pacer.stall_verdict(deadline);
     assert!(
-        matches!(verdict, Some(StallVerdict::Reset { resends: 2, .. })),
+        matches!(verdict, Some(StallVerdict::Resync { resends: 2, .. })),
         "a later probe cannot renew the first probe's expired budget: {verdict:?}"
     );
     assert_eq!(pacer.totals().resends, 2);
 }
 
 #[test]
-fn timeouts_without_an_emitted_probe_cannot_request_a_reset() {
+fn timeouts_without_an_emitted_probe_cannot_request_a_resync() {
     let mut pacer = DeliveryPacer::default();
     pacer.ensure_clusters(1);
     let start = Instant::now();
@@ -194,7 +194,7 @@ fn timeouts_without_an_emitted_probe_cannot_request_a_reset() {
     }
     assert!(pacer.totals().timeouts > 0);
     assert_eq!(pacer.totals().resends, 0);
-    assert!(!pacer.reset_requested());
+    assert!(!pacer.silenced());
 }
 
 const TABLE_PERIOD: Duration = Duration::from_millis(100);
@@ -231,7 +231,7 @@ fn repeated_brief_omissions_cannot_renew_the_probe_budget_forever() {
     let omission_every = Duration::from_secs(5);
     let mut omissions = 0_u32;
     let mut first_return = None;
-    let mut reset = None;
+    let mut resync = None;
 
     for step in 0..400_u32 {
         let elapsed = TABLE_PERIOD * step;
@@ -244,26 +244,26 @@ fn repeated_brief_omissions_cannot_renew_the_probe_budget_forever() {
         }
         let verdict = stalled_step(&mut pacer, 10_000 + step, (!omitted).then_some(echo), now);
         if let Some(verdict) = verdict {
-            reset = Some((now, verdict));
+            resync = Some((now, verdict));
             break;
         }
     }
 
     let first_return = first_return.expect("the cluster returns after its first omission");
-    let (reset_at, verdict) = reset.expect(
-        "a stalled cluster that keeps reappearing with an unchanged echo must still reach a TX reset",
+    let (resync_at, verdict) = resync.expect(
+        "a stalled cluster that keeps reappearing with an unchanged echo must still reach a resync",
     );
     assert!(
         omissions >= 2,
-        "the reset must survive a second brief omission, saw {omissions}"
+        "the resync must survive a second brief omission, saw {omissions}"
     );
     assert!(
-        reset_at <= first_return + ECHO_TIMEOUT_CAP + TABLE_PERIOD,
-        "only the first return may restart the probe budget: reset {:?} after the first return",
-        reset_at.saturating_duration_since(first_return)
+        resync_at <= first_return + ECHO_TIMEOUT_CAP + TABLE_PERIOD,
+        "only the first return may restart the probe budget: resync {:?} after the first return",
+        resync_at.saturating_duration_since(first_return)
     );
     assert!(
-        matches!(verdict, StallVerdict::Reset { resends, .. } if resends >= 2),
+        matches!(verdict, StallVerdict::Resync { resends, .. } if resends >= 2),
         "probes sent before a brief omission remain evidence: {verdict:?}"
     );
     assert_eq!(
@@ -281,7 +281,7 @@ fn a_genuine_absence_after_a_brief_omission_still_earns_a_fresh_probe_budget() {
     let mut run = |pacer: &mut DeliveryPacer, until: Instant, echo: Option<Tag>| {
         while now < until {
             let verdict = stalled_step(pacer, 20_000 + step, echo, now);
-            assert!(verdict.is_none(), "no reset before {until:?}: {verdict:?}");
+            assert!(verdict.is_none(), "no resync before {until:?}: {verdict:?}");
             step += 1;
             now += TABLE_PERIOD;
         }
@@ -307,7 +307,7 @@ fn a_genuine_absence_after_a_brief_omission_still_earns_a_fresh_probe_budget() {
     assert!(
         matches!(
             stalled_step(&mut pacer, 30_000, Some(echo), back_at + ECHO_TIMEOUT_CAP),
-            Some(StallVerdict::Reset { .. })
+            Some(StallVerdict::Resync { .. })
         ),
         "the returned receiver's probe budget still expires"
     );
@@ -349,7 +349,7 @@ fn a_return_that_crosses_the_absence_threshold_unlogged_earns_a_fresh_budget() {
     let verdict = at(&mut pacer, returned, Some(echo));
     assert!(
         verdict.is_none(),
-        "a genuine absence earns a fresh probe before any reset: {verdict:?}"
+        "a genuine absence earns a fresh probe before any resync: {verdict:?}"
     );
     assert_eq!(
         pacer.totals().resends,
@@ -369,7 +369,7 @@ fn a_return_that_crosses_the_absence_threshold_unlogged_earns_a_fresh_budget() {
     assert!(
         matches!(
             at(&mut pacer, returned + ECHO_TIMEOUT_CAP, Some(echo)),
-            Some(StallVerdict::Reset { .. })
+            Some(StallVerdict::Resync { .. })
         ),
         "the fresh probe's budget still expires"
     );

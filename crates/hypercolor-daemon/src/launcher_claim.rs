@@ -78,28 +78,6 @@ pub fn resolve_launcher_identity(
     Ok(authority)
 }
 
-/// Ensure two launcher declarations agree when both are present.
-///
-/// Launchers that still publish a legacy platform claim beside the neutral
-/// one must keep them equal; disagreement is a configuration fault and
-/// rejects startup rather than letting one channel silently win.
-///
-/// # Errors
-///
-/// Returns an error naming both declarations when they disagree.
-pub fn ensure_claims_agree(
-    neutral: Option<&ServiceIdentity>,
-    legacy: Option<&ServiceIdentity>,
-) -> Result<()> {
-    if let (Some(neutral), Some(legacy)) = (neutral, legacy) {
-        anyhow::ensure!(
-            same_launcher(neutral, legacy),
-            "conflicting daemon launcher claims: {SERVICE_IDENTITY_ENV}={neutral} legacy={legacy}"
-        );
-    }
-    Ok(())
-}
-
 /// Launchers a Linux authority probe measured as owning the process.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinuxLauncherEvidence {

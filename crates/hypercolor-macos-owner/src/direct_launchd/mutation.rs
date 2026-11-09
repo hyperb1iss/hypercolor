@@ -92,7 +92,7 @@ impl MacosDirectLaunchdBootstrapExpectation {
         })
     }
 
-    /// Absolute diagnostic path where the retained property list was opened.
+    /// Absolute path launchd reads the property list from.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -129,7 +129,7 @@ impl MacosDirectLaunchdBootstrapExpectation {
     }
 }
 
-/// Retained exact property-list object submitted to launchctl without reopening its path.
+/// Retained exact property list, proven unchanged around its submission to launchd.
 #[derive(Debug)]
 pub struct MacosDirectLaunchdBootstrapSource {
     #[cfg_attr(
@@ -211,6 +211,18 @@ pub trait MacosDirectLaunchdMutator {
 pub fn parse_direct_launchd_autostart_state(
     stdout: &[u8],
 ) -> Result<bool, MacosOwnerExecutionError> {
+    parse_launchd_autostart_state(MACOS_DIRECT_LAUNCHD_LABEL, stdout)
+}
+
+/// Parse bounded `launchctl print-disabled` output for one agent label.
+///
+/// A missing label has launchd's default enabled state. Current symbolic values
+/// and the legacy boolean representation are accepted with identical meaning.
+/// Only the `disabled services` block is read, wherever launchctl indents it.
+pub fn parse_launchd_autostart_state(
+    target_label: &str,
+    stdout: &[u8],
+) -> Result<bool, MacosOwnerExecutionError> {
     if stdout.len() > MAX_LAUNCHCTL_OUTPUT_BYTES {
         return Err(MacosOwnerExecutionError::new(
             "launchctl disabled-state output exceeds 64 KiB",
@@ -219,7 +231,7 @@ pub fn parse_direct_launchd_autostart_state(
     let stdout = std::str::from_utf8(stdout).map_err(|_| {
         MacosOwnerExecutionError::new("launchctl disabled-state output is not UTF-8")
     })?;
-    let mut lines = stdout.lines();
+    let mut lines = stdout.lines().skip_while(|line| line.trim().is_empty());
     if lines.next().map(str::trim) != Some("disabled services = {") {
         return Err(MacosOwnerExecutionError::new(
             "launchctl disabled-state output has the wrong header",
@@ -227,15 +239,10 @@ pub fn parse_direct_launchd_autostart_state(
     }
     let mut target = None;
     let mut closed = false;
-    while let Some(line) = lines.next() {
+    for line in lines {
         let line = line.trim();
         if line == "}" {
             closed = true;
-            if lines.any(|remaining| !remaining.trim().is_empty()) {
-                return Err(MacosOwnerExecutionError::new(
-                    "launchctl disabled-state output has trailing content",
-                ));
-            }
             break;
         }
         if line.is_empty() {
@@ -271,9 +278,9 @@ pub fn parse_direct_launchd_autostart_state(
                 ));
             }
         };
-        if label == MACOS_DIRECT_LAUNCHD_LABEL && target.replace(enabled).is_some() {
+        if label == target_label && target.replace(enabled).is_some() {
             return Err(MacosOwnerExecutionError::new(
-                "launchctl disabled-state output repeats the direct service label",
+                "launchctl disabled-state output repeats the service label",
             ));
         }
     }
@@ -504,6 +511,25 @@ where
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Unload the fixed label whatever it runs. An installation that swaps
+    /// its bundle uses this where an owner record may not exist yet: a
+    /// candidate can hang or crash before it ever publishes one.
+    fn bootout_unconditional(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        let deadline = Self::deadline(timeout)?;
+        if self.exact_not_loaded(deadline) {
+            return Ok(MacosDirectLaunchdMutationOutcome::Complete(()));
+        }
+        let _outcome = self.commands.run(&LaunchctlAction::Bootout, deadline)?;
+        Ok(if self.exact_not_loaded(deadline) {
+            MacosDirectLaunchdMutationOutcome::Complete(())
+        } else {
+            MacosDirectLaunchdMutationOutcome::SubmittedUnknown
+        })
     }
 
     fn exact_not_loaded(&mut self, deadline: Instant) -> bool {

@@ -5,7 +5,7 @@ use std::thread;
 
 use hypercolor_core::input::{
     DataSource, DataSourceKind, DataSourceRole, INPUT_EVENT_RING_CAPACITY, InputData, InputManager,
-    InputSource, InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole,
+    InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole, ManagedSource,
     ManagedSourceRole, MotionAggregate, SourceRoleBinding,
 };
 use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
@@ -22,7 +22,7 @@ struct SequencedInteractionSource {
     generation: u64,
 }
 
-impl InputSource for SequencedInteractionSource {
+impl ManagedSource for SequencedInteractionSource {
     fn name(&self) -> &'static str {
         "sequenced-interaction"
     }
@@ -89,7 +89,7 @@ struct SequencedSensorSource {
     steps: VecDeque<SensorStep>,
 }
 
-impl InputSource for SequencedSensorSource {
+impl ManagedSource for SequencedSensorSource {
     fn name(&self) -> &'static str {
         "sequenced-sensors"
     }

@@ -7,9 +7,11 @@
 //! the driver then held their lighting, and a daemon restart 99 minutes
 //! later found them confirming at once. The fake models that: a stalled
 //! receiver drops RGB until it hears a session start (the first clock
-//! broadcast of a session) after a long enough rest with no RGB. A TX reset
-//! alone never clears it. The rig reconnects the way the device lifecycle
-//! does, so a session that ends is connected afresh after a short delay.
+//! broadcast of a session) after a long enough rest with no RGB. A fresh
+//! connect without the rest never clears it. The driver no longer resets
+//! the TX for this at all (it took every write): it resyncs, then rests.
+//! The rig reconnects the way the device lifecycle does, so a session that
+//! ends is connected afresh after a short delay.
 
 #[path = "support/lianli_wireless_fake.rs"]
 mod fake;
@@ -18,8 +20,8 @@ use std::time::Duration;
 
 use fake::{FRAME_PERIOD, FakeRadio, Rig, SessionEnd};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
-    MAX_RECONNECTS_WITHOUT_DELIVERY, MAX_RESETS_WITHOUT_DELIVERY, RECONNECT_REST_HELD,
-    RECONNECT_RESTS, reconnects_without_delivery, resets_without_delivery,
+    MAX_RECONNECTS_WITHOUT_DELIVERY, MAX_RESYNCS_WITHOUT_DELIVERY, RECONNECT_REST_HELD,
+    RECONNECT_RESTS, reconnects_without_delivery, resyncs_without_delivery,
 };
 use hypercolor_hal::protocol::Protocol;
 
@@ -46,14 +48,16 @@ fn streaming_rig() -> Rig {
     rig
 }
 
-/// The session ends of the rig so far, as TX resets then restarts.
+/// The session ends of the rig so far, as resyncs then rested restarts.
+/// The TX is never reset along the way.
 fn ends(rig: &Rig) -> (usize, usize) {
-    let resets = rig
+    assert!(rig.radio.resets.is_empty(), "the TX is never reset");
+    let resyncs = rig
         .session_ends
         .iter()
-        .filter(|end| **end == SessionEnd::TxReset)
+        .filter(|end| **end == SessionEnd::Resync)
         .count();
-    (resets, rig.session_ends.len() - resets)
+    (resyncs, rig.session_ends.len() - resyncs)
 }
 
 /// Frames the first cluster took over the next `span`, against what the
@@ -65,13 +69,12 @@ fn streaming_over(rig: &mut Rig, span: Duration) -> (usize, u128) {
     (taken, span.as_millis() / FRAME_PERIOD.as_millis())
 }
 
-/// The owner's stall: the TX resets and the reconnects that follow them do
-/// not clear it, a rest does. After two TX resets the cluster's lighting
-/// rests, the session ends, and the connect sequence runs again; once a
-/// rest is long enough the fans take frames at the offered rate, and the
-/// recovery budget starts over.
+/// The owner's stall: fresh connects at once do not clear it, a rest does.
+/// After two resyncs the cluster's lighting rests, the session ends, and
+/// the connect sequence runs again; once a rest is long enough the fans
+/// take frames at the offered rate, and the recovery budget starts over.
 #[test]
-fn fans_stalled_past_their_tx_resets_come_back_after_a_rested_reconnect() {
+fn fans_stalled_past_their_resyncs_come_back_after_a_rested_reconnect() {
     let mut rig = streaming_rig();
     let mac = rig.radio.clusters[0].mac;
     let stalled_at = rig.now();
@@ -88,14 +91,14 @@ fn fans_stalled_past_their_tx_resets_come_back_after_a_rested_reconnect() {
         rig.session_ends
     );
     assert_eq!(
-        rig.radio.resets.len(),
-        usize::try_from(MAX_RESETS_WITHOUT_DELIVERY).expect("small"),
-        "the TX is reset its budget's worth of times, then no more"
+        rig.resyncs.len(),
+        usize::try_from(MAX_RESYNCS_WITHOUT_DELIVERY).expect("small"),
+        "a resync budget's worth of fresh connects, then no more"
     );
     assert_eq!(
         rig.session_ends[..2],
-        [SessionEnd::TxReset, SessionEnd::TxReset],
-        "TX resets first: {:?}",
+        [SessionEnd::Resync, SessionEnd::Resync],
+        "resyncs first: {:?}",
         rig.session_ends
     );
     assert_eq!(
@@ -109,15 +112,14 @@ fn fans_stalled_past_their_tx_resets_come_back_after_a_rested_reconnect() {
         taken * 100 >= usize::try_from(offered).expect("small") * 90,
         "streaming at the offered rate again: {taken} of {offered} frames in 20 s"
     );
-    assert_eq!(resets_without_delivery(mac), 0, "the budget starts over");
+    assert_eq!(resyncs_without_delivery(mac), 0, "the budget starts over");
     assert_eq!(reconnects_without_delivery(mac), 0);
     assert!(rig.protocol.session_restart().is_none());
 }
 
 /// A stall that needs four minutes' rest: the rests grow until one
 /// outlasts it, on the last scheduled rest before the power-cycle message,
-/// and the TX is reset
-/// no more than its budget allows along the way.
+/// with no more resyncs than the budget allows along the way.
 #[test]
 fn a_long_fan_stall_is_outlasted_by_growing_rests() {
     let mut rig = streaming_rig();
@@ -128,10 +130,10 @@ fn a_long_fan_stall_is_outlasted_by_growing_rests() {
     let cleared_at = rig.radio.clusters[0]
         .stall_cleared_at
         .expect("the fans came back");
-    let (resets, restarts) = ends(&rig);
+    let (resyncs, restarts) = ends(&rig);
     assert_eq!(
-        u32::try_from(resets).expect("small"),
-        MAX_RESETS_WITHOUT_DELIVERY
+        u32::try_from(resyncs).expect("small"),
+        MAX_RESYNCS_WITHOUT_DELIVERY
     );
     assert_eq!(
         u32::try_from(restarts).expect("small"),
@@ -152,11 +154,11 @@ fn a_long_fan_stall_is_outlasted_by_growing_rests() {
     );
 }
 
-/// Fans that never come back: the TX is reset twice, the rests run their
-/// course, and after the power-cycle message a reconnect still follows
-/// every ten minutes, since the one recovery seen came after a long rest.
-/// Between reconnects the stalled cluster gets no RGB, while fan-speed and
-/// clock upkeep carry on.
+/// Fans that never come back: two resyncs, the rests run their course,
+/// and after the power-cycle message a reconnect still follows every ten
+/// minutes, since the one recovery seen came after a long rest.
+/// Between reconnects the stalled cluster gets no RGB, while the clock
+/// upkeep carries on.
 #[test]
 fn fans_that_never_come_back_are_reconnected_every_ten_minutes() {
     let mut rig = streaming_rig();
@@ -166,11 +168,11 @@ fn fans_that_never_come_back_are_reconnected_every_ten_minutes() {
     rig.run_for(Duration::from_mins(70));
 
     assert!(rig.radio.clusters[0].stall_cleared_at.is_none());
-    let (resets, restarts) = ends(&rig);
+    let (resyncs, restarts) = ends(&rig);
     assert_eq!(
-        u32::try_from(resets).expect("small"),
-        MAX_RESETS_WITHOUT_DELIVERY,
-        "no reset loop: {:?}",
+        u32::try_from(resyncs).expect("small"),
+        MAX_RESYNCS_WITHOUT_DELIVERY,
+        "no resync loop: {:?}",
         rig.session_ends
     );
     let scheduled: Duration = RECONNECT_RESTS.iter().sum();
@@ -214,17 +216,16 @@ fn fans_that_never_come_back_are_reconnected_every_ten_minutes() {
         "a resting cluster gets no RGB"
     );
     assert!(
-        rig.radio.tx_packets - packets_before >= 60 * 8,
-        "fan-speed and clock upkeep carry on through the rest: {} packets in 60 s",
+        rig.radio.tx_packets - packets_before >= 60 * 4,
+        "the clock carries on through the rest, with fans at their duty: {} packets in 60 s",
         rig.radio.tx_packets - packets_before
     );
 }
 
-/// A TX that stops delivering and comes back with its reset still recovers
-/// on the first reset, as before: the rests are only for fans the resets
-/// did not bring back.
+/// A radio that stops delivering and comes back recovers on the first
+/// resync: the rests are only for fans fresh connects did not bring back.
 #[test]
-fn a_tx_that_a_reset_revives_needs_no_rest() {
+fn a_radio_that_comes_back_needs_no_rest() {
     let mut rig = streaming_rig();
     rig.radio.rf_dead = true;
     rig.run_for(Duration::from_secs(8));
@@ -233,8 +234,25 @@ fn a_tx_that_a_reset_revives_needs_no_rest() {
 
     assert_eq!(
         rig.session_ends,
-        [SessionEnd::TxReset],
-        "one reset, then streaming"
+        [SessionEnd::Resync],
+        "one resync, then streaming"
+    );
+    assert!(rig.radio.resets.is_empty(), "the TX is never reset");
+    let mac = rig.radio.clusters[0].mac;
+    let resynced_at = rig.sessions[1];
+    assert!(
+        rig.radio.tx_pwm.iter().all(|(at, _)| *at >= resynced_at),
+        "a session at its duty sends no fan speed: {:?}",
+        rig.radio.tx_pwm
+    );
+    assert_eq!(
+        rig.radio
+            .tx_pwm
+            .iter()
+            .map(|(_, target)| *target)
+            .collect::<Vec<_>>(),
+        vec![mac],
+        "the recovering session re-asserts the cluster's duty and address once"
     );
     let (taken, offered) = streaming_over(&mut rig, Duration::from_secs(10));
     assert!(

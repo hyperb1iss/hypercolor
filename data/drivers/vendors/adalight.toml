@@ -1,0 +1,52 @@
+[vendor]
+name = "DIY Serial (Adalight / AWA)"
+vid = []
+notes = "Boards running Adalight-compatible firmware on a serial port. Devices are configured by hand under drivers.adalight; the driver never claims a board by USB id. Experimental: built and tested against the published framing, not yet run on real boards."
+
+[[devices]]
+name = "Arduino with the Adalight sketch"
+type = "argb_controller"
+status = "supported"
+driver = "adalight"
+transport = "usb_serial"
+notes = "Adafruit LEDstream sketch, protocol ada, 115200 baud. Classic Arduinos reset when the port opens; set startup_delay_ms. Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "Arduino with Adalight-FastLED"
+type = "argb_controller"
+status = "supported"
+driver = "adalight"
+transport = "usb_serial"
+notes = "protocol ada, 115200 baud by default. Drops frames that arrive while it latches LEDs; set latch_ms on AVR boards. Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "ESP8266 with HyperSerialEsp8266"
+type = "argb_controller"
+status = "supported"
+driver = "adalight"
+transport = "usb_serial"
+notes = "protocol awa, 2000000 baud by default, up to 4096 LEDs. Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "ESP32 with HyperSerialESP32"
+type = "argb_controller"
+status = "supported"
+driver = "adalight"
+transport = "usb_serial"
+notes = "protocol awa, 2000000 baud by default, up to 4096 LEDs. RGBW builds take white = firmware (calibrated) or white = host. Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "RP2040 with HyperSerialPico"
+type = "argb_controller"
+status = "supported"
+driver = "adalight"
+transport = "usb_serial"
+notes = "protocol awa over USB CDC; the baud value is nominal, so configure the rate the link carries. Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "WLED serial input"
+type = "argb_controller"
+status = "supported"
+driver = "adalight"
+transport = "usb_serial"
+notes = "protocol ada at 115200 baud. Prefer the network WLED driver: a lost byte can switch WLED's serial baud rate until it restarts. Experimental, not yet tested on hardware."

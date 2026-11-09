@@ -4,13 +4,14 @@ use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_driver_api::{
-    BackendRebindActions, DeviceControlStore, DeviceInputSink, DiscoveredDevice, DriverConfigView,
-    DriverControlHost, DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
-    DriverLifecycleActions, DriverRuntimeActions, DriverTrackedDevice,
+    BackendRebindActions, DeviceControlStore, DeviceInputSink, DiscoveredDevice,
+    DriverConfigSource, DriverConfigView, DriverContext, DriverContextProvider, DriverControlHost,
+    DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
+    DriverLifecycleActions, DriverRuntimeActions, DriverTrackedDevice, InstallationId,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValueMap};
 use hypercolor_types::device::DeviceId;
@@ -25,10 +26,19 @@ use crate::driver_inventory::DriverInventoryStore;
 #[derive(Clone)]
 pub struct DaemonDriverHost {
     runtime: Arc<DiscoveryRuntime>,
+    parts: HostParts,
+    retained: Arc<RetainedDriverRuntime>,
+}
+
+/// Host parts none of which reaches back into the backends, so retained
+/// handles may hold them strongly.
+#[derive(Clone)]
+struct HostParts {
     driver_inventory: Arc<DriverInventoryStore>,
     driver_registry: Arc<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
     device_input: Option<Arc<dyn DeviceInputSink>>,
+    installation_id: InstallationId,
 }
 
 impl DaemonDriverHost {
@@ -38,21 +48,38 @@ impl DaemonDriverHost {
         driver_inventory: Arc<DriverInventoryStore>,
         driver_registry: Arc<DriverModuleRegistry>,
         config_manager: Option<Arc<ConfigManager>>,
+        installation_id: InstallationId,
     ) -> Self {
+        Self::assemble(
+            Arc::new(runtime),
+            HostParts {
+                driver_inventory,
+                driver_registry,
+                config_manager,
+                device_input: None,
+                installation_id,
+            },
+        )
+    }
+
+    fn assemble(runtime: Arc<DiscoveryRuntime>, parts: HostParts) -> Self {
+        let retained = Arc::new(RetainedDriverRuntime {
+            runtime: Arc::downgrade(&runtime),
+            parts: parts.clone(),
+        });
         Self {
-            runtime: Arc::new(runtime),
-            driver_inventory,
-            driver_registry,
-            config_manager,
-            device_input: None,
+            runtime,
+            parts,
+            retained,
         }
     }
 
     /// Accept input from driver-owned devices through `sink`.
     #[must_use]
-    pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
-        self.device_input = Some(sink);
-        self
+    pub fn with_device_input(self, sink: Arc<dyn DeviceInputSink>) -> Self {
+        let mut parts = self.parts;
+        parts.device_input = Some(sink);
+        Self::assemble(self.runtime, parts)
     }
 
     #[must_use]
@@ -67,12 +94,13 @@ impl DaemonDriverHost {
 
     #[must_use]
     pub fn driver_inventory(&self) -> Arc<DriverInventoryStore> {
-        Arc::clone(&self.driver_inventory)
+        Arc::clone(&self.parts.driver_inventory)
     }
 
     pub(crate) async fn refresh_driver_inventory(&self) {
-        self.driver_inventory
-            .refresh(self.driver_registry.as_ref(), self)
+        self.parts
+            .driver_inventory
+            .refresh(self.parts.driver_registry.as_ref(), self)
             .await;
     }
 
@@ -83,7 +111,8 @@ impl DaemonDriverHost {
 
     #[must_use]
     pub(crate) fn current_config_snapshot(&self) -> Option<Arc<HypercolorConfig>> {
-        self.config_manager
+        self.parts
+            .config_manager
             .as_ref()
             .map(|manager| Arc::clone(&manager.get()))
     }
@@ -100,13 +129,13 @@ impl DaemonDriverHost {
         let targets = discovery::rescan_targets_for_driver(
             driver_id,
             config.as_ref(),
-            &self.driver_registry,
+            &self.parts.driver_registry,
         )?;
         let driver_host = Arc::new(self.clone());
         for target in targets {
             if !discovery::schedule_target_scan(
                 self.discovery_runtime(),
-                Arc::clone(&self.driver_registry),
+                Arc::clone(&self.parts.driver_registry),
                 Arc::clone(&driver_host),
                 Arc::clone(&config),
                 target,
@@ -155,56 +184,14 @@ impl DriverCredentialStore for DaemonDriverHost {
     }
 }
 
-#[async_trait]
-impl DriverRuntimeActions for DaemonDriverHost {
-    async fn activate_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
-        let runtime = self.discovery_runtime();
-        discovery::activate_pairable_device(&runtime, device_id, backend_id).await
-    }
-
-    async fn disconnect_device(
-        &self,
-        device_id: DeviceId,
-        backend_id: &str,
-        will_retry: bool,
-    ) -> Result<bool> {
-        let _ = backend_id;
-        let runtime = self.discovery_runtime();
-        discovery::disconnect_tracked_device(
-            &runtime,
-            device_id,
-            DisconnectReason::User,
-            will_retry,
-        )
-        .await
-    }
-
-    async fn request_reconnect(
-        &self,
-        device_id: DeviceId,
-        backend_id: &str,
-        updated: Option<DiscoveredDevice>,
-    ) -> Result<bool> {
-        request_device_reconnect(&self.runtime, device_id, backend_id, updated).await
-    }
-
-    async fn request_discovery(&self, driver_id: &str) -> Result<()> {
-        self.schedule_driver_rescan(driver_id)
-            .map_err(anyhow::Error::msg)
-    }
-}
-
-/// Drivers retain a weak runtime so the backend graph cannot keep itself alive.
+/// The one runtime-actions implementation, weak so a backend retaining it
+/// cannot keep its own graph alive.
 ///
-/// The other host parts are held strongly because none of them reaches back
-/// into the backends; they let a retained handle rebuild the host a
-/// discovery scan runs against.
+/// The strong parts let a retained handle rebuild the host a discovery scan
+/// runs against.
 struct RetainedDriverRuntime {
     runtime: Weak<DiscoveryRuntime>,
-    driver_inventory: Arc<DriverInventoryStore>,
-    driver_registry: Arc<DriverModuleRegistry>,
-    config_manager: Option<Arc<ConfigManager>>,
-    device_input: Option<Arc<dyn DeviceInputSink>>,
+    parts: HostParts,
 }
 
 impl RetainedDriverRuntime {
@@ -213,13 +200,10 @@ impl RetainedDriverRuntime {
     }
 
     fn upgrade_host(&self) -> Result<DaemonDriverHost> {
-        Ok(DaemonDriverHost {
-            runtime: self.upgrade()?,
-            driver_inventory: Arc::clone(&self.driver_inventory),
-            driver_registry: Arc::clone(&self.driver_registry),
-            config_manager: self.config_manager.clone(),
-            device_input: self.device_input.clone(),
-        })
+        Ok(DaemonDriverHost::assemble(
+            self.upgrade()?,
+            self.parts.clone(),
+        ))
     }
 }
 
@@ -353,7 +337,7 @@ impl DriverDiscoveryState for DaemonDriverHost {
     }
 
     fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
-        Ok(self.driver_inventory.load_cached_json(driver_id, key))
+        Ok(self.parts.driver_inventory.load_cached_json(driver_id, key))
     }
 }
 
@@ -363,17 +347,7 @@ impl DriverHost for DaemonDriverHost {
     }
 
     fn runtime(&self) -> &dyn DriverRuntimeActions {
-        self
-    }
-
-    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
-        Some(Arc::new(RetainedDriverRuntime {
-            runtime: Arc::downgrade(&self.runtime),
-            driver_inventory: Arc::clone(&self.driver_inventory),
-            driver_registry: Arc::clone(&self.driver_registry),
-            config_manager: self.config_manager.clone(),
-            device_input: self.device_input.clone(),
-        }))
+        self.retained.as_ref()
     }
 
     fn discovery_state(&self) -> &dyn DriverDiscoveryState {
@@ -383,23 +357,51 @@ impl DriverHost for DaemonDriverHost {
     fn control_host(&self) -> Option<&dyn DriverControlHost> {
         Some(self)
     }
+}
 
-    fn device_input(&self) -> Option<Arc<dyn DeviceInputSink>> {
-        self.device_input.clone()
+impl DriverContextProvider for DaemonDriverHost {
+    fn driver_context(&self, driver_id: &str) -> DriverContext {
+        DriverContext {
+            config: Arc::new(LiveDriverConfig {
+                config_manager: self.parts.config_manager.clone(),
+                driver_id: driver_id.to_owned(),
+            }),
+            installation_id: self.parts.installation_id.clone(),
+            runtime: self.retained.clone(),
+            device_input: self.parts.device_input.clone(),
+        }
+    }
+}
+
+/// Reads one driver's entry from the live config at call time.
+///
+/// A host composed without a config manager has no entries, so it reads as
+/// the default entry and authorizes nothing.
+struct LiveDriverConfig {
+    config_manager: Option<Arc<ConfigManager>>,
+    driver_id: String,
+}
+
+impl DriverConfigSource for LiveDriverConfig {
+    fn current(&self) -> DriverConfigEntry {
+        self.config_manager
+            .as_ref()
+            .map(|manager| super::driver_config_entry(&manager.get(), &self.driver_id))
+            .unwrap_or_default()
     }
 }
 
 #[async_trait]
 impl DriverControlStore for DaemonDriverHost {
     async fn load_driver_values(&self, driver_id: &str) -> Result<ControlValueMap> {
-        let Some(manager) = &self.config_manager else {
+        let Some(manager) = &self.parts.config_manager else {
             bail!("config manager unavailable");
         };
         let config = manager.get();
         let Some(entry) = config.drivers.get(driver_id) else {
             return Ok(ControlValueMap::new());
         };
-        let Some(driver) = self.driver_registry.get(driver_id) else {
+        let Some(driver) = self.parts.driver_registry.get(driver_id) else {
             bail!("driver '{driver_id}' is not registered");
         };
         let Some(provider) = driver.controls() else {
@@ -432,7 +434,7 @@ impl DriverControlStore for DaemonDriverHost {
     }
 
     async fn save_driver_values(&self, driver_id: &str, values: ControlValueMap) -> Result<()> {
-        let Some(manager) = &self.config_manager else {
+        let Some(manager) = &self.parts.config_manager else {
             bail!("config manager unavailable");
         };
         let mut entry = manager
@@ -446,7 +448,7 @@ impl DriverControlStore for DaemonDriverHost {
                 .with_context(|| format!("failed to serialize driver control '{key}'"))?;
             entry.settings.insert(key, persisted);
         }
-        if let Some(driver) = self.driver_registry.get(driver_id)
+        if let Some(driver) = self.parts.driver_registry.get(driver_id)
             && let Some(provider) = driver.config()
         {
             provider.validate_config(&entry)?;
@@ -513,7 +515,7 @@ impl DriverLifecycleActions for DaemonDriverHost {
 impl BackendRebindActions for DaemonDriverHost {
     async fn rebind_backend(&self, driver_id: &str) -> Result<()> {
         let config = self.current_config();
-        let Some(driver) = self.driver_registry.get(driver_id) else {
+        let Some(driver) = self.parts.driver_registry.get(driver_id) else {
             return Ok(());
         };
         let descriptor = driver.module_descriptor();
@@ -524,8 +526,10 @@ impl BackendRebindActions for DaemonDriverHost {
             return Ok(());
         }
 
-        let enabled_driver_ids = super::enabled_driver_module_ids(&self.driver_registry, &config);
+        let enabled_driver_ids =
+            super::enabled_driver_module_ids(&self.parts.driver_registry, &config);
         let finalized = self
+            .parts
             .driver_registry
             .finalize_output_bindings(&enabled_driver_ids)?;
         let Some(backend_id) = driver.output().backend_id().cloned() else {

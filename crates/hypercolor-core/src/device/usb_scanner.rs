@@ -345,6 +345,8 @@ pub(crate) fn usb_observation(
         device_class: usb.class(),
         interface_classes: usb.interfaces().map(nusb::InterfaceInfo::class).collect(),
         descriptor_driver_id: descriptor.map(|descriptor| descriptor.driver_id().into_owned()),
+        descriptor_experimental: descriptor
+            .is_some_and(|descriptor| descriptor.stability.is_experimental()),
         hid_usage_pages: Vec::new(),
     }
 }
@@ -580,6 +582,7 @@ mod tests {
                 device_class: 0,
                 interface_classes: interface_classes.to_vec(),
                 descriptor_driver_id: driver.map(ToOwned::to_owned),
+                descriptor_experimental: false,
                 hid_usage_pages: Vec::new(),
             },
             hid_interfaces: vec![0],

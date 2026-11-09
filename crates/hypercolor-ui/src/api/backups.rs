@@ -12,7 +12,7 @@ pub struct BackupAccess {
 fn require_local_restore() -> ApiResult<()> {
     if crate::remote_bridge::is_available() {
         return Err(ApiError::Network(
-            "Import backups from the app on this computer.".into(),
+            "Import backups on the installation itself.".into(),
         ));
     }
     Ok(())

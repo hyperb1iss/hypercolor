@@ -34,7 +34,7 @@ use serde::de::DeserializeOwned;
 
 use crate::state::{
     CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary,
-    PresetTemplate, SceneSummary, SimulatedDisplaySummary,
+    PresetTemplate, SceneSummary, SimulatedDisplay,
 };
 
 /// HTTP client for the daemon REST API.
@@ -113,7 +113,7 @@ impl DaemonClient {
         let response: Option<ControlSurfaceListResponse> = self
             .get_optional_data(&control_surface_list_path(query))
             .await?;
-        Ok(response.map_or_else(Vec::new, |response| response.surfaces))
+        Ok(response.map_or_else(Vec::new, |response| response.items))
     }
 
     /// Fetch device-owned and optional driver-owned control surfaces.
@@ -172,8 +172,10 @@ impl DaemonClient {
     }
 
     /// Fetch all configured virtual display simulators.
-    pub async fn get_simulated_displays(&self) -> Result<Vec<SimulatedDisplaySummary>> {
-        self.get_data("/simulators/displays").await
+    pub async fn get_simulated_displays(&self) -> Result<Vec<SimulatedDisplay>> {
+        let response: ListResponse<SimulatedDisplay> =
+            self.get_data("/simulators/displays").await?;
+        Ok(response.items)
     }
 
     /// Fetch the latest rendered frame for a virtual display simulator.

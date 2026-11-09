@@ -49,6 +49,198 @@ impl ValidatedManifest {
         let raw: RawManifest = serde_json::from_slice(&bytes)?;
         raw.validate(bytes, false)
     }
+
+    /// Parse the manifest of a macOS app bundle unit: the store inventory
+    /// and the signed bundle, and nothing else.
+    pub(super) fn parse_macos_bundle(
+        bytes: Vec<u8>,
+    ) -> Result<(Self, MacosBundleManifestFacts), ReleasePayloadError> {
+        let raw: RawBundleManifest = serde_json::from_slice(&bytes)?;
+        raw.validate(bytes)
+    }
+}
+
+/// The macOS bundle every app bundle unit carries at its root.
+pub(crate) const MACOS_BUNDLE_ROOT: &str = "Hypercolor.app";
+/// The store inventory every managed unit carries, beside the bundle.
+pub(crate) const MACOS_BUNDLE_DURABLE_STORES: &str = "share/hypercolor/durable-stores.json";
+/// The CLI inside a bundle unit.
+pub(crate) const MACOS_BUNDLE_CLI: &str = "Hypercolor.app/Contents/MacOS/hypercolor";
+/// The app, the daemon and the CLI, in that order.
+pub(crate) const MACOS_BUNDLE_EXECUTABLES: [&str; 3] = [
+    "Hypercolor.app/Contents/MacOS/hypercolor-app",
+    "Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+    MACOS_BUNDLE_CLI,
+];
+const MACOS_BUNDLE_TARGETS: [(&str, &str); 2] = [
+    ("macos-aarch64", "aarch64-apple-darwin"),
+    ("macos-x86_64", "x86_64-apple-darwin"),
+];
+
+/// What a macOS bundle manifest states beyond its member tree.
+#[derive(Debug, Clone)]
+pub(super) struct MacosBundleManifestFacts {
+    pub(super) version: String,
+    /// `manifest.json` plus every regular file, the figure the signed entry
+    /// states as `installed_bytes`.
+    pub(super) installed_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBundleManifest {
+    name: String,
+    version: String,
+    platform: String,
+    rust_target: String,
+    members: Vec<RawMember>,
+}
+
+impl RawBundleManifest {
+    fn validate(
+        self,
+        bytes: Vec<u8>,
+    ) -> Result<(ValidatedManifest, MacosBundleManifestFacts), ReleasePayloadError> {
+        if self.name != "hypercolor"
+            || !valid_identity(&self.version)
+            || !MACOS_BUNDLE_TARGETS.contains(&(self.platform.as_str(), self.rust_target.as_str()))
+        {
+            return Err(ReleasePayloadError::InvalidManifest(
+                "macOS bundle identity fields are invalid".to_owned(),
+            ));
+        }
+        if self.members.is_empty() || self.members.len() > MAX_RELEASE_MEMBERS {
+            return Err(ReleasePayloadError::InvalidManifest(format!(
+                "manifest member count must be in 1..={MAX_RELEASE_MEMBERS}"
+            )));
+        }
+        let mut members = BTreeMap::new();
+        let mut installed_bytes = u64::try_from(bytes.len()).map_err(|_| {
+            ReleasePayloadError::InvalidManifest("manifest length overflows u64".to_owned())
+        })?;
+        let mut total_size = 0_u64;
+        for raw in self.members {
+            let path = validate_member_path(&raw.path)?;
+            let member = raw.validate(&path)?;
+            validate_bundle_member(&path, &member)?;
+            if let ValidatedMember::File { size, .. } = member {
+                total_size = total_size
+                    .checked_add(size)
+                    .filter(|total| *total <= MAX_RELEASE_PAYLOAD_BYTES)
+                    .ok_or_else(|| {
+                        ReleasePayloadError::InvalidManifest(format!(
+                            "manifest payload exceeds {MAX_RELEASE_PAYLOAD_BYTES} bytes"
+                        ))
+                    })?;
+                installed_bytes = installed_bytes.checked_add(size).ok_or_else(|| {
+                    ReleasePayloadError::InvalidManifest(
+                        "manifest installed bytes overflow".to_owned(),
+                    )
+                })?;
+            }
+            if members.insert(path.clone(), member).is_some() {
+                return Err(ReleasePayloadError::InvalidManifest(format!(
+                    "duplicate manifest member path {path}"
+                )));
+            }
+        }
+        for path in members.keys() {
+            let (parent, _) = split_parent(path);
+            if !parent.is_empty()
+                && !members
+                    .get(parent)
+                    .is_some_and(ValidatedMember::is_directory)
+            {
+                return Err(ReleasePayloadError::InvalidManifest(format!(
+                    "manifest member {path} has no declared directory parent"
+                )));
+            }
+        }
+        if !matches!(
+            members.get(MACOS_BUNDLE_DURABLE_STORES),
+            Some(ValidatedMember::File { .. })
+        ) {
+            return Err(ReleasePayloadError::InvalidManifest(format!(
+                "a macOS bundle unit must carry {MACOS_BUNDLE_DURABLE_STORES}"
+            )));
+        }
+        for executable in MACOS_BUNDLE_EXECUTABLES {
+            match members.get(executable) {
+                Some(ValidatedMember::File { source_mode, .. }) if *source_mode == 0o755 => {}
+                _ => {
+                    return Err(ReleasePayloadError::InvalidManifest(format!(
+                        "bundle executable {executable} must be a 0755 regular file"
+                    )));
+                }
+            }
+        }
+        let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for path in members.keys() {
+            let (parent, name) = split_parent(path);
+            children
+                .entry(parent.to_owned())
+                .or_default()
+                .push(name.to_owned());
+        }
+        let unit_id = UnitId::new(hex_digest(&Sha256::digest(&bytes))).map_err(|error| {
+            ReleasePayloadError::InvalidManifest(format!("invalid manifest digest: {error}"))
+        })?;
+        Ok((
+            ValidatedManifest {
+                bytes,
+                unit_id,
+                #[cfg(target_os = "macos")]
+                platform: self.platform,
+                #[cfg(target_os = "macos")]
+                rust_target: self.rust_target,
+                members,
+                children,
+            },
+            MacosBundleManifestFacts {
+                version: self.version,
+                installed_bytes,
+            },
+        ))
+    }
+}
+
+/// A bundle unit holds the bundle and its store inventory beside it, so a
+/// file the code seal does not cover never lands inside the bundle.
+fn validate_bundle_member(path: &str, member: &ValidatedMember) -> Result<(), ReleasePayloadError> {
+    let in_bundle = path == MACOS_BUNDLE_ROOT
+        || path
+            .strip_prefix(MACOS_BUNDLE_ROOT)
+            .is_some_and(|rest| rest.starts_with('/'));
+    let (allowed, mode) = match member {
+        ValidatedMember::Directory { source_mode } => {
+            // The swap renames both bundle roots across directories and the
+            // displaced one is removed later, so the owner needs full access
+            // to every bundle directory.
+            (
+                (in_bundle && source_mode & 0o700 == 0o700)
+                    || matches!(path, "share" | "share/hypercolor"),
+                *source_mode,
+            )
+        }
+        ValidatedMember::File { source_mode, .. } => (
+            (in_bundle && path != MACOS_BUNDLE_ROOT) || path == MACOS_BUNDLE_DURABLE_STORES,
+            *source_mode,
+        ),
+    };
+    if !allowed {
+        return Err(ReleasePayloadError::InvalidManifest(format!(
+            "macOS bundle unit member {path} is outside the bundle and its store inventory, or \
+             a bundle directory denies its owner full access"
+        )));
+    }
+    // The bundle is materialized with these modes in a directory its admin
+    // group shares, so no member may be writable by anyone but its owner.
+    if in_bundle && mode & 0o022 != 0 {
+        return Err(ReleasePayloadError::InvalidManifest(format!(
+            "macOS bundle member {path} is writable by its group or by others"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

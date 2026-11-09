@@ -301,6 +301,7 @@ fn driver_facts_take_usb_claims_from_the_published_protocol_catalog() {
         transport: DriverTransportKind::Usb,
         route_backend_id: "usb".to_owned(),
         presentation: None,
+        stability: hypercolor_types::device::DriverStability::Stable,
     };
     let summary = DriverSummary {
         descriptor: DriverModuleDescriptor {
@@ -313,6 +314,7 @@ fn driver_facts_take_usb_claims_from_the_published_protocol_catalog() {
             api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
             config_version: 1,
             default_enabled: true,
+            stability: hypercolor_types::device::DriverStability::Stable,
         },
         presentation: DriverPresentation {
             label: "Razer".to_owned(),
@@ -400,4 +402,59 @@ fn detector_rules_match_driver_ids_without_regard_to_case() {
     assert_eq!(rules.disabled_prefixes, vec!["Corsair ".to_owned()]);
     assert!(rules.detector_enabled("Razer Kraken Ultimate", Some(false)));
     assert!(!rules.detector_enabled("Corsair K70 RGB MK.2", Some(true)));
+}
+
+#[test]
+fn native_nzxt_withholds_gen2_controllers_and_releases_unsupported_families() {
+    const HUE_2: UsbDeviceId = UsbDeviceId::new(0x1e71, 0x2001);
+    const RGB_FAN_CONTROLLER: UsbDeviceId = UsbDeviceId::new(0x1e71, 0x2009);
+    assert!(
+        detector_usb_claim("NZXT Smart Device V1").is_some(),
+        "the id map must know the Smart Device V1 for this test to mean anything"
+    );
+
+    let rules = partition_driver_ids(
+        &[
+            driver("nzxt", true, &[HUE_2, RGB_FAN_CONTROLLER]),
+            driver("openrgb", true, &[]),
+        ],
+        &[device("nzxt"), device("openrgb")],
+        &known_detector_driver_ids(),
+    )
+    .detector_rules();
+
+    assert!(!rules.detector_enabled("NZXT Hue 2", None));
+    assert!(!rules.detector_enabled("NZXT RGB & Fan Controller", Some(true)));
+    assert!(
+        rules.detector_enabled("NZXT Smart Device V1", Some(false)),
+        "a mapped NZXT detector the catalog cannot claim goes back to OpenRGB"
+    );
+    assert!(rules.detector_enabled("NZXT Hue+", None));
+}
+
+#[test]
+fn native_wooting_withholds_the_boards_it_claims() {
+    const SIXTY_HE_PLUS: UsbDeviceId = UsbDeviceId::new(0x31e3, 0x1322);
+    const TWO_LEGACY: UsbDeviceId = UsbDeviceId::new(0x03eb, 0xff02);
+    assert!(
+        detector_usb_claim("Wooting 60HE+").is_some(),
+        "the id map must know the 60HE+ for this test to mean anything"
+    );
+
+    let rules = partition_driver_ids(
+        &[
+            driver("wooting", true, &[SIXTY_HE_PLUS, TWO_LEGACY]),
+            driver("openrgb", true, &[]),
+        ],
+        &[device("wooting"), device("openrgb")],
+        &known_detector_driver_ids(),
+    )
+    .detector_rules();
+
+    assert!(!rules.detector_enabled("Wooting 60HE+", Some(true)));
+    assert!(!rules.detector_enabled("Wooting Two (Legacy)", None));
+    assert!(
+        rules.detector_enabled("Wooting 80HE", Some(false)),
+        "a mapped Wooting detector the catalog cannot claim goes back to OpenRGB"
+    );
 }

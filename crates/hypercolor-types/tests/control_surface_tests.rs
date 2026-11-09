@@ -358,9 +358,7 @@ fn control_surface_list_response_roundtrips() {
             driver_id: "fixture-driver".to_owned(),
         },
     );
-    let response = ControlSurfaceListResponse {
-        surfaces: vec![document],
-    };
+    let response = ControlSurfaceListResponse::complete(vec![document]);
 
     let json = serde_json::to_value(&response).expect("response serializes");
     let decoded: ControlSurfaceListResponse =

@@ -16,7 +16,9 @@ use hypercolor_core::device::mock::{
 use hypercolor_core::device::{DeviceRegistry, DiscoveryOrchestrator};
 use hypercolor_core::effect::EffectRenderer;
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
-use hypercolor_driver_api::{DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{
+    DeviceBackend, DiscoveredDevice, DiscoveryBatch, DiscoveryConnectBehavior,
+};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceState};
@@ -31,7 +33,10 @@ static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::e
 
 fn add_discovery_source(orchestrator: &mut DiscoveryOrchestrator, source: MockDiscoverySource) {
     let name = source.name().to_owned();
-    orchestrator.add_source(name, async move { source.scan() });
+    orchestrator.add_source(
+        name,
+        async move { source.scan().map(DiscoveryBatch::complete) },
+    );
 }
 
 fn initialized_renderer(

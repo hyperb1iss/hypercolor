@@ -15,15 +15,15 @@ use hypercolor_core::input::screen::implementer::{
     PhysicalOrigin, RawCaptureSurface, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    InputPublicationDemandRevision, LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorPipeline,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
-    ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, ScreenToneMapOperator,
-    ScreenToneMapPolicy,
+    CaptureBackendId, InputPublicationDemandRevision, LED_TONE_MAP_ALGORITHM_REVISION,
+    LedToneMapCalibration, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenColorPipeline, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenColorTransformCapabilities, ScreenExtentRequest, ScreenHdrPolicy,
+    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
 };
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
@@ -169,7 +169,7 @@ fn resolved_source(
             source_pixel_format,
             CaptureColorimetry::from_known(source_color),
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 1,
                 1,

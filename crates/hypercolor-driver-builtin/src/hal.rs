@@ -24,13 +24,15 @@ impl HalCatalogDriverModule {
             .or_else(|| module_descriptor.transports.first())
             .map(|transport| transport.kind.clone())
             .unwrap_or(DriverTransportKind::Usb);
-        let descriptor = DriverDescriptor::new(
+        let mut descriptor = DriverDescriptor::new(
             leak_string(module_descriptor.id.clone()),
             leak_string(module_descriptor.display_name.clone()),
             transport,
             false,
             false,
         );
+        descriptor.stability = module_descriptor.stability;
+        descriptor.default_enabled = module_descriptor.default_enabled;
         let descriptor = Box::leak(Box::new(descriptor));
 
         Self {

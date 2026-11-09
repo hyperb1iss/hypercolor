@@ -183,6 +183,7 @@ fn member_placement(output: &Output) -> MemberPlacement {
         scale: output.scale,
         orientation: output.orientation,
         topology: output.topology.clone(),
+        shape: output.shape.clone(),
     }
 }
 

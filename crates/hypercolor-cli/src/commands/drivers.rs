@@ -105,7 +105,14 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
                 .map(|driver| driver_row(driver, ctx))
                 .collect::<Vec<_>>();
             ctx.print_table(
-                &["Driver", "Kind", "Transports", "Enabled", "Controls"],
+                &[
+                    "Driver",
+                    "Kind",
+                    "Tier",
+                    "Transports",
+                    "Enabled",
+                    "Controls",
+                ],
                 &rows,
             );
         }
@@ -172,6 +179,7 @@ fn driver_row(driver: &DriverSummary, ctx: &OutputContext) -> Vec<String> {
         ctx.painter.name(&driver.presentation.label),
         ctx.painter
             .muted(module_kind_label(driver.descriptor.module_kind)),
+        ctx.painter.muted(&tier_label(driver)),
         ctx.painter.muted(&transport_summary(driver)),
         ctx.painter.muted(if driver.enabled { "yes" } else { "no" }),
         ctx.painter
@@ -201,6 +209,25 @@ const fn module_kind_label(kind: DriverModuleKind) -> &'static str {
         DriverModuleKind::Host => "host",
         DriverModuleKind::Virtual => "virtual",
     }
+}
+
+/// Release label for the drivers table (Spec 89).
+///
+/// A stable module that carries experimental protocols says how many.
+#[must_use]
+pub fn tier_label(driver: &DriverSummary) -> String {
+    if driver.descriptor.stability.is_experimental() {
+        return "experimental".to_owned();
+    }
+    let experimental = driver
+        .protocols
+        .iter()
+        .filter(|protocol| protocol.stability.is_experimental())
+        .count();
+    if experimental == 0 {
+        return "stable".to_owned();
+    }
+    format!("stable +{experimental} experimental")
 }
 
 fn transport_summary(driver: &DriverSummary) -> String {

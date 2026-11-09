@@ -1,17 +1,29 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use reqwest::{StatusCode, Url};
+use hypercolor_driver_support::http::{
+    BoundedHttpClient, BoundedResponse, ReadBudget, StatusCode, Url,
+};
 use serde::{Deserialize, Serialize};
 
 use super::rate::{RateBudget, V1RateOperation};
 
 const DEFAULT_BASE_URL: &str = "https://developer-api.govee.com/v1/";
 const API_KEY_HEADER: &str = "Govee-API-Key";
+/// Longest one cloud exchange may take. The API sits across the internet,
+/// so this is more generous than the LAN drivers' five seconds.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest device list read. An entry is a few hundred bytes, so this
+/// holds thousands of devices, far past any real account.
+const DEVICE_LIST_REPLY_BYTES: usize = 4 * 1024 * 1024;
+/// Largest reply read for one device's state or a control command, both a
+/// short envelope around at most a handful of properties.
+const DEVICE_REPLY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct CloudClient {
-    http: reqwest::Client,
+    http: BoundedHttpClient,
     api_key: String,
     base_url: Url,
     budget: Arc<Mutex<RateBudget>>,
@@ -22,7 +34,7 @@ impl CloudClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the built-in API base URL cannot be parsed.
+    /// Returns an error if the HTTP client cannot be built.
     pub fn new(api_key: impl Into<String>) -> Result<Self> {
         Self::with_base_url(api_key, DEFAULT_BASE_URL)
     }
@@ -31,12 +43,13 @@ impl CloudClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if `base_url` is not a valid URL.
+    /// Returns an error if `base_url` is not a valid URL or the HTTP client
+    /// cannot be built.
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl AsRef<str>) -> Result<Self> {
         let base_url = normalize_base_url(base_url.as_ref())?;
 
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: BoundedHttpClient::new().context("failed to build Govee HTTP client")?,
             api_key: api_key.into(),
             base_url,
             budget: Arc::new(Mutex::new(RateBudget::default())),
@@ -65,29 +78,15 @@ impl CloudClient {
             .http
             .get(url)
             .header(API_KEY_HEADER, &self.api_key)
-            .send()
+            .send(ReadBudget::new(DEVICE_LIST_REPLY_BYTES, REQUEST_TIMEOUT))
             .await
             .context("failed to call Govee device-list API")?;
-
-        let status = response.status();
-        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-            bail!("Govee rejected the API key");
-        }
-
-        let envelope: V1Envelope<V1DevicesData> = response
-            .error_for_status()
-            .context("Govee device-list API returned an HTTP error")?
-            .json()
-            .await
-            .context("failed to parse Govee device-list response")?;
-
-        if envelope.code != 200 {
-            let message = envelope
-                .message
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or_else(|| "unknown error".to_owned());
-            bail!("Govee API returned code {}: {message}", envelope.code);
-        }
+        let envelope: V1Envelope<V1DevicesData> = parse_v1_response(
+            response,
+            "Govee device-list API returned an HTTP error",
+            "failed to parse Govee device-list response",
+        )
+        .await?;
 
         Ok(envelope.data.map_or_else(Vec::new, |data| data.devices))
     }
@@ -109,7 +108,7 @@ impl CloudClient {
             .get(url)
             .header(API_KEY_HEADER, &self.api_key)
             .query(&[("device", device), ("model", model)])
-            .send()
+            .send(ReadBudget::new(DEVICE_REPLY_BYTES, REQUEST_TIMEOUT))
             .await
             .context("failed to call Govee device-state API")?;
         let envelope: V1Envelope<V1State> = parse_v1_response(
@@ -146,7 +145,7 @@ impl CloudClient {
             .put(url)
             .header(API_KEY_HEADER, &self.api_key)
             .json(&request)
-            .send()
+            .send(ReadBudget::new(DEVICE_REPLY_BYTES, REQUEST_TIMEOUT))
             .await
             .context("failed to call Govee device-control API")?;
         let _: V1Envelope<serde_json::Value> = parse_v1_response(
@@ -256,7 +255,7 @@ struct V1CommandPayload {
 }
 
 async fn parse_v1_response<T>(
-    response: reqwest::Response,
+    response: BoundedResponse,
     status_context: &'static str,
     parse_context: &'static str,
 ) -> Result<V1Envelope<T>>

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::envelope::ListResponse;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
@@ -40,3 +42,6 @@ pub struct CaptureMonitor {
     pub primary: bool,
     pub value: String,
 }
+
+/// Response body for `GET /api/v1/capture/monitors`.
+pub type CaptureMonitorListResponse = ListResponse<CaptureMonitor>;

@@ -62,6 +62,7 @@ pid = 0x4714
 name = "Nollie 32"
 type = "argb_controller"
 status = "supported"
+verification = "hardware"
 driver = "nollie"
 transport = "usb_hid"
 notes = "VID 0x3061 grouped Gen-2 HID; VID 0x16D5 NOS2 HID; supports ATX/GPU Strimer rows"

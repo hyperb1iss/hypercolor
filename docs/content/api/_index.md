@@ -82,8 +82,8 @@ A few details worth pinning down. The `api_version` field is the literal string
 `"1.0"` and is unrelated to the `v1` URL segment. The `request_id` is `req_`
 followed by a time-ordered UUID v7, not a bare UUID. Error codes serialize in
 `snake_case`, and `validation_error` maps to HTTP **422** (Unprocessable Entity),
-not 400. The [REST reference](@/api/rest.md) carries the complete error-code to
-HTTP-status table.
+not 400. [Envelope & errors](@/api/rest-envelope-and-errors.md) carries the
+complete error-code to HTTP-status table.
 
 ## Authentication and access
 
@@ -129,7 +129,8 @@ MCP --> Agents[AI agents]
 
 ## Where to go next
 
-- [REST API reference](@/api/rest.md): every `/api/v1` endpoint, grouped by domain, with the envelope and error model.
+- [REST API reference](@/api/rest.md): every `/api/v1` endpoint, grouped by domain and generated from the OpenAPI document, with [every request and response type](@/api/rest-schemas.md) beside it.
 - [WebSocket protocol](@/api/websocket.md): the `hypercolor-v1` subprotocol, JSON channels, and binary canvas/spectrum frames.
 - [CLI reference](@/api/cli.md): the command tree, global flags, and environment variables. Note that `server`, `servers`, and `service` are three distinct commands: `server` targets this daemon, `servers` is the multi-daemon registry, and `service` manages the system service.
 - [MCP server](@/api/mcp.md): the pointer into the canonical [Agents & MCP](@/agents/_index.md) reference for tools, resources, and prompts.
+- [Stability & versioning](@/api/stability.md): which of these interfaces semantic versioning freezes from 1.0 on, what stays internal, and how deprecation works.

@@ -13,6 +13,21 @@ pub const BRAGI_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(50);
 pub const BRAGI_KEYBOARD_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 pub const BRAGI_POINTER_FRAME_INTERVAL: Duration = Duration::from_millis(22);
 pub const NXP_PACKET_SIZE: usize = 64;
+/// Payload bytes after the four-byte NXP command header.
+pub const NXP_PAYLOAD_LEN: usize = NXP_PACKET_SIZE - 4;
+/// Hardware LED index space shared by NXP per-key keyboards.
+///
+/// The packed 512-color frame carries 216 bytes (three planes of 72 bytes,
+/// two LEDs per byte), so every NXP keyboard addresses 144 LED slots.
+pub const NXP_KEYBOARD_LED_SLOTS: usize = 144;
+/// Bytes in one full-range color plane: the declared bulk chunk lengths
+/// (60 + 60 + 48). Slots past [`NXP_KEYBOARD_LED_SLOTS`] carry extras such
+/// as the K95 Platinum light bar.
+pub const NXP_FULL_RANGE_PLANE_LEN: usize = 168;
+/// Software zone IDs the NXP mouse color packet can address (one-based).
+pub const NXP_MOUSE_ZONE_SLOTS: usize = 6;
+/// RGB slots in the NXP mousepad and headset-stand color packet.
+pub const NXP_MOUSEPAD_ZONE_SLOTS: usize = 15;
 pub const NXP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const NXP_KEYBOARD_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 pub const NXP_POINTER_FRAME_INTERVAL: Duration = Duration::from_millis(22);
@@ -79,9 +94,60 @@ pub enum BragiCommand {
 pub enum BragiProperty {
     Brightness = 0x02,
     Mode = 0x03,
+    /// Vendor ID of the device a request is routed to (receiver children).
+    VendorId = 0x11,
+    /// Product ID of the device a request is routed to (receiver children).
+    ProductId = 0x12,
     AppVersion = 0x13,
     BootloaderVersion = 0x14,
+    /// Receiver bitmap of paired child slots that are present.
+    SubdeviceBitfield = 0x36,
     BrightnessCoarse = 0x44,
+}
+
+/// One paired-device slot behind a Bragi wireless receiver.
+///
+/// Slots are numbered 1 through 7. A request reaches the child in a slot
+/// when the slot number is ORed into the Bragi magic byte, so slot 1 is
+/// addressed with `0x09` and slot 7 with `0x0F`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BragiChildSlot(u8);
+
+impl BragiChildSlot {
+    /// Highest slot a receiver bitmap can report.
+    pub const MAX: u8 = 7;
+
+    /// Wrap a slot number, refusing 0 (the receiver itself) and anything
+    /// above [`Self::MAX`].
+    #[must_use]
+    pub const fn new(slot: u8) -> Option<Self> {
+        if slot >= 1 && slot <= Self::MAX {
+            Some(Self(slot))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// Magic byte that routes a request through the receiver to this slot.
+    #[must_use]
+    pub const fn magic(self) -> u8 {
+        BRAGI_MAGIC | self.0
+    }
+
+    /// Slots a receiver reports present in its `SubdeviceBitfield` value.
+    ///
+    /// Only bits 1 through 7 name slots; bit 0 and every higher bit are
+    /// ignored.
+    pub fn present_in(bitfield: u32) -> impl Iterator<Item = Self> {
+        (1..=Self::MAX)
+            .filter(move |slot| bitfield & (1_u32 << slot) != 0)
+            .map(Self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,9 +174,15 @@ pub enum BragiHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CorsairPeripheralTopology {
     None,
-    KeyboardMatrix { rows: u32, cols: u32 },
+    KeyboardMatrix {
+        rows: u32,
+        cols: u32,
+    },
     Strip,
     Point,
+    /// LEDs in hardware index order with no rectangular geometry; the
+    /// spatial layout places them.
+    Custom,
 }
 
 impl CorsairPeripheralTopology {
@@ -120,6 +192,7 @@ impl CorsairPeripheralTopology {
             Self::None | Self::Strip => DeviceTopologyHint::Strip,
             Self::KeyboardMatrix { rows, cols } => DeviceTopologyHint::Matrix { rows, cols },
             Self::Point => DeviceTopologyHint::Point,
+            Self::Custom => DeviceTopologyHint::Custom,
         }
     }
 }
@@ -133,6 +206,9 @@ pub struct BragiDeviceConfig {
     pub topology: CorsairPeripheralTopology,
     pub lighting_format: BragiLightingFormat,
     pub max_fps: u32,
+    /// Receiver slot every request is routed to, or `None` for a device
+    /// addressed directly.
+    pub child_slot: Option<BragiChildSlot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +276,9 @@ pub struct NxpDeviceConfig {
     pub topology: CorsairPeripheralTopology,
     pub max_fps: u32,
     pub requires_unclean_exit: bool,
+    /// Hardware slots of a light bar, in left-to-right order. Bar LEDs follow
+    /// the key slots in frame order and get their own zone.
+    pub light_bar: &'static [u8],
 }
 
 impl NxpDeviceConfig {
@@ -219,6 +298,7 @@ impl NxpDeviceConfig {
             topology,
             max_fps: class.default_max_fps(),
             requires_unclean_exit: false,
+            light_bar: &[],
         }
     }
 
@@ -226,6 +306,53 @@ impl NxpDeviceConfig {
     pub const fn with_max_fps(mut self, max_fps: u32) -> Self {
         self.max_fps = max_fps;
         self
+    }
+
+    /// Add a light bar addressed through the full-range plane slots past the
+    /// key slots. `hardware_slots` lists each bar LED's plane slot from left
+    /// to right.
+    ///
+    /// # Panics
+    ///
+    /// Panics (at compile time for a `const` config) unless the config is a
+    /// full-range or monochrome keyboard, every slot lies past the key slots
+    /// and inside the full-range plane, and no slot repeats.
+    #[must_use]
+    pub const fn with_light_bar(mut self, hardware_slots: &'static [u8]) -> Self {
+        assert!(
+            matches!(
+                self.lighting_kind,
+                NxpLightingKind::FullRangeKeyboard | NxpLightingKind::MonochromeKeyboard
+            ),
+            "only full-range planes have room for a light bar"
+        );
+        let mut index = 0;
+        while index < hardware_slots.len() {
+            let slot = hardware_slots[index] as usize;
+            assert!(
+                slot >= self.led_count && slot < NXP_FULL_RANGE_PLANE_LEN,
+                "light bar slots must follow the key slots inside the plane"
+            );
+            let mut other = index + 1;
+            while other < hardware_slots.len() {
+                assert!(
+                    hardware_slots[other] != hardware_slots[index],
+                    "light bar slots must be distinct"
+                );
+                other += 1;
+            }
+            index += 1;
+        }
+        self.led_count += hardware_slots.len();
+        self.light_bar = hardware_slots;
+        self
+    }
+
+    /// Frame positions before the light bar: the key slots, in hardware
+    /// order.
+    #[must_use]
+    pub const fn key_slots(self) -> usize {
+        self.led_count - self.light_bar.len()
     }
 
     #[must_use]
@@ -265,6 +392,23 @@ impl BragiDeviceConfig {
             topology,
             lighting_format: BragiLightingFormat::RgbPlanar,
             max_fps: class.default_max_fps(),
+            child_slot: None,
+        }
+    }
+
+    /// Route every request through a wireless receiver to one child slot.
+    #[must_use]
+    pub const fn routed_to(mut self, slot: BragiChildSlot) -> Self {
+        self.child_slot = Some(slot);
+        self
+    }
+
+    /// Magic byte that opens every request this config emits.
+    #[must_use]
+    pub const fn magic(self) -> u8 {
+        match self.child_slot {
+            Some(slot) => slot.magic(),
+            None => BRAGI_MAGIC,
         }
     }
 

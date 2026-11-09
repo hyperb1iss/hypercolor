@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class StripDirection(StrEnum):
+class StripDirection(TolerantStrEnum):
     BOTTOM_TO_TOP = "bottom_to_top"
     LEFT_TO_RIGHT = "left_to_right"
     RIGHT_TO_LEFT = "right_to_left"

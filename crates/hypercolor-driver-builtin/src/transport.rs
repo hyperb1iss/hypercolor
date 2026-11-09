@@ -10,8 +10,9 @@ use hypercolor_core::device::{
     UsbScanner,
 };
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
-    DriverConfigView, DriverDescriptor, DriverError, DriverHost, DriverModule, OutputBinding,
+    DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability, DiscoveryRequest,
+    DriverConfigView, DriverContext, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    OutputBinding,
 };
 #[cfg(unix)]
 use hypercolor_types::device::BLOCKS_OUTPUT_BACKEND_ID;
@@ -88,11 +89,11 @@ impl DriverModule for UsbTransportDriverModule {
 impl DeviceBackendFactory for UsbTransportDriverModule {
     fn build(
         &self,
-        host: &dyn DriverHost,
+        context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
         let mut backend = UsbBackend::with_protocol_config_store(self.protocol_configs.clone());
-        if let Some(sink) = host.device_input() {
+        if let Some(sink) = context.device_input {
             backend = backend.with_device_input(sink);
         }
         Ok(Arc::new(backend))
@@ -106,11 +107,12 @@ impl DiscoveryCapability for UsbTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         UsbScanner::new()
             .with_unclaimed_store(self.unclaimed_devices.clone())
             .scan()
             .await
+            .map(DiscoveryBatch::complete)
             .map_err(DriverError::discovery)
     }
 }
@@ -143,7 +145,7 @@ impl DriverModule for SmBusTransportDriverModule {
 impl DeviceBackendFactory for SmBusTransportDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
         Ok(Arc::new(SmBusBackend::new()))
@@ -157,10 +159,11 @@ impl DiscoveryCapability for SmBusTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         SmBusScanner::new()
             .scan()
             .await
+            .map(DiscoveryBatch::complete)
             .map_err(DriverError::discovery)
     }
 }
@@ -209,15 +212,13 @@ impl DriverModule for BlocksTransportDriverModule {
 impl DeviceBackendFactory for BlocksTransportDriverModule {
     fn build(
         &self,
-        host: &dyn DriverHost,
+        context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
-        let mut backend = BlocksBackend::new(self.socket_path.clone());
-        if let Some(sink) = host.device_input() {
+        let mut backend = BlocksBackend::new(self.socket_path.clone())
+            .with_discovery_requests(context.runtime, self.descriptor().id);
+        if let Some(sink) = context.device_input {
             backend = backend.with_device_input(sink);
-        }
-        if let Some(runtime) = host.runtime_handle() {
-            backend = backend.with_discovery_requests(runtime, self.descriptor().id);
         }
         Ok(Arc::new(backend))
     }
@@ -231,10 +232,11 @@ impl DiscoveryCapability for BlocksTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         BlocksScanner::new(self.socket_path.clone())
             .scan()
             .await
+            .map(DiscoveryBatch::complete)
             .map_err(DriverError::discovery)
     }
 }

@@ -384,6 +384,10 @@ impl DeviceBackend for MultiDisplaySinkBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if !self.sinks.contains_key(id) {
             bail!("unexpected device id {id}");
@@ -479,6 +483,10 @@ impl DeviceBackend for RecordingDisplayBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -529,6 +537,10 @@ impl DeviceBackend for FailingDisplayBackend {
         }
 
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 

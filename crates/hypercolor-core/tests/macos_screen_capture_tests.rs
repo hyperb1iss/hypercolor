@@ -14,7 +14,7 @@ use hypercolor_core::input::screen::consumer::{
 use hypercolor_core::input::screen::implementer::MacosScreenCaptureFixture;
 use hypercolor_core::input::screen::planner::{ScreenAdmissionCapacity, ScreenCursorPolicy};
 use hypercolor_core::input::{
-    CapabilityActionDisposition, InputData, InputManager, InputSource, InteractionData,
+    CapabilityActionDisposition, InputData, InputManager, InteractionData, ManagedSource,
     ManagedSourceRole, ScreenSource, SourceCapabilityConflict, SourceCapabilityContext,
     SourceStatus,
 };
@@ -185,7 +185,7 @@ fn diagnostics_payload(snapshot: &SourceStatus) -> &serde_json::Value {
 // A live capture source keeps delivering after an individual frame expires.
 // Stop and join each producer before reconfiguration so it cannot submit new
 // frames across the worker generation boundary.
-fn with_fixture_stream<S: InputSource, T>(
+fn with_fixture_stream<S: ManagedSource, T>(
     source: &mut S,
     fixture: &MacosScreenCaptureFixture,
     mut frame: MacosCaptureFrame,
@@ -217,7 +217,7 @@ fn with_fixture_stream<S: InputSource, T>(
     })
 }
 
-fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::ScreenData {
+fn wait_for_screen(source: &mut impl ManagedSource) -> hypercolor_core::input::ScreenData {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match source.sample().expect("fixture sample succeeds") {
@@ -237,7 +237,7 @@ fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::Scr
 }
 
 fn wait_for_grid_width(
-    source: &mut impl InputSource,
+    source: &mut impl ManagedSource,
     grid_width: u32,
     matches_frame: impl Fn(&hypercolor_core::input::ScreenData) -> bool,
 ) -> hypercolor_core::input::ScreenData {
@@ -267,7 +267,7 @@ fn canvas_bytes(data: &hypercolor_core::input::ScreenData) -> Vec<u8> {
 }
 
 fn wait_for_canvas_change(
-    source: &mut impl InputSource,
+    source: &mut impl ManagedSource,
     previous: &[u8],
 ) -> hypercolor_core::input::ScreenData {
     let deadline = Instant::now() + Duration::from_secs(2);

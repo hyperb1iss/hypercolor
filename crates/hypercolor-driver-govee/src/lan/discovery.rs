@@ -2,8 +2,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use anyhow::{Context, Result, bail};
+use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::discovery::{
+    Admission, CandidateAdmission, KnownTarget, ScanOutcome,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,
@@ -19,6 +22,11 @@ use crate::capabilities::{
     GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, profile_for_sku,
 };
 use crate::lan::protocol::{DEVICE_PORT, LISTEN_PORT, LanCommand, MULTICAST_ADDR, encode_command};
+
+/// Unknown MACs one scan admits. Homes run from a few lights to a few dozen;
+/// 256 leaves headroom while capping how many invented identities one scan
+/// can hand the device registry.
+pub const MAX_SCAN_RESPONSES: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoveeKnownDevice {
@@ -52,6 +60,41 @@ pub struct GoveeLanDevice {
     pub firmware_version: Option<String>,
 }
 
+/// Admission that always keeps a slot for `known` devices: by MAC when one is
+/// known, else by the configured address.
+#[must_use]
+pub fn scan_admission(
+    known: &[GoveeKnownDevice],
+    limit: usize,
+) -> CandidateAdmission<String, DiscoveredDevice> {
+    CandidateAdmission::new(
+        limit,
+        known.iter().map(|device| match device.mac.as_deref() {
+            Some(mac) => KnownTarget::Identity(normalize_mac(mac)),
+            None => KnownTarget::Address(device.ip),
+        }),
+    )
+}
+
+/// Offer one datagram from `source`. Each MAC reports its latest reply, and
+/// anything that does not parse is ignored.
+pub fn offer_scan_response(
+    admission: &mut CandidateAdmission<String, DiscoveredDevice>,
+    bytes: &[u8],
+    source: IpAddr,
+) -> Option<Admission> {
+    match parse_scan_response(bytes, source) {
+        Ok(device) => {
+            let mac = device.mac.clone();
+            Some(admission.offer_latest(source, mac, build_discovered_device(device)))
+        }
+        Err(error) => {
+            debug!(ip = %source, error = %error, "ignored invalid Govee scan response");
+            None
+        }
+    }
+}
+
 pub struct GoveeLanScanner {
     known_devices: Vec<GoveeKnownDevice>,
     timeout: Duration,
@@ -69,42 +112,65 @@ impl GoveeLanScanner {
 
 impl GoveeLanScanner {
     /// Discover multicast-visible and configured Govee LAN devices.
-    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scan socket cannot be bound or no request
+    /// left this host.
+    pub async fn scan(&mut self) -> Result<ScanOutcome<DiscoveredDevice>> {
         let socket = bind_scan_socket().await?;
         let scan = encode_command(&LanCommand::Scan)?;
-        socket
-            .send_to(&scan, MULTICAST_ADDR)
-            .await
-            .context("failed to send Govee multicast scan")?;
+        let mut gaps = Vec::new();
+        let mut sent = false;
+        match socket.send_to(&scan, MULTICAST_ADDR).await {
+            Ok(_) => sent = true,
+            Err(error) => {
+                debug!(error = %error, "failed to send Govee multicast scan");
+                gaps.push(CoverageGap::SendFailed {
+                    target: MULTICAST_ADDR.to_owned(),
+                });
+            }
+        }
 
         for known in &self.known_devices {
             let target = SocketAddr::new(known.ip, DEVICE_PORT);
-            if let Err(error) = socket.send_to(&scan, target).await {
-                debug!(ip = %known.ip, error = %error, "failed to send Govee known-IP scan");
+            match socket.send_to(&scan, target).await {
+                Ok(_) => sent = true,
+                Err(error) => {
+                    debug!(ip = %known.ip, error = %error, "failed to send Govee known-IP scan");
+                    gaps.push(CoverageGap::SendFailed {
+                        target: target.to_string(),
+                    });
+                }
             }
+        }
+        if !sent {
+            bail!("no Govee scan request left this host");
         }
 
         let deadline = Instant::now() + self.timeout;
         let mut buf = [0_u8; 4096];
-        let mut discovered = HashMap::new();
+        let mut admission = scan_admission(&self.known_devices, MAX_SCAN_RESPONSES);
 
         loop {
-            let recv = timeout_at(deadline, socket.recv_from(&mut buf)).await;
-            let Ok(Ok((len, source))) = recv else {
-                break;
+            let (len, source) = match timeout_at(deadline, socket.recv_from(&mut buf)).await {
+                Err(_) => break,
+                Ok(Err(error)) => {
+                    debug!(error = %error, "Govee scan receive failed");
+                    let Some(gap) = CoverageGap::from_receive_error(&error) else {
+                        continue;
+                    };
+                    gaps.push(gap);
+                    break;
+                }
+                Ok(Ok(received)) => received,
             };
-
-            match parse_scan_response(&buf[..len], source.ip()) {
-                Ok(device) => {
-                    discovered.insert(device.mac.clone(), build_discovered_device(device));
-                }
-                Err(error) => {
-                    debug!(ip = %source.ip(), error = %error, "ignored invalid Govee scan response");
-                }
-            }
+            offer_scan_response(&mut admission, &buf[..len], source.ip());
         }
 
-        Ok(discovered.into_values().collect())
+        let mut outcome = admission.finish();
+        outcome.gaps.append(&mut gaps);
+        Ok(outcome)
     }
 }
 

@@ -17,8 +17,8 @@ use crate::drivers::corsair::types::{
     LightingNodeColorChannel, LightingNodePacketId, LightingNodePortState,
 };
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 const MAX_LEDS_PER_CHANNEL: u32 = 204;
@@ -195,7 +195,11 @@ impl Protocol for CorsairLightingNodeProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = self.normalize_colors(colors);
         let mut encoder = CommandBuffer::new(commands);
         let mut offset = 0_usize;
@@ -258,6 +262,7 @@ impl Protocol for CorsairLightingNodeProtocol {
             );
         }
         encoder.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {

@@ -8,7 +8,8 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::simulators::SimulatedDisplayExt;
-use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
+use hypercolor_daemon::simulators::activate_simulated_displays;
+use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::device::DeviceId;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -28,8 +29,8 @@ fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
     (state, tempdir)
 }
 
-fn simulator_config() -> SimulatedDisplayConfig {
-    SimulatedDisplayConfig {
+fn simulator_config() -> SimulatedDisplay {
+    SimulatedDisplay {
         id: DeviceId::from_uuid(Uuid::now_v7()),
         name: "Preview Test Display".to_owned(),
         width: 240,

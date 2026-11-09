@@ -47,8 +47,9 @@ and reusable driver policy never leak into the stable trait boundary.
 | `DriverModule` | `driver_api::module` | Capability root: the entry point the host sees |
 | `DriverDescriptor` | `driver_api::descriptor` | Static ID, display name, transport kind, schema version |
 | `DeviceBackendFactory` | `driver_api::module` | Constructs one finalized output backend |
+| `DriverContext` | `driver_api::host` | Host services a backend is built with: live config, installation identity, runtime actions, optional device input |
 | `DeviceBackend` | `driver_api::backend` | Adopts discoveries and owns connected-device output |
-| `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning `Vec<DiscoveredDevice>` |
+| `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning a `DiscoveryBatch` of observations plus coverage |
 | `PairingCapability` | `driver_api::pairing` | `auth_summary`, `pair`, `clear_credentials` |
 | `DriverControlProvider` | `driver_api::controls` | Driver-level and device-level control surfaces |
 | `DriverRuntimeCacheProvider` | `driver_api::module` | Persist discovery hints across daemon restarts |
@@ -87,8 +88,8 @@ use std::sync::Arc;
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceBackendFactory, DiscoveryCapability,
-    DriverConfigProvider, DriverConfigView, DriverDescriptor, DriverError,
-    DriverHost, DriverModule, OutputBinding,
+    DriverConfigProvider, DriverConfigView, DriverContext, DriverDescriptor,
+    DriverError, DriverModule, OutputBinding,
 };
 use hypercolor_types::identity::BackendId;
 
@@ -120,7 +121,7 @@ impl DriverModule for AcmeDriverModule {
 impl DeviceBackendFactory for AcmeDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
         let cfg = config.parse_settings::<AcmeConfig>()?;
@@ -128,6 +129,13 @@ impl DeviceBackendFactory for AcmeDriverModule {
     }
 }
 ```
+
+`config` is the entry this backend is built for, and the host rebuilds the backend when that
+entry changes. `context` carries the host services a backend may keep: a live view of this
+driver's config, the installation identity, and retained runtime actions. A driver whose
+devices exist only because config names them keeps `context.config` in a
+`hypercolor_driver_support::ConfiguredDevices` and resolves every device through it right
+before opening; discovery metadata may describe such a device but never authorizes one.
 
 Methods you do not need (`pairing`, `controls`, `runtime_cache`, `presentation`,
 `protocol_catalog`) have default implementations that return `None`. Override only what you
@@ -141,11 +149,44 @@ those `Option` returns.
 `DeviceBackend` is the hot-path trait the render loop calls on every frame. It is
 `Send + Sync` and must not block the async executor.
 
+The backend owns routes. Everything that lives and dies with one connection, the socket
+included, belongs in a `DeviceSession` kept in a `SessionTable`:
+
 ```rust
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, Frame, OutputPolicy,
+    SkipReason, Submission,
 };
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId};
+
+struct AcmeSession {
+    device_id: DeviceId,
+    socket: UdpSocket,
+}
+
+impl DeviceSession for AcmeSession {
+    // Facts fixed at connect, readable without waiting for the session's I/O.
+    type Facts = OutputPolicy;
+
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        // Encode one frame. Called on every render tick; keep allocations minimal.
+        // A frame the device already shows settles without touching the wire:
+        // return attempt.skip(SkipReason::Unchanged).into();
+        let transmission = attempt.start();
+        // Send it. A failed send settles with transmission.failed(error).
+        transmission.written().into()
+    }
+
+    async fn finish(&mut self) -> Result<(), DeviceError> {
+        // Say goodbye on the wire, within DeviceSession::CLEANUP.
+        Ok(())
+    }
+
+    // release(self) gives the transport back. The default just drops the
+    // session; a transport whose close can block awaits that there.
+}
 
 #[async_trait::async_trait]
 impl DeviceBackend for AcmeBackend {
@@ -164,29 +205,76 @@ impl DeviceBackend for AcmeBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        // Open the UDP socket or handshake as required.
-        todo!()
+        // Runs only when this connect starts an open. The future runs on a
+        // task the table owns, so it takes what it needs from `self` up front.
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let opener = self.opener();
+                // Open the UDP socket or handshake as required.
+                async move { opener.open_session(id).await }
+            })
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        todo!()
+        self.sessions.close(id).await
     }
 
-    async fn write_colors(
-        &self,
-        id: &DeviceId,
-        colors: &[[u8; 3]],
-    ) -> Result<(), DeviceError> {
-        // Encode and send one frame. Called on every render tick; keep allocations minimal.
-        todo!()
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.sessions.retire().await
     }
 
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        self.sessions.require(id)?.write(colors).await
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.sessions.frame_sink(id)
+    }
+
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         // Govern how often the render loop sends frames to this device.
-        Some(OutputCadence::from_fps(30))
+        self.sessions.facts(id).map(|cadence| *cadence)
     }
 }
 ```
+
+Each frame carries an `Attempt`, and the receipt says what became of it. `Attempt::start` marks
+the first transport I/O and exactly one terminal call settles it: `skip` for a frame that was not
+written (`Unchanged`, `Deferred { retry_at }`, or `Superseded`), `reject` for a failure before any
+I/O, and on the started `Transmission`, `written`, `answered` for a peer that replied, or `failed`.
+Settling consumes it, so a frame cannot report twice, and an attempt dropped unsettled still
+reports. `Written` counts bytes of the submitted frame, three per LED, whatever the wire format
+adds. A driver that hands the frame to its own worker wraps it in a `MailboxFrame`, moves the
+attempt to that worker, and returns `Submission::Pending`. A lane that has to wait for its own
+reasons (a quota, a backlog, another application holding the device) answers `Readiness::Deferred`
+and skips with its `retry_at`, and the host offers the latest frame again then.
+
+The table keeps the session contract for you. When `disconnect` returns `Ok`, new operations
+are revoked, admitted I/O has settled or been cancelled, `finish` ran, tasks started with
+`Session::spawn` are joined, and the transport is gone. A frame sink somebody retained holds
+an empty slot, so it rejects every frame and keeps no socket alive. A reconnect is a new
+session, and a retired backend closes everything and refuses new sessions. Do not add closed
+flags, `Drop` hooks, or your own sink for any of that.
+
+Each device has at most one generation Opening or Open at a time, and a closing generation
+stays in the table until its transport is gone. Concurrent connects share one open and one
+result, a connect waits for a close to finish, and retirement waits for both, so one
+session's cleanup can never hit the next, even when device state outlives any one connection.
+A device whose target can move uses `open_unless` instead of `open`, which closes a session
+that no longer matches before the new open starts.
+
+The table owns every open, so a connect that times out only stops waiting. The open keeps
+going under `DeviceSession::OPEN`, and if nobody is waiting when it finishes, the session
+closes through normal cleanup. An open that awaits blocking native work sets `OPEN` to
+`Duration::MAX`, because dropping that wait would detach the work.
+
+A socket every device of the backend sends from stays on the backend, with each session
+holding a reference, so closing one session leaves the others running. `Session::spawn`
+aborts its tasks, so a task must be safe to stop at any await. A task that must finish a
+write on a link other sessions share stays on the session and stops in `finish` instead,
+as OpenRGB's writer does.
 
 `DeviceLifecyclePolicy::default()` gives a 5-second connect timeout with inline execution
 and retry on timeout. Override `lifecycle_policy` only when your connect call blocks for
@@ -216,7 +304,7 @@ impl DiscoveryCapability for WledDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
         let tracked = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_targets = resolve_wled_probe_targets_from_sources(
@@ -232,6 +320,30 @@ impl DiscoveryCapability for WledDriverModule {
 
 Device fingerprints use `DeviceFingerprint::mint(FingerprintNamespace::Net, "wled", mac)`
 rather than the IP address, so a DHCP reassignment keeps the same `DeviceId`.
+
+### Reporting what a scan covered
+
+A scan returns observations plus coverage, and the host treats them differently:
+
+- **Observations always apply.** `DiscoveryObservation::Device` carries a verified description.
+  `DiscoveryObservation::Present` carries the fingerprint of a device the host already tracks
+  (take it from `DriverTrackedDevice`) that answered but could not be described. It renews the
+  device without touching its routes, capabilities, or metadata, so never rebuild a record from
+  tracked or cached fields to keep a device alive.
+- **Coverage decides retirement.** A `CoverageGap` is anything that could hide a device, and it
+  has one of two scopes. `CoverageGap::DeviceUnverified` names one tracked device: the host holds
+  that device as if seen and the rest of the target can still retire. Every other gap (a failed
+  send, a receive failure, a cancelled probe, a truncated admission, a discovery source that
+  could not run) covers the whole target, so nothing retires. An intended collection window
+  ending is complete, and so is a known target that never answered.
+- **Errors mean nothing ran.** Return `Err` only when discovery could not start at all. One
+  failed source must not throw away what the others found.
+
+Bound what unsolicited replies can make a scan do with `hypercolor_driver_support::discovery`.
+`CandidateAdmission` caps retained candidates before any state grows and reserves room for
+configured and tracked targets. `probe_candidates` bounds concurrency under a deadline. Both
+hand back the gaps their bounds cost. Pass tracked targets to `MdnsBrowser::browse` so a flood
+of advertisements cannot crowd them out.
 
 ### Govee: UDP multicast + optional cloud fallback
 
@@ -385,29 +497,59 @@ Govee uses a JSON-over-UDP control protocol on port `4003`. For SKUs with the
 25 fps, with a cap of 255 LEDs per frame. Plain LAN devices without Razer streaming support
 run at up to 10 fps.
 
-### Shared HTTP clients
+### Bounded HTTP and framing
 
-Drivers that make HTTP calls for pairing or discovery enrichment (WLED's `GET /json/info`,
-Govee's cloud API) should share a single `reqwest::Client` rather than building one per
-call. Store it in a `LazyLock` at crate root:
+Every reply from a device is untrusted, so a driver never reads one without a limit. Drivers
+that make HTTP calls for pairing or discovery enrichment (WLED's `GET /json/info`, Govee's
+cloud API) use `hypercolor_driver_support::http` and do not depend on `reqwest` directly;
+`deny.toml` fails CI if one does.
+
+A request cannot go out without a `ReadBudget`, which sets an absolute deadline for the whole
+exchange and a byte cap the body is held to as it arrives, whatever `Content-Length` claims.
+Choose the cap per endpoint from what that endpoint can legitimately return, and say why in a
+comment: one small global cap breaks large inventories. Share a single client in a `LazyLock`
+at crate root rather than building one per call:
 
 ```rust
 use std::sync::LazyLock;
 use std::time::Duration;
 
-static HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())
-});
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget};
 
-fn http_client() -> anyhow::Result<&'static reqwest::Client> {
+const INFO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Largest info reply read. The device serializes it from a 32 KiB buffer.
+const INFO_REPLY_BYTES: usize = 128 * 1024;
+
+static HTTP_CLIENT: LazyLock<Result<BoundedHttpClient, String>> =
+    LazyLock::new(|| BoundedHttpClient::new().map_err(|e| e.to_string()));
+
+fn http_client() -> anyhow::Result<&'static BoundedHttpClient> {
     HTTP_CLIENT
         .as_ref()
         .map_err(|e| anyhow::anyhow!("HTTP client unavailable: {e}"))
 }
+
+async fn fetch_info(url: &str) -> anyhow::Result<serde_json::Value> {
+    let info = http_client()?
+        .get(url)
+        .send(ReadBudget::new(INFO_REPLY_BYTES, INFO_TIMEOUT))
+        .await
+        .and_then(BoundedResponse::error_for_status)?
+        .json()
+        .await?;
+    Ok(info)
+}
 ```
+
+Protocols that speak delimited lines or frames over TCP use
+`hypercolor_driver_support::framing`. `BoundedLines` caps every line and reads on an absolute
+deadline; pass the same deadline to every call of a multi-line reply so a slow peer cannot
+extend it. `next_after_idle` is for a long-lived connection that may legitimately stay silent:
+it waits as long as the peer does, then holds any line the peer starts to a completion bound.
+
+`FramedWriter` owns its stream and drops it when a frame fails, times out, or is abandoned, so
+a half-written frame can never be followed by anything. It flushes every frame, which makes it
+wrong for serial ports: flushing a tty blocks a runtime thread until the UART drains.
 
 ---
 
@@ -515,6 +657,8 @@ At minimum, cover:
   independent calls.
 - **Pairing validation**: missing fields and empty credentials return
   `PairDeviceStatus::InvalidInput`, not an error.
+- **The session contract**: implement `SessionRig` from `hypercolor-driver-conformance`
+  over your emulator and call `assert_session_contract`. Every driver runs this same test.
 
 ```bash
 just test-crate hypercolor-driver-acme

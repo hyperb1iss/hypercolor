@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DisplayPixelFormat(StrEnum):
+class DisplayPixelFormat(TolerantStrEnum):
     RGB = "rgb"
     YUV420 = "yuv420"
 

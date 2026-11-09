@@ -17,7 +17,7 @@ use crate::app_state::AppState;
 /// `GET /api/v1/system/audio-devices` — Enumerate audio input devices.
 pub async fn list_audio_devices(State(state): State<Arc<AppState>>) -> Response {
     let current = current_audio_device_id(&state);
-    let devices = audio_device_options(&current);
+    let devices = audio_device_options(&current, state.capabilities.audio_devices);
 
     envelope::ok(AudioDevicesResponse { devices, current })
 }
@@ -36,14 +36,17 @@ fn current_audio_device_id(state: &AppState) -> String {
     )
 }
 
-fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
+fn audio_device_options(
+    current: &str,
+    enumerate: fn() -> anyhow::Result<Vec<AudioDeviceInfo>>,
+) -> Vec<AudioDeviceInfo> {
     let mut devices = vec![
         default_audio_device(),
         microphone_audio_device(),
         disabled_audio_device(),
     ];
 
-    match enumerate_audio_input_devices() {
+    match enumerate() {
         Ok(mut enumerated) => devices.append(&mut enumerated),
         Err(error) => {
             warn!(
@@ -74,7 +77,7 @@ fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
     devices
 }
 
-fn enumerate_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
+pub(crate) fn enumerate_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
     #[cfg(target_os = "linux")]
     if let Ok(devices) = enumerate_linux_audio_input_devices()
         && !devices.is_empty()

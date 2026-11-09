@@ -18,13 +18,14 @@ use std::path::{Component, Path, PathBuf};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
-    FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
-    FileRenameInformation, NtCreateFile, NtSetInformationFile,
+    FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
+    FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation,
+    FileRenameInformationEx, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     DuplicateHandle, ERROR_LOCK_VIOLATION, ERROR_NO_MORE_FILES, GENERIC_READ, GENERIC_WRITE,
     HANDLE, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
-    UNICODE_STRING,
+    STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
 };
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows_sys::Win32::Security::Authorization::{
@@ -81,10 +82,6 @@ const READ_RIGHTS: u32 = FILE_READ_DATA | FILE_READ_ATTRIBUTES;
 const READ_CONTROL: u32 = 0x0002_0000;
 const ENUMERATION_BUFFER_BYTES: usize = 64 * 1024;
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-const RESERVED_DEVICE_NAMES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
 
 /// Which operations a retained directory handle permits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +131,18 @@ impl WindowsEntryMetadata {
     #[must_use]
     pub const fn link_count(self) -> u32 {
         self.links
+    }
+
+    /// The serial number of the volume holding the file.
+    #[must_use]
+    pub const fn volume_serial(self) -> u64 {
+        self.volume
+    }
+
+    /// The file's 128-bit ID on its volume.
+    #[must_use]
+    pub const fn file_id(self) -> u128 {
+        self.file_id
     }
 
     /// Whether both describe the same file on the same volume.
@@ -719,6 +728,60 @@ impl WindowsDirectory {
         Ok(File::from(handle))
     }
 
+    /// Create a new regular child file for writing, whose security
+    /// descriptor is exactly `sddl` from the start.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name or descriptor,
+    /// [`io::ErrorKind::AlreadyExists`] when the name is taken, and the
+    /// operating-system error for any other failure.
+    pub fn create_file_with_security(&self, name: &OsStr, sddl: &str) -> io::Result<File> {
+        self.require_write()?;
+        let wide = validate_name(name)?;
+        let descriptor = SddlDescriptor::parse(sddl)?;
+        let handle = nt_create(
+            Some(&self.handle),
+            &wide,
+            GENERIC_READ | GENERIC_WRITE | DELETE,
+            SHARE_ALL,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+            Some(&descriptor),
+        )?;
+        Ok(File::from(handle))
+    }
+
+    /// Open a regular child file for appending, creating it when it is
+    /// missing. The handle can only add bytes at the end. A child that is a
+    /// reparse point, a directory, or a file with a second name (a hard link
+    /// to something elsewhere) is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, a refused child, a read-only
+    /// authority, or an open failure.
+    pub fn open_append_file(&self, name: &OsStr) -> io::Result<File> {
+        self.require_write()?;
+        let handle = self.nt_open(
+            name,
+            FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_OPEN_IF,
+            FILE_NON_DIRECTORY_FILE,
+        )?;
+        let metadata = metadata(&handle)?;
+        if metadata.kind != WindowsEntryKind::File {
+            return Err(reparse_refused());
+        }
+        if metadata.links != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to append to a file with more than one name",
+            ));
+        }
+        Ok(File::from(handle))
+    }
+
     /// Open or create a regular child file and lock it exclusively without
     /// waiting. Returns `None` when another handle holds the lock.
     ///
@@ -798,7 +861,6 @@ impl WindowsDirectory {
         // SAFETY: The buffer is zeroed, 8-byte aligned and large enough for
         // the header, the name and a terminator; each write stays inside it.
         unsafe {
-            (*info).Anonymous.ReplaceIfExists = replace;
             (*info).RootDirectory = self.handle.as_raw_handle();
             (*info).FileNameLength = name_bytes as u32;
             std::ptr::copy_nonoverlapping(
@@ -807,19 +869,43 @@ impl WindowsDirectory {
                 to_wide.len(),
             );
         }
-        let mut status_block = IO_STATUS_BLOCK::default();
-        // SAFETY: The handle is live and opened with DELETE, and the buffer
-        // holds one complete FILE_RENAME_INFORMATION of `total` bytes whose
-        // root directory handle is this live directory.
-        let status = unsafe {
-            NtSetInformationFile(
-                source.as_raw_handle(),
-                &mut status_block,
-                buffer.as_ptr().cast(),
-                total as u32,
-                FileRenameInformation,
-            )
+        let set_rename = |class, flags: u32| {
+            // SAFETY: The union's fields share offset zero, and the buffer
+            // outlives the write.
+            unsafe { (*info).Anonymous.Flags = flags };
+            let mut status_block = IO_STATUS_BLOCK::default();
+            // SAFETY: The handle is live and opened with DELETE, and the
+            // buffer holds one complete FILE_RENAME_INFORMATION of `total`
+            // bytes whose root directory handle is this live directory.
+            unsafe {
+                NtSetInformationFile(
+                    source.as_raw_handle(),
+                    &mut status_block,
+                    buffer.as_ptr().cast(),
+                    total as u32,
+                    class,
+                )
+            }
         };
+        // A plain rename fails while anyone holds the replaced file open,
+        // which would let a reader that takes no lock fail a journal write.
+        // POSIX semantics replace the name and leave the reader its bytes.
+        let mut status = set_rename(
+            FileRenameInformationEx,
+            FILE_RENAME_POSIX_SEMANTICS
+                | if replace {
+                    FILE_RENAME_REPLACE_IF_EXISTS
+                } else {
+                    0
+                },
+        );
+        // File systems without POSIX semantics answer one of these.
+        if matches!(
+            status,
+            STATUS_INVALID_PARAMETER | STATUS_NOT_SUPPORTED | STATUS_INVALID_INFO_CLASS
+        ) {
+            status = set_rename(FileRenameInformation, u32::from(replace));
+        }
         nt_result(status)?;
         drop(source);
         self.sync()
@@ -1252,10 +1338,10 @@ fn security(handle: RawHandle) -> io::Result<WindowsSecurity> {
 }
 
 /// A self-relative security descriptor parsed from SDDL, freed on drop.
-struct SddlDescriptor(PSECURITY_DESCRIPTOR);
+pub(super) struct SddlDescriptor(pub(super) PSECURITY_DESCRIPTOR);
 
 impl SddlDescriptor {
-    fn parse(sddl: &str) -> io::Result<Self> {
+    pub(super) fn parse(sddl: &str) -> io::Result<Self> {
         let mut wide = sddl.encode_utf16().collect::<Vec<_>>();
         if wide.contains(&0) {
             return Err(io::Error::new(
@@ -1347,40 +1433,14 @@ pub fn windows_child_name_is_valid(name: &OsStr) -> bool {
 
 /// Accept only one plain child name the Win32 layer reads the same way.
 fn validate_name(name: &OsStr) -> io::Result<Vec<u16>> {
-    let invalid = |reason: &str| {
-        io::Error::new(
+    let wide = name.encode_wide().collect::<Vec<_>>();
+    match crate::windows_names::name_refusal(&wide, name.to_str()) {
+        None => Ok(wide),
+        Some(reason) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("invalid child name {name:?}: {reason}"),
-        )
-    };
-    let wide = name.encode_wide().collect::<Vec<_>>();
-    if wide.is_empty() || wide.len() > 255 {
-        return Err(invalid("it must hold 1 to 255 UTF-16 units"));
+        )),
     }
-    if wide.iter().any(|&unit| {
-        unit < 0x20
-            || matches!(
-                unit,
-                0x22 | 0x2A | 0x2F | 0x3A | 0x3C | 0x3E | 0x3F | 0x5C | 0x7C
-            )
-    }) {
-        return Err(invalid(
-            "it holds a separator, stream marker or reserved character",
-        ));
-    }
-    if matches!(wide.last(), Some(0x20 | 0x2E)) {
-        return Err(invalid("Win32 drops a trailing dot or space"));
-    }
-    if let Some(text) = name.to_str() {
-        let stem = text.split('.').next().unwrap_or(text);
-        if RESERVED_DEVICE_NAMES
-            .iter()
-            .any(|reserved| stem.eq_ignore_ascii_case(reserved))
-        {
-            return Err(invalid("it is a reserved device name"));
-        }
-    }
-    Ok(wide)
 }
 
 fn require_normal_absolute(path: &Path) -> io::Result<()> {

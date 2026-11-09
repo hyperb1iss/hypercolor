@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DriverModuleKind(StrEnum):
+class DriverModuleKind(TolerantStrEnum):
     BRIDGE = "bridge"
     HAL = "hal"
     HOST = "host"

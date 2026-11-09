@@ -1,0 +1,31 @@
+[package]
+name = "hypercolor-driver-pixel"
+description = "Generic sACN (E1.31), Art-Net, and DDP pixel controller driver for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-driver-api = { workspace = true }
+hypercolor-driver-support = { workspace = true }
+hypercolor-pixel-protocols = { workspace = true }
+hypercolor-types = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+hypercolor-driver-conformance = { workspace = true }
+socket2 = { workspace = true }
+toml = { workspace = true }

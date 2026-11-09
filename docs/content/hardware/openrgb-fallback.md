@@ -186,7 +186,7 @@ enabled and owns at least one enabled device, and then it withholds per device:
   disabled, connected or not and whatever its name, so a second supported device plugged
   in later never races OpenRGB for it.
 - Other detectors from the same brand stay enabled. With a native Razer base station, the
-  `Razer Kraken Ultimate` detector still reaches OpenRGB when Hypercolor has no protocol
+  `Razer Kraken V3` detector still reaches OpenRGB, because Hypercolor has no protocol
   for that headset.
 - Detectors with no USB id to match stay disabled for the whole brand prefix (`Corsair`,
   `ENE SMBus DRAM`, `ASUS Aura`, and so on): SMBus RAM and motherboard controllers, and

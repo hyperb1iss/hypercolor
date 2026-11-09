@@ -4,7 +4,9 @@
 
 **Status:** Implemented (status corrected 2026-08-25). The 90-byte report, protocol
 dispatch, CRC, and device catalog all ship in
-`crates/hypercolor-hal/src/drivers/razer/`.
+`crates/hypercolor-hal/src/drivers/razer/`. Section 6.3 (added 2026-11-05)
+records the accessory and headset registry facts. Section 7.2 (rewritten
+2026-11-05) records the no-detach rule and the laptop interface layout.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::razer`
 **Author:** Nova
@@ -28,7 +30,7 @@ dispatch, CRC, and device catalog all ship in
 
 ## 1. Overview
 
-Native USB HID driver for Razer peripherals via the `hypercolor-hal` abstraction layer. All Razer Chroma devices share a common 90-byte HID feature report protocol over USB control transfers, differentiated by a transaction ID byte that selects between protocol generations.
+Native USB HID driver for Razer peripherals via the `hypercolor-hal` abstraction layer. All Razer Chroma devices share a common 90-byte HID feature report protocol, differentiated by a transaction ID byte that selects between protocol generations.
 
 Clean-room implementation derived from publicly available protocol knowledge:
 
@@ -38,7 +40,7 @@ Clean-room implementation derived from publicly available protocol knowledge:
 
 **Vendor ID:** `0x1532` (Razer Inc.)
 
-All devices use USB control transfers with HID feature reports — not interrupt endpoints — making `nusb` control transfer APIs the correct transport binding.
+Feature reports travel as HID class requests on the default control pipe, not as interrupt endpoint traffic. Hypercolor sends them through the host HID stack and never claims the interface that carries them, because on every Razer family that interface is also a live input interface (section 7.2).
 
 Older Kraken headsets (Kraken 7.1 Chroma, V2, Tournament Edition, Ultimate, Kitty V2) are the exception: they expose lighting as a RAM register map written through a 37-byte HID output report. Spec 83 covers that protocol.
 
@@ -65,7 +67,7 @@ Offset  Size  Field               Description
 
 ### USB Control Transfer Parameters
 
-Sent as HID feature reports via USB control transfers:
+On the wire each report is one HID class request on the default control pipe:
 
 | Operation         | bmRequestType | bRequest | wValue   | wIndex           |
 | ----------------- | ------------- | -------- | -------- | ---------------- |
@@ -74,22 +76,22 @@ Sent as HID feature reports via USB control transfers:
 
 The `wValue` encodes `(HID_REPORT_TYPE_FEATURE << 8) | report_id` where `report_id = 0x00` for all standard devices. Some devices (Leviathan V2) use `report_id = 0x07`, yielding `wValue = 0x0307`.
 
+These are the requests the device sees. Registered descriptors never build them directly: the host HID stack issues them for a feature report written to the device's HID collection (section 7.2).
+
 ### CRC Calculation
 
-XOR fold of bytes `[1..86]` inclusive (transaction_id through arguments[78]):
+XOR fold of bytes `2..=87` (86 bytes): `remaining_packets` through the last
+argument byte. The status byte and the transaction ID are not covered, so two
+reports that differ only in transaction ID carry the same checksum.
 
 ```rust
-/// Compute Razer report CRC.
-///
-/// XOR of bytes 1 through 86 (86 bytes total), covering
-/// transaction_id, remaining_packets, protocol_type, data_size,
-/// command_class, command_id, and the first 79 argument bytes.
+/// Compute Razer report CRC: XOR of bytes 2 through 87, stored at offset 88.
 pub fn razer_crc(buf: &[u8; 90]) -> u8 {
-    buf[1..87].iter().fold(0u8, |acc, &b| acc ^ b)
+    buf[2..88].iter().fold(0u8, |acc, &b| acc ^ b)
 }
 ```
 
-This matches the OpenRazer/uchroma canonical formula. The CRC byte is stored at offset 88 before transmission.
+OpenRazer's `razer_calculate_crc` uses the same window. The CRC byte is stored at offset 88 before transmission.
 
 For performance, the implementation may use 8-byte-at-a-time XOR folding via `u64` reinterpretation (reference: uchroma's `fast_crc_impl`).
 
@@ -275,8 +277,9 @@ pub enum RazerMatrixType {
     /// Strips, mousepads, single-zone accessories.
     Linear,
 
-    /// Extended ARGB — command class 0x0F, id 0x03 with ARGB LED IDs.
-    /// Addressable RGB controller channels.
+    /// Unused. The Chroma Addressable RGB Controller registers on its own
+    /// frame-report encoder (section 6.3); this variant still encodes like
+    /// Extended.
     ExtendedArgb,
 }
 ```
@@ -418,9 +421,174 @@ The Seiren V3 Chroma is not present in OpenRGB or openrazer databases as of this
 | Device                            | PID      | Transaction ID | Notes                                                              |
 | --------------------------------- | -------- | -------------- | ------------------------------------------------------------------ |
 | Seiren Emote                      | `0x0F1B` | `0x3F`         | Microphone, 4 × 16 transport geometry, reported as 8 × 8 (64 LEDs) |
-| Firefly V2                        | `0x008A` | `0x3F`         | Mousepad, 1 × 20                                                   |
-| Chroma Addressable RGB Controller | `0x0F1F` | `0x3F`         | 6 ARGB channels                                                    |
-| Charging Pad Chroma               | `0x0F26` | `0x3F`         | 1 × 10                                                             |
+| Firefly V2                        | `0x0C04` | `0x3F`         | Mousepad, 1 × 19                                                   |
+| Chroma Addressable RGB Controller | `0x0F1F` | n/a            | 6 ARGB headers × 80 LEDs, 320-byte frame report on interface 1 (section 6.3) |
+| Charging Pad Chroma               | `0x0F26` | `0x1F`         | 1 × 10, switched to driver mode on connect                         |
+
+Section 6.3 covers the remaining accessories and headsets.
+
+
+### 6.3 Accessory and Headset Registry Facts
+
+This section records, per device, the facts a registration needs: the
+transaction ID, the lighting command set, the matrix shape, the LED ID, and
+the HID interface. Each value comes from OpenRazer's kernel driver and daemon
+device tables or OpenRGB's Razer device table and detector list, at the
+commits listed under References, restated here as facts. A device is
+registered only when every value maps onto a packet layout this driver
+already encodes.
+
+Where OpenRGB has a device, its interface and usage selection is used,
+because the rest of the catalog follows the same source and OpenRGB opens
+devices through HIDAPI the way Hypercolor does. OpenRazer-only devices use
+OpenRazer's facts. OpenRazer sends every accessory report as a class
+`SET_REPORT` with `wIndex = 0` whichever interface its HID driver binds, so
+those devices open the interface 0 node with no usage filter.
+
+#### Registered in This Pass
+
+All of these are unverified on hardware and carry the experimental label once
+the stability field lands (Spec 89).
+
+| Device | PID | Transaction ID | Command set | Matrix | LED ID | HID interface | Source | Protocol ID |
+|---|---|---|---|---|---|---|---|---|
+| Tomahawk ATX | `0x0F17` | `0x1F` | Extended | 1 × 20 | `0x00` | 0, any usage | OpenRazer | `razer/tomahawk-atx` |
+| Raptor 27 | `0x0F12` | `0x1F` | Extended | 1 × 12 | `0x00` | 0, any usage | OpenRazer | `razer/raptor-27` |
+| Core X Chroma | `0x0F1A` | `0x3F` | Extended | 1 × 16 | `0x00` | 2, usage `0x01`/`0x02` | OpenRGB | `razer/core-x-chroma` |
+| Kraken 7.1 V2 | `0x0510` | n/a | Kraken memory access, Kylie map | 1 | n/a | 3, usage `0x0C`/`0x01` | both | `razer/kraken-v2` |
+| Kraken Tournament Edition | `0x0520` | n/a | Kraken memory access, Kylie map | 1 | n/a | 3 (OpenRazer `wIndex = 3`) | OpenRazer | `razer/kraken-tournament-edition` |
+| Kraken Kitty V2 (Black Edition V2) | `0x0560` | n/a | Kraken memory access, Kylie map | 1 | n/a | 3, usage `0x0C`/`0x01` | both | `razer/kraken-kitty-v2` |
+| Kraken 7.1 Chroma | `0x0504` | n/a | Kraken memory access, Rainie map | 1 | n/a | 3, usage `0x0C`/`0x01` | both | `razer/kraken-7-1-chroma` |
+| Chroma Addressable RGB Controller | `0x0F1F` | n/a | ARGB frame report (below) | 6 headers × 80 | n/a | 1, usage `0x0C`/`0x01` | both | `razer/chroma-argb-controller` |
+
+The three 90-byte devices use the shared extended frame upload (class `0x0F`,
+id `0x03`, declared size `5 + 3 × columns`, one row per frame), the extended
+brightness command on LED `0x00`, no `SET_DEVICE_MODE`, and write-only frames.
+Their apply packet is the one both references send to extended-matrix
+accessories:
+
+```
+class 0x0F, id 0x02, data_size 0x0C, args [0x00 NOSTORE, 0x00 LED, 0x08 custom frame]
+```
+
+That differs from the default apply packet the shared accessory builders
+send (declared size `0x06`, arguments `00 00 08 00 01`), which neither
+reference uses.
+
+The Kraken headsets reuse Spec 83's memory-access report unchanged. The Kylie
+devices write the custom color at `0x1189` and the effect byte at `0x172D`.
+The Kraken 7.1 Chroma keeps the custom color at `0x1189` but takes the effect
+byte at `0x1008`; OpenRazer and OpenRGB agree on both addresses.
+
+#### Already Registered
+
+The device database listed these as researched, some under wrong product IDs,
+while the HAL already claimed them through the shared builders. They need no
+code, only database corrections:
+
+| Device | PID | Transaction ID | Matrix | Database correction |
+|---|---|---|---|---|
+| Firefly | `0x0C00` | `0x3F` | Linear 1 × 15 | Split out of a combined "Mousepad Controller" row |
+| Goliathus Chroma, Goliathus Chroma Extended | `0x0C01`, `0x0C02` | `0x3F` | 1 × 1 | Same |
+| Firefly V2, Strider Chroma | `0x0C04`, `0x0C05` | `0x3F` | 1 × 19 | Same |
+| Firefly Hyperflux | `0x0068` | `0x3F` | 1 × 14 | Added |
+| Base Station Chroma | `0x0F08` | `0x3F` | 1 × 15 | Status only |
+| Mouse Dock Chroma | `0x007E` | `0x3F` | 1 × 1 | Database used `0x0F22` |
+| Mouse Dock Pro | `0x00A4` | `0xFF`, extended command set | 1 × 9 | Database used `0x0F23` |
+| Mouse Bungee V3 Chroma | `0x0F1D` | `0x1F` | 1 × 8 | Duplicate row at `0x0F24` removed |
+| Thunderbolt 4 and 5 Dock Chroma | `0x0F21`, `0x0F52` | `0x3F` | 1 × 12 | Status, TB5 added |
+| Chroma PC Case Lighting Kit | `0x0F0E` | `0x3F` | 2 × 16 | Status only |
+| Chroma Mug Holder, Core | `0x0F07`, `0x0215` | `0x3F` | 1 × 15, 1 × 9 | Added |
+| Kraken Kitty Edition | `0x0F19` | `0x1F` | 1 × 4 | Database used `0x020F`, a Blade laptop |
+| Nommo Chroma, Nommo Pro | `0x0517`, `0x0518` | `0x3F` | 2 × 24, 2 × 8 | Split out of a combined row |
+| Leviathan V2 X | `0x054A` | `0x1F`, report ID `0x07` | 1 × 14 | Split out of a combined row |
+
+The database's Tomahawk ATX row used `0x0F05` (Driver Fusion lists that ID as
+a "Razer Chroma32") and its Hanbo row used `0x0F44`; the references place
+them at `0x0F17` and `0x0F35`.
+
+#### Held
+
+| Device | PID | Reason |
+|---|---|---|
+| Hanbo Chroma | `0x0F35` | Own report layout and green-red-blue order (OpenRGB `RazerHanboController`); OpenRGB's table shape of 1 × 70 does not fit one 90-byte report |
+| Kraken V3, V3 X, V3 HyperSense, Kitty V2 Pro | `0x0549`, `0x0537`, `0x0533`, `0x0554` | 13-byte output report `0x40` with its own command IDs |
+| Kraken V4, Kitty V3 Pro | `0x056B`, `0x056C`, `0x0587`, `0x0588` | 64-byte report with a wireless flag byte and 52 argument bytes on usage page `0xFF14`; the `KrakenV4` transaction ID variant has no encoder for it |
+| Kraken 7.1 (Classic, Classic alt) | `0x0501`, `0x0506` | Logo on/off only, no color registers |
+| Kraken Kitty Black Edition | `0x0F21` | OpenRGB's ID collides with the Thunderbolt 4 Dock Chroma, which OpenRazer and Driver Fusion both place at `0x0F21` |
+| Chroma Light Strip Set | `0x0F2C` | Enumerates as the Chroma Wireless ARGB Controller; OpenRGB issue 2203 holds captures nobody has decoded |
+| Raptor 27, second ID | `0x0F28` | Neither reference lists it |
+| Laptop Cooling Pad | `0x0F43` | No captures or protocol facts (OpenRGB request 4565) |
+| PWM PC Fan Controller | `0x0F3C` | Fan controller on HID interface 1, no lighting protocol documented |
+| Leviathan V2 Pro, Nommo V2, Nommo V2 Pro | `0x0548`, `0x055C`, `0x055A` | Product IDs confirmed by USB ID listings, no protocol facts |
+| Barracuda X Chroma, Nari family | `0x0574`; `0x051A`, `0x051C` to `0x051F` | No protocol facts |
+
+#### Chroma Addressable RGB Controller Frame Report
+
+The controller enumerates three HID interfaces, each with subclass 0,
+protocol 0 (no boot keyboard or mouse), and one interrupt IN endpoint. Their
+report descriptors, from a `usbhid-dump` in OpenRazer issue 1357, all open a
+Consumer Control (`0x0C`/`0x01`) application collection containing one
+vendor usage (`0xFF00`/`0x02`), 8-bit fields, logical range 0 to 1, and no
+report ID:
+
+| Interface | Descriptor length | Report | Role |
+|---|---|---|---|
+| 0 | 22 bytes | Feature, 90 bytes | Shared 90-byte Razer report (modes, brightness) |
+| 1 | 23 bytes | Feature, 320 bytes | ARGB frame report |
+| 2 | 22 bytes | Input, 16 bytes, array | Vendor input; not used |
+
+Interface 1 declares no input or output fields, and the kernel log in
+OpenRazer issue 2015 shows `hid-generic` creating only hidraw nodes, no input
+devices, on all three interfaces. Opening interface 1 through hidraw or
+HIDAPI detaches nothing and shares no collection with input.
+
+Both references send the frame report as a feature report (`SET_REPORT`,
+`wValue = 0x0300`, `wIndex = 1`), 320 bytes. Through HIDAPI that is report
+ID `0x00` followed by the 320 bytes, a 321-byte buffer:
+
+| Offset | Size | Field | Value |
+|---|---|---|---|
+| 0 | 1 | Report selector | `0x04` for channels 0 to 4, `0x84` for channel 5 |
+| 1 | 1 | Channel | 0 to 5 |
+| 2 | 1 | Channel (repeated) | 0 to 5 |
+| 3 | 1 | Pad | `0x00` |
+| 4 | 1 | Last LED index | LED count minus one |
+| 5 | 315 | Color data | R, G, B per LED, up to 105 LEDs, zero past the last LED |
+
+OpenRGB sends all six headers on every update, each with last LED index 79
+(80 LEDs), waits 1 ms before each header's report, and sends no apply packet
+afterward; its Direct mode exposes each header as a resizable zone of 0 to 80
+LEDs. OpenRazer sends whichever headers and lengths its caller writes, with no
+pacing, and places the colors from LED 0. Neither reads a reply to the frame
+report.
+
+Brightness lives on interface 0: the extended brightness command (class
+`0x0F`, id `0x04`, transaction ID `0x3F`) on LED IDs `0x1A` to `0x1F`, one
+per header. OpenRGB sends all six; the OpenRazer contributor who ported the
+controller found LED `0x00` had no effect. An OpenRazer maintainer notes some
+Razer firmware stays dark when it powered on at 0 % brightness.
+
+Hypercolor's encoder (`drivers/razer/argb.rs`) follows OpenRGB's update
+shape: six write-only reports per frame, each carrying all 80 LEDs with last
+LED index `0x4F`, 1 ms after each. The device exposes six 80-LED strip
+segments, "Channel 1" through "Channel 6", because the controller cannot see
+what is connected; the attachment profile binds fans, rings, or strips to
+each header. It opens only interface 1, so it sends no brightness command and
+relies on host-side brightness. A unit left at hardware brightness 0 would
+therefore stay dark until another tool raises it; nobody has confirmed
+whether that happens.
+
+#### Source Disagreements
+
+| Device | OpenRazer | OpenRGB | Hypercolor follows |
+|---|---|---|---|
+| Core X Chroma | `0x1F` | `0x3F` | OpenRGB |
+| Mouse Dock Pro | 1 × 8, `SET_DEVICE_MODE` (`0x03`, transaction ID `0x3F`) before every frame | 1 × 9, no device mode | OpenRGB (already registered) |
+| Laptop Stand Chroma | 1 × 16 | 1 × 15 | OpenRGB (already registered) |
+| Thunderbolt 4 Dock Chroma | `0x1F` | `0x3F` | OpenRGB (already registered) |
+
+A capture from any of these devices settles its row.
 
 ---
 
@@ -454,21 +622,33 @@ pub struct RazerProtocol {
 
 ### 7.2 Transport
 
-On Linux, Hypercolor uses `TransportType::UsbHidRaw` for Razer devices so the kernel HID driver can stay attached while feature reports flow through `/dev/hidraw*`:
+Every registered Razer descriptor uses `TransportType::UsbHidApi`, backed by `hidapi`. The crate is built with its hidraw backend on Linux, so reports flow through `/dev/hidraw*` while `usbhid` stays bound; Windows and macOS use the native HID APIs. Shared-report devices use `HidRawReportMode::FeatureReport`; the Kraken memory-access headsets use output reports (Spec 83).
 
-```rust
-/// Linux HIDRAW transport for Razer devices.
-///
-/// Sends/receives 90-byte feature reports through async-hid on top of hidraw.
-pub struct UsbHidRawTransport {
-    /// Open `/dev/hidraw*` node path.
-    device_path: String,
-    /// Report ID (0x00 for most devices, 0x07 for Leviathan V2).
-    report_id: u8,
-    /// Maximum feature report length.
-    max_packet_len: usize,
-}
-```
+For a report ID of `0x00` the HID buffer is the report ID byte followed by the 90-byte report, 91 bytes in all. The HID stack carries the ID in the low byte of `wValue` and leaves it out of the data stage, so the device receives exactly the 90 bytes of section 2. Reads request a 91-byte buffer and get back the ID byte followed by the 90-byte reply, which the transport strips.
+
+#### No-detach rule
+
+No Razer descriptor may use a transport that claims a USB interface (`UsbControl`, `UsbHid`, `UsbBulk`, `UsbVendor`, or a driver-owned `DriverUsb` transport). On Linux a claim detaches the kernel driver, and the interface that carries the Razer feature report is a HID input interface on keyboards, mice, and laptops alike, so a claim takes that input away for as long as Hypercolor holds the device. This is the Spec 53 section 8.4 rule applied to Razer. `crates/hypercolor-hal/tests/razer_input_safety_tests.rs` enforces it for every registered Razer descriptor.
+
+#### Laptop interface layout
+
+Blade and Book laptops expose the internal keyboard as one USB device with three HID interfaces. Public `lsusb -v` dumps show the same layout from 2018 through 2023:
+
+| Interface | Class / subclass / protocol | Report descriptor | Endpoint  | Role                                    |
+| --------- | --------------------------- | ----------------- | --------- | --------------------------------------- |
+| 0         | 3 / 1 / 1 (boot keyboard)   | 61 bytes          | `0x81` IN | Keyboard                                |
+| 1         | 3 / 0 / 1 (keyboard)        | 159 bytes         | `0x82` IN | Keyboard                                |
+| 2         | 3 / 0 / 2 (mouse)           | 94 bytes          | `0x83` IN | Input, plus the lighting feature report |
+
+All three are HID class, so `usbhid` binds them by default. The lighting feature report rides interface 2 (OpenRGB targets interface 2, usage page `0x0001`, usage `0x0002` for every Blade and Book; openrazer creates its lighting controls on the mouse-protocol interface and never detaches it). A third-party HID enumeration of the Blade 15 (2018 Advanced) reports a 91-byte feature report (ID plus 90) on interface 2.
+
+Hypercolor therefore registers every laptop with the tuple the `BlackWidow` keyboards use: interface 2, report ID `0x00`, `FeatureReport`, usage page `0x0001`, usage `0x0002`, `max_report_len` 91. Until 2026-11-05 the laptops used `UsbControl { interface: 2 }`, which detached `usbhid` from interface 2 on Linux. `crates/hypercolor-hal/tests/razer_laptop_wire_tests.rs` proves both paths put identical requests on the wire for every command the laptop protocols emit.
+
+Dumps confirming the layout cover PIDs `0x0233`, `0x023A`, `0x0245`, `0x0246`, `0x0234`, and `0x029D`, plus three PIDs outside the registry (`0x024B`, `0x026E`, `0x02C6`). Open questions:
+
+- No decoded interface 2 report descriptor is public, so whether Fn or media keys ride its input reports is unknown. It does not change the rule, since the interface is input either way.
+- No dumps exist for `0x0205`, `0x020F`, `0x0210`, `0x0220`, `0x0224`, `0x022D`, `0x0232`, `0x0239`, `0x026A`, `0x0270`, `0x0276`, `0x028A`, or `0x028C`. They are assumed to share the layout.
+- The hidraw path has not yet been run on a Blade by the Hypercolor team.
 
 ### 7.3 Device Descriptor
 
@@ -624,3 +804,36 @@ pub struct MockRazerTransport {
 - `~/dev/uchroma/uchroma/server/protocol.py` — protocol version abstraction
 - `~/dev/uchroma/uchroma/server/commands.py` — command class/ID definitions
 - openrazer wiki: Reverse Engineering USB Protocol
+- OpenRazer at `477f4d6d3ab7e9deb6310d5bd3742560c5cbe80d`: `driver/razeraccessory_driver.c`
+  (per-device transaction IDs, the `wIndex = 0` report path, device mode
+  handling), `driver/razercommon.c` (`razer_calculate_crc`,
+  `razer_send_argb_msg`), `driver/razerchromacommon.c` (extended frame and
+  apply packets), `driver/razerkraken_driver.c` and `.h` (Kylie and Rainie
+  address maps), and `daemon/openrazer_daemon/hardware/` (matrix dimensions)
+- OpenRazer commits adding single devices: Raptor 27
+  `260057fc7b9b105a1eb481b9a0f31bcc3f9c93ae`, Core X Chroma
+  `b70bc11b57348972e412119a54ec4aa82898e37d`, Tomahawk ATX
+  `10058dca6085d90345db7a7ddda52c444347e80e`
+- OpenRGB at `4f2d8920d8e187e8e47b36ebe3c12301e23eda37`:
+  `Controllers/RazerController/RazerDevices.cpp` and `.h` (device table),
+  `RazerControllerDetect.cpp` (interface and usage per detector),
+  `RazerController/RazerController.cpp` (ARGB report, apply packet),
+  `RazerHanboController/`, `RazerKrakenController/`,
+  `RazerKrakenV3Controller/`, `RazerKrakenV4Controller/`
+- OpenRazer issues 1357 (`usbhid-dump` report descriptors and the port of
+  the ARGB frame report), 1845 (`lsusb -v` interface descriptors), 2015
+  (kernel log binding `hid-generic` to hidraw only), and 2270 (brightness
+  note) for the Chroma Addressable RGB Controller
+- OpenRGB issue 2203 (Chroma Wireless ARGB Controller captures) and issue
+  4565 (Laptop Cooling Pad request)
+- linux-usb.org `usb.ids` and Driver Fusion's HID listings for product ID
+  confirmation (Nari family, Leviathan V2 Pro, Nommo V2 and V2 Pro, `0x0F05`,
+  `0x0F28`)
+- Blade laptop `lsusb -v` dumps in openrazer issues 605 (`0x0233`), 775
+  (`0x023A`), 855 (`0x0245`), 859 and 971 (`0x0246`), 910 (`0x0234`), and
+  2102 (`0x029D`), which record the interface layout in section 7.2
+- OpenRGB `RazerControllerDetect.cpp` (laptop detectors: interface 2, usage
+  page `0x0001`, usage `0x0002`)
+- dvalfrid/rigstats issue 510 (feature report enumeration on the Blade 15
+  2018 Advanced: interface 2, 91 bytes)
+- Spec 53 section 8.4 (input device safety)

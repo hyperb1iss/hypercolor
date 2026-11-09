@@ -8,16 +8,10 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.driver_transport_kind_type_0 import DriverTransportKindType0
-from ..models.driver_transport_kind_type_1 import DriverTransportKindType1
-from ..models.driver_transport_kind_type_2 import DriverTransportKindType2
-from ..models.driver_transport_kind_type_3 import DriverTransportKindType3
-from ..models.driver_transport_kind_type_4 import DriverTransportKindType4
-from ..models.driver_transport_kind_type_5 import DriverTransportKindType5
-from ..models.driver_transport_kind_type_6 import DriverTransportKindType6
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.driver_transport_kind_type_7 import DriverTransportKindType7
+    from ..models.driver_transport_kind_type_1 import DriverTransportKindType1
 
 
 T = TypeVar("T", bound="DeviceOrigin")
@@ -30,24 +24,14 @@ class DeviceOrigin:
     Attributes:
         backend_id (str): Output backend responsible for writing frames.
         driver_id (str): Driver module that owns discovery, semantics, and presentation.
-        transport (DriverTransportKindType0 | DriverTransportKindType1 | DriverTransportKindType2 |
-            DriverTransportKindType3 | DriverTransportKindType4 | DriverTransportKindType5 | DriverTransportKindType6 |
-            DriverTransportKindType7): API-facing transport category for a driver module.
+        transport (DriverTransportKindType0 | DriverTransportKindType1): API-facing transport category for a driver
+            module.
         protocol_id (None | str | Unset): Optional protocol implementation selected by the driver/backend.
     """
 
     backend_id: str
     driver_id: str
-    transport: (
-        DriverTransportKindType0
-        | DriverTransportKindType1
-        | DriverTransportKindType2
-        | DriverTransportKindType3
-        | DriverTransportKindType4
-        | DriverTransportKindType5
-        | DriverTransportKindType6
-        | DriverTransportKindType7
-    )
+    transport: DriverTransportKindType0 | DriverTransportKindType1
     protocol_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -57,15 +41,7 @@ class DeviceOrigin:
         driver_id = self.driver_id
 
         transport: dict[str, Any] | str
-        if (
-            isinstance(self.transport, DriverTransportKindType0)
-            or isinstance(self.transport, DriverTransportKindType1)
-            or isinstance(self.transport, DriverTransportKindType2)
-            or isinstance(self.transport, DriverTransportKindType3)
-            or isinstance(self.transport, DriverTransportKindType4)
-            or isinstance(self.transport, DriverTransportKindType5)
-            or isinstance(self.transport, DriverTransportKindType6)
-        ):
+        if isinstance(self.transport, DriverTransportKindType0):
             transport = self.transport.value
         else:
             transport = self.transport.to_dict()
@@ -92,8 +68,8 @@ class DeviceOrigin:
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
-        from ..models.driver_transport_kind_type_7 import (
-            DriverTransportKindType7,
+        from ..models.driver_transport_kind_type_1 import (
+            DriverTransportKindType1,
         )
 
         d = dict(src_dict)
@@ -103,16 +79,7 @@ class DeviceOrigin:
 
         def _parse_transport(
             data: object,
-        ) -> (
-            DriverTransportKindType0
-            | DriverTransportKindType1
-            | DriverTransportKindType2
-            | DriverTransportKindType3
-            | DriverTransportKindType4
-            | DriverTransportKindType5
-            | DriverTransportKindType6
-            | DriverTransportKindType7
-        ):
+        ) -> DriverTransportKindType0 | DriverTransportKindType1:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
@@ -123,73 +90,13 @@ class DeviceOrigin:
                 return componentsschemas_driver_transport_kind_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_driver_transport_kind_type_1 = (
-                    DriverTransportKindType1(data)
-                )
-
-                return componentsschemas_driver_transport_kind_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_driver_transport_kind_type_2 = (
-                    DriverTransportKindType2(data)
-                )
-
-                return componentsschemas_driver_transport_kind_type_2
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_driver_transport_kind_type_3 = (
-                    DriverTransportKindType3(data)
-                )
-
-                return componentsschemas_driver_transport_kind_type_3
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_driver_transport_kind_type_4 = (
-                    DriverTransportKindType4(data)
-                )
-
-                return componentsschemas_driver_transport_kind_type_4
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_driver_transport_kind_type_5 = (
-                    DriverTransportKindType5(data)
-                )
-
-                return componentsschemas_driver_transport_kind_type_5
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_driver_transport_kind_type_6 = (
-                    DriverTransportKindType6(data)
-                )
-
-                return componentsschemas_driver_transport_kind_type_6
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_driver_transport_kind_type_7 = (
-                DriverTransportKindType7.from_dict(data)
+            componentsschemas_driver_transport_kind_type_1 = (
+                DriverTransportKindType1.from_dict(data)
             )
 
-            return componentsschemas_driver_transport_kind_type_7
+            return componentsschemas_driver_transport_kind_type_1
 
         transport = _parse_transport(d.pop("transport"))
 

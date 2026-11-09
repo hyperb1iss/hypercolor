@@ -1,4 +1,4 @@
-use hypercolor_driver_api::OutputCadence;
+use hypercolor_driver_api::OutputPolicy;
 use hypercolor_types::device::DeviceId;
 
 use super::{BackendDeviceKey, BackendManager, DeviceFrameSinkHandle, DirectControlGuard};
@@ -15,42 +15,31 @@ impl BackendManager {
             .set_frame_sink(backend_id, device_id, frame_sink);
     }
 
-    /// Cache a backend-provided output FPS for a physical device.
-    pub fn set_cached_target_fps(
+    /// Cache a backend-provided output policy for a physical device.
+    pub fn set_cached_output_policy(
         &mut self,
         backend_id: &str,
         device_id: DeviceId,
-        target_fps: u32,
+        output_policy: OutputPolicy,
     ) {
         self.output
-            .set_target_fps(backend_id, device_id, target_fps);
+            .set_output_policy(backend_id, device_id, output_policy);
     }
 
-    /// Cache a backend-provided output cadence for a physical device.
-    pub fn set_cached_output_cadence(
-        &mut self,
-        backend_id: &str,
-        device_id: DeviceId,
-        output_cadence: OutputCadence,
-    ) {
-        self.output
-            .set_output_cadence(backend_id, device_id, output_cadence);
-    }
-
-    /// Return the cached target FPS for a connected physical device, if present.
+    /// Return the display frame rate of a connected physical device, if cached.
     #[must_use]
-    pub fn cached_target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
-        self.output.target_fps(backend_id, device_id)
+    pub fn cached_display_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
+        self.output.display_fps(backend_id, device_id)
     }
 
-    /// Return the cached output cadence for a connected physical device, if present.
+    /// Return the cached output policy for a connected physical device, if present.
     #[must_use]
-    pub fn cached_output_cadence(
+    pub fn cached_output_policy(
         &self,
         backend_id: &str,
         device_id: DeviceId,
-    ) -> Option<OutputCadence> {
-        self.output.output_cadence(backend_id, device_id)
+    ) -> Option<OutputPolicy> {
+        self.output.output_policy(backend_id, device_id)
     }
 
     /// Suppress queued frame writes for a specific physical device.

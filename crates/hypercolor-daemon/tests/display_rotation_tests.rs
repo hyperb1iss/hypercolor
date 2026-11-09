@@ -11,8 +11,9 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::simulators::SimulatedDisplayExt;
-use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
+use hypercolor_daemon::simulators::activate_simulated_displays;
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
@@ -37,7 +38,7 @@ fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
 }
 
 async fn register_display(state: &Arc<AppState>, name: &str) -> DeviceId {
-    let config = SimulatedDisplayConfig {
+    let config = SimulatedDisplay {
         id: DeviceId::from_uuid(Uuid::now_v7()),
         name: name.to_owned(),
         width: 480,
@@ -163,9 +164,9 @@ async fn setting_the_mount_rotation_sticks_to_the_device() {
 
     // The display summary reports the same mount.
     let displays = body_json(send(&app, get_request("/api/v1/displays".to_owned())).await).await;
-    let display = displays["data"]
+    let display = displays["data"]["items"]
         .as_array()
-        .expect("displays should be a bare array")
+        .expect("displays should be listed under items")
         .iter()
         .find(|display| display["id"] == device_id.to_string())
         .expect("the display should be listed");

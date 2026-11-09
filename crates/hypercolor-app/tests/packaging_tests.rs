@@ -1634,8 +1634,10 @@ fn installer_hook_provisions_the_whole_hardware_access_stack() {
         "postinstall must run the orchestrator that installs PawnIO *and* the SMBus broker"
     );
     assert!(
-        INSTALLER_HOOKS_NSH.contains(r#"-BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe""#),
-        "the broker must be registered from its Program Files path"
+        INSTALLER_HOOKS_NSH.contains(
+            r#"-BrokerExe "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\hypercolor-smbus-service.exe""#
+        ),
+        "the broker must be registered from the unit this installer installed"
     );
     assert!(
         INSTALLER_HOOKS_NSH.contains("-ReinstallService"),
@@ -1645,10 +1647,11 @@ fn installer_hook_provisions_the_whole_hardware_access_stack() {
 
 /// The broker installer rejects service binaries and PawnIO directories under
 /// per-user profile paths, since a LocalSystem service must not load code the
-/// user can rewrite. Everything the hook hands it therefore lives in $INSTDIR.
+/// user can rewrite. Everything the hook hands it therefore lives in the unit,
+/// and nothing it does may write there: the unit already holds the modules.
 #[test]
 fn installer_hook_keeps_privileged_paths_administrator_owned() {
-    for flag in ["-AssetRoot", "-BrokerExe", "-ModuleDestination"] {
+    for flag in ["-AssetRoot", "-BrokerExe"] {
         let value = INSTALLER_HOOKS_NSH
             .split_once(&format!("{flag} \""))
             .map(|(_, rest)| rest)
@@ -1656,10 +1659,19 @@ fn installer_hook_keeps_privileged_paths_administrator_owned() {
             .map(|(value, _)| value)
             .unwrap_or_else(|| panic!("installer hook should pass {flag}"));
         assert!(
-            value.starts_with("$INSTDIR\\"),
-            "{flag} must stay under $INSTDIR, got {value}"
+            value.starts_with("$INSTDIR\\units\\${HYPERCOLOR_UNIT}\\"),
+            "{flag} must stay inside the unit, got {value}"
         );
     }
+    // Nothing may write inside a unit, and an elevated install never writes
+    // into a directory the user owns.
+    assert!(!INSTALLER_HOOKS_NSH.contains("-ModuleDestination"));
+    assert!(INSTALLER_HOOKS_NSH.contains("-NoUserModules"));
+    assert!(
+        INSTALL_BUNDLED_PAWNIO_PS1
+            .contains("if (-not $NoUserModules) {\n        Copy-BundledModules"),
+        "the bundled setup must honor -NoUserModules"
+    );
 }
 
 /// Splatting an array into a PowerShell *script* binds every element
@@ -1691,38 +1703,53 @@ fn nsis_macro_body<'a>(name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("installer hooks should define {name}"))
 }
 
-/// The broker runs from `$INSTDIR\tools` and holds its exe and the app-local
-/// VC++ runtime open. `sc.exe stop` returns as soon as the stop is requested,
-/// so the hooks must wait for the process to exit before files change.
+/// The broker runs from a release and holds its exe and the app-local VC++
+/// runtime open, and a transaction refuses to leave it running. `sc.exe stop`
+/// returns as soon as the stop is requested, so the hooks must wait for the
+/// process to exit before anything changes.
 #[test]
 fn installer_hooks_stop_the_broker_before_files_change() {
-    let stop = nsis_macro_body("HYPERCOLOR_STOP_BROKER");
+    let stop = nsis_macro_body("HYPERCOLOR_STOP_SERVICE NAME");
     assert!(stop.contains("$$service.Stop()"));
     assert!(stop.contains("WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))"));
     // Stop-Service waits without a bound while the broker is stopping.
     assert!(!stop.contains("Stop-Service"));
     for hook in ["NSIS_HOOK_PREINSTALL", "NSIS_HOOK_PREUNINSTALL"] {
         assert!(
-            nsis_macro_body(hook).contains("!insertmacro HYPERCOLOR_STOP_BROKER"),
+            nsis_macro_body(hook).contains("!insertmacro HYPERCOLOR_STOP_SERVICE HypercolorSmBus"),
             "{hook} must stop the broker before files change"
         );
     }
 }
 
 #[test]
-fn installer_hook_cleans_up_the_broker_on_uninstall() {
+fn installer_hook_cleans_up_both_services_on_uninstall() {
     let uninstall = nsis_macro_body("NSIS_HOOK_PREUNINSTALL");
-    assert!(uninstall.contains("sc.exe delete HypercolorSmBus"));
+    for service in ["HypercolorUpdate", "HypercolorSmBus"] {
+        assert!(uninstall.contains(&format!("sc.exe delete {service}")));
+    }
     let stopped = uninstall
-        .find("!insertmacro HYPERCOLOR_STOP_BROKER")
+        .find("!insertmacro HYPERCOLOR_STOP_SERVICE HypercolorSmBus")
         .expect("uninstall stops the broker");
-    let logs_removed = uninstall
-        .find(r#"RMDir /r "$INSTDIR\tools\logs""#)
-        .expect("uninstall removes the logs the broker and setup wrote");
+    let removed = uninstall
+        .find("!insertmacro HYPERCOLOR_REMOVE_MACHINE_DIRECTORY")
+        .expect("uninstall removes the machine directory");
     assert!(
-        stopped < logs_removed,
+        stopped < removed,
         "the broker holds its log open until it stops"
     );
+    let remove = nsis_macro_body("HYPERCOLOR_REMOVE_MACHINE_DIRECTORY");
+    assert!(remove.contains(
+        r#""$INSTDIR\units\$R9\tools\hypercolor-smbus-service.exe" --remove-machine-directory"#
+    ));
+    for hook in [uninstall, remove] {
+        for by_path in ["ReadEnvStr", r"\Hypercolor\logs", r"ProgramData\"] {
+            assert!(
+                !hook.contains(by_path),
+                "the elevated uninstaller never deletes under ProgramData by path ({by_path})"
+            );
+        }
+    }
 }
 
 /// The installer is a 32-bit process, so a bare `powershell.exe` resolves
@@ -1759,7 +1786,8 @@ fn installer_tells_the_user_when_the_broker_is_not_running() {
         "${If} $R1 != 0",
         "MessageBox MB_OK|MB_ICONEXCLAMATION",
         "its SMBus hardware broker (HypercolorSmBus) is not running",
-        r"The setup log is in $INSTDIR\tools\logs.",
+        r#"ReadEnvStr $R2 "ProgramData""#,
+        r"The setup log is in $R2\Hypercolor\logs.",
         "Start-Service HypercolorSmBus",
         "/SD IDOK",
         // A broker that runs after a failed PawnIO step is not the whole
@@ -1859,7 +1887,7 @@ fn smbus_service_installer_bounds_waits_and_explains_a_failed_start() {
         "Write-Host \"  Service: $(Get-ServiceExitSummary $Name)\"",
         "Get-Content -LiteralPath $logPath -Tail 20",
         "throw \"$Name did not start: $failure\"",
-        "Join-Path (Split-Path -Parent $BrokerPath) \"logs\\smbus-broker.log\"",
+        "Join-Path $env:ProgramData \"Hypercolor\\logs\\smbus-broker.log\"",
         "sc.exe failureflag $ServiceName 1",
         "is still marked for deletion",
     ] {
@@ -1908,13 +1936,28 @@ fn hardware_setup_registers_the_broker_even_when_pawnio_fails() {
     assert!(broker_caught < reboot && reboot < failed);
 }
 
-/// The hardware setup keeps a transcript beside the broker's own log, which
-/// outlives the installer's details pane and lands in the diagnostics
-/// bundle and `diagnose-windows.ps1`.
+/// The hardware setup keeps a transcript beside the broker's own log, in the
+/// machine log directory outside the installed release, which outlives the
+/// installer's details pane and lands in the diagnostics bundle and
+/// `diagnose-windows.ps1`. The elevated script writes there only after the
+/// broker has created or checked the directory.
 #[test]
 fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
+    let script = INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1;
+    let position = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("hardware setup is missing {needle}"))
+    };
+    let prepared = position("-ArgumentList \"--prepare-log-directory\"");
+    let gated = position("if ($logDirectoryReady) {");
+    let transcript = position("Start-Transcript -LiteralPath $transcriptPath -Append");
+    assert!(prepared < gated && gated < transcript);
     for step in [
-        "$transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) \"logs\\hardware-support.log\"",
+        "$logDirectory = Join-Path $env:ProgramData \"Hypercolor\\logs\"",
+        "$transcriptPath = Join-Path $logDirectory \"hardware-support.log\"",
+        "$logDirectoryReady = $prepare.ExitCode -eq 0",
+        "-RedirectStandardError $prepareErrors",
         "Move-Item -LiteralPath $transcriptPath -Destination \"$transcriptPath.1\" -Force",
         "Start-Transcript -LiteralPath $transcriptPath -Append",
         "Stop-Transcript",
@@ -1925,6 +1968,7 @@ fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
         );
     }
     for step in [
+        "$machineLogDir = Join-Path $env:ProgramData \"Hypercolor\\logs\"",
         "foreach ($log in @(\"smbus-broker.log\", \"hardware-support.log\"))",
         "service-specific exit code $($broker.ServiceSpecificExitCode)",
         "ProviderName = \"Service Control Manager\"",
@@ -1936,80 +1980,123 @@ fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
     }
 }
 
-/// Upgrades only overwrite files, and the UI and bundled effects change file
-/// names between releases, so both folders are cleared first. That has to
-/// wait until the app is closed and happen before any file is copied.
+/// The steps of an install are ordered so a kill anywhere leaves a Hypercolor
+/// that starts, and the next installer can finish: the release goes in whole
+/// before anything names it, the names move next, and the old layout, and the
+/// registry value that says what it was called, go last.
 #[test]
-fn installer_clears_rebuilt_folders_once_the_app_is_closed() {
-    let hook = nsis_macro_body("HYPERCOLOR_HOOK_BEFORE_FILES");
-    for guard in [
-        "${If} ${FileExists} \"$INSTDIR\\${MAINBINARYNAME}.exe\"",
-        "${AndIf} ${FileExists} \"$INSTDIR\\uninstall.exe\"",
-    ] {
-        assert!(hook.contains(guard), "clearing must be guarded by {guard}");
-    }
-    assert!(hook.contains("RMDir /r \"$INSTDIR\\ui\""));
-    assert!(hook.contains("RMDir /r \"$INSTDIR\\effects\\bundled\""));
-
-    let (_, install) = INSTALLER_NSI
+fn installer_moves_names_onto_a_finished_release_and_retires_the_old_layout_last() {
+    let install = INSTALLER_NSI
         .split_once("Section Install\n")
+        .and_then(|(_, rest)| rest.split_once("SectionEnd"))
+        .map(|(body, _)| body)
         .expect("installer.nsi has an Install section");
     let position = |needle: &str| {
         install
             .find(needle)
             .unwrap_or_else(|| panic!("Install section is missing {needle}"))
     };
-    let app_closed = position("!insertmacro CheckIfAppIsRunning");
-    let cleared = position("!insertmacro HYPERCOLOR_HOOK_BEFORE_FILES");
-    let first_copy = position("File \"${MAINBINARYSRCPATH}\"");
-    assert!(app_closed < cleared && cleared < first_copy);
+    let steps = [
+        "Call HypercolorCloseApps",
+        "!insertmacro HYPERCOLOR_HOOK_BEFORE_FILES",
+        "!insertmacro HYPERCOLOR_INSTALL_UNIT",
+        "SetOutPath $INSTDIR",
+        "File \"/oname=${MAINBINARYNAME}.new.exe\"",
+        "kernel32::MoveFileExW",
+        "WriteUninstaller",
+        "Call CreateOrUpdateStartMenuShortcut",
+        "Call CreateOrUpdateDesktopShortcut",
+        "!insertmacro HYPERCOLOR_RETIRE_FLAT_LAYOUT",
+        "WriteRegStr SHCTX \"${UNINSTKEY}\" \"MainBinaryName\"",
+    ];
+    for pair in steps.windows(2) {
+        assert!(
+            position(pair[0]) < position(pair[1]),
+            "{} must come before {}",
+            pair[0],
+            pair[1]
+        );
+    }
+    // The installer stops here on a failed transaction, with nothing moved.
+    let unit = nsis_macro_body("HYPERCOLOR_INSTALL_UNIT");
+    assert!(unit.contains("__install-release --expected-manifest-sha256 ${HYPERCOLOR_UNIT}"));
+    assert!(unit.contains("${If} $0 != 0"));
+    assert!(unit.contains("Abort"));
+    // Everything names the launcher, so a kill must never leave it missing.
+    assert!(
+        !install.contains("Delete \"$INSTDIR\\${MAINBINARYNAME}.exe\""),
+        "the launcher is replaced in one step"
+    );
+    let retire = nsis_macro_body("HYPERCOLOR_RETIRE_FLAT_LAYOUT");
+    assert!(
+        retire.contains("EnumRegKey $R9 HKU"),
+        "every signed-in account's autostart moves"
+    );
+    assert!(
+        retire.contains("--minimized"),
+        "autostart moves to the launcher"
+    );
+    for flat in ["ui", "effects", "tools"] {
+        assert!(retire.contains(&format!("RMDir /r \"$INSTDIR\\{flat}\"")));
+    }
+}
+
+/// Everything a release ships is in its unit, so the bundler's resources and
+/// sidecars never reach the installer, and the uninstaller takes the units as
+/// a whole.
+#[test]
+fn nsis_template_installs_a_unit_and_no_bundle_resources() {
+    for upstream in [
+        "{{#each resources}}",
+        "{{#each binaries}}",
+        "{{main_binary_name}}",
+        "{{main_binary_path}}",
+    ] {
+        assert!(
+            !INSTALLER_NSI.contains(upstream),
+            "installer.nsi still lays down {upstream}"
+        );
+    }
+    assert!(INSTALLER_NSI.contains("!define MAINBINARYNAME \"Hypercolor\""));
+    assert!(INSTALLER_NSI.contains("RMDir /r /REBOOTOK \"$INSTDIR\\units\""));
+    assert!(INSTALLER_HOOKS_NSH.contains(
+        "!define /file HYPERCOLOR_UNIT \"${HYPERCOLOR_STAGE_DIR}\\windows-unit.digest\""
+    ));
+    assert!(
+        nsis_macro_body("HYPERCOLOR_INSTALL_UNIT")
+            .contains("File /r \"${HYPERCOLOR_STAGE_DIR}\\windows-unit\\*\"")
+    );
 }
 
 /// A daemon still running from the install directory (exiting with the app,
-/// orphaned, or registered as a Windows service) holds hypercolor-daemon.exe
-/// open, so upgrades stop it before the copy, with every wait bounded, and
-/// start exactly the daemon services they stopped once the files are in.
-/// The logic ships as a script the installer embeds, with paths passed as
+/// orphaned, or registered as a Windows service) would keep the transaction
+/// from starting, so installs stop it first, with every wait bounded. Its
+/// service goes once the release is in, because the program it names does not
+/// outlive the install, and not before, so a failed install leaves it. The
+/// logic ships as a script the installer embeds, with paths passed as
 /// double-quoted arguments that no apostrophe can break.
 #[test]
-fn installer_stops_and_restarts_daemons_around_the_copy() {
+fn installer_stops_daemons_and_removes_their_services_before_the_transaction() {
     let before_files = nsis_macro_body("HYPERCOLOR_HOOK_BEFORE_FILES");
-    let stopped = before_files
-        .find("!insertmacro HYPERCOLOR_STOP_DAEMON")
-        .expect("the daemon must be stopped before the copy");
-    let cleared = before_files
-        .find("RMDir /r")
-        .expect("the hook clears rebuilt folders");
-    assert!(stopped < cleared);
+    assert!(before_files.contains("!insertmacro HYPERCOLOR_STOP_DAEMON"));
 
     let stop = nsis_macro_body("HYPERCOLOR_STOP_DAEMON");
     assert!(stop.contains(
         "File \"/oname=$PLUGINSDIR\\hypercolor-daemon-services.ps1\" \"${HYPERCOLOR_HOOKS_DIR}\\installer-daemon-services.ps1\""
     ));
-    assert!(stop.contains("-Action Stop ${HYPERCOLOR_DAEMON_SERVICES_ARGS}"));
-    let restore = nsis_macro_body("HYPERCOLOR_RESTORE_DAEMON_SERVICES");
+    assert!(stop.contains("-Action Stop -InstallDir \"$INSTDIR\""));
     assert!(
-        restore.contains("${If} ${FileExists} \"$PLUGINSDIR\\hypercolor-daemon-services.txt\"")
+        nsis_macro_body("HYPERCOLOR_RETIRE_FLAT_LAYOUT")
+            .contains("-Action Remove -InstallDir \"$INSTDIR\"")
     );
-    assert!(restore.contains("-Action Restore ${HYPERCOLOR_DAEMON_SERVICES_ARGS}"));
-    assert!(
-        nsis_macro_body("NSIS_HOOK_POSTINSTALL")
-            .contains("!insertmacro HYPERCOLOR_RESTORE_DAEMON_SERVICES")
-    );
-    assert!(INSTALLER_HOOKS_NSH.contains(
-        "!define HYPERCOLOR_DAEMON_SERVICES_ARGS `-InstallDir \"$INSTDIR\" -StateFile \"$PLUGINSDIR\\hypercolor-daemon-services.txt\"`"
-    ));
 
     for step in [
         "if ($svc.State -ne \"Stop Pending\") {",
-        "$stopped += $svc.Name",
         "$service.WaitForStatus(\"Stopped\", [TimeSpan]::FromSeconds(20))",
-        "Set-Content -LiteralPath $StateFile -Value $stopped",
+        "& sc.exe delete $svc.Name",
         "Get-CimInstance Win32_Process -Filter \"Name = 'hypercolor-daemon.exe'\"",
         "Wait-Process -Id $daemonIds -Timeout 10",
         "Stop-Process -Id $id -Force",
-        "$service.Start()",
-        "$service.WaitForStatus(\"Running\", [TimeSpan]::FromSeconds(20))",
     ] {
         assert!(
             DAEMON_SERVICES_PS1.contains(step),
@@ -2017,13 +2104,12 @@ fn installer_stops_and_restarts_daemons_around_the_copy() {
         );
     }
     // The script runs in the installer's 32-bit PowerShell, where Get-Process
-    // cannot see a 64-bit process's path, and Stop-Service and Start-Service
-    // wait unbounded.
+    // cannot see a 64-bit process's path, and Stop-Service waits unbounded.
     let code: Vec<&str> = DAEMON_SERVICES_PS1
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .collect();
-    for avoided in ["Get-Process", "Stop-Service", "Start-Service"] {
+    for avoided in ["Get-Process", "Stop-Service"] {
         assert!(
             !code.iter().any(|line| line.contains(avoided)),
             "daemon services script must not use {avoided}"
@@ -2039,11 +2125,7 @@ fn installer_hook_commands_fit_the_nsis_string_limit() {
     const NSIS_MAX_STRLEN: usize = 1024;
     let long_instdir = format!("C:\\{}", "i".repeat(150));
     let long_pluginsdir = format!("C:\\{}", "p".repeat(150));
-    let daemon_services_args = INSTALLER_HOOKS_NSH
-        .lines()
-        .find_map(|line| line.strip_prefix("!define HYPERCOLOR_DAEMON_SERVICES_ARGS "))
-        .expect("hooks define the daemon services arguments")
-        .trim_matches('`');
+    let digest = "a".repeat(64);
 
     let mut commands = 0;
     for line in INSTALLER_HOOKS_NSH.lines() {
@@ -2052,7 +2134,9 @@ fn installer_hook_commands_fit_the_nsis_string_limit() {
         };
         let quoted = quoted.trim();
         let command = quoted[1..quoted.len() - 1]
-            .replace("${HYPERCOLOR_DAEMON_SERVICES_ARGS}", daemon_services_args)
+            .replace("${HYPERCOLOR_UNIT}", &digest)
+            .replace("$R9", &digest)
+            .replace("${NAME}", "HypercolorUpdate")
             .replace("$$", "$")
             .replace("$INSTDIR", &long_instdir)
             .replace("$PLUGINSDIR", &long_pluginsdir);
@@ -2096,7 +2180,7 @@ fn release_lane_proves_windows_upgrades_in_place() {
     ] {
         assert!(CI_WORKFLOW.contains(step), "upgrade step is missing {step}");
     }
-    assert!(CI_WORKFLOW.contains("foreach ($mode in \"Interactive\", \"Silent\")"));
+    assert!(CI_WORKFLOW.contains("foreach ($mode in \"Interactive\", \"Silent\", \"Killed\")"));
     assert!(CI_WORKFLOW.contains(
         "./scripts/test-windows-installer-upgrade.ps1 -PreviousInstaller $previous.FullName -CandidateInstaller $candidate.FullName -Mode $mode"
     ));
@@ -2113,10 +2197,15 @@ fn release_lane_proves_windows_upgrades_in_place() {
     }
     for check in [
         "the installed version stayed at",
-        "the autostart Run value did not survive the upgrade",
+        "the autostart Run value is not on the launcher",
         "the upgrade recreated the desktop shortcut the user had removed",
         "a previous release's file survived the upgrade",
-        "::warning::the HypercolorSmBus broker is $brokerState after the upgrade ($Mode)",
+        "::warning::the HypercolorSmBus broker is $brokerState after the install ($Mode)",
+        "is owned by $owner, not Administrators",
+        "survived from the flat layout",
+        "the launcher refused a standard user",
+        "an open source build left HypercolorUpdate registered",
+        "the installing user may not start the update service",
     ] {
         assert!(
             WINDOWS_UPGRADE_TEST_PS1.contains(check),
@@ -2138,6 +2227,37 @@ fn nsis_function_body<'a>(name: &str) -> &'a str {
         .and_then(|(_, rest)| rest.split_once("FunctionEnd"))
         .map(|(body, _)| body)
         .unwrap_or_else(|| panic!("installer.nsi should define {name}"))
+}
+
+/// The proof lane runs on every installer change, from the last flat release,
+/// through a kill at each step that can be seen from outside, with the update
+/// service and without it, and through the uninstaller.
+#[test]
+fn installer_lane_proves_adoption_kills_and_the_managed_switch() {
+    for step in [
+        "- name: Prove installs, upgrades, kills and uninstalls",
+        "FLAT_RELEASE: v0.9.0",
+        "-Profile dev -SkipUi -SkipEffects -NoServo -ManagedUpdate",
+        "foreach ($mode in \"Silent\", \"Interactive\", \"Killed\")",
+        "-Mode Fresh -CandidateInstaller $openSource",
+        "-Mode Fresh -CandidateInstaller $managed -Managed",
+        "-Mode Replace -PreviousInstaller $managed -CandidateInstaller $openSource",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(step),
+            "installer lane is missing {step}"
+        );
+    }
+    for moment in [
+        "while publishing the unit",
+        "inside the transaction",
+        "after the transaction committed",
+    ] {
+        assert!(
+            WINDOWS_UPGRADE_TEST_PS1.contains(moment),
+            "the kill test skips {moment}"
+        );
+    }
 }
 
 /// Upstream's template treats an upgrade as "uninstall, then install" unless
@@ -2178,9 +2298,16 @@ fn nsis_template_upgrades_older_installs_in_place() {
         INSTALLER_NSI.contains("${If} $UpdateMode <> 1\n    ${OrIf} $HypercolorImpliedUpdate = 1")
     );
 
-    assert!(INSTALLER_NSI.contains(
-        "!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpdate\n!insertmacro MUI_PAGE_DIRECTORY"
-    ));
+    // A flat layout only moves forward, whatever version it holds.
+    assert!(detect.contains("${OrIf} ${FileExists} \"$INSTDIR\\${HYPERCOLOR_APP}\""));
+
+    // The installation lives in Program Files, so no page offers another
+    // folder, and an update still moves a desktop shortcut the finish page
+    // no longer offers.
+    assert!(!INSTALLER_NSI.contains("!insertmacro MUI_PAGE_DIRECTORY"));
+    assert!(
+        INSTALLER_NSI.contains("${OrIf} $UpdateMode = 1\n    Call CreateOrUpdateDesktopShortcut")
+    );
     assert!(
         nsis_function_body("HypercolorFinishShow")
             .contains("ShowWindow $mui.FinishPage.ShowReadme ${SW_HIDE}")
@@ -2383,16 +2510,21 @@ fn windows_installer_target_builds_all_bundle_inputs() {
         "Build production UI",
         "Build bundled effects",
         "hypercolor-daemon",
-        "@(\"-p\", \"hypercolor\")",
+        "$CliArgs = @(\"-p\", \"hypercolor\")",
         "hypercolor-windows-pawnio",
         "hypercolor-smbus-service",
+        "hypercolor-windows-launcher",
+        "hypercolor-windows-unit",
         "stage-app-bundle-assets.ps1",
+        "produce-windows-unit.ps1",
         "\"cargo\"",
-        "\"tauri\", \"build\"",
-        "--bundles",
+        "\"tauri\", \"build\", \"--no-bundle\"",
+        "\"tauri\", \"bundle\", \"--bundles\"",
+        "\"--features\", \"managed-update\"",
+        "\"--no-default-features\", \"--features\", \"builtin-drivers\"",
         "$env:CARGO_TARGET_DIR",
         "[Environment]::GetFolderPath(\"UserProfile\")",
-        ".cache\\hypercolor\\target\\release\\bundle\\nsis",
+        ".cache\\hypercolor\\target\\$ProfileDirectory\\bundle\\nsis",
     ] {
         assert!(
             WINDOWS_INSTALLER_SCRIPT.contains(required),

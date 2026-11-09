@@ -6,6 +6,39 @@ use crate::library::FavoriteEffect;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
+/// The backup manifest schema this build writes.
+pub const PORTABLE_BACKUP_SCHEMA_VERSION: u32 = 1;
+
+/// The oldest backup manifest schema this build reads.
+///
+/// Every manifest from this floor through [`PORTABLE_BACKUP_SCHEMA_VERSION`]
+/// is upgraded in memory before it is decoded, and the floor only moves at a
+/// major release. Schema 1 is the first one that shipped.
+pub const OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION: u32 = 1;
+
+/// Rewrites a manifest of one schema into the next schema's shape, including
+/// its `schema_version`.
+type ManifestUpgrade = fn(&mut serde_json::Value) -> Result<(), PortableSetupError>;
+
+/// One upgrade per schema below the current one, starting at the floor: entry
+/// `n` lifts schema `OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION + n` by one. The
+/// array length is tied to the two constants, so bumping the written schema
+/// without adding its upgrade does not compile.
+const MANIFEST_UPGRADES: [ManifestUpgrade;
+    (PORTABLE_BACKUP_SCHEMA_VERSION - OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION) as usize] = [];
+
+/// Why a backup manifest could not be decoded.
+#[derive(Debug, thiserror::Error)]
+pub enum PortableBackupDecodeError {
+    /// The bytes are not JSON, or do not fit the schema they declare.
+    #[error("backup JSON is invalid: {0}")]
+    Json(#[from] serde_json::Error),
+    /// The declared schema is missing, malformed, or outside the range this
+    /// build reads.
+    #[error(transparent)]
+    Schema(#[from] PortableSetupError),
+}
+
 /// The manifest inside a portable backup. New backups carry configuration only.
 /// Older resource descriptors remain readable without restoring their files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,8 +53,42 @@ pub struct PortableBackupV1 {
 }
 
 impl PortableBackupV1 {
+    /// Decode a manifest written by this build or by any older one.
+    ///
+    /// The declared `schema_version` is read before the typed decode. A
+    /// manifest from a newer build is refused with an upgrade message rather
+    /// than an unknown-field error, and an older one is upgraded in memory
+    /// first. Decoding does not validate; call [`Self::validate`] next.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortableBackupDecodeError::Schema`] when the declared schema
+    /// is missing, malformed, older than
+    /// [`OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION`], or newer than
+    /// [`PORTABLE_BACKUP_SCHEMA_VERSION`], and
+    /// [`PortableBackupDecodeError::Json`] when the document does not fit
+    /// that schema.
+    pub fn from_manifest_json(bytes: &[u8]) -> Result<Self, PortableBackupDecodeError> {
+        #[derive(Deserialize)]
+        struct DeclaredSchema {
+            schema_version: Option<serde_json::Value>,
+        }
+
+        let declared = serde_json::from_slice::<DeclaredSchema>(bytes)?;
+        let schema = readable_backup_schema(declared.schema_version.as_ref())?;
+        if schema == PORTABLE_BACKUP_SCHEMA_VERSION {
+            return Ok(serde_json::from_slice(bytes)?);
+        }
+        let mut document = serde_json::from_slice::<serde_json::Value>(bytes)?;
+        let first = (schema - OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION) as usize;
+        for upgrade in &MANIFEST_UPGRADES[first..] {
+            upgrade(&mut document)?;
+        }
+        Ok(serde_json::from_value(document)?)
+    }
+
     pub fn validate(&self) -> Result<(), PortableSetupError> {
-        if self.schema_version != 1 {
+        if self.schema_version != PORTABLE_BACKUP_SCHEMA_VERSION {
             return Err(invalid("schema_version", "unsupported backup version"));
         }
         self.setup.validate()?;
@@ -200,6 +267,40 @@ impl PortablePreferences {
         }
         Ok(())
     }
+}
+
+/// Accept a declared manifest schema this build can read, or explain why not.
+fn readable_backup_schema(declared: Option<&serde_json::Value>) -> Result<u32, PortableSetupError> {
+    let schema = declared
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|schema| u32::try_from(schema).ok())
+        .ok_or_else(|| {
+            invalid(
+                "schema_version",
+                "a backup manifest must declare schema_version as a non-negative integer",
+            )
+        })?;
+    if schema > PORTABLE_BACKUP_SCHEMA_VERSION {
+        return Err(PortableSetupError {
+            path: "schema_version".into(),
+            message: format!(
+                "this backup uses schema {schema}, which a newer Hypercolor wrote; this \
+                 build reads backup schemas {OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION} through \
+                 {PORTABLE_BACKUP_SCHEMA_VERSION}. Upgrade Hypercolor to restore it."
+            ),
+        });
+    }
+    if schema < OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION {
+        return Err(PortableSetupError {
+            path: "schema_version".into(),
+            message: format!(
+                "backup schema {schema} is older than any this build reads; this build \
+                 reads backup schemas {OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION} through \
+                 {PORTABLE_BACKUP_SCHEMA_VERSION}"
+            ),
+        });
+    }
+    Ok(schema)
 }
 
 fn bounded(path: &str, value: f32, min: f32, max: f32) -> Result<(), PortableSetupError> {

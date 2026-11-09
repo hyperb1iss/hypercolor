@@ -16,10 +16,10 @@ use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_driver_api::{
-    BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
-    DriverControlStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverRuntimeCacheProvider, ValidatedControlChanges,
+    BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView,
+    DriverControlProvider, DriverControlStore, DriverDescriptor, DriverError, DriverHost,
+    DriverModule, DriverRuntimeCacheProvider, ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,7 +36,7 @@ use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
     AudioSource, AudioSourceRole, BrowserConnectionIncarnation, BrowserInputChildKey,
-    BrowserInputEdge, BrowserPreviewId, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    BrowserInputEdge, BrowserPreviewId, InputData, ManagedSource, ManagedSourceRole, SourceIssue,
     SourceKind, SourceRoleBinding, SourceSessionWriter, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_daemon::LayoutTransactionRejection;
@@ -53,11 +53,11 @@ use hypercolor_daemon::library::JsonLibraryStore;
 use hypercolor_daemon::persistence::AtomicFileWriter;
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store;
-#[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::simulators::SimulatedDisplayConfig;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::api::scenes::{ReplaceSceneLayerRequest, ReplaceSceneRequest};
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::control::ControlValue as SurfaceControlValue;
@@ -259,7 +259,7 @@ impl ObservableInputSource {
     }
 }
 
-impl InputSource for ObservableInputSource {
+impl ManagedSource for ObservableInputSource {
     fn name(&self) -> &'static str {
         "ObservableInputSource"
     }
@@ -523,6 +523,10 @@ impl DeviceBackend for NoopBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(
         &self,
         _id: &DeviceId,
@@ -703,9 +707,9 @@ impl DiscoveryCapability for RescanTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 
@@ -818,13 +822,13 @@ impl DiscoveryCapability for BlockingReconnectTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
         let _permit = Arc::clone(&self.release)
             .acquire_owned()
             .await
             .expect("blocking reconnect semaphore should stay open");
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 
@@ -950,6 +954,10 @@ impl DeviceBackend for StaticOutputRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(
         &self,
         id: &DeviceId,
@@ -988,6 +996,10 @@ impl DeviceBackend for IdentifyRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(
         &self,
         _id: &DeviceId,
@@ -997,6 +1009,53 @@ impl DeviceBackend for IdentifyRecordingBackend {
             .lock()
             .expect("identify output writes lock")
             .push(colors.to_vec());
+        Ok(())
+    }
+}
+
+/// Answers the first writes, then wedges every later one forever.
+struct WedgingIdentifyBackend {
+    writes_before_wedge: usize,
+    writes: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for WedgingIdentifyBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "wled".to_owned(),
+            name: "Wedging Identify Backend".to_owned(),
+            description: "Stops answering writes partway through an identify".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        _colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
+        if self.writes.fetch_add(1, Ordering::SeqCst) >= self.writes_before_wedge {
+            std::future::pending::<()>().await;
+        }
         Ok(())
     }
 }
@@ -1051,6 +1110,10 @@ impl DeviceBackend for DisconnectRecordingBackend {
         }
         self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
@@ -3111,13 +3174,15 @@ async fn config_schema_route_serves_the_key_registry() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let entries = json["data"]
+    let entries = json["data"]["items"]
         .as_array()
         .expect("the schema is served as a list of entries");
     assert_eq!(
         entries.len(),
         hypercolor_types::config_registry::schema_entries().len()
     );
+    assert_eq!(json["data"]["total"], entries.len());
+    assert!(json["data"].get("page").is_none());
 
     let render = entries
         .iter()
@@ -4685,9 +4750,9 @@ async fn list_control_surfaces_batches_device_and_driver_surfaces() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let surfaces = json["data"]["surfaces"]
+    let surfaces = json["data"]["items"]
         .as_array()
-        .expect("surfaces should be an array");
+        .expect("surfaces should be listed under items");
     assert_eq!(surfaces.len(), 3);
     assert!(surfaces.iter().any(|surface| {
         surface["surface_id"] == format!("device:{device_id}")
@@ -4724,9 +4789,9 @@ async fn list_control_surfaces_preserves_driver_action_confirmation() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let surfaces = json["data"]["surfaces"]
+    let surfaces = json["data"]["items"]
         .as_array()
-        .expect("surfaces should be an array");
+        .expect("surfaces should be listed under items");
     let nanoleaf = surfaces
         .iter()
         .find(|surface| surface["surface_id"] == format!("driver:nanoleaf:device:{device_id}"))
@@ -4842,9 +4907,9 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let surfaces = json["data"]["surfaces"]
+    let surfaces = json["data"]["items"]
         .as_array()
-        .expect("surfaces should be an array");
+        .expect("surfaces should be listed under items");
     let driver_device_surface = surfaces
         .iter()
         .find(|surface| surface["surface_id"] == surface_id)
@@ -10066,7 +10131,7 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
         .simulated_displays
         .write()
         .await
-        .upsert(SimulatedDisplayConfig {
+        .upsert(SimulatedDisplay {
             id: device_id,
             name: "Cancellation Simulator".to_owned(),
             width: 16,
@@ -10245,7 +10310,7 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
         .simulated_displays
         .write()
         .await
-        .upsert(SimulatedDisplayConfig {
+        .upsert(SimulatedDisplay {
             id: device_id,
             name: "Collision Simulator".to_owned(),
             width: 16,
@@ -11770,9 +11835,10 @@ async fn list_displays_only_returns_display_capable_devices() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let items = json["data"]
+    let items = json["data"]["items"]
         .as_array()
         .expect("display list should be an array");
+    assert_eq!(json["data"]["total"], items.len());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], display_id.to_string());
     assert_eq!(items[0]["name"], "Pump LCD");
@@ -11858,7 +11924,7 @@ async fn list_displays_tells_identical_panels_apart_by_port_and_honours_user_nam
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let names: HashMap<String, String> = json["data"]
+    let names: HashMap<String, String> = json["data"]["items"]
         .as_array()
         .expect("array")
         .iter()
@@ -12865,6 +12931,128 @@ async fn pause_preempts_identify_and_holds_black_output() {
     );
 }
 
+/// What a wedged identify write may cost a global control: the write bound
+/// in the API, plus room for a loaded machine.
+const WEDGED_IDENTIFY_BOUND: Duration = Duration::from_secs(6);
+
+async fn wedging_identify_app(
+    writes_before_wedge: usize,
+) -> (axum::Router, DeviceId, Arc<AppState>, Arc<AtomicUsize>) {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Wedging Strip").await;
+    let device_info = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("test device should exist")
+        .info;
+    let layout_device_id = format!("identify:{device_id}");
+    let writes = Arc::new(AtomicUsize::new(0));
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Arc::new(WedgingIdentifyBackend {
+            writes_before_wedge,
+            writes: Arc::clone(&writes),
+        }));
+        manager
+            .connect_device("wled", device_id, &layout_device_id)
+            .await
+            .expect("test device should connect");
+        assert!(manager.set_device_zone_segments(&layout_device_id, &device_info));
+    }
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    let app = test_app_with_state(Arc::clone(&state));
+    (app, device_id, state, writes)
+}
+
+fn identify_request(device_id: DeviceId, duration_ms: u64) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/devices/{device_id}/identify"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"{{"duration_ms":{duration_ms}}}"#)))
+        .expect("failed to build request")
+}
+
+async fn wait_for_write_attempts(writes: &AtomicUsize, count: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while writes.load(Ordering::SeqCst) < count {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("identify should reach the wedged write");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_identify_write_fails_and_releases_global_output_controls() {
+    let (app, device_id, _state, writes) = wedging_identify_app(0).await;
+
+    let identify = tokio::spawn({
+        let app = app.clone();
+        async move { app.oneshot(identify_request(device_id, 10_000)).await }
+    });
+    wait_for_write_attempts(&writes, 1).await;
+
+    // Pause needs the guard the wedged write is under.
+    let paused = tokio::time::timeout(
+        WEDGED_IDENTIFY_BOUND,
+        app.oneshot(output_patch_request(r#"{"power":"paused"}"#)),
+    )
+    .await
+    .expect("a wedged identify write must not hold global controls past its bound")
+    .expect("failed to execute pause request");
+    assert_eq!(paused.status(), StatusCode::OK);
+
+    let identify = identify
+        .await
+        .expect("identify task should join")
+        .expect("failed to execute identify request");
+    assert_eq!(
+        identify.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a timed-out write is a failed identify"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_identify_clear_releases_global_output_controls() {
+    let (app, device_id, state, writes) = wedging_identify_app(1).await;
+
+    let identify = app
+        .clone()
+        .oneshot(identify_request(device_id, 1))
+        .await
+        .expect("failed to execute identify request");
+    assert_eq!(identify.status(), StatusCode::OK);
+    wait_for_write_attempts(&writes, 2).await;
+
+    let paused = tokio::time::timeout(
+        WEDGED_IDENTIFY_BOUND,
+        app.oneshot(output_patch_request(r#"{"power":"paused"}"#)),
+    )
+    .await
+    .expect("a wedged identify clear must not hold global controls past its bound")
+    .expect("failed to execute pause request");
+    assert_eq!(paused.status(), StatusCode::OK);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state
+            .backend_manager
+            .lock()
+            .await
+            .is_direct_control_active("wled", device_id)
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("identify should end once its clear gives up");
+}
+
 #[tokio::test]
 async fn identify_device_uses_discovered_smbus_backend_for_asus_devices() {
     let state = Arc::new(isolated_state());
@@ -13846,9 +14034,8 @@ async fn software_conflicts_report_the_latest_scan() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["scanned"], true, "a scan request scans");
     assert_eq!(
-        json["data"]["supported"],
-        cfg!(any(target_os = "linux", target_os = "windows")),
-        "Linux and Windows list running software"
+        json["data"]["supported"], true,
+        "an isolated host lists its running software, and it is empty"
     );
 }
 

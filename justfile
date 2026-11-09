@@ -40,7 +40,7 @@ docker-test image="hypercolor:local":
     node scripts/tests/docker-smoke.mjs "{{ image }}"
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check platform-cfg-budget-check test-hermeticity-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
 
 # Verify target isolation and Cargo argument normalization on Linux, and
@@ -85,6 +85,16 @@ api-doc-route-check:
 # Keep production macOS capture native-only while retaining fixture oracles
 macos-gpu-only-check:
     ./scripts/check-macos-gpu-only.sh
+
+# Hold core and daemon to their cfg(target_os) budget (Design 72)
+platform-cfg-budget-check:
+    ./scripts/tests/platform-cfg-budget-tests.sh
+    ./scripts/check-platform-cfg-budget.sh
+
+# Fail when test code builds an mDNS daemon that is not scoped to loopback
+test-hermeticity-check:
+    ./scripts/tests/test-hermeticity-tests.sh
+    ./scripts/check-test-hermeticity.sh
 
 # Fail when a vendored [patch.crates-io] crate no longer resolves to vendor/
 vendored-patches-check:
@@ -240,6 +250,29 @@ test-one name *args='':
 test-one name *args='':
     HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ test_features }} {{ name }} {{ args }}
 
+# Drive the LIFX driver against lifx-emulator bound to 127.0.0.1 (Spec 88 §12.1)
+[unix]
+lifx-emulator-test port='56799':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="$(pwd)"
+    workdir="${CARGO_TARGET_DIR:-$root/target}/lifx-emulator"
+    mkdir -p "$workdir"
+    log="$workdir/emulator.log"
+    # Run from an empty directory so no stray lifx-emulator.yaml is loaded.
+    (cd "$workdir" && exec uvx lifx-emulator@4.11.0 \
+        --config "$root/crates/hypercolor-driver-lifx/tests/fixtures/lifx-emulator.yaml" \
+        --bind 127.0.0.1 --port {{ port }}) > "$log" 2>&1 &
+    emulator_pid=$!
+    trap 'kill "$emulator_pid" 2>/dev/null || true; wait "$emulator_pid" 2>/dev/null || true' EXIT
+    for _ in $(seq 1 120); do
+        grep -q "Server running" "$log" && break
+        kill -0 "$emulator_pid" 2>/dev/null || { cat "$log"; exit 1; }
+        sleep 0.5
+    done
+    HYPERCOLOR_LIFX_EMULATOR=127.0.0.1:{{ port }} HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh \
+        cargo test -p hypercolor-driver-lifx --test lifx_emulator_tests -- --nocapture
+
 # Manually run the Cinder/Leptos extension design audit snapshot generator
 cinder-audit:
     ./scripts/cinder-audit.sh >/dev/null
@@ -250,6 +283,7 @@ compat *args='':
 
 # Verify the compatibility matrix is up to date (gated by the `compat` CI job)
 compat-check:
+    bun test scripts/gen-compat.test.ts
     bun scripts/gen-compat.ts --check
 
 # Regenerate the OpenRGB detector USB id map from `openrgb --print-udev-rules` output
@@ -420,6 +454,18 @@ docs-dev:
 docs-build:
     cd docs && zola build
 
+# Regenerate the REST reference pages from the daemon's OpenAPI document
+rest-reference *args='':
+    bun scripts/gen-rest-reference.ts {{ args }}
+
+# Verify the REST reference pages match the daemon's OpenAPI document
+rest-reference-check:
+    bun scripts/gen-rest-reference.ts --check
+
+# Test the REST reference generator's escaping, ordering, and schema rendering
+rest-reference-test:
+    bun test scripts/tests/gen-rest-reference.test.ts
+
 # ─── Running ──────────────────────────────────────────────
 
 # Run the daemon with the full renderer set enabled
@@ -481,7 +527,7 @@ app-bundle-binaries:
 
 [windows]
 app-bundle-binaries:
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper -p hypercolor-windows-launcher --bin hypercolor-launcher --bin hypercolor-update-bootstrap -p hypercolor-install --bin hypercolor-windows-unit
 
 # Stage triple-suffixed sidecars (and Windows-only PawnIO/SMBus payloads) under target/bundle-stage/
 [unix]
@@ -503,10 +549,12 @@ app-bundle *args='': app-assets app-bundle-assets
     cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ if os() == "macos" { "--bundles app" } else { "" } }} {{ args }}
     ./scripts/macos-dev-postsign.sh
 
-# Build native Tauri bundles; installer.nsi needs exactly tauri-cli 2.12.1
+# Build native Tauri bundles; installer.nsi needs exactly tauri-cli 2.12.1.
+# The installer carries a unit of the finished programs, so the unit is
+# produced between building the app and bundling it.
 [windows]
 app-bundle *args='': app-assets app-bundle-assets
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((cargo tauri --version) -ne 'tauri-cli 2.12.1') { throw 'Windows bundles need tauri-cli 2.12.1; install it with: cargo install tauri-cli --version =2.12.1 --locked' }; Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((cargo tauri --version) -ne 'tauri-cli 2.12.1') { throw 'Windows bundles need tauri-cli 2.12.1; install it with: cargo install tauri-cli --version =2.12.1 --locked' }; Set-Location crates/hypercolor-app; cargo tauri build --no-bundle --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; ../../scripts/produce-windows-unit.ps1; cargo tauri bundle --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
 
 # Build the full unsigned Windows NSIS installer package
 [windows]

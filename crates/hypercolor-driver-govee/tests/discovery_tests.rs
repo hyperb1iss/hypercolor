@@ -5,18 +5,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 use hypercolor_driver_api::{
-    BackendRebindActions, ControlApplyTarget, DeviceControlStore, DriverConfigView,
+    BackendRebindActions, ControlApplyTarget, CoverageGap, DeviceControlStore, DriverConfigView,
     DriverControlHost, DriverControlProvider, DriverControlStore, DriverCredentialStore,
     DriverDiscoveryState, DriverHost, DriverLifecycleActions, DriverModule, DriverRuntimeActions,
     DriverTrackedDevice, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
-    GoveeConfig, GoveeDriverModule, GoveeKnownDevice, build_cloud_discovered_device,
-    build_device_info, govee_device_control_surface, govee_driver_control_surface,
-    merge_cloud_inventory, parse_scan_response, resolve_govee_probe_devices,
-    resolve_govee_probe_devices_from_sources,
+    GoveeConfig, GoveeDriverModule, GoveeKnownDevice, MAX_SCAN_RESPONSES,
+    build_cloud_discovered_device, build_device_info, govee_device_control_surface,
+    govee_driver_control_surface, merge_cloud_inventory, offer_scan_response, parse_scan_response,
+    resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources, scan_admission,
 };
+use hypercolor_driver_support::discovery::Admission;
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
@@ -28,6 +29,91 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
     SegmentInfo,
 };
+
+fn scan_reply(mac: &str) -> Vec<u8> {
+    format!(r#"{{"msg":{{"data":{{"ip":"10.0.0.8","device":"{mac}","sku":"H6163"}}}}}}"#)
+        .into_bytes()
+}
+
+#[test]
+fn a_flood_of_invented_macs_cannot_crowd_out_a_known_device() {
+    let source = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
+    let known = GoveeKnownDevice {
+        mac: Some("AA:BB:CC:DD:EE:FF".to_owned()),
+        ..GoveeKnownDevice::from_ip(source)
+    };
+    let mut admission = scan_admission(std::slice::from_ref(&known), 4);
+    for index in 0..1_000_u32 {
+        offer_scan_response(
+            &mut admission,
+            &scan_reply(&format!("0000{index:08x}")),
+            source,
+        );
+    }
+    assert_eq!(
+        offer_scan_response(&mut admission, &scan_reply("AA:BB:CC:DD:EE:FF"), source),
+        Some(Admission::Added),
+        "the known device is admitted past the limit"
+    );
+
+    let scan = admission.finish();
+    assert_eq!(scan.found.len(), 5);
+    assert_eq!(scan.found[0].metadata["mac"], "aabbccddeeff");
+    assert_eq!(
+        scan.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 996 }],
+        "refused replies keep the scan partial"
+    );
+}
+
+#[test]
+fn a_flood_of_invented_macs_cannot_crowd_out_a_newly_configured_address() {
+    let flood_source = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
+    let configured = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+    let known = GoveeKnownDevice::from_ip(configured);
+    let mut admission = scan_admission(std::slice::from_ref(&known), 0);
+    for index in 0..1_000_u32 {
+        offer_scan_response(
+            &mut admission,
+            &scan_reply(&format!("0000{index:08x}")),
+            flood_source,
+        );
+    }
+    assert_eq!(
+        offer_scan_response(&mut admission, &scan_reply("AABBCCDDEEFF"), configured),
+        Some(Admission::Added),
+        "a configured address has a slot before anyone knows its MAC"
+    );
+
+    let scan = admission.finish();
+    assert_eq!(scan.found.len(), 1);
+    assert_eq!(
+        scan.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 1_000 }]
+    );
+}
+
+#[test]
+fn scan_replies_keep_each_macs_latest_answer_and_ignore_garbage() {
+    let source = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
+    let mut admission = scan_admission(&[], MAX_SCAN_RESPONSES);
+    assert_eq!(
+        offer_scan_response(&mut admission, b"not json", source),
+        None
+    );
+    assert_eq!(
+        offer_scan_response(&mut admission, &scan_reply("001122334455"), source),
+        Some(Admission::Added)
+    );
+    assert_eq!(
+        offer_scan_response(&mut admission, &scan_reply("001122334455"), source),
+        Some(Admission::Updated)
+    );
+
+    let scan = admission.finish();
+    assert_eq!(scan.found.len(), 1);
+    assert!(scan.gaps.is_empty());
+}
 
 #[test]
 fn parses_lan_scan_response_into_stable_govee_identity() {

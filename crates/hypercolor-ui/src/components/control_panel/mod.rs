@@ -5,7 +5,7 @@
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
+use leptos_use_event_listener::{UseEventListenerOptions, use_event_listener_with_options};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 

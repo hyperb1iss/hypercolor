@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use hypercolor_driver_api::{
-    DRIVER_API_SCHEMA_VERSION, DeviceBackend, DriverConfigView, DriverDescriptor, DriverError,
-    DriverHost, DriverModule, OutputBinding,
+    DRIVER_API_SCHEMA_VERSION, DeviceBackend, DriverConfigView, DriverContextProvider,
+    DriverDescriptor, DriverError, DriverModule, OutputBinding,
 };
 use hypercolor_types::device::DriverModuleDescriptor;
 use hypercolor_types::identity::BackendId;
@@ -51,7 +51,7 @@ impl FinalizedOutputProvider {
     /// fails, or the constructed backend reports a different ID.
     pub fn build(
         &self,
-        host: &dyn DriverHost,
+        host: &dyn DriverContextProvider,
         config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
         let OutputBinding::Owned { id, factory } = self.driver.output() else {
@@ -71,7 +71,7 @@ impl FinalizedOutputProvider {
             });
         }
 
-        let backend = factory.build(host, config)?;
+        let backend = factory.build(host.driver_context(&self.driver_id), config)?;
         let reported_id = backend.info().id;
         if reported_id != self.backend_id.as_str() {
             return Err(DriverError::Contract {

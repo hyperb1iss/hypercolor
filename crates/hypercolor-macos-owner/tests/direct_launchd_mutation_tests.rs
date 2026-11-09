@@ -34,6 +34,15 @@ fn disabled_state_parser_accepts_current_legacy_and_missing_forms() {
         parse_direct_launchd_autostart_state(b"disabled services = {\n}\n")
             .expect("missing label should retain launchd's enabled default")
     );
+
+    let current = format!(
+        "\n\tdisabled services = {{\n\t\t\"com.apple.Siri.agent\" => disabled\n\t\t\
+         \"{MACOS_DIRECT_LAUNCHD_LABEL}\" => disabled\n\t}}\n\n\tlogin item associations = {{\n\t}}\n"
+    );
+    assert!(
+        !parse_direct_launchd_autostart_state(current.as_bytes())
+            .expect("launchctl's current layout should parse")
+    );
 }
 
 #[test]

@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
-pub use hypercolor_pipewire_interop::PackedVideoFormat as SpaVideoFormat;
+pub use hypercolor_pipewire_interop::PackedVideoFormat;
 use hypercolor_pipewire_interop::{
     BufferFault, CallbackAction, CaptureFormatRequest, D4Transform, DequeueOutcome, FormatEvent,
     FormatFault, FormatOffer, LoopReceiver, LoopSender, MetaFault, NegotiatedVideoFormat,
@@ -29,24 +29,24 @@ use serde_json::{Map, Value, json};
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch,
-    CaptureFrame, CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
-    CapturePixelFormat, CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage,
-    CpuCaptureStorage, CpuExactReductionWorkPlan, ExactBoxList, ExactBoxNode, PhysicalOrigin,
-    PixelExtent, PixelRect, PooledCapturePlane, PreparedCpuPublicationFanout,
-    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenBackendResourceIdentity, ScreenByteAdmissionCoordinator,
-    ScreenByteLease, ScreenCaptureBackend, ScreenCaptureDemand, ScreenColorTransformCapabilities,
-    ScreenCommittedState, ScreenComputeCapacityPolicy, ScreenPreparedWorkerToken,
-    ScreenProcessingProfile, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
+    CaptureBackendId, CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor,
+    CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
+    CaptureGeometry, CapturePacer, CapturePixelFormat, CapturePlanePool, CaptureRotation,
+    CaptureSourceId, CaptureStorage, CpuCaptureStorage, CpuExactReductionWorkPlan, ExactBoxList,
+    ExactBoxNode, PhysicalOrigin, PixelExtent, PixelRect, PooledCapturePlane,
+    PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate, RawCaptureSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenBackendResourceIdentity,
+    ScreenByteAdmissionCoordinator, ScreenByteLease, ScreenCaptureDemand,
+    ScreenColorTransformCapabilities, ScreenCommittedState, ScreenComputeCapacityPolicy,
+    ScreenPreparedWorkerToken, ScreenProcessingProfile, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale,
 };
 use crate::input::traits::{
-    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource, ScreenSource,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, ManagedSource, ScreenSource,
     ScreenSourcePickerAction, ScreenSourceRole, SourceRoleBinding,
 };
 use crate::input::{
@@ -85,7 +85,7 @@ pub struct SpaChunkView<'a> {
     stride: i32,
     width: u32,
     height: u32,
-    format: SpaVideoFormat,
+    format: PackedVideoFormat,
     crop: Option<PixelRect>,
     transform: CaptureRotation,
 }
@@ -101,7 +101,7 @@ impl<'a> SpaChunkView<'a> {
         stride: i32,
         width: u32,
         height: u32,
-        format: SpaVideoFormat,
+        format: PackedVideoFormat,
         crop: Option<PixelRect>,
         transform: CaptureRotation,
     ) -> Self {
@@ -368,7 +368,7 @@ impl DoubleBuffer {
 
     /// Negotiated pixel encoding attached to the most recent successful decode.
     #[must_use]
-    pub fn latest_format(&self) -> Option<SpaVideoFormat> {
+    pub fn latest_format(&self) -> Option<PackedVideoFormat> {
         self.completed.as_ref().map(|chunk| chunk.format)
     }
 
@@ -422,7 +422,7 @@ struct DecodedChunk {
     byte_len: usize,
     width: u32,
     height: u32,
-    format: SpaVideoFormat,
+    format: PackedVideoFormat,
     crop: Option<PixelRect>,
     transform: CaptureRotation,
     captured_at: Instant,
@@ -1553,7 +1553,7 @@ impl WaylandScreenCaptureInput {
                 SourceStatusReporter::new(
                     "wayland_screen_capture",
                     SourceKind::Screen,
-                    ScreenCaptureBackend::PipeWire.wire_name(),
+                    CaptureBackendId::PipeWire.wire_name(),
                     true,
                     true,
                     false,
@@ -1589,7 +1589,7 @@ impl WaylandScreenCaptureInput {
             let callback_capacity = NegotiatedFormat {
                 width: acquisition_extent.width(),
                 height: acquisition_extent.height(),
-                format: SpaVideoFormat::Rgba,
+                format: PackedVideoFormat::Rgba,
             }
             .byte_len()
             .ok_or(CaptureFrameError::StorageSizeOverflow)?;
@@ -1993,7 +1993,7 @@ impl CaptureSessionExit for WaylandCaptureExit {
     }
 }
 
-impl InputSource for WaylandScreenCaptureInput {
+impl ManagedSource for WaylandScreenCaptureInput {
     fn name(&self) -> &'static str {
         "wayland_screen_capture"
     }
@@ -2605,7 +2605,7 @@ impl WaylandCaptureUserData {
 struct NegotiatedFormat {
     width: u32,
     height: u32,
-    format: SpaVideoFormat,
+    format: PackedVideoFormat,
 }
 
 impl NegotiatedFormat {
@@ -3618,7 +3618,7 @@ impl WaylandAnalysisState {
                 CapturePixelFormat::Rgba8,
                 colorimetry,
                 ScreenBackendResourceIdentity::new(
-                    ScreenCaptureBackend::PipeWire,
+                    CaptureBackendId::PipeWire,
                     ScreenResourceApi::Cpu,
                     self.source.session_generation,
                     topology.generation,
@@ -4369,7 +4369,7 @@ fn run_pipewire_loop(
     let callback_capacity = NegotiatedFormat {
         width: requested_extent.width(),
         height: requested_extent.height(),
-        format: SpaVideoFormat::Rgba,
+        format: PackedVideoFormat::Rgba,
     }
     .byte_len()
     .ok_or(CaptureFrameError::StorageSizeOverflow)?;
@@ -4723,12 +4723,12 @@ fn convert_packed_to_rgba(decoded: &DecodedChunk, rgba: &mut [u8]) {
     }
 }
 
-fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
+fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: PackedVideoFormat) {
     match format {
-        SpaVideoFormat::Rgba => {
+        PackedVideoFormat::Rgba => {
             dst.copy_from_slice(src);
         }
-        SpaVideoFormat::Bgra => {
+        PackedVideoFormat::Bgra => {
             for (src_px, dst_px) in src
                 .as_chunks::<4>()
                 .0
@@ -4741,7 +4741,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = src_px[3];
             }
         }
-        SpaVideoFormat::Rgbx => {
+        PackedVideoFormat::Rgbx => {
             for (src_px, dst_px) in src
                 .as_chunks::<4>()
                 .0
@@ -4754,7 +4754,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = 255;
             }
         }
-        SpaVideoFormat::Bgrx => {
+        PackedVideoFormat::Bgrx => {
             for (src_px, dst_px) in src
                 .as_chunks::<4>()
                 .0
@@ -4767,7 +4767,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = 255;
             }
         }
-        SpaVideoFormat::Argb => {
+        PackedVideoFormat::Argb => {
             for (src_px, dst_px) in src
                 .as_chunks::<4>()
                 .0
@@ -4780,7 +4780,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = src_px[0];
             }
         }
-        SpaVideoFormat::Abgr => {
+        PackedVideoFormat::Abgr => {
             for (src_px, dst_px) in src
                 .as_chunks::<4>()
                 .0
@@ -4793,7 +4793,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = src_px[0];
             }
         }
-        SpaVideoFormat::Xrgb => {
+        PackedVideoFormat::Xrgb => {
             for (src_px, dst_px) in src
                 .as_chunks::<4>()
                 .0
@@ -4806,7 +4806,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = 255;
             }
         }
-        SpaVideoFormat::Xbgr => {
+        PackedVideoFormat::Xbgr => {
             for (src_px, dst_px) in src
                 .as_chunks::<4>()
                 .0
@@ -4819,7 +4819,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = 255;
             }
         }
-        SpaVideoFormat::Rgb => {
+        PackedVideoFormat::Rgb => {
             for (src_px, dst_px) in src
                 .as_chunks::<3>()
                 .0
@@ -4832,7 +4832,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
                 dst_px[3] = 255;
             }
         }
-        SpaVideoFormat::Bgr => {
+        PackedVideoFormat::Bgr => {
             for (src_px, dst_px) in src
                 .as_chunks::<3>()
                 .0

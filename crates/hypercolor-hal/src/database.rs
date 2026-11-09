@@ -5,15 +5,17 @@ use std::sync::LazyLock;
 
 use hypercolor_types::device::{
     BLOCKS_OUTPUT_BACKEND_ID, DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor, DriverTransportDescriptor,
-    DriverTransportKind, SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
+    DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor, DriverStability,
+    DriverTransportDescriptor, DriverTransportKind, SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
 };
 
 pub use crate::registry::{
     DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType, UsbTransportKind,
 };
 
-use crate::drivers::{asus, corsair, dygma, lianli, nollie, prismrgb, push2, qmk, razer};
+use crate::drivers::{
+    asus, corsair, dygma, lianli, nollie, nzxt, prismrgb, push2, qmk, razer, wooting,
+};
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 use crate::transport::{TransportError, TransportIntent, TransportPlatform, resolve_transport};
 
@@ -24,10 +26,12 @@ static DEVICE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     descriptors.extend_from_slice(dygma::devices::descriptors());
     descriptors.extend_from_slice(lianli::devices::descriptors());
     descriptors.extend_from_slice(nollie::devices::descriptors());
+    descriptors.extend_from_slice(nzxt::devices::descriptors());
     descriptors.extend_from_slice(prismrgb::devices::descriptors());
     descriptors.extend_from_slice(push2::descriptors());
     descriptors.extend_from_slice(qmk::devices::descriptors());
     descriptors.extend_from_slice(razer::devices::descriptors());
+    descriptors.extend_from_slice(wooting::devices::descriptors());
     descriptors
 });
 
@@ -50,26 +54,8 @@ static KNOWN_VID_PIDS: LazyLock<Vec<(u16, u16)>> = LazyLock::new(|| {
     set.into_iter().collect()
 });
 
-static MODULE_DESCRIPTORS: LazyLock<Vec<DriverModuleDescriptor>> = LazyLock::new(|| {
-    let mut modules = BTreeMap::<String, HalModuleAccumulator>::new();
-    for descriptor in DEVICE_DESCRIPTORS.iter() {
-        let id = descriptor.driver_id().into_owned();
-        let entry = modules.entry(id.clone()).or_insert_with(|| {
-            HalModuleAccumulator::new(id, descriptor.driver_display_name().into_owned())
-        });
-        entry.add_transport(DriverTransportDescriptor::available(transport_kind(
-            descriptor.transport,
-        )));
-    }
-    if let Some(module) = modules.get_mut("asus") {
-        module.add_transport(smbus_transport_descriptor());
-    }
-
-    modules
-        .into_values()
-        .map(HalModuleAccumulator::into_descriptor)
-        .collect()
-});
+static MODULE_DESCRIPTORS: LazyLock<Vec<DriverModuleDescriptor>> =
+    LazyLock::new(|| derive_module_descriptors(DEVICE_DESCRIPTORS.as_slice()));
 
 static PROTOCOL_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock::new(|| {
     let mut descriptors = DEVICE_DESCRIPTORS
@@ -87,6 +73,7 @@ static PROTOCOL_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock:
         transport: DriverTransportKind::Smbus,
         route_backend_id: SMBUS_OUTPUT_BACKEND_ID.to_owned(),
         presentation: None,
+        stability: DriverStability::Stable,
     });
     descriptors.sort_by(|left, right| {
         left.driver_id
@@ -97,10 +84,43 @@ static PROTOCOL_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock:
     descriptors
 });
 
+fn derive_module_descriptors(descriptors: &[DeviceDescriptor]) -> Vec<DriverModuleDescriptor> {
+    let mut modules = BTreeMap::<String, HalModuleAccumulator>::new();
+    for descriptor in descriptors {
+        let id = descriptor.driver_id().into_owned();
+        let entry = modules.entry(id.clone()).or_insert_with(|| {
+            HalModuleAccumulator::new(id, descriptor.driver_display_name().into_owned())
+        });
+        entry.add_transport(DriverTransportDescriptor::available(transport_kind(
+            descriptor.transport,
+        )));
+        entry.add_stability(descriptor.stability);
+    }
+    if let Some(module) = modules.get_mut("asus") {
+        module.add_transport(smbus_transport_descriptor());
+        module.add_stability(DriverStability::Stable);
+    }
+
+    modules
+        .into_values()
+        .map(HalModuleAccumulator::into_descriptor)
+        .collect()
+}
+
+/// HAL families a fresh install leaves off until the user turns them on.
+///
+/// A family belongs here when its devices are registered but cannot light
+/// yet. `dygma`: stock Defy firmware has no live LED path for the Focus
+/// protocol to drive, so frame writes are dropped.
+const DEFAULT_DISABLED_FAMILIES: &[&str] = &["dygma"];
+
 struct HalModuleAccumulator {
     id: String,
     display_name: String,
     transports: Vec<DriverTransportDescriptor>,
+    /// Whether any descriptor of the family is stable. A family made only
+    /// of experimental descriptors gets the experimental module label.
+    has_stable_descriptor: bool,
 }
 
 impl HalModuleAccumulator {
@@ -109,7 +129,12 @@ impl HalModuleAccumulator {
             id,
             display_name,
             transports: Vec::new(),
+            has_stable_descriptor: false,
         }
+    }
+
+    fn add_stability(&mut self, stability: DriverStability) {
+        self.has_stable_descriptor |= !stability.is_experimental();
     }
 
     fn add_transport(&mut self, transport: DriverTransportDescriptor) {
@@ -125,6 +150,13 @@ impl HalModuleAccumulator {
     fn into_descriptor(self) -> DriverModuleDescriptor {
         let mut transports = self.transports;
         transports.sort_by_key(|transport| transport_sort_key(&transport.kind));
+
+        let stability = if self.has_stable_descriptor {
+            DriverStability::Stable
+        } else {
+            DriverStability::Experimental
+        };
+        let default_enabled = !DEFAULT_DISABLED_FAMILIES.contains(&self.id.as_str());
 
         DriverModuleDescriptor {
             id: self.id,
@@ -145,7 +177,8 @@ impl HalModuleAccumulator {
             },
             api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
             config_version: 1,
-            default_enabled: true,
+            default_enabled,
+            stability,
         }
     }
 }
@@ -209,6 +242,7 @@ fn protocol_descriptor(descriptor: &DeviceDescriptor) -> DriverProtocolDescripto
         route_backend_id: route_backend_id(&transport).to_owned(),
         transport,
         presentation: None,
+        stability: descriptor.stability,
     }
 }
 
@@ -338,6 +372,49 @@ impl ProtocolDatabase {
             .iter()
             .filter(|descriptor| descriptor.driver_id == driver_id)
             .cloned()
+            .collect()
+    }
+
+    /// Derive driver module descriptors from `descriptors` exactly as the
+    /// static database derives its own.
+    ///
+    /// A family whose every descriptor is experimental gets the
+    /// experimental module label; one stable descriptor keeps the module
+    /// stable, and its experimental protocols carry the label on their own
+    /// protocol descriptors (Spec 89).
+    #[must_use]
+    pub fn derive_module_descriptors(
+        descriptors: &[DeviceDescriptor],
+    ) -> Vec<DriverModuleDescriptor> {
+        derive_module_descriptors(descriptors)
+    }
+
+    /// The protocol descriptor the catalog publishes for one device
+    /// descriptor, stability label included.
+    #[must_use]
+    pub fn protocol_descriptor_for(descriptor: &DeviceDescriptor) -> DriverProtocolDescriptor {
+        protocol_descriptor(descriptor)
+    }
+
+    /// Protocol ids in `descriptors` whose descriptors disagree on their
+    /// stability label.
+    ///
+    /// A connected device is labeled through the protocol id in its
+    /// origin, so every descriptor sharing a protocol id must carry one
+    /// label; give an experimental variant its own protocol id.
+    #[must_use]
+    pub fn stability_conflicts(descriptors: &[DeviceDescriptor]) -> Vec<&'static str> {
+        let mut by_protocol = BTreeMap::<&'static str, BTreeSet<DriverStability>>::new();
+        for descriptor in descriptors {
+            by_protocol
+                .entry(descriptor.protocol.id)
+                .or_default()
+                .insert(descriptor.stability);
+        }
+        by_protocol
+            .into_iter()
+            .filter(|(_, labels)| labels.len() > 1)
+            .map(|(protocol_id, _)| protocol_id)
             .collect()
     }
 }

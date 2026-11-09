@@ -17,6 +17,7 @@ pid = 0x0012
 name = "Defy (Wireless)"
 type = "keyboard"
 status = "blocked"
+verification = "hardware"
 driver = "dygma"
 transport = "usb_serial"
 notes = "Same firmware limitation as wired variant. RGBW color support ready on our side."

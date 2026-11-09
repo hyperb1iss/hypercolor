@@ -7,9 +7,14 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveredDevice,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
+    DeliveryResult, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryConnectBehavior, DiscoveryObservation, DiscoveryRequest, DriverConfigSource,
+    DriverConfigView, DriverContext, DriverContextProvider, DriverCredentialStore,
     DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
+    InstallationId, IoStage, SkipReason, Submission,
+};
+use hypercolor_driver_conformance::{
+    DeliveryLog, OfferToSink, SessionRig, assert_session_contract, assert_written,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -72,13 +77,24 @@ impl FixtureClock {
     }
 }
 
+fn reported_devices(batch: DiscoveryBatch) -> Vec<DiscoveredDevice> {
+    batch
+        .observations
+        .into_iter()
+        .filter_map(|observation| match observation {
+            DiscoveryObservation::Device(device) => Some(device),
+            DiscoveryObservation::Present(_) => None,
+        })
+        .collect()
+}
+
 async fn discover_and_adopt(
     module: &OpenRgbDriverModule,
     backend: &Arc<dyn DeviceBackend>,
     host: &dyn DriverHost,
     config: DriverConfigView<'_>,
 ) -> Vec<DiscoveredDevice> {
-    let devices = module
+    let batch = module
         .discovery()
         .expect("OpenRGB should expose discovery")
         .discover(
@@ -91,6 +107,7 @@ async fn discover_and_adopt(
         )
         .await
         .expect("driver discovery should read the fake OpenRGB server");
+    let devices = reported_devices(batch);
     for device in &devices {
         backend
             .adopt_device(device)
@@ -128,7 +145,7 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
 
-    let discovery = module
+    let batch = module
         .discovery()
         .expect("OpenRGB should expose discovery")
         .discover(
@@ -141,6 +158,7 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
         )
         .await
         .expect("discovery should read fake OpenRGB controller");
+    let discovery = reported_devices(batch);
 
     assert_eq!(discovery.len(), 1);
     let discovered = &discovery[0];
@@ -160,7 +178,7 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     assert!(discovered.info.capabilities.supports_direct);
 
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     backend
         .adopt_device(discovered)
@@ -171,7 +189,12 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
         .connect(&device_id)
         .await
         .expect("backend should connect selected controller");
-    assert_eq!(backend.target_fps(&device_id), Some(45));
+    assert_eq!(
+        backend
+            .output_policy(&device_id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(45)
+    );
     tokio::time::sleep(Duration::from_millis(20)).await;
     backend
         .write_colors(&device_id, &[[10, 20, 30], [40, 50, 60]])
@@ -219,7 +242,7 @@ async fn endpoint_reconnects_with_bounded_backoff_after_socket_close() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -233,36 +256,40 @@ async fn endpoint_reconnects_with_bounded_backoff_after_socket_close() {
         .frame_sink(&device_id)
         .expect("connected controller should expose a frame sink");
     let ack = sink
-        .deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 3,
-                sequence: 1,
-            },
-            Arc::new(vec![[90, 80, 70], [60, 50, 40]]),
-        )
+        .offer_to_sink(device_id, Arc::new(vec![[90, 80, 70], [60, 50, 40]]))
         .await;
 
-    assert_eq!(
-        ack.status,
-        DeviceDeliveryStatus::Failed,
+    assert!(
+        ack.into_result().is_err(),
         "the dropped socket surfaces on the next frame"
     );
+
+    // The link is down now, so a frame fails before it reaches any I/O.
+    let refused = sink
+        .offer_to_sink(device_id, Arc::new(vec![[11, 22, 33], [44, 55, 66]]))
+        .await;
+    assert!(
+        matches!(
+            refused.result(),
+            DeliveryResult::Failed {
+                stage: IoStage::Admission,
+                ..
+            }
+        ),
+        "{:?}",
+        refused.result()
+    );
+    assert_eq!(refused.transport_latency(), Duration::ZERO);
 
     let mut recovered = false;
     for _ in 0..40 {
         let ack = tokio::time::timeout(
             Duration::from_secs(1),
-            sink.deliver_colors_shared(
-                DeviceDeliveryId {
-                    queue_generation: 3,
-                    sequence: 2,
-                },
-                Arc::new(vec![[11, 22, 33], [44, 55, 66]]),
-            ),
+            sink.offer_to_sink(device_id, Arc::new(vec![[11, 22, 33], [44, 55, 66]])),
         )
         .await
         .expect("frames during backoff must fail fast, not hang");
-        if ack.status == DeviceDeliveryStatus::Completed {
+        if matches!(ack.result(), DeliveryResult::Written { .. }) {
             recovered = true;
             break;
         }
@@ -326,7 +353,7 @@ async fn connect_re_resolves_controller_index_before_mode_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -377,7 +404,7 @@ async fn connect_fails_when_re_resolved_controller_disappears() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -420,7 +447,7 @@ async fn connect_handshake_timeout_preserves_configured_deadline() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = clock
         .wait(
@@ -507,7 +534,7 @@ async fn connect_rejects_unapproved_active_mode_after_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -548,7 +575,7 @@ async fn connect_rejects_missing_active_mode_after_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -587,7 +614,7 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -600,18 +627,20 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");
 
-    frame_sink
-        .write_colors_shared(Arc::new(vec![[1, 2, 3], [4, 5, 6]]))
-        .await
-        .expect("sink should accept first queued frame");
-    frame_sink
-        .write_colors_shared(Arc::new(vec![[7, 8, 9], [10, 11, 12]]))
-        .await
-        .expect("sink should replace stale queued frame");
-    frame_sink
-        .write_colors_shared(Arc::new(vec![[13, 14, 15], [16, 17, 18]]))
-        .await
-        .expect("sink should accept latest queued frame");
+    // Posted together, so the newest replaces the others before the writer
+    // takes one.
+    let (first, second, third) = tokio::join!(
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 2, 3], [4, 5, 6]])),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[7, 8, 9], [10, 11, 12]])),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[13, 14, 15], [16, 17, 18]])),
+    );
+    for stale in [&first, &second] {
+        assert!(matches!(
+            stale.result(),
+            DeliveryResult::NotWritten(SkipReason::Superseded)
+        ));
+    }
+    assert_written(&third);
 
     let update = server.await.expect("server task should join");
     assert_eq!(update.header.device_index, 0);
@@ -651,7 +680,7 @@ async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -707,7 +736,7 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -719,19 +748,20 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     let frame_sink = backend
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");
-    let delivery_id = DeviceDeliveryId {
-        queue_generation: 11,
-        sequence: 29,
-    };
-    let delivery =
-        frame_sink.deliver_colors_shared(delivery_id, Arc::new(vec![[21, 22, 23], [24, 25, 26]]));
-    let ack = tokio::time::timeout(Duration::from_secs(1), delivery)
+    let log = Arc::new(DeliveryLog::default());
+    let delivery = frame_sink.submit(log.frame(device_id, 29, vec![[21, 22, 23], [24, 25, 26]]));
+    let submission = tokio::time::timeout(Duration::from_secs(1), delivery)
         .await
         .expect("delivery acknowledgement should arrive");
-    assert_eq!(ack.id, delivery_id);
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
-    assert!(ack.transport_started);
-    assert_eq!(ack.completed_payload_bytes, 6);
+    let Submission::Settled(receipt) = submission else {
+        panic!("the sink waits for the writer");
+    };
+    assert_eq!(receipt.id().sequence, 29);
+    assert!(matches!(
+        receipt.result(),
+        DeliveryResult::Written { bytes: 6, .. }
+    ));
+    assert_eq!(log.started(), [29]);
 
     let update = server.await.expect("server task should join");
     assert_eq!(update.header.device_index, 0);
@@ -769,7 +799,7 @@ async fn disconnect_completes_while_frame_sink_writers_race() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -789,7 +819,7 @@ async fn disconnect_completes_while_frame_sink_writers_race() {
             for frame_index in 0_u8..64 {
                 let color = writer_index.saturating_mul(64).saturating_add(frame_index);
                 let _ = frame_sink
-                    .write_colors_shared(Arc::new(vec![[color, 10, 20], [color, 30, 40]]))
+                    .write_direct(device_id, Arc::new(vec![[color, 10, 20], [color, 30, 40]]))
                     .await;
                 tokio::task::yield_now().await;
             }
@@ -838,7 +868,7 @@ async fn disconnect_restores_previous_openrgb_mode() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -855,21 +885,24 @@ async fn disconnect_restores_previous_openrgb_mode() {
         .await
         .expect("backend should restore previous mode on disconnect");
     let error = frame_sink
-        .write_colors_shared(Arc::new(vec![[20, 30, 40]; 2]))
+        .write_direct(device_id, Arc::new(vec![[20, 30, 40]; 2]))
         .await
         .expect_err("stale frame sink should stop after disconnect");
     assert!(error.to_string().contains("disconnected"));
-    let rejected_id = DeviceDeliveryId {
-        queue_generation: 4,
-        sequence: 8,
-    };
-    let rejected = frame_sink
-        .deliver_colors_shared(rejected_id, Arc::new(vec![[20, 30, 40]; 2]))
+    let log = Arc::new(DeliveryLog::default());
+    let _ = frame_sink
+        .submit(log.frame(device_id, 8, vec![[20, 30, 40]; 2]))
         .await;
-    assert_eq!(rejected.id, rejected_id);
-    assert_eq!(rejected.status, DeviceDeliveryStatus::Failed);
-    assert!(!rejected.transport_started);
-    assert_eq!(rejected.completed_payload_bytes, 0);
+    let rejected = log.settled(1).await.remove(0);
+    assert_eq!(rejected.id().sequence, 8);
+    assert!(matches!(
+        rejected.result(),
+        DeliveryResult::Failed {
+            stage: IoStage::Admission,
+            ..
+        }
+    ));
+    assert!(log.started().is_empty());
 
     let TeardownOutcome::Packet(restore) = server.await.expect("server task should join") else {
         panic!("restore teardown should write a packet");
@@ -909,7 +942,7 @@ async fn disconnect_fallback_blacks_out_without_previous_mode() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -959,7 +992,7 @@ async fn disconnect_blackout_policy_writes_zero_frame() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1009,7 +1042,7 @@ async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1058,7 +1091,7 @@ async fn connect_writes_brightness_max_and_verifies_readback() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1114,7 +1147,7 @@ async fn connect_rejects_readback_below_brightness_max() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1193,7 +1226,7 @@ async fn writer_paces_to_target_fps_and_drops_superseded_frames() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1203,50 +1236,40 @@ async fn writer_paces_to_target_fps_and_drops_superseded_frames() {
         .connect(&device_id)
         .await
         .expect("backend should connect selected controller");
-    assert_eq!(backend.target_fps(&device_id), Some(20));
+    assert_eq!(
+        backend
+            .output_policy(&device_id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(20)
+    );
     let frame_sink = backend
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");
 
     let first = tokio::time::timeout(
         Duration::from_secs(1),
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 5,
-                sequence: 1,
-            },
-            Arc::new(vec![[1, 1, 1], [1, 1, 1]]),
-        ),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 1, 1], [1, 1, 1]])),
     )
     .await
     .expect("first frame should be written immediately");
-    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    assert_written(&first);
     let first_done = tokio::time::Instant::now();
 
     let (superseded, latest) = tokio::join!(
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 5,
-                sequence: 2,
-            },
-            Arc::new(vec![[2, 2, 2], [2, 2, 2]]),
-        ),
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 5,
-                sequence: 3,
-            },
-            Arc::new(vec![[3, 3, 3], [3, 3, 3]]),
-        ),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[2, 2, 2], [2, 2, 2]])),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[3, 3, 3], [3, 3, 3]])),
     );
     let latest_done = tokio::time::Instant::now();
 
-    assert_eq!(superseded.status, DeviceDeliveryStatus::Failed);
     assert!(
-        !superseded.transport_started,
-        "the superseded frame must never reach the socket"
+        matches!(
+            superseded.result(),
+            DeliveryResult::NotWritten(SkipReason::Superseded)
+        ),
+        "the superseded frame must never reach the socket: {:?}",
+        superseded.result()
     );
-    assert_eq!(latest.status, DeviceDeliveryStatus::Completed);
+    assert_written(&latest);
     assert!(
         latest_done.duration_since(first_done) >= Duration::from_millis(40),
         "second write must wait for the 50 ms slot, got {:?}",
@@ -1296,7 +1319,7 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     assert_eq!(devices.len(), 2);
@@ -1317,6 +1340,7 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
             .await
             .expect("backend should connect controller");
     }
+    let (fast_id, slow_id) = (fast.info.id, slow.info.id);
     let fast_sink = backend
         .frame_sink(&fast.info.id)
         .expect("fast controller should expose a frame sink");
@@ -1330,14 +1354,18 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
     for millis in 0_u16..300 {
         if millis % 5 == 0 {
             let tick = u8::try_from(millis / 5).expect("fixture tick fits");
-            fast_sink
-                .write_colors_shared(Arc::new(vec![[tick, 0, 0], [tick, 0, 0]]))
-                .await
-                .expect("fast frame should queue");
-            slow_sink
-                .write_colors_shared(Arc::new(vec![[0, tick, 0], [0, tick, 0]]))
-                .await
-                .expect("slow frame should queue");
+            // A sink waits for its writer, which waits for this paused clock.
+            let frame = Arc::new(vec![[tick, 0, 0], [tick, 0, 0]]);
+            let sink = Arc::clone(&fast_sink);
+            drop(tokio::spawn(async move {
+                let _ = sink.write_direct(fast_id, frame).await;
+            }));
+            let frame = Arc::new(vec![[0, tick, 0], [0, tick, 0]]);
+            let sink = Arc::clone(&slow_sink);
+            drop(tokio::spawn(async move {
+                let _ = sink.write_direct(slow_id, frame).await;
+            }));
+            tokio::task::yield_now().await;
         }
         // Tokio rounds timer deadlines to milliseconds. Observe each 10 ms
         // fast slot after that rounding boundary, without changing either rate.
@@ -1518,7 +1546,7 @@ async fn assert_configured_zone_resize(initial_led_count: u32, rebound: bool) {
         entry: &base_entry,
     };
     let probe = module
-        .build(&host, base_view)
+        .build(host.driver_context(DESCRIPTOR.id), base_view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &probe, &host, base_view).await;
     let discovered = &devices[0];
@@ -1545,7 +1573,7 @@ async fn assert_configured_zone_resize(initial_led_count: u32, rebound: bool) {
         entry: &sized_entry,
     };
     let backend = module
-        .build(&host, sized_view)
+        .build(host.driver_context(DESCRIPTOR.id), sized_view)
         .expect("backend with zone sizes should build");
     let devices = if rebound {
         backend
@@ -1673,7 +1701,7 @@ async fn discovery_reuses_the_open_endpoint_link() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1769,7 +1797,7 @@ async fn write_path_pads_and_truncates_frames_to_controller_shape() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1783,29 +1811,18 @@ async fn write_path_pads_and_truncates_frames_to_controller_shape() {
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");
 
-    let oversized = frame_sink.deliver_colors_shared(
-        DeviceDeliveryId {
-            queue_generation: 1,
-            sequence: 1,
-        },
-        Arc::new(vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
-    );
+    let oversized =
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]]));
     let ack = tokio::time::timeout(Duration::from_secs(1), oversized)
         .await
         .expect("oversized frame should be acknowledged");
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    assert_written(&ack);
 
-    let undersized = frame_sink.deliver_colors_shared(
-        DeviceDeliveryId {
-            queue_generation: 1,
-            sequence: 2,
-        },
-        Arc::new(vec![[9, 9, 9]]),
-    );
+    let undersized = frame_sink.offer_to_sink(device_id, Arc::new(vec![[9, 9, 9]]));
     let ack = tokio::time::timeout(Duration::from_secs(1), undersized)
         .await
         .expect("undersized frame should be acknowledged");
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    assert_written(&ack);
 
     let updates = server.await.expect("server task should join");
     assert_eq!(updates.len(), 2);
@@ -1849,7 +1866,7 @@ async fn device_list_update_with_new_shape_disables_output_until_rescan() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1863,21 +1880,14 @@ async fn device_list_update_with_new_shape_disables_output_until_rescan() {
         .expect("connected controller should expose frame sink");
     let ack = tokio::time::timeout(
         Duration::from_secs(2),
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 2,
-                sequence: 1,
-            },
-            Arc::new(vec![[1, 2, 3], [4, 5, 6]]),
-        ),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 2, 3], [4, 5, 6]])),
     )
     .await
     .expect("frame after shape change should be acknowledged");
 
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
     let error = ack
-        .error
-        .expect("failed ack should carry the shape-change error");
+        .into_result()
+        .expect_err("a failed frame should carry the shape-change error");
     assert!(
         error
             .to_string()
@@ -1915,7 +1925,9 @@ async fn idle_shape_change_requests_lifecycle_reconnect_without_a_frame() {
         entry: &entry,
     };
     let module = OpenRgbDriverModule;
-    let backend = module.build(&host, view).expect("build");
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("build");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let id = devices[0].info.id;
     backend.connect(&id).await.expect("connect");
@@ -1965,11 +1977,17 @@ impl<R: DriverRuntimeActions + 'static> DriverHost for ReconnectHost<R> {
     fn runtime(&self) -> &dyn DriverRuntimeActions {
         self.0.as_ref()
     }
-    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
-        Some(self.0.clone())
-    }
     fn discovery_state(&self) -> &dyn DriverDiscoveryState {
         &NullHost
+    }
+}
+
+impl<R: DriverRuntimeActions + 'static> DriverContextProvider for ReconnectHost<R> {
+    fn driver_context(&self, driver_id: &str) -> DriverContext {
+        DriverContext {
+            runtime: self.0.clone(),
+            ..NullHost.driver_context(driver_id)
+        }
     }
 }
 
@@ -2146,7 +2164,7 @@ async fn discover_with_startup_rescan_server(server_protocol_version: u32) -> bo
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
 
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
@@ -3162,6 +3180,25 @@ fn push_i32(body: &mut Vec<u8>, value: i32) {
 #[derive(Debug, Default)]
 struct NullHost;
 
+struct EmptyConfig;
+
+impl DriverConfigSource for EmptyConfig {
+    fn current(&self) -> DriverConfigEntry {
+        DriverConfigEntry::default()
+    }
+}
+
+impl DriverContextProvider for NullHost {
+    fn driver_context(&self, _driver_id: &str) -> DriverContext {
+        DriverContext {
+            config: Arc::new(EmptyConfig),
+            installation_id: InstallationId::new("openrgb-test"),
+            runtime: Arc::new(Self),
+            device_input: None,
+        }
+    }
+}
+
 #[async_trait]
 impl DriverCredentialStore for NullHost {
     async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
@@ -3313,7 +3350,9 @@ async fn malformed_enumeration_replaces_the_invalid_session() {
             entry: &entry,
         };
         let module = OpenRgbDriverModule;
-        let backend = module.build(&NullHost, view).expect("build");
+        let backend = module
+            .build(NullHost.driver_context(DESCRIPTOR.id), view)
+            .expect("build");
         let devices = discover_and_adopt(&module, &backend, &NullHost, view).await;
         let id = devices[0].info.id;
         backend.connect(&id).await.expect("connect");
@@ -3435,7 +3474,9 @@ async fn rejected_lifecycle_requests_retry_on_unchanged_enumeration() {
         entry: &entry,
     };
     let module = OpenRgbDriverModule;
-    let backend = module.build(&host, view).expect("build");
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("build");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let id = devices[0].info.id;
     backend.connect(&id).await.expect("connect");
@@ -3508,7 +3549,9 @@ async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
         entry: &entry,
     };
     let module = OpenRgbDriverModule;
-    let backend = module.build(&NullHost, view).expect("build");
+    let backend = module
+        .build(NullHost.driver_context(DESCRIPTOR.id), view)
+        .expect("build");
     let devices = discover_and_adopt(&module, &backend, &NullHost, view).await;
     let discovered = &devices[0];
     let id = discovered.info.id;
@@ -3528,7 +3571,7 @@ async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
     let resized_entry = config_entry(&resized);
     let replacement = module
         .build(
-            &NullHost,
+            NullHost.driver_context(DESCRIPTOR.id),
             DriverConfigView {
                 driver_id: DESCRIPTOR.id,
                 entry: &resized_entry,
@@ -3553,4 +3596,203 @@ async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
     assert_eq!(resize.header.packet_id, PacketId::ResizeZone);
     assert_eq!(&update.payload[4..6], &4_u16.to_le_bytes());
     replacement.disconnect(&id).await.expect("disconnect");
+}
+
+// ── Session contract ────────────────────────────────────────────────────
+
+/// Fake OpenRGB server that counts LED updates and closed connections.
+#[derive(Default)]
+struct ContractServer {
+    updates: AtomicUsize,
+    accepts: AtomicUsize,
+    closes: AtomicUsize,
+}
+
+async fn run_contract_server(listener: TcpListener, state: Arc<ContractServer>) {
+    let controller = controller_payload_v5("Board", "SER123", "hidraw0");
+    while let Ok((mut stream, _)) = listener.accept().await {
+        state.accepts.fetch_add(1, Ordering::SeqCst);
+        let state = Arc::clone(&state);
+        let controller = controller.clone();
+        tokio::spawn(async move {
+            let mut decoder = PacketDecoder::new();
+            while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+                if packet.header.packet_id == PacketId::UpdateLeds {
+                    state.updates.fetch_add(1, Ordering::SeqCst);
+                    continue;
+                }
+                answer_standard_client_packet(
+                    &mut stream,
+                    packet.header.packet_id,
+                    &packet,
+                    &controller,
+                )
+                .await;
+            }
+            state.closes.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+}
+
+struct OpenRgbRig {
+    backend: Arc<dyn DeviceBackend>,
+    id: DeviceId,
+    server: Arc<ContractServer>,
+    seen: usize,
+}
+
+#[async_trait]
+impl SessionRig for OpenRgbRig {
+    fn backend(&self) -> &dyn DeviceBackend {
+        self.backend.as_ref()
+    }
+
+    fn device_id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn frame(&self, shade: u8) -> Vec<[u8; 3]> {
+        vec![[shade, 0, 255], [0, shade, 255]]
+    }
+
+    async fn saw_traffic(&mut self, window: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            let count = self.server.updates.load(Ordering::SeqCst);
+            if count > self.seen {
+                self.seen = count;
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    async fn discard_traffic(&mut self) {
+        self.seen = self.server.updates.load(Ordering::SeqCst);
+    }
+
+    /// The last session on an endpoint takes the pooled SDK connection with
+    /// it, so the server sees every connection it accepted close.
+    async fn assert_transport_released(&mut self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let accepts = self.server.accepts.load(Ordering::SeqCst);
+            let closes = self.server.closes.load(Ordering::SeqCst);
+            if closes == accepts {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a closed session left an SDK connection open: {accepts} accepted, {closes} closed"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// The controller leaves the endpoint by dropping the shared link.
+    async fn teardowns(&mut self) -> usize {
+        self.server.closes.load(Ordering::SeqCst)
+    }
+}
+
+#[tokio::test]
+async fn openrgb_sessions_keep_the_contract() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let state = Arc::new(ContractServer::default());
+    let server = tokio::spawn(run_contract_server(listener, Arc::clone(&state)));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let id = devices[0].info.id;
+
+    let mut rig = OpenRgbRig {
+        backend,
+        id,
+        server: Arc::clone(&state),
+        seen: 0,
+    };
+    assert_session_contract(&mut rig).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn retiring_during_a_connect_leaves_the_endpoint_unpinned() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let state = Arc::new(ContractServer::default());
+    let server = tokio::spawn(run_contract_server(listener, Arc::clone(&state)));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let id = devices[0].info.id;
+
+    let mut rig = OpenRgbRig {
+        backend,
+        id,
+        server: Arc::clone(&state),
+        seen: 0,
+    };
+    // Discovery's own connection ending says nothing about this one.
+    rig.assert_transport_released().await;
+
+    let (connected, retired) = {
+        let backend = rig.backend();
+        tokio::join!(backend.connect(&id), async {
+            tokio::task::yield_now().await;
+            backend.retire().await
+        })
+    };
+
+    retired.expect("retire");
+    connected.expect_err("the connect lost to retirement");
+    assert!(
+        state.accepts.load(Ordering::SeqCst) > 1,
+        "the connect reached the endpoint"
+    );
+    rig.assert_transport_released().await;
+    server.abort();
 }

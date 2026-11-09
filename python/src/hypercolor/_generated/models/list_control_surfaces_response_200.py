@@ -8,7 +8,9 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 if TYPE_CHECKING:
-    from ..models.control_surface_list_response import ControlSurfaceListResponse
+    from ..models.control_surface_document_list_response import (
+        ControlSurfaceDocumentListResponse,
+    )
     from ..models.response_meta import ResponseMeta
 
 
@@ -19,11 +21,15 @@ T = TypeVar("T", bound="ListControlSurfacesResponse200")
 class ListControlSurfacesResponse200:
     """
     Attributes:
-        data (ControlSurfaceListResponse): Response body for `GET /api/v1/control-surfaces`.
+        data (ControlSurfaceDocumentListResponse): Canonical list payload: honest pagination or none at all.
+
+            `page: None` means the response is complete — no fabricated
+            `limit`/`has_more` block pretending a paging contract that doesn't
+            exist. `page: Some` means the endpoint genuinely pages.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
-    data: ControlSurfaceListResponse
+    data: ControlSurfaceDocumentListResponse
     meta: ResponseMeta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -45,13 +51,13 @@ class ListControlSurfacesResponse200:
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
-        from ..models.control_surface_list_response import (
-            ControlSurfaceListResponse,
+        from ..models.control_surface_document_list_response import (
+            ControlSurfaceDocumentListResponse,
         )
         from ..models.response_meta import ResponseMeta
 
         d = dict(src_dict)
-        data = ControlSurfaceListResponse.from_dict(d.pop("data"))
+        data = ControlSurfaceDocumentListResponse.from_dict(d.pop("data"))
 
         meta = ResponseMeta.from_dict(d.pop("meta"))
 

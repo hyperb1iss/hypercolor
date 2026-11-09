@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ActionConfirmationLevel(StrEnum):
+class ActionConfirmationLevel(TolerantStrEnum):
     DESTRUCTIVE = "destructive"
     HARDWARE_PERSISTENT = "hardware_persistent"
     NORMAL = "normal"

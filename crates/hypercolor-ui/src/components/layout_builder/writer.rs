@@ -475,7 +475,7 @@ fn hold(ticket: Ticket) {
     });
     if tell {
         toasts::toast_info(
-            "Layout changes wait to be saved: the daemon restarted, and they go out once the connection catches up.",
+            "Layout changes wait to be saved: Hypercolor restarted, and they go out once the connection catches up.",
         );
     }
 }
@@ -701,10 +701,10 @@ fn report_lapsed(lapsed: &[Lapsed]) {
     match count(Lapse::Restart) {
         0 => {}
         1 => toasts::toast_error(
-            "A layout change may not have been saved: the daemon restarted while it was on its way. Check the canvas.",
+            "A layout change may not have been saved: Hypercolor restarted while it was on its way. Check the canvas.",
         ),
         count => toasts::toast_error(&format!(
-            "{count} layout changes may not have been saved: the daemon restarted while they were on their way. Check the canvas."
+            "{count} layout changes may not have been saved: Hypercolor restarted while they were on their way. Check the canvas."
         )),
     }
     match count(Lapse::Forgotten) {
@@ -834,7 +834,7 @@ async fn send(
             let Some(wait) = wait else {
                 pause(
                     ticket,
-                    "Layout change not confirmed yet: no answer from the daemon. It goes out again when the connection is back or with your next edit.",
+                    "Layout change not confirmed yet: no answer from Hypercolor. It goes out again when the connection is back or with your next edit.",
                 );
                 return Next::Stop(Ended::Paused);
             };

@@ -9,6 +9,7 @@
 //! empty list never hides a device. A collection the HID stack itself
 //! leaves out of an interface it otherwise reports is beyond its sight.
 
+use hypercolor_hal::transport::TransportError;
 use hypercolor_hal::transport::hidapi::{HidCollectionInfo, enumerate_usb_hid_collections};
 use tracing::debug;
 
@@ -35,7 +36,17 @@ impl HidUsageIndex {
     /// join against it comes back unknown.
     #[must_use]
     pub fn enumerate() -> Self {
-        match enumerate_usb_hid_collections() {
+        Self::from_enumeration(enumerate_usb_hid_collections())
+    }
+
+    /// An index over the outcome of a HID enumeration.
+    ///
+    /// A failed enumeration yields an empty index, so every join against it
+    /// comes back unknown. [`enumerate`](Self::enumerate) feeds it the host
+    /// HID stack; tests feed it fixture collections.
+    #[must_use]
+    pub fn from_enumeration(enumeration: Result<Vec<HidCollectionInfo>, TransportError>) -> Self {
+        match enumeration {
             Ok(collections) => Self::new(collections),
             Err(error) => {
                 debug!(%error, "HID enumeration failed; usage pages stay unknown");

@@ -5,11 +5,14 @@
 //! HTTP dance on `/json/state`, the three-frame priming flush, and the
 //! clear frame sent at disconnect.
 
-use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget};
 use tracing::{debug, warn};
+
+use crate::{WLED_JSON_REPLY_BYTES, fetch_json};
 
 use super::protocol::{
     WledColorFormat, WledDevice, WledProtocol, parse_wled_live_receiver_config,
@@ -20,26 +23,27 @@ pub(super) const REALTIME_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 const REALTIME_PRIME_FRAMES: usize = 3;
 const REALTIME_PRIME_DELAY: Duration = Duration::from_millis(50);
 
-async fn post_realtime_state(ip: IpAddr, body: serde_json::Value) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(REALTIME_HTTP_TIMEOUT)
-        .build()
-        .context("Failed to build WLED HTTP client")?;
+async fn post_realtime_state(api: SocketAddr, body: serde_json::Value) -> Result<()> {
+    let client = BoundedHttpClient::new().context("Failed to build WLED HTTP client")?;
 
+    // The reply is never read: the status is all that matters.
     client
-        .post(format!("http://{ip}/json/state"))
+        .post(format!("http://{api}/json/state"))
         .json(&body)
-        .send()
+        .send(ReadBudget::new(
+            WLED_JSON_REPLY_BYTES,
+            REALTIME_HTTP_TIMEOUT,
+        ))
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("Failed to update WLED realtime state for {ip}"))?;
+        .and_then(BoundedResponse::error_for_status)
+        .with_context(|| format!("Failed to update WLED realtime state for {api}"))?;
 
     Ok(())
 }
 
-pub(super) async fn enter_realtime_mode(ip: IpAddr) -> Result<()> {
+pub(super) async fn enter_realtime_mode(api: SocketAddr) -> Result<()> {
     post_realtime_state(
-        ip,
+        api,
         serde_json::json!({
             // Let the incoming realtime protocol own pixel data instead of
             // forcing WLED's local override state.
@@ -51,9 +55,9 @@ pub(super) async fn enter_realtime_mode(ip: IpAddr) -> Result<()> {
     .await
 }
 
-pub(super) async fn exit_realtime_mode(ip: IpAddr) -> Result<()> {
+pub(super) async fn exit_realtime_mode(api: SocketAddr) -> Result<()> {
     post_realtime_state(
-        ip,
+        api,
         serde_json::json!({
             "live": false,
             "lor": 0,
@@ -64,41 +68,30 @@ pub(super) async fn exit_realtime_mode(ip: IpAddr) -> Result<()> {
 }
 
 async fn fetch_wled_live_receiver_config(
-    ip: IpAddr,
+    api: SocketAddr,
 ) -> Result<Option<super::protocol::WledLiveReceiverConfig>> {
-    let client = reqwest::Client::builder()
-        .timeout(REALTIME_HTTP_TIMEOUT)
-        .build()
-        .context("Failed to build WLED HTTP client")?;
-
-    let json: serde_json::Value = client
-        .get(format!("http://{ip}/json/cfg"))
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("Failed to fetch WLED config for {ip}"))?
-        .json()
-        .await
-        .with_context(|| format!("Failed to parse WLED config JSON for {ip}"))?;
+    let client = BoundedHttpClient::new().context("Failed to build WLED HTTP client")?;
+    let url = format!("http://{api}/json/cfg");
+    let json = fetch_json(&client, &url, REALTIME_HTTP_TIMEOUT).await?;
 
     parse_wled_live_receiver_config(&json)
 }
 
 pub(super) async fn validate_wled_receiver_config(
-    ip: IpAddr,
+    api: SocketAddr,
     protocol: WledProtocol,
     color_format: WledColorFormat,
     e131_start_universe: u16,
 ) {
-    let config = match fetch_wled_live_receiver_config(ip).await {
+    let config = match fetch_wled_live_receiver_config(api).await {
         Ok(Some(config)) => config,
         Ok(None) => {
-            debug!(ip = %ip, "WLED /json/cfg did not expose realtime receiver settings");
+            debug!(%api, "WLED /json/cfg did not expose realtime receiver settings");
             return;
         }
         Err(error) => {
             debug!(
-                ip = %ip,
+                %api,
                 error = %error,
                 "Failed to validate WLED realtime receiver config"
             );
@@ -111,7 +104,7 @@ pub(super) async fn validate_wled_receiver_config(
 
     if mismatches.is_empty() {
         debug!(
-            ip = %ip,
+            %api,
             protocol = ?protocol,
             port = config.port,
             dmx_address = config.dmx_address,
@@ -123,7 +116,7 @@ pub(super) async fn validate_wled_receiver_config(
         match protocol {
             WledProtocol::Ddp => {
                 warn!(
-                    ip = %ip,
+                    %api,
                     protocol = ?protocol,
                     port = config.port,
                     dmx_address = config.dmx_address,
@@ -135,7 +128,7 @@ pub(super) async fn validate_wled_receiver_config(
             }
             WledProtocol::E131 => {
                 warn!(
-                    ip = %ip,
+                    %api,
                     protocol = ?protocol,
                     port = config.port,
                     dmx_address = config.dmx_address,

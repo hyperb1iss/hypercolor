@@ -5,7 +5,7 @@
 //! usage `0x61`). Each keyboard entry specifies its known LED count,
 //! protocol revision, and optional matrix dimensions.
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
@@ -168,6 +168,7 @@ macro_rules! qmk_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         }
     };
 }

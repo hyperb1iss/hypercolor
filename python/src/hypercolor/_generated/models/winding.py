@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class Winding(StrEnum):
+class Winding(TolerantStrEnum):
     CLOCKWISE = "clockwise"
     COUNTER_CLOCKWISE = "counter_clockwise"
 

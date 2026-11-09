@@ -7,7 +7,8 @@ use std::time::Duration;
 use hypercolor_types::device::{DeviceCapabilities, DeviceFeatures};
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
+    FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 use crate::transport::vendor::{
     VendorControlOperation, encode_operations as encode_vendor_operations,
@@ -114,8 +115,13 @@ impl Protocol for CorsairLegacyPeripheralProtocol {
         Vec::new()
     }
 
-    fn encode_frame_into(&self, _colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        _colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         commands.clear();
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {

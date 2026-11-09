@@ -44,17 +44,17 @@ use hypercolor_core::input::screen::planner::{
     ScreenPublicationExecutorRequest,
 };
 use hypercolor_core::input::screen::planner::{
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenCursorCapabilities, ScreenNativeExecutionPolicy,
+    CaptureBackendId, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenBackendResourceIdentity, ScreenCursorCapabilities, ScreenNativeExecutionPolicy,
     ScreenPublicationExecutor, ScreenPublicationHub, ScreenResourceApi, ScreenResourceLifetime,
     ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 use hypercolor_core::input::{
-    AudioSource, AudioSourceRole, InputData, InputManager, InputSource, InteractionSource,
-    InteractionSourceRole, ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind,
-    SourceRoleBinding,
+    AudioSource, AudioSourceRole, InputData, InputManager, InteractionSource,
+    InteractionSourceRole, ManagedSource, ManagedSourceRole, ScreenSource, ScreenSourceRole,
+    SourceKind, SourceRoleBinding,
 };
 #[cfg(feature = "wgpu")]
 use hypercolor_core::scene::interpolate_color;
@@ -67,9 +67,7 @@ use hypercolor_daemon::domain::DeviceBindingMigrationContext;
 use hypercolor_daemon::domain::layout::LayoutContext;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
-use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, Frame, Submission};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
 #[cfg(feature = "wgpu")]
@@ -380,6 +378,10 @@ impl DeviceBackend for FencedRecoveryBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if *id != self.device_id {
             return Err(DeviceError::NotFound {
@@ -446,6 +448,10 @@ impl DeviceBackend for SlowDisconnectFailBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if !self.connected.load(Ordering::Acquire) {
             return Err(DeviceError::Disconnected {
@@ -496,6 +502,10 @@ impl DeviceBackend for TransientWriteFailureBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         Err(DeviceError::protocol(
             id,
@@ -503,14 +513,9 @@ impl DeviceBackend for TransientWriteFailureBackend {
         ))
     }
 
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        observer.transport_started(delivery_id);
+    async fn submit_frame(&self, device_id: &DeviceId, frame: Frame) -> Submission {
+        let (_, attempt) = frame.into_parts();
+        let transmission = attempt.start();
         self.deliveries.fetch_add(1, Ordering::SeqCst);
         if *device_id == self.device_id
             && self
@@ -520,14 +525,14 @@ impl DeviceBackend for TransientWriteFailureBackend {
                 })
                 .is_ok()
         {
-            return DeviceDeliveryAck::failed_transient(
-                delivery_id,
-                true,
-                Duration::ZERO,
-                DeviceError::write(device_id, "hid write reported a short count"),
-            );
+            return transmission
+                .failed_transient(DeviceError::write(
+                    device_id,
+                    "hid write reported a short count",
+                ))
+                .into();
         }
-        DeviceDeliveryAck::completed(delivery_id, colors.len().saturating_mul(3), Duration::ZERO)
+        transmission.written().into()
     }
 }
 
@@ -888,7 +893,7 @@ impl ExactScreenSource {
                 CaptureColorimetry::SRGB,
                 ScreenCursorCapabilities::clean_with_separate_cursor(),
                 ScreenBackendResourceIdentity::new(
-                    ScreenCaptureBackend::Synthetic,
+                    CaptureBackendId::Synthetic,
                     ScreenResourceApi::Cpu,
                     1,
                     1,
@@ -945,7 +950,7 @@ impl ExactScreenSource {
                 CaptureColorimetry::SRGB,
                 ScreenCursorCapabilities::clean_with_separate_cursor(),
                 ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                    ScreenCaptureBackend::ScreenCaptureKit,
+                    CaptureBackendId::ScreenCaptureKit,
                     ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
                     target.physical_gpu_device().clone(),
                     1,
@@ -1057,7 +1062,7 @@ impl Drop for ExactScreenSource {
     }
 }
 
-impl InputSource for ExactScreenSource {
+impl ManagedSource for ExactScreenSource {
     fn name(&self) -> &'static str {
         "exact_screen"
     }
@@ -1299,7 +1304,7 @@ impl MockAudioSource {
     }
 }
 
-impl InputSource for MockAudioSource {
+impl ManagedSource for MockAudioSource {
     fn name(&self) -> &'static str {
         "mock_audio"
     }
@@ -1350,7 +1355,7 @@ impl DemandGatedMockAudioSource {
     }
 }
 
-impl InputSource for DemandGatedMockAudioSource {
+impl ManagedSource for DemandGatedMockAudioSource {
     fn name(&self) -> &'static str {
         "demand_gated_audio"
     }
@@ -1421,7 +1426,7 @@ impl EventOnlySource {
     }
 }
 
-impl InputSource for EventOnlySource {
+impl ManagedSource for EventOnlySource {
     fn name(&self) -> &'static str {
         "event_only"
     }

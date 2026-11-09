@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88.0"
 name = "servo-script"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["The Servo Project Developers"]
 build = "build.rs"
 publish = true
@@ -66,6 +66,7 @@ webcrypto = [
     "dep:elliptic-curve",
     "dep:hkdf",
     "dep:k12",
+    "dep:keccak",
     "dep:ml-dsa",
     "dep:ml-kem",
     "dep:ocb3",
@@ -77,6 +78,8 @@ webcrypto = [
     "dep:sha1",
     "dep:sha2",
     "dep:sha3",
+    "dep:sponge-cursor",
+    "dep:x-wing",
     "dep:x25519-dalek",
     "dep:x448",
     "dep:zeroize",
@@ -91,8 +94,6 @@ webgl_backtrace = ["servo-canvas-traits/webgl_backtrace"]
 webgpu = [
     "dep:script_webgpu",
     "dep:webgpu_traits",
-    "dep:wgpu-core",
-    "dep:wgpu-types",
     "script_bindings/webgpu",
     "script_traits/webgpu",
 ]
@@ -106,6 +107,10 @@ webxr = [
 [lib]
 name = "script"
 path = "lib.rs"
+
+[dependencies.accesskit]
+version = "0.24.0"
+features = ["serde"]
 
 [dependencies.aes]
 version = "0.9"
@@ -192,7 +197,7 @@ version = "0.4"
 features = ["serde"]
 
 [dependencies.content-security-policy]
-version = "0.8.1"
+version = "0.9"
 features = ["serde"]
 
 [dependencies.cookie]
@@ -210,7 +215,7 @@ version = "0.2"
 optional = true
 
 [dependencies.cssparser]
-version = "0.37"
+version = "0.38"
 features = ["serde"]
 
 [dependencies.ctr]
@@ -226,15 +231,15 @@ optional = true
 version = "0.3"
 
 [dependencies.deny_public_fields]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-deny-public-fields"
 
 [dependencies.devtools_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-devtools-traits"
 
 [dependencies.dom_struct]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-dom-struct"
 
 [dependencies.ecdsa]
@@ -261,7 +266,7 @@ features = ["pkcs8"]
 optional = true
 
 [dependencies.embedder_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-embedder-traits"
 
 [dependencies.encoding_rs]
@@ -275,11 +280,11 @@ version = "0.22"
 version = "1.1"
 
 [dependencies.fonts]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-fonts"
 
 [dependencies.fonts_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-fonts-traits"
 
 [dependencies.glow]
@@ -293,7 +298,7 @@ version = "0.13"
 optional = true
 
 [dependencies.html5ever]
-version = "0.39"
+version = "0.40.1"
 
 [dependencies.http]
 version = "1.4"
@@ -302,7 +307,7 @@ version = "1.4"
 version = "1.9"
 
 [dependencies.hyper_serde]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-hyper-serde"
 
 [dependencies.icu_locale_core]
@@ -313,13 +318,13 @@ version = "2.14.0"
 features = ["std"]
 
 [dependencies.ipc-channel]
-version = "0.22"
+version = "0.23"
 
 [dependencies.itertools]
 version = "0.15"
 
 [dependencies.js]
-version = "=0.26.3"
+version = "=0.26.4"
 features = [
     "intl",
     "libz-sys",
@@ -328,7 +333,7 @@ default-features = false
 package = "mozjs"
 
 [dependencies.jstraceable_derive]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-jstraceable-derive"
 
 [dependencies.k12]
@@ -337,6 +342,7 @@ optional = true
 
 [dependencies.keccak]
 version = "0.2"
+optional = true
 
 [dependencies.keyboard-types]
 version = "0.8.3"
@@ -346,7 +352,7 @@ features = [
 ]
 
 [dependencies.layout_api]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-layout-api"
 
 [dependencies.libc]
@@ -356,21 +362,21 @@ version = "0.2"
 version = "0.4.32"
 
 [dependencies.malloc_size_of]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-malloc-size-of"
 
 [dependencies.malloc_size_of_derive]
 version = "0.1"
 
 [dependencies.markup5ever]
-version = "0.39"
+version = "0.40"
 
 [dependencies.media]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-media-thread"
 
 [dependencies.metrics]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-metrics"
 
 [dependencies.mime]
@@ -394,7 +400,7 @@ features = [
 optional = true
 
 [dependencies.net_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-net-traits"
 
 [dependencies.nom-rfc8288]
@@ -426,7 +432,7 @@ features = ["ecdh"]
 optional = true
 
 [dependencies.paint_api]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-paint-api"
 
 [dependencies.parking_lot]
@@ -437,10 +443,11 @@ features = ["serde"]
 version = "2.3"
 
 [dependencies.phf]
-version = "0.13"
+version = "0.14"
+features = ["macros"]
 
 [dependencies.pixels]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-pixels"
 
 [dependencies.pkcs8]
@@ -453,7 +460,7 @@ features = ["use-std"]
 default-features = false
 
 [dependencies.profile_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-profile-traits"
 
 [dependencies.rand]
@@ -473,20 +480,20 @@ optional = true
 version = "2.1.2"
 
 [dependencies.script_bindings]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-script-bindings"
 
 [dependencies.script_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-script-traits"
 
 [dependencies.script_webgpu]
-version = "=0.6.0"
+version = "=0.7.0"
 optional = true
 package = "servo-script-webgpu"
 
 [dependencies.selectors]
-version = "0.40.0"
+version = "0.41"
 
 [dependencies.serde]
 version = "1.0.228"
@@ -497,41 +504,41 @@ version = "1.0"
 features = ["preserve_order"]
 
 [dependencies.servo-background-hang-monitor-api]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-base]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-bluetooth-traits]
-version = "=0.6.0"
+version = "=0.7.0"
 optional = true
 
 [dependencies.servo-canvas-traits]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-config]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-constellation-traits]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-geometry]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-media]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-tracing]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-url]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo-webvtt]
-version = "=0.6.0"
+version = "=0.7.0"
 
 [dependencies.servo_arc]
-version = "0.4.3"
+version = "0.5.0"
 
 [dependencies.sha1]
 version = "0.11"
@@ -554,9 +561,10 @@ features = [
 
 [dependencies.sponge-cursor]
 version = "0.1"
+optional = true
 
 [dependencies.storage_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-storage-traits"
 
 [dependencies.strum]
@@ -564,19 +572,19 @@ version = "0.28"
 features = ["derive"]
 
 [dependencies.stylo]
-version = "0.21.0"
+version = "0.22"
 
 [dependencies.stylo_atoms]
-version = "0.21.0"
+version = "0.22"
 
 [dependencies.stylo_dom]
-version = "0.21.0"
+version = "0.22"
 
 [dependencies.stylo_malloc_size_of]
-version = "0.21.0"
+version = "0.22"
 
 [dependencies.stylo_traits]
-version = "0.21.0"
+version = "0.22"
 
 [dependencies.swapper]
 version = "0.1"
@@ -598,7 +606,7 @@ features = [
 package = "time"
 
 [dependencies.timers]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-timers"
 
 [dependencies.tracing]
@@ -626,14 +634,13 @@ features = [
 ]
 
 [dependencies.web_atoms]
-version = "0.2.6"
+version = "0.3.0"
 
 [dependencies.webdriver]
 version = "0.54.0"
-default-features = false
 
 [dependencies.webgpu_traits]
-version = "=0.6.0"
+version = "=0.7.0"
 optional = true
 package = "servo-webgpu-traits"
 
@@ -641,16 +648,13 @@ package = "servo-webgpu-traits"
 version = "0.70"
 
 [dependencies.webxr-api]
-version = "=0.6.0"
+version = "=0.7.0"
 optional = true
 package = "servo-webxr-api"
 
-[dependencies.wgpu-core]
-version = "30"
-optional = true
-
-[dependencies.wgpu-types]
-version = "30"
+[dependencies.x-wing]
+version = "0.1.0"
+features = ["zeroize"]
 optional = true
 
 [dependencies.x25519-dalek]
@@ -668,10 +672,10 @@ features = ["static_secrets"]
 optional = true
 
 [dependencies.xml5ever]
-version = "0.39"
+version = "0.40"
 
 [dependencies.xpath]
-version = "=0.6.0"
+version = "=0.7.0"
 package = "servo-xpath"
 
 [dependencies.zeroize]
@@ -682,10 +686,18 @@ optional = true
 version = "0.7"
 optional = true
 
+[lints.clippy]
+manual_string_new = "warn"
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
 priority = 0
-check-cfg = ["cfg(crown)"]
+check-cfg = [
+    "cfg(crown)",
+    "cfg(coverage)",
+    "cfg(llvm_pgo)",
+    "cfg(ohos_mock)",
+]
 
 # Hypercolor: cargo caps lints for crates.io dependencies but not for path
 # dependencies, so the vendored copy would print upstream's rustc warnings

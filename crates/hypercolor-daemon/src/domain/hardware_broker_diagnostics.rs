@@ -7,8 +7,8 @@
 //! and RAM lighting and CPU temperature with no error anywhere else. This
 //! check names that state, the broker's own account of its last exit, the
 //! remedy, and where the broker's log lives. The platform reading comes in
-//! through `crate::session::hardware_broker_report`, so this module stays
-//! free of platform branches; a host with no broker reports no check.
+//! through the daemon's host capabilities, so this module stays free of
+//! platform branches; a host with no broker reports no check.
 
 use std::time::Duration;
 
@@ -24,10 +24,12 @@ const CHECK_CATEGORY: &str = "devices";
 const CHECK_NAME: &str = "smbus_broker";
 const WHAT_DEPENDS_ON_IT: &str = "motherboard and RAM lighting over SMBus and CPU temperature";
 
-/// Read the host's broker within [`BROKER_CHECK_BUDGET`] and turn it into a
-/// check. `None` when the host has no broker to check.
-pub async fn smbus_broker_check() -> Option<DiagnoseCheck> {
-    let probe = tokio::task::spawn_blocking(crate::session::hardware_broker_report);
+/// Take `report` within [`BROKER_CHECK_BUDGET`] and turn it into a check.
+/// `None` when the host has no broker to check.
+pub async fn smbus_broker_check(
+    report: fn() -> Option<HardwareBrokerReport>,
+) -> Option<DiagnoseCheck> {
+    let probe = tokio::task::spawn_blocking(report);
     match tokio::time::timeout(BROKER_CHECK_BUDGET, probe).await {
         Ok(Ok(report)) => report.as_ref().map(hardware_broker_check),
         Ok(Err(error)) => {

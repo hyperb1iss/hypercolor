@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_driver_support::network::{
-    ValidationError, metadata_value, network_ip_from_metadata, push_lookup_key, validate_ip,
-    validate_port,
+    ValidationError, metadata_value, network_ip_from_metadata, push_lookup_key,
+    tracked_fingerprints_by_ip, validate_ip, validate_port,
+};
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo,
+    DeviceOrigin, DeviceState,
 };
 
 #[test]
@@ -91,5 +96,45 @@ fn network_metadata_helpers_parse_and_dedupe() {
     assert_eq!(
         keys,
         vec!["fixture:ip:10.0.0.42".to_owned(), "fixture:desk".to_owned()]
+    );
+}
+
+fn tracked(ip: Option<&str>, fingerprint: Option<&str>) -> DriverTrackedDevice {
+    DriverTrackedDevice {
+        info: DeviceInfo {
+            id: DeviceId::new(),
+            name: "Fixture".to_owned(),
+            vendor: "Fixture".to_owned(),
+            family: DeviceFamily::new_static("fixture", "Fixture"),
+            model: None,
+            connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("fixture", "fixture", ConnectionType::Network),
+            segments: Vec::new(),
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        },
+        metadata: ip
+            .map(|ip| HashMap::from([("ip".to_owned(), ip.to_owned())]))
+            .unwrap_or_default(),
+        fingerprint: fingerprint.map(|raw| DeviceFingerprint::from_persisted(raw.to_owned())),
+        current_state: DeviceState::Known,
+    }
+}
+
+#[test]
+fn tracked_fingerprints_need_a_routable_address_and_a_fingerprint() {
+    let tracked_devices = [
+        tracked(Some("192.0.2.5"), Some("net:fixture:lamp")),
+        tracked(Some("127.0.0.1"), Some("net:fixture:loopback")),
+        tracked(Some("192.0.2.6"), None),
+        tracked(None, Some("net:fixture:nowhere")),
+    ];
+
+    let fingerprints = tracked_fingerprints_by_ip(&tracked_devices);
+
+    assert_eq!(fingerprints.len(), 1);
+    assert_eq!(
+        fingerprints[&IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5))].as_str(),
+        "net:fixture:lamp"
     );
 }

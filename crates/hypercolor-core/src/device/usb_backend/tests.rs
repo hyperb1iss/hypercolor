@@ -1,12 +1,13 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use hypercolor_driver_api::DeviceDeliveryStatus;
+use hypercolor_driver_api::{DeliveryResult, FrameObserver, IoStage, Receipt, SkipReason};
 use hypercolor_hal::display::DisplayEncodeError;
 use hypercolor_hal::protocol::{
-    ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
+    FrameBatch, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 use hypercolor_hal::registry::{TransportLifecycleHints, UsbTransportFuture, UsbTransportKind};
 use hypercolor_types::device::{
@@ -18,6 +19,61 @@ use tokio::time::timeout;
 
 use super::*;
 use crate::device::BackendManager;
+
+struct QuietObserver;
+
+impl FrameObserver for QuietObserver {
+    fn transport_started(&self, _id: DeviceDeliveryId) {}
+
+    fn settled(&self, _receipt: &Receipt) {}
+}
+
+/// A frame for the actor with nobody waiting on it.
+fn untracked_frame(colors: Arc<Vec<[u8; 3]>>) -> MailboxFrame {
+    MailboxFrame::new(Frame::direct(DeviceId::new(), colors))
+}
+
+type PendingReceipt =
+    std::pin::Pin<Box<dyn Future<Output = std::result::Result<Receipt, &'static str>> + Send>>;
+
+/// A frame for the actor and the receipt it will settle with.
+fn tracked_frame(
+    id: DeviceDeliveryId,
+    colors: Arc<Vec<[u8; 3]>>,
+) -> (MailboxFrame, PendingReceipt) {
+    let mut frame = Frame::new(
+        DeviceId::new(),
+        id,
+        Arc::new(QuietObserver),
+        Instant::now(),
+        colors,
+    );
+    let waiting = frame.wait_for_receipt();
+    let receipt =
+        Box::pin(async move { waiting.received().await.ok_or("the attempt never settled") });
+    (MailboxFrame::new(frame), receipt)
+}
+
+fn assert_refused_before_transport(receipt: &Receipt) {
+    assert!(
+        matches!(
+            receipt.result(),
+            DeliveryResult::Failed {
+                stage: IoStage::Admission,
+                ..
+            }
+        ),
+        "{:?}",
+        receipt.result()
+    );
+}
+
+fn written_bytes(receipt: &Receipt) -> u64 {
+    match receipt.result() {
+        DeliveryResult::Written { bytes, .. } => *bytes,
+        other => panic!("expected a written frame, got {other:?}"),
+    }
+}
 
 static USB_ACTOR_METRICS_TEST_LOCK: LazyLock<AsyncMutex<()>> =
     LazyLock::new(|| AsyncMutex::new(()));
@@ -221,13 +277,13 @@ fn standard_usb_lifecycle_policy_uses_default_connect_behavior() {
 async fn display_branch_services_pending_led_frame_before_display_frame() {
     let _metrics_guard = USB_ACTOR_METRICS_TEST_LOCK.lock().await;
     let before = usb_actor_metrics_snapshot();
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
-        [0x11, 0x22, 0x33],
-    ])))));
+    frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(vec![[
+        0x11, 0x22, 0x33,
+    ]])))));
     display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
         OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1])),
     )))));
@@ -280,7 +336,7 @@ async fn display_branch_services_pending_led_frame_before_display_frame() {
 async fn display_load_services_new_led_before_next_display_frame() {
     let _metrics_guard = USB_ACTOR_METRICS_TEST_LOCK.lock().await;
     let before = usb_actor_metrics_snapshot();
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -306,9 +362,9 @@ async fn display_load_services_new_led_before_next_display_frame() {
     let writes = wait_for_writes(&transport, 1).await;
     assert_eq!(writes, vec![vec![0xD1]]);
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
-        [0x22, 0x33, 0x44],
-    ])))));
+    frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(vec![[
+        0x22, 0x33, 0x44,
+    ]])))));
     display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
         OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD2])),
     )))));
@@ -344,13 +400,13 @@ async fn display_load_services_new_led_before_next_display_frame() {
 async fn parallel_transfer_lanes_do_not_wait_for_pending_led_frame_before_display() {
     let _metrics_guard = USB_ACTOR_METRICS_TEST_LOCK.lock().await;
     let before = usb_actor_metrics_snapshot();
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
-        [0x11, 0x22, 0x33],
-    ])))));
+    frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(vec![[
+        0x11, 0x22, 0x33,
+    ]])))));
     display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
         OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1])),
     )))));
@@ -406,7 +462,7 @@ async fn parallel_transfer_lanes_do_not_wait_for_pending_led_frame_before_displa
 
 #[tokio::test]
 async fn display_write_failure_does_not_stop_single_lane_led_actor() {
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -430,9 +486,9 @@ async fn display_write_failure_does_not_stop_single_lane_led_actor() {
     ));
 
     tokio::time::sleep(Duration::from_millis(20)).await;
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
-        [0x22, 0x33, 0x44],
-    ])))));
+    frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(vec![[
+        0x22, 0x33, 0x44,
+    ]])))));
 
     assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x22]]);
 
@@ -455,7 +511,7 @@ async fn display_write_failure_does_not_stop_single_lane_led_actor() {
 
 #[tokio::test]
 async fn parallel_display_write_failure_does_not_stop_control_lane() {
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -482,9 +538,9 @@ async fn parallel_display_write_failure_does_not_stop_control_lane() {
     ));
 
     tokio::time::sleep(Duration::from_millis(20)).await;
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
-        [0x33, 0x44, 0x55],
-    ])))));
+    frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(vec![[
+        0x33, 0x44, 0x55,
+    ]])))));
 
     assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x33]]);
 
@@ -576,15 +632,14 @@ async fn parallel_actor_survives_transient_timeout_frame_failure() {
 
 #[tokio::test]
 async fn actor_shutdown_rejects_pending_tracked_frame() {
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let delivery_id = DeviceDeliveryId {
         queue_generation: 17,
         sequence: 3,
     };
-    let (frame, delivery_rx) =
-        UsbFramePayload::tracked(delivery_id, Arc::new(vec![[0x11, 0x22, 0x33]]));
+    let (frame, delivery_rx) = tracked_frame(delivery_id, Arc::new(vec![[0x11, 0x22, 0x33]]));
     frame_tx.send_replace(Some(Arc::new(frame)));
 
     let (response_tx, response_rx) = oneshot::channel();
@@ -618,23 +673,21 @@ async fn actor_shutdown_rejects_pending_tracked_frame() {
         .await
         .expect("pending delivery should be rejected without hanging")
         .expect("delivery acknowledgement channel should stay open");
-    assert_eq!(ack.id, delivery_id);
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
-    assert!(!ack.transport_started);
+    assert_eq!(ack.id(), delivery_id);
+    assert_refused_before_transport(&ack);
     actor.await.expect("actor wrapper should join");
 }
 
 #[tokio::test]
 async fn fatal_control_exit_rejects_pending_tracked_frame() {
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let delivery_id = DeviceDeliveryId {
         queue_generation: 23,
         sequence: 9,
     };
-    let (frame, delivery_rx) =
-        UsbFramePayload::tracked(delivery_id, Arc::new(vec![[0x44, 0x55, 0x66]]));
+    let (frame, delivery_rx) = tracked_frame(delivery_id, Arc::new(vec![[0x44, 0x55, 0x66]]));
     frame_tx.send_replace(Some(Arc::new(frame)));
 
     let (response_tx, response_rx) = oneshot::channel();
@@ -673,9 +726,8 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
         .await
         .expect("pending delivery should be rejected without hanging")
         .expect("delivery acknowledgement channel should stay open");
-    assert_eq!(ack.id, delivery_id);
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
-    assert!(!ack.transport_started);
+    assert_eq!(ack.id(), delivery_id);
+    assert_refused_before_transport(&ack);
     actor.await.expect("actor wrapper should join");
     assert!(
         last_async_error
@@ -694,7 +746,7 @@ async fn brightness_actor_response_preserves_timeout_duration() {
         RecordingTransport::default()
             .with_failed_primary_send_attempt(1, InjectedPrimaryFailure::Timeout),
     );
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let active = Arc::new(AtomicBool::new(true));
@@ -755,7 +807,8 @@ async fn stored_actor_disconnect_survives_duplicate_connect_and_output_paths() {
         DeviceError::Disconnected {
             device: device_id.to_string(),
         },
-    );
+    )
+    .await;
     let expected = DeviceError::Disconnected {
         device: device_id.to_string(),
     };
@@ -793,7 +846,7 @@ async fn stored_actor_disconnect_survives_duplicate_connect_and_output_paths() {
     );
 }
 
-fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> UsbBackend {
+async fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> UsbBackend {
     let backend = UsbBackend::new();
     let mut info = temporary_control_test_device(true, 1);
     info.id = device_id;
@@ -801,7 +854,7 @@ fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> U
     info.sync_display_capabilities();
     info.capabilities.supports_brightness = true;
     let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
-    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, _display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, _command_rx) = mpsc::unbounded_channel();
     let active = Arc::new(AtomicBool::new(false));
@@ -826,25 +879,47 @@ fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> U
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
+    let session = Session::new(
+        device_id,
+        UsbFacts {
+            info_template: info,
+            protocol,
+            target_fps: None,
+            frame_sink,
+            display_sink,
+        },
+        UsbSession { device_id, device },
+    );
     backend
-        .connected
-        .write()
-        .expect("connected device map should remain available")
-        .insert(
-            device_id,
-            Arc::new(ConnectedUsbDevice {
-                device: tokio::sync::Mutex::new(device),
-                info_template: info,
-                protocol,
-                target_fps: None,
-                frame_sink,
-                display_sink,
-            }),
-        );
+        .sessions
+        .open(&device_id, || async move { Ok(session) })
+        .await
+        .expect("open should succeed");
     backend
 }
 
-fn backend_with_display_actor(
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retirement_closes_the_session_and_refuses_later_connects() {
+    let device_id = DeviceId::new();
+    let backend =
+        backend_with_display_actor(device_id, Arc::new(RecordingTransport::default())).await;
+    let sink = backend.frame_sink(&device_id).expect("connected sink");
+
+    backend.retire().await.expect("retire");
+
+    assert!(sink.is_closed());
+    assert!(backend.frame_sink(&device_id).is_none());
+    assert!(matches!(
+        backend.write_colors(&device_id, &[[1, 2, 3]]).await,
+        Err(DeviceError::Disconnected { .. })
+    ));
+    backend
+        .connect(&device_id)
+        .await
+        .expect_err("a retired backend refuses connects");
+}
+
+async fn backend_with_display_actor(
     device_id: DeviceId,
     transport: Arc<RecordingTransport>,
 ) -> Arc<UsbBackend> {
@@ -855,7 +930,7 @@ fn backend_with_display_actor(
     info.sync_display_capabilities();
     let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
     let actor_transport: Arc<dyn Transport> = transport;
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let active = Arc::new(AtomicBool::new(true));
@@ -894,21 +969,22 @@ fn backend_with_display_actor(
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
+    let session = Session::new(
+        device_id,
+        UsbFacts {
+            info_template: info,
+            protocol,
+            target_fps: None,
+            frame_sink,
+            display_sink,
+        },
+        UsbSession { device_id, device },
+    );
     backend
-        .connected
-        .write()
-        .expect("connected device map should remain available")
-        .insert(
-            device_id,
-            Arc::new(ConnectedUsbDevice {
-                device: tokio::sync::Mutex::new(device),
-                info_template: info,
-                protocol,
-                target_fps: None,
-                frame_sink,
-                display_sink,
-            }),
-        );
+        .sessions
+        .open(&device_id, || async move { Ok(session) })
+        .await
+        .expect("open should succeed");
     backend
 }
 
@@ -918,8 +994,8 @@ async fn coordinator_generation_gate_survives_cancelled_usb_display_waiter() {
     let old_transport =
         Arc::new(RecordingTransport::default().with_bulk_send_delay(Duration::from_millis(200)));
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -992,8 +1068,8 @@ async fn replacement_retains_old_usb_actor_through_terminal_delivery() {
     let old_transport =
         Arc::new(RecordingTransport::default().with_bulk_send_delay(Duration::from_millis(200)));
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1058,8 +1134,8 @@ async fn cancelled_replaced_usb_failure_reaches_original_lifecycle_fence() {
             .with_failed_transfer_delay(Duration::from_millis(200)),
     );
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1148,7 +1224,7 @@ async fn repeated_replacement_does_not_accumulate_cancelled_display_transactions
     let old_transport = Arc::new(
         RecordingTransport::default().with_bulk_send_release(Arc::clone(&release_old_transport)),
     );
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1174,7 +1250,7 @@ async fn repeated_replacement_does_not_accumulate_cancelled_display_transactions
 
     for payload_byte in 0xD2..=0xDD {
         let transport = Arc::new(RecordingTransport::default());
-        let backend = backend_with_display_actor(device_id, transport);
+        let backend = backend_with_display_actor(device_id, transport).await;
         manager.register_backend(backend);
         let lane = manager
             .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
@@ -1225,8 +1301,8 @@ async fn actor_panic_terminates_cancelled_retired_display_delivery() {
             .with_panicked_transfer_type(TransferType::Bulk),
     );
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1302,7 +1378,7 @@ async fn hung_display_transport_has_bounded_actor_shutdown() {
     let transport = Arc::new(
         RecordingTransport::default().with_bulk_send_release(Arc::clone(&transport_release)),
     );
-    let backend = backend_with_display_actor(device_id, Arc::clone(&transport));
+    let backend = backend_with_display_actor(device_id, Arc::clone(&transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(backend.clone());
     let lane = manager
@@ -1410,7 +1486,11 @@ async fn shutdown_response_loss_still_joins_a_failing_actor() {
         }
     });
     let mut device = usb_device_with_actor_task(device_id, command_tx, actor_task);
-    let mut shutdown_task = tokio::spawn(async move { (device.shutdown(device_id).await, device) });
+    let mut shutdown_task = tokio::spawn(async move {
+        let shutdown_result = device.shutdown(device_id).await;
+        let _ = device.join_actor(device_id).await;
+        (shutdown_result, device)
+    });
 
     timeout(Duration::from_secs(1), response_dropped.notified())
         .await
@@ -1442,7 +1522,7 @@ async fn usb_display_transport_failure_keeps_its_queue_generation() {
     let device_id = DeviceId::new();
     let transport =
         Arc::new(RecordingTransport::default().with_failed_transfer_type(TransferType::Bulk));
-    let backend = backend_with_display_actor(device_id, transport);
+    let backend = backend_with_display_actor(device_id, transport).await;
     let mut manager = BackendManager::new();
     manager.register_backend(backend.clone());
     let lane = manager
@@ -1483,7 +1563,7 @@ async fn cancelled_usb_display_waiter_keeps_terminal_failure_generation() {
             .with_failed_transfer_type(TransferType::Bulk)
             .with_failed_transfer_delay(Duration::from_millis(200)),
     );
-    let backend = backend_with_display_actor(device_id, Arc::clone(&transport));
+    let backend = backend_with_display_actor(device_id, Arc::clone(&transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(backend.clone());
     let lane = manager
@@ -1538,7 +1618,7 @@ async fn cancelled_usb_display_waiter_keeps_terminal_failure_generation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
-    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let active = Arc::new(AtomicBool::new(true));
     let lifecycle_gate = Arc::new(Mutex::new(()));
     let device_id = DeviceId::new();
@@ -1555,13 +1635,24 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
     };
 
     let gate = lock_lifecycle_gate(&lifecycle_gate);
+    let (frame, delivered) = {
+        let mut frame = Frame::new(
+            device_id,
+            delivery_id,
+            Arc::new(QuietObserver),
+            Instant::now(),
+            Arc::new(vec![[1, 2, 3]]),
+        );
+        let waiting = frame.wait_for_receipt();
+        (frame, waiting)
+    };
     let delivery = tokio::spawn(async move {
-        sink.deliver_colors_shared(delivery_id, Arc::new(vec![[1, 2, 3]]))
-            .await
+        let _ = sink.submit(frame).await;
+        delivered.received().await.expect("the attempt settles")
     });
     active.store(false, Ordering::Release);
     if let Some(pending) = frame_tx.send_replace(None) {
-        pending.reject_pending(DeviceError::Disconnected {
+        pending.reject(DeviceError::Disconnected {
             device: device_id.to_string(),
         });
     }
@@ -1571,9 +1662,8 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
         .await
         .expect("publication blocked across cleanup should not hang")
         .expect("delivery task should join");
-    assert_eq!(ack.id, delivery_id);
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
-    assert!(!ack.transport_started);
+    assert_eq!(ack.id(), delivery_id);
+    assert_refused_before_transport(&ack);
     assert!(frame_tx.borrow().is_none());
 }
 
@@ -1590,7 +1680,7 @@ fn usb_device_with_actor_task(
     command_tx: mpsc::UnboundedSender<UsbDeviceCommand>,
     actor_task: JoinHandle<()>,
 ) -> UsbDevice {
-    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, _display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let mut info = temporary_control_test_device(true, 1);
     info.id = device_id;
@@ -1707,7 +1797,7 @@ async fn a_wedged_lianli_tx_ends_the_actor_and_is_reset_through_the_rx() {
         WirelessControllerTransport, partner_reset_packet,
     };
 
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let pair = Arc::new(StalledWirelessTx::default());
@@ -1731,22 +1821,24 @@ async fn a_wedged_lianli_tx_ends_the_actor_and_is_reset_through_the_rx() {
         queue_generation: 3,
         sequence: 1,
     };
-    let (frame, ack_rx) = UsbFramePayload::tracked(frame_id, Arc::new(vec![[0x40, 0x10, 0x80]]));
+    let (frame, ack_rx) = tracked_frame(frame_id, Arc::new(vec![[0x40, 0x10, 0x80]]));
     frame_tx.send_replace(Some(Arc::new(frame)));
 
     let ack = timeout(Duration::from_secs(1), ack_rx)
         .await
         .expect("the stalled frame is acknowledged")
         .expect("acknowledgement channel stays open");
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
     assert!(
-        matches!(ack.error, Some(DeviceError::Disconnected { .. })),
-        "a wedge is a disconnect, not a retryable timeout: {:?}",
-        ack.error
-    );
-    assert!(
-        !ack.transient,
-        "a failure that ends the actor must not be reported as transient"
+        matches!(
+            ack.result(),
+            DeliveryResult::Failed {
+                error: DeviceError::Disconnected { .. },
+                transient: false,
+                ..
+            }
+        ),
+        "a wedge is a disconnect the actor does not survive: {:?}",
+        ack.result()
     );
 
     let result = timeout(Duration::from_secs(1), actor)
@@ -1811,7 +1903,7 @@ struct EchoingTransfer {
 }
 
 /// The stand-in's fan cluster: a radio MAC of its own per controller, since
-/// the TX reset budget is kept per cluster for the whole process.
+/// the resync budget is kept per cluster for the whole process.
 const fn echoing_cluster(master: [u8; 6]) -> [u8; 6] {
     [0x11, 0x11, 0x11, 0x11, master[4], master[5]]
 }
@@ -2075,11 +2167,9 @@ fn paced_wireless_protocol(
     Arc::new(protocol)
 }
 
-fn wireless_frame(index: u8) -> Arc<UsbFramePayload> {
-    Arc::new(UsbFramePayload::untracked(Arc::new(vec![
-        [
-            index, 0x20, 0x40
-        ];
+fn wireless_frame(index: u8) -> Arc<MailboxFrame> {
+    Arc::new(untracked_frame(Arc::new(vec![
+        [index, 0x20, 0x40];
         ECHOING_LEDS
     ])))
 }
@@ -2103,7 +2193,7 @@ async fn a_lianli_fan_found_after_empty_discovery_restarts_the_idle_actor() {
         .expect("discovery can finish before any fan answers");
     assert_eq!(protocol.total_leds(), 0);
 
-    let (_frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let pair = Arc::new(EchoingWirelessPair::new(master, Duration::ZERO));
@@ -2151,7 +2241,7 @@ async fn a_lianli_late_pairing_reaches_flash_before_the_idle_actor_restarts() {
         .parse_response(&empty_table)
         .expect("discovery finishes before the unpaired fan appears");
 
-    let (_frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let pair = Arc::new(EchoingWirelessPair::new(master, Duration::ZERO));
@@ -2201,7 +2291,7 @@ async fn a_lianli_late_pairing_reaches_flash_before_the_idle_actor_restarts() {
 #[tokio::test(start_paused = true)]
 async fn a_closed_empty_wireless_actor_reports_failure_through_duplicate_output() {
     use crate::device::output_queue::{OutputLane, OutputQueue};
-    use hypercolor_driver_api::OutputCadence;
+    use hypercolor_driver_api::OutputPolicy;
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x08];
     let protocol = paced_wireless_protocol(master);
@@ -2212,7 +2302,7 @@ async fn a_closed_empty_wireless_actor_reports_failure_through_duplicate_output(
         .expect("discovery finishes before the fan appears");
 
     let device_id = DeviceId::new();
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let active = Arc::new(AtomicBool::new(true));
@@ -2246,7 +2336,7 @@ async fn a_closed_empty_wireless_actor_reports_failure_through_duplicate_output(
         USB_OUTPUT_BACKEND_ID.to_owned(),
         device_id,
         OutputLane::frame_sink(sink.clone()),
-        OutputCadence::from_fps(0),
+        OutputPolicy::from_fps(0),
     );
 
     queue.push(Vec::new());
@@ -2324,7 +2414,7 @@ async fn the_lianli_frame_pump_releases_a_frame_held_for_an_echo() {
     use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x01];
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let pair = Arc::new(EchoingWirelessPair::new(master, Duration::from_millis(40)));
@@ -2395,7 +2485,7 @@ async fn a_lianli_frame_held_for_an_echo_is_acknowledged_as_suppressed() {
     use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x04];
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let pair = Arc::new(EchoingWirelessPair::new(master, Duration::from_millis(40)));
@@ -2422,16 +2512,14 @@ async fn a_lianli_frame_held_for_an_echo_is_acknowledged_as_suppressed() {
             queue_generation: 9,
             sequence: u64::from(sequence),
         };
-        let (frame, ack) = UsbFramePayload::tracked(id, colors(sequence));
+        let (frame, ack) = tracked_frame(id, colors(sequence));
         frame_tx.send_replace(Some(Arc::new(frame)));
         let ack = timeout(Duration::from_secs(1), ack)
             .await
             .expect("the frame is acknowledged")
             .expect("acknowledgement channel stays open");
-        assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
-        assert!(ack.transport_started);
         assert_eq!(
-            ack.completed_payload_bytes,
+            written_bytes(&ack),
             u64::try_from(ECHOING_LEDS * 3).expect("small")
         );
     }
@@ -2440,19 +2528,17 @@ async fn a_lianli_frame_held_for_an_echo_is_acknowledged_as_suppressed() {
         queue_generation: 9,
         sequence: 3,
     };
-    let (held, held_ack) = UsbFramePayload::tracked(held_id, colors(3));
+    let (held, held_ack) = tracked_frame(held_id, colors(3));
     frame_tx.send_replace(Some(Arc::new(held)));
     let held_ack = timeout(Duration::from_secs(1), held_ack)
         .await
         .expect("the held frame is acknowledged")
         .expect("acknowledgement channel stays open");
-    assert_eq!(
-        held_ack.status,
-        DeviceDeliveryStatus::SuppressedCadence,
-        "the window was full; nothing was written for the frame"
+    assert!(
+        matches!(held_ack.result(), DeliveryResult::NotWritten(_)),
+        "the window was full; nothing was written for the frame: {:?}",
+        held_ack.result()
     );
-    assert!(!held_ack.transport_started);
-    assert_eq!(held_ack.completed_payload_bytes, 0);
 
     drop(frame_tx);
     let result = timeout(Duration::from_secs(1), actor)
@@ -2470,7 +2556,7 @@ async fn a_transient_fault_on_a_pumped_lianli_frame_keeps_the_actor_alive() {
     use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x02];
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let pair = Arc::new(EchoingWirelessPair::new(master, Duration::from_millis(40)));
@@ -2523,22 +2609,19 @@ async fn a_transient_fault_on_a_pumped_lianli_frame_keeps_the_actor_alive() {
     assert!(result.is_ok(), "{result:?}");
 }
 
-/// A TX that takes every write while its fans stop confirming frames is
-/// reset through the RX once the stall bound passes, and the actor ends
-/// instead of streaming into a radio that delivers nothing.
+/// A TX that takes every write while its fans stop confirming frames ends
+/// the actor once the stall bound passes, asking for a fresh connect,
+/// instead of streaming into a radio that delivers nothing. The TX took
+/// every write, so it is neither reset nor recorded as wedged.
 #[tokio::test(start_paused = true)]
-async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path() {
-    use hypercolor_hal::drivers::lianli::wireless::health::{
-        ControllerHealth, DongleHalf, WedgeCause, controller_health,
-    };
+async fn lianli_fans_that_stop_confirming_end_the_actor_without_a_tx_reset() {
+    use hypercolor_hal::drivers::lianli::wireless::health::{ControllerHealth, controller_health};
     use hypercolor_hal::drivers::lianli::wireless::pacing::ECHO_STALL;
-    use hypercolor_hal::drivers::lianli::wireless::transport::{
-        WirelessControllerTransport, partner_reset_packet,
-    };
+    use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x03];
     let controller = "usb-backend-test-lianli-undelivered";
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let pair = Arc::new(EchoingWirelessPair::new(master, Duration::from_millis(10)));
@@ -2583,22 +2666,21 @@ async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path()
     }
     let ended_after = failed_at.elapsed();
     let result = actor.await.expect("actor task joins");
-    assert!(result.is_err(), "the session ends with the verdict");
+    let error = result.expect_err("the session ends with the verdict");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains("reconnecting to run the connect sequence again (resync 1)"),
+        "the reason names the resync: {chain}"
+    );
     assert!(
         ended_after + Duration::from_millis(100) >= ECHO_STALL,
         "the verdict waits out the stall bound: {ended_after:?}"
     );
 
     let state = pair.state();
-    let resets: Vec<&(TransferType, Vec<u8>)> = state
-        .sends
-        .iter()
-        .filter(|(_, data)| data[0] == 0x15)
-        .collect();
-    assert_eq!(
-        resets,
-        vec![&(TransferType::Companion, partner_reset_packet())],
-        "one reset, written to the RX"
+    assert!(
+        !state.sends.iter().any(|(_, data)| data[0] == 0x15),
+        "the TX took every write, so nothing resets it"
     );
     let after_failure = state
         .transfers
@@ -2610,13 +2692,11 @@ async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path()
         "a bounded number of resends, not {after_failure} transfers"
     );
     drop(state);
-    match controller_health(controller) {
-        ControllerHealth::Wedged(wedge) => {
-            assert_eq!(wedge.half, DongleHalf::Tx);
-            assert_eq!(wedge.cause, WedgeCause::Undelivered);
-        }
-        ControllerHealth::Healthy => panic!("the stall is recorded as a TX wedge"),
-    }
+    assert_eq!(
+        controller_health(controller),
+        ControllerHealth::Healthy,
+        "a radio that delivers nothing is not a wedged TX"
+    );
 }
 
 /// One actor session over `pair` for the controller `controller`, fed a
@@ -2630,7 +2710,7 @@ async fn run_lianli_session(
 ) -> (Option<anyhow::Result<()>>, Vec<(TransferType, Vec<u8>)>) {
     use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
 
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let transport: Arc<dyn Transport> = Arc::new(WirelessControllerTransport::new(
@@ -2665,16 +2745,16 @@ async fn run_lianli_session(
     (result, sends)
 }
 
-/// Fans that stop confirming past the TX-reset budget: the next session
-/// sends no reset but rests the cluster's RGB with upkeep going on, then
+/// Fans that stop confirming past the resync budget: the next session
+/// rests the cluster's RGB with upkeep going on, then
 /// ends the actor as a disconnect asking for a fresh connect, which the
 /// lifecycle turns into a reconnect. When the fans confirm again, their
 /// recovery budget starts over.
 #[tokio::test(start_paused = true)]
-async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh_connect() {
+async fn lianli_fans_past_their_resync_budget_rest_then_end_the_actor_for_a_fresh_connect() {
     use hypercolor_hal::drivers::lianli::wireless::pacing::{
-        MAX_RESETS_WITHOUT_DELIVERY, RECONNECT_RESTS, reconnects_without_delivery,
-        resets_without_delivery,
+        MAX_RESYNCS_WITHOUT_DELIVERY, RECONNECT_RESTS, reconnects_without_delivery,
+        resyncs_without_delivery,
     };
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x05];
@@ -2684,18 +2764,18 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
     pair.state().rf_dead = true;
     let is_reset = |(_, data): &(TransferType, Vec<u8>)| data.first() == Some(&0x15);
 
-    for session in 0..MAX_RESETS_WITHOUT_DELIVERY {
+    for session in 0..MAX_RESYNCS_WITHOUT_DELIVERY {
         let (result, sends) =
             run_lianli_session(master, controller, &pair, Duration::from_secs(15)).await;
         assert!(
             matches!(result, Some(Err(_))),
-            "session {session} ends with the TX reset"
+            "session {session} ends with a resync"
         );
-        assert_eq!(sends.iter().filter(|send| is_reset(send)).count(), 1);
+        assert!(!sends.iter().any(is_reset), "a resync resets nothing");
     }
     assert_eq!(
-        resets_without_delivery(cluster),
-        MAX_RESETS_WITHOUT_DELIVERY
+        resyncs_without_delivery(cluster),
+        MAX_RESYNCS_WITHOUT_DELIVERY
     );
 
     let started = tokio::time::Instant::now();
@@ -2715,10 +2795,7 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
         actor::FrameWriteDisposition::Fatal,
         "a disconnect, so the lifecycle reconnects"
     );
-    assert!(
-        !sends.iter().any(is_reset),
-        "past the budget, no further TX reset"
-    );
+    assert!(!sends.iter().any(is_reset), "the TX is never reset");
     assert!(
         ended_after >= RECONNECT_RESTS[0],
         "the rest comes first: ended after {ended_after:?}"
@@ -2728,8 +2805,8 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
         .filter(|(transfer, _)| *transfer == TransferType::Primary)
         .count();
     assert!(
-        upkeep >= 8 * 8,
-        "fan-speed and clock upkeep carry on through the rest: {upkeep} TX writes"
+        upkeep >= 4 * 8,
+        "the clock upkeep carries on through the rest: {upkeep} TX writes"
     );
     assert_eq!(reconnects_without_delivery(cluster), 1);
 
@@ -2737,7 +2814,7 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
     pair.state().rf_dead = false;
     let (result, _) = run_lianli_session(master, controller, &pair, Duration::from_secs(5)).await;
     assert!(result.is_none(), "the recovered session streams on");
-    assert_eq!(resets_without_delivery(cluster), 0);
+    assert_eq!(resyncs_without_delivery(cluster), 0);
     assert_eq!(reconnects_without_delivery(cluster), 0);
 }
 
@@ -2745,7 +2822,7 @@ async fn assert_transient_frame_failure_survival(
     parallel_transfer_lanes: bool,
     failure: InjectedPrimaryFailure,
 ) {
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -2783,8 +2860,7 @@ async fn assert_transient_frame_failure_survival(
         queue_generation: 7,
         sequence: 1,
     };
-    let (first_frame, first_ack_rx) =
-        UsbFramePayload::tracked(first_id, Arc::new(vec![[0x11, 0x22, 0x33]]));
+    let (first_frame, first_ack_rx) = tracked_frame(first_id, Arc::new(vec![[0x11, 0x22, 0x33]]));
     frame_tx.send_replace(Some(Arc::new(first_frame)));
     wait_for_primary_send_attempts(&transport, 1).await;
     assert!(transport.writes().is_empty());
@@ -2792,23 +2868,26 @@ async fn assert_transient_frame_failure_survival(
         .await
         .expect("failed transport acknowledgement should arrive")
         .expect("failed transport acknowledgement channel should stay open");
-    assert_eq!(first_ack.id, first_id);
-    assert_eq!(first_ack.status, DeviceDeliveryStatus::Failed);
-    assert!(first_ack.transport_started);
+    assert_eq!(first_ack.id(), first_id);
+    let DeliveryResult::Failed {
+        stage,
+        error,
+        transient,
+    } = first_ack.result()
+    else {
+        panic!("the frame failed: {:?}", first_ack.result());
+    };
+    assert_eq!(*stage, IoStage::Transport);
     assert!(
-        first_ack.transient,
+        transient,
         "a failure the actor survives should be acknowledged as transient"
     );
-    assert_eq!(first_ack.completed_payload_bytes, 0);
     match failure {
         InjectedPrimaryFailure::Timeout => assert!(matches!(
-            first_ack.error,
-            Some(DeviceError::Timeout { after }) if after == Duration::from_millis(25)
+            error,
+            DeviceError::Timeout { after } if *after == Duration::from_millis(25)
         )),
-        InjectedPrimaryFailure::Io => assert!(matches!(
-            first_ack.error,
-            Some(DeviceError::WriteError { .. })
-        )),
+        InjectedPrimaryFailure::Io => assert!(matches!(error, DeviceError::WriteError { .. })),
     }
 
     let second_id = DeviceDeliveryId {
@@ -2816,18 +2895,15 @@ async fn assert_transient_frame_failure_survival(
         sequence: 2,
     };
     let (second_frame, second_ack_rx) =
-        UsbFramePayload::tracked(second_id, Arc::new(vec![[0x22, 0x33, 0x44]]));
+        tracked_frame(second_id, Arc::new(vec![[0x22, 0x33, 0x44]]));
     frame_tx.send_replace(Some(Arc::new(second_frame)));
     assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x22]]);
     let second_ack = timeout(Duration::from_secs(1), second_ack_rx)
         .await
         .expect("completed transport acknowledgement should arrive")
         .expect("completed transport acknowledgement channel should stay open");
-    assert_eq!(second_ack.id, second_id);
-    assert_eq!(second_ack.status, DeviceDeliveryStatus::Completed);
-    assert!(second_ack.transport_started);
-    assert!(!second_ack.transient);
-    assert_eq!(second_ack.completed_payload_bytes, 3);
+    assert_eq!(second_ack.id(), second_id);
+    assert_eq!(written_bytes(&second_ack), 3);
     assert!(!actor.is_finished());
 
     let (response_tx, response_rx) = oneshot::channel();
@@ -2964,8 +3040,17 @@ impl Protocol for PartlyWritingProtocol {
         vec![test_command(colors.first().map_or(0x11, |color| color[0]))]
     }
 
-    fn written_frame_bytes(&self) -> Option<usize> {
-        Some(18)
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
+        commands.clear();
+        commands.extend(self.encode_frame(colors));
+        FrameBatch::Write {
+            pixel_bytes: Some(18),
+            completion: None,
+        }
     }
 
     fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
@@ -2996,7 +3081,7 @@ impl Protocol for PartlyWritingProtocol {
 /// actually written, not the whole payload.
 #[tokio::test]
 async fn a_partly_written_frame_is_acknowledged_with_the_bytes_written() {
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let transport: Arc<dyn Transport> = Arc::new(RecordingTransport::default());
@@ -3015,17 +3100,123 @@ async fn a_partly_written_frame_is_acknowledged_with_the_bytes_written() {
         queue_generation: 11,
         sequence: 1,
     };
-    let (frame, ack) = UsbFramePayload::tracked(id, Arc::new(vec![[1, 2, 3]; 10]));
+    let (frame, ack) = tracked_frame(id, Arc::new(vec![[1, 2, 3]; 10]));
     frame_tx.send_replace(Some(Arc::new(frame)));
     let ack = timeout(Duration::from_secs(1), ack)
         .await
         .expect("the frame is acknowledged")
         .expect("acknowledgement channel stays open");
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
     assert_eq!(
-        ack.completed_payload_bytes, 18,
+        written_bytes(&ack),
+        18,
         "only the bytes the protocol wrote are counted"
     );
+
+    drop(frame_tx);
+    let result = timeout(Duration::from_secs(1), actor)
+        .await
+        .expect("the actor stops once its frame source is gone")
+        .expect("actor task joins");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+/// Holds every frame, the way a protocol waiting on a confirmation does,
+/// with one probe in the batch.
+struct HoldingProtocol;
+
+const HELD_PROBE: u8 = 0x5A;
+
+impl Protocol for HoldingProtocol {
+    fn name(&self) -> &'static str {
+        "holding"
+    }
+
+    fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn encode_frame(&self, _colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        vec![test_command(HELD_PROBE)]
+    }
+
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
+        commands.clear();
+        commands.extend(self.encode_frame(colors));
+        FrameBatch::Held
+    }
+
+    fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
+        Ok(ProtocolResponse {
+            status: ResponseStatus::Ok,
+            data: Vec::new(),
+        })
+    }
+
+    fn zones(&self) -> Vec<SegmentInfo> {
+        Vec::new()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities::default()
+    }
+
+    fn total_leds(&self) -> u32 {
+        10
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_millis(16)
+    }
+}
+
+/// A held batch settles as not written, but its probe still goes out. Without
+/// that the confirmation it waits for never comes and the lane wedges.
+#[tokio::test]
+async fn a_held_batch_reaches_the_transport_and_settles_as_not_written() {
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let transport = Arc::new(RecordingTransport::default());
+    let transport_for_actor: Arc<dyn Transport> = transport.clone();
+    let protocol: Arc<dyn Protocol> = Arc::new(HoldingProtocol);
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "holding-test-device",
+        protocol,
+        transport_for_actor,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let id = DeviceDeliveryId {
+        queue_generation: 12,
+        sequence: 1,
+    };
+    let (frame, ack) = tracked_frame(id, Arc::new(vec![[1, 2, 3]; 10]));
+    frame_tx.send_replace(Some(Arc::new(frame)));
+    let ack = timeout(Duration::from_secs(1), ack)
+        .await
+        .expect("the frame is acknowledged")
+        .expect("acknowledgement channel stays open");
+    assert!(
+        matches!(
+            ack.result(),
+            DeliveryResult::NotWritten(SkipReason::Deferred { .. })
+        ),
+        "a probe is not the frame: {:?}",
+        ack.result()
+    );
+    assert_eq!(ack.transport_latency(), Duration::ZERO);
+    assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![HELD_PROBE]]);
 
     drop(frame_tx);
     let result = timeout(Duration::from_secs(1), actor)
@@ -4080,7 +4271,7 @@ fn push2_test_frame(seed: u32) -> Vec<[u8; 3]> {
 }
 
 async fn publish_until(
-    frame_tx: &watch::Sender<Option<Arc<UsbFramePayload>>>,
+    frame_tx: &watch::Sender<Option<Arc<MailboxFrame>>>,
     clock: &Mutex<std::time::Instant>,
     frame: &[[u8; 3]],
     mut done: impl FnMut() -> bool,
@@ -4088,9 +4279,7 @@ async fn publish_until(
     timeout(Duration::from_secs(5), async {
         while !done() {
             *clock.lock().expect("clock lock") += Duration::from_millis(100);
-            frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(
-                frame.to_vec(),
-            )))));
+            frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(frame.to_vec())))));
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
@@ -4116,7 +4305,7 @@ async fn push2_midi_stall_never_blocks_frame_publication_or_tears_down_the_actor
     .await
     .expect("init should complete against a healthy fake");
 
-    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let actor_protocol: Arc<dyn Protocol> = protocol.clone();
@@ -4140,9 +4329,9 @@ async fn push2_midi_stall_never_blocks_frame_publication_or_tears_down_the_actor
     transport.stall();
     let publish_started = std::time::Instant::now();
     for seed in 1..=2_000 {
-        frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(
-            push2_test_frame(seed),
-        )))));
+        frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(push2_test_frame(
+            seed,
+        ))))));
         if seed % 100 == 0 {
             tokio::task::yield_now().await;
         }
@@ -4150,9 +4339,9 @@ async fn push2_midi_stall_never_blocks_frame_publication_or_tears_down_the_actor
     let publish_elapsed = publish_started.elapsed();
     for seed in 0..30 {
         *clock.lock().expect("clock lock") += Duration::from_secs(1);
-        frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(
-            push2_test_frame(3_000 + seed),
-        )))));
+        frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(push2_test_frame(
+            3_000 + seed,
+        ))))));
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
@@ -4224,6 +4413,7 @@ fn driver_usb_descriptor(publishes_input: bool) -> &'static DeviceDescriptor {
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: hypercolor_types::device::DriverStability::Stable,
     }))
 }
 
@@ -4306,4 +4496,179 @@ async fn disconnect_retires_the_input_lease_before_shutting_down() {
     // A transport callback that fires after disconnect changes nothing.
     TransportInputSink::interrupted(input.as_ref());
     assert!(host.registry().snapshot().child(device_id).is_none());
+}
+
+/// Asynchronous status reports queued ahead of a reply are read past, never
+/// answered with a resend, so the reply behind them is the one parsed.
+#[tokio::test]
+async fn unsolicited_reports_are_read_past_without_resending() {
+    let protocol = ReportRecordingProtocol::with_statuses(vec![
+        ResponseStatus::Unsolicited,
+        ResponseStatus::Unsolicited,
+    ]);
+    let transport = ResponsePlanTransport::new(vec![
+        b"status-1".to_vec(),
+        b"status-2".to_vec(),
+        b"reply".to_vec(),
+        b"next-command-reply".to_vec(),
+    ]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[responding_command(0xA6), responding_command(0xAA)],
+    )
+    .await
+    .expect("both commands should run");
+
+    assert_eq!(
+        protocol.seen(),
+        vec![
+            b"status-1".to_vec(),
+            b"status-2".to_vec(),
+            b"reply".to_vec(),
+            b"next-command-reply".to_vec(),
+        ]
+    );
+    assert_eq!(
+        transport.sends(),
+        vec![vec![0xA6], vec![0xAA]],
+        "unsolicited reports are reads, not resends"
+    );
+}
+
+#[tokio::test]
+async fn a_command_fails_once_unsolicited_reports_exceed_the_budget() {
+    let protocol = ReportRecordingProtocol::with_statuses(vec![ResponseStatus::Unsolicited; 17]);
+    let transport = ResponsePlanTransport::new(vec![b"status".to_vec(); 17]);
+
+    let error = UsbBackend::run_commands(&protocol, &transport, &[responding_command(0xA6)])
+        .await
+        .expect_err("a reply that never comes must fail the command");
+
+    assert!(
+        error.to_string().contains("unsolicited"),
+        "error should name the cause: {error}"
+    );
+    assert_eq!(transport.sends(), vec![vec![0xA6]]);
+    assert_eq!(protocol.seen().len(), 17);
+}
+
+fn nzxt_status_report(prefix: [u8; 2]) -> Vec<u8> {
+    let mut report = vec![0_u8; 64];
+    report[..2].copy_from_slice(&prefix);
+    report
+}
+
+/// The Linux hwmon driver enables Gen2 fan polling, so `0x67 0x02` status
+/// reports can sit queued ahead of the `0x21 0x03` topology reply.
+#[tokio::test]
+async fn nzxt_topology_survives_status_reports_queued_ahead_of_the_reply() {
+    use hypercolor_hal::drivers::nzxt::{Gen2Profile, NzxtGen2Protocol};
+
+    let protocol = NzxtGen2Protocol::new("NZXT Backend Test", Gen2Profile::controller());
+    let mut topology = vec![0_u8; 64];
+    topology[..2].copy_from_slice(&[0x21, 0x03]);
+    topology[14] = 2;
+    // Channel 0: two F120 RGB (18 LEDs each). Channel 1: one Hue 2 strip.
+    topology[15] = 0x13;
+    topology[16] = 0x13;
+    topology[21] = 0x04;
+    let transport = ResponsePlanTransport::new(vec![
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x75, 0x02]),
+        topology,
+    ]);
+
+    UsbBackend::run_commands(&protocol, &transport, &protocol.init_sequence())
+        .await
+        .expect("init should read past the status reports to the topology reply");
+
+    assert_eq!(
+        transport.sends().len(),
+        1,
+        "the topology query is sent once"
+    );
+    assert_eq!(transport.reads().len(), 5);
+    assert_eq!(protocol.total_leds(), 18 + 18 + 10);
+    let zones: Vec<String> = protocol.zones().into_iter().map(|zone| zone.name).collect();
+    assert_eq!(
+        zones,
+        [
+            "Channel 1 F120 RGB 1",
+            "Channel 1 F120 RGB 2",
+            "Channel 2 Hue 2 Strip 10 LED",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn nzxt_init_fails_when_the_topology_reply_never_arrives() {
+    use hypercolor_hal::drivers::nzxt::{Gen2Profile, NzxtGen2Protocol};
+
+    let protocol = NzxtGen2Protocol::new("NZXT Backend Test", Gen2Profile::controller());
+    // Two status reports, then the scripted transport returns empty reads,
+    // which is how hidapi reports a timeout.
+    let transport = ResponsePlanTransport::new(vec![
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x67, 0x02]),
+    ]);
+
+    UsbBackend::run_commands(&protocol, &transport, &protocol.init_sequence())
+        .await
+        .expect_err("init must not succeed without a topology reply");
+
+    assert_eq!(transport.sends().len(), 1);
+    assert_eq!(protocol.total_leds(), 0);
+}
+
+/// A serial port that stops taking data must end the actor on the frame that
+/// stalls, not on the next one: a static scene may never send another.
+#[tokio::test]
+async fn a_stalled_serial_frame_ends_the_actor_without_waiting_for_another_frame() {
+    use hypercolor_hal::drivers::nollie::{NollieModel, NollieProtocol};
+
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    // Nobody reads the device end, so the frame stalls once the pipe fills.
+    let (port, _device) = tokio::io::duplex(64);
+    let transport: Arc<dyn Transport> = Arc::new(
+        UsbSerialTransport::from_stream("actor-stalled-serial", port)
+            .expect("the serial release service should start")
+            .with_write_timeout(Duration::from_millis(50)),
+    );
+    let protocol: Arc<dyn Protocol> = Arc::new(NollieProtocol::new(NollieModel::Nollie8Cdc));
+    frame_tx.send_replace(Some(Arc::new(untracked_frame(Arc::new(vec![
+        [
+            0x10, 0x20, 0x30
+        ];
+        1_008
+    ])))));
+
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "nollie-cdc-stalled-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let error = timeout(Duration::from_secs(2), actor)
+        .await
+        .expect("the stalled frame should end the actor without another frame")
+        .expect("actor task joins")
+        .expect_err("a wedged serial port must hand the device back for reconnect");
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<TransportError>(),
+            Some(TransportError::Disconnected { .. })
+        )),
+        "the lifecycle must receive a reconnectable disconnect: {error:#}"
+    );
+    drop(frame_tx);
 }

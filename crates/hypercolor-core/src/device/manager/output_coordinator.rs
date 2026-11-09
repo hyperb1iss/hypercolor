@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 
-use hypercolor_driver_api::OutputCadence;
+use hypercolor_driver_api::OutputPolicy;
 use hypercolor_types::device::DeviceId;
 use tokio::sync::Mutex;
 
@@ -72,7 +72,7 @@ pub(super) struct DeviceOutputCoordinator {
     active_staging_keys: Vec<BackendDeviceKey>,
     active_staging_len: usize,
     staging_generation: u64,
-    output_cadence: HashMap<BackendDeviceKey, OutputCadence>,
+    output_policy: HashMap<BackendDeviceKey, OutputPolicy>,
     direct_control: Arc<DirectControlRegistry>,
     warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
 }
@@ -93,7 +93,7 @@ impl DeviceOutputCoordinator {
         });
         self.staging
             .retain(|(staged_backend_id, _), _| staged_backend_id != backend_id);
-        self.output_cadence
+        self.output_policy
             .retain(|(cached_backend_id, _), _| cached_backend_id != backend_id);
         self.warned_inactive_layout_devices
             .retain(|(warn_backend_id, _)| warn_backend_id != backend_id);
@@ -106,7 +106,7 @@ impl DeviceOutputCoordinator {
             lane.retire();
         }
         self.staging.remove(key);
-        self.output_cadence.remove(key);
+        self.output_policy.remove(key);
         self.warned_inactive_layout_devices.remove(key);
     }
 
@@ -186,37 +186,28 @@ impl DeviceOutputCoordinator {
         self.direct_control.is_active(key)
     }
 
-    pub(super) fn set_target_fps(
+    pub(super) fn set_output_policy(
         &mut self,
         backend_id: &str,
         device_id: DeviceId,
-        target_fps: u32,
+        output_policy: OutputPolicy,
     ) {
-        self.set_output_cadence(backend_id, device_id, OutputCadence::from_fps(target_fps));
+        self.output_policy
+            .insert((backend_id.to_owned(), device_id), output_policy);
     }
 
-    pub(super) fn set_output_cadence(
-        &mut self,
-        backend_id: &str,
-        device_id: DeviceId,
-        output_cadence: OutputCadence,
-    ) {
-        self.output_cadence
-            .insert((backend_id.to_owned(), device_id), output_cadence);
-    }
-
-    pub(super) fn target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
-        self.output_cadence
+    pub(super) fn display_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
+        self.output_policy
             .get(&(backend_id.to_owned(), device_id))
-            .map(|cadence| cadence.target_fps())
+            .map(|policy| policy.display_fps())
     }
 
-    pub(super) fn output_cadence(
+    pub(super) fn output_policy(
         &self,
         backend_id: &str,
         device_id: DeviceId,
-    ) -> Option<OutputCadence> {
-        self.output_cadence
+    ) -> Option<OutputPolicy> {
+        self.output_policy
             .get(&(backend_id.to_owned(), device_id))
             .copied()
     }
@@ -333,7 +324,7 @@ impl DeviceOutputCoordinator {
                 .get_mut(key)
                 .expect("finished output queue should still exist")
                 .push(values);
-            let cadence = self.output_cadence.get(key).copied().unwrap_or_default();
+            let policy = self.output_policy.get(key).copied().unwrap_or_default();
             let lane = if let Some(frame_sink) = frame_sink {
                 OutputLane::frame_sink(frame_sink)
             } else {
@@ -349,7 +340,7 @@ impl DeviceOutputCoordinator {
                 .queues
                 .remove(key)
                 .expect("finished output queue should still exist");
-            let queue = previous.recover(key.0.clone(), key.1, lane, cadence);
+            let queue = previous.recover(key.0.clone(), key.1, lane, policy);
             self.queues.insert(key.clone(), queue);
             if let (Some(staging), Some(recycled)) = (self.staging.get_mut(key), recycled) {
                 staging.output = recycled;
@@ -365,7 +356,7 @@ impl DeviceOutputCoordinator {
             return true;
         }
 
-        let cadence = self.output_cadence.get(key).copied().unwrap_or_default();
+        let policy = self.output_policy.get(key).copied().unwrap_or_default();
         let lane = if let Some(frame_sink) = frame_sink {
             OutputLane::frame_sink(frame_sink)
         } else {
@@ -378,7 +369,7 @@ impl DeviceOutputCoordinator {
             OutputLane::backend(backend, key.1)
         };
         self.queues.remove(key);
-        let mut queue = OutputQueue::spawn(key.0.clone(), key.1, lane, cadence);
+        let mut queue = OutputQueue::spawn(key.0.clone(), key.1, lane, policy);
         let recycled = queue.push(values);
         self.queues.insert(key.clone(), queue);
 

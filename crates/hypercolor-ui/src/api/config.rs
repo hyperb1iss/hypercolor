@@ -1,6 +1,8 @@
 //! Config and audio device API functions.
 
 pub use hypercolor_types::api::capture::CaptureMonitor;
+use hypercolor_types::api::capture::CaptureMonitorListResponse;
+use hypercolor_types::api::config::ConfigSchemaListResponse;
 use hypercolor_types::api::system::AudioDevicesResponse;
 use hypercolor_types::config_registry::ConfigKeySchemaEntry;
 
@@ -31,13 +33,16 @@ pub async fn reset_config_key(key: &str) -> ApiResult<()> {
 
 /// The daemon's config key registry: how every key applies and renders.
 pub async fn fetch_config_schema() -> ApiResult<Vec<ConfigKeySchemaEntry>> {
-    client::fetch_json("/api/v1/config/schema").await
+    let response = client::fetch_json::<ConfigSchemaListResponse>("/api/v1/config/schema").await?;
+    Ok(response.items)
 }
 
 /// Display outputs the capture backend can address. Empty on portal
 /// platforms, which is the UI's cue to show the picker button instead.
 pub async fn fetch_capture_monitors() -> ApiResult<Vec<CaptureMonitor>> {
-    client::fetch_json("/api/v1/capture/monitors").await
+    let response =
+        client::fetch_json::<CaptureMonitorListResponse>("/api/v1/capture/monitors").await?;
+    Ok(response.items)
 }
 
 /// Enumerate available audio devices.

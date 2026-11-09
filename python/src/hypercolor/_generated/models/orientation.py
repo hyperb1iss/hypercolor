@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class Orientation(StrEnum):
+class Orientation(TolerantStrEnum):
     DIAGONAL = "diagonal"
     HORIZONTAL = "horizontal"
     RADIAL = "radial"

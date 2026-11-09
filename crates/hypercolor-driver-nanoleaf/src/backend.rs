@@ -7,19 +7,19 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceInputSink, DiscoveredDevice, Frame,
+    OutputPolicy, Submission,
 };
-use hypercolor_driver_support::CredentialStore;
+use hypercolor_driver_support::{CredentialStore, DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use super::scanner::load_auth_token;
 use super::streaming::{DEFAULT_NANOLEAF_STREAM_PORT, NanoleafStreamSession};
+use super::touch::{self, NanoleafTouchDecoder};
 use super::types::{NanoleafDiscoveredDevice, build_device_info, panel_ids_from_layout};
 use super::{fetch_device_info, fetch_panel_layout};
 
@@ -55,19 +55,63 @@ pub struct NanoleafBackend {
     config: NanoleafConfig,
     credential_store: Arc<CredentialStore>,
     stream_port: u16,
-    discovered: StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>,
-    devices: StdRwLock<HashMap<DeviceId, Arc<Mutex<NanoleafDeviceState>>>>,
+    input_sink: Option<Arc<dyn DeviceInputSink>>,
+    discovered: Arc<StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>>,
+    sessions: SessionTable<NanoleafSession>,
 }
 
-struct NanoleafDeviceState {
-    device_key: String,
-    ip: IpAddr,
-    api_port: u16,
+/// One open External Control stream.
+struct NanoleafSession {
+    device_id: DeviceId,
     stream: NanoleafStreamSession,
-    info: DeviceInfo,
+    led_count: usize,
+    transition_time: u16,
     brightness: u8,
     scaled_colors: Vec<[u8; 3]>,
     last_size_mismatch_warn_at: Option<Instant>,
+}
+
+impl DeviceSession for NanoleafSession {
+    type Facts = DeviceInfo;
+
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let colors = colors.as_slice();
+        if colors.len() != self.led_count {
+            let should_warn = self
+                .last_size_mismatch_warn_at
+                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+            if should_warn {
+                warn!(
+                    device_id = %self.device_id,
+                    expected_led_count = self.led_count,
+                    actual_led_count = colors.len(),
+                    "Nanoleaf frame size mismatch; truncating or padding to match panel count"
+                );
+                self.last_size_mismatch_warn_at = Some(Instant::now());
+            }
+        }
+
+        let scaled = if self.brightness == u8::MAX {
+            colors
+        } else {
+            let brightness = f32::from(self.brightness) / f32::from(u8::MAX);
+            self.scaled_colors.clear();
+            self.scaled_colors.reserve(colors.len());
+            for [r, g, b] in colors.iter().copied() {
+                let scaled = Rgb::new(r, g, b).scale(brightness);
+                self.scaled_colors.push([scaled.r, scaled.g, scaled.b]);
+            }
+            self.scaled_colors.as_slice()
+        };
+        let transmission = attempt.start();
+        match self.stream.send_frame(scaled, self.transition_time).await {
+            Ok(()) => transmission.written().into(),
+            Err(error) => transmission
+                .failed(DeviceError::write(self.device_id, error))
+                .into(),
+        }
+    }
 }
 
 impl NanoleafBackend {
@@ -78,8 +122,9 @@ impl NanoleafBackend {
             config,
             credential_store,
             stream_port: DEFAULT_NANOLEAF_STREAM_PORT,
-            discovered: StdRwLock::new(HashMap::new()),
-            devices: StdRwLock::new(HashMap::new()),
+            input_sink: None,
+            discovered: Arc::new(StdRwLock::new(HashMap::new())),
+            sessions: SessionTable::new(),
         }
     }
 
@@ -95,103 +140,171 @@ impl NanoleafBackend {
         self
     }
 
-    async fn write_device_colors(
+    /// Connect panel touch input to the host interaction pipeline.
+    #[must_use]
+    pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
+        self.input_sink = Some(sink);
+        self
+    }
+
+    fn opener(&self) -> NanoleafOpener {
+        NanoleafOpener {
+            config: self.config.clone(),
+            credential_store: Arc::clone(&self.credential_store),
+            stream_port: self.stream_port,
+            input_sink: self.input_sink.clone(),
+            discovered: Arc::clone(&self.discovered),
+        }
+    }
+}
+
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct NanoleafOpener {
+    config: NanoleafConfig,
+    credential_store: Arc<CredentialStore>,
+    stream_port: u16,
+    input_sink: Option<Arc<dyn DeviceInputSink>>,
+    discovered: Arc<StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>>,
+}
+
+impl NanoleafOpener {
+    async fn open_session(
+        &self,
         id: &DeviceId,
-        device: &Arc<Mutex<NanoleafDeviceState>>,
-        colors: &[[u8; 3]],
-        transition_time: u16,
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<()> {
-        let mut device = device.lock().await;
-
-        let expected_led_count =
-            usize::try_from(device.info.total_led_count()).unwrap_or(usize::MAX);
-        if colors.len() != expected_led_count {
-            let should_warn = device
-                .last_size_mismatch_warn_at
-                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
-            if should_warn {
-                warn!(
-                    device_id = %id,
-                    expected_led_count,
-                    actual_led_count = colors.len(),
-                    "Nanoleaf frame size mismatch; truncating or padding to match panel count"
-                );
-                device.last_size_mismatch_warn_at = Some(Instant::now());
-            }
-        }
-
-        if device.brightness == u8::MAX {
-            if let Some((id, observer)) = delivery {
-                observer.transport_started(id);
-            }
-            device.stream.send_frame(colors, transition_time).await?;
-            return Ok(());
-        }
-
-        let brightness = f32::from(device.brightness) / f32::from(u8::MAX);
-        device.scaled_colors.clear();
-        device.scaled_colors.reserve(colors.len());
-        for [r, g, b] in colors.iter().copied() {
-            let scaled = Rgb::new(r, g, b).scale(brightness);
-            device.scaled_colors.push([scaled.r, scaled.g, scaled.b]);
-        }
-
-        let scaled_colors = std::mem::take(&mut device.scaled_colors);
-        if let Some((id, observer)) = delivery {
-            observer.transport_started(id);
-        }
-        let result = device
-            .stream
-            .send_frame(scaled_colors.as_slice(), transition_time)
-            .await;
-        device.scaled_colors = scaled_colors;
-        result
-    }
-}
-
-struct NanoleafFrameSink {
-    device_id: DeviceId,
-    device: Arc<Mutex<NanoleafDeviceState>>,
-    transition_time: u16,
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for NanoleafFrameSink {
-    async fn write_colors_shared(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<(), DeviceError> {
-        NanoleafBackend::write_device_colors(
-            &self.device_id,
-            &self.device,
-            colors.as_slice(),
-            self.transition_time,
-            None,
+        discovered: NanoleafDiscoveredDevice,
+    ) -> std::result::Result<Session<NanoleafSession>, DeviceError> {
+        let auth_token = load_auth_token(
+            &self.credential_store,
+            &discovered.device_key,
+            discovered.ip,
         )
         .await
-        .map_err(|error| DeviceError::write(self.device_id, error))
-    }
+        .with_context(|| {
+            format!(
+                "Nanoleaf device {} at {} requires pairing credentials",
+                discovered.info.name, discovered.ip
+            )
+        })
+        .map_err(|error| DeviceError::connection(id, error))?;
 
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let result = NanoleafBackend::write_device_colors(
-            &self.device_id,
-            &self.device,
-            colors.as_slice(),
-            self.transition_time,
-            Some((id, observer.as_ref())),
+        let device_info = fetch_device_info(discovered.ip, discovered.api_port, &auth_token)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to fetch Nanoleaf device info for {} ({})",
+                    discovered.info.name, discovered.ip
+                )
+            })
+            .map_err(|error| DeviceError::connection(id, error))?;
+        let layout = fetch_panel_layout(discovered.ip, discovered.api_port, &auth_token)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to fetch Nanoleaf panel layout for {} ({})",
+                    discovered.info.name, discovered.ip
+                )
+            })
+            .map_err(|error| DeviceError::connection(id, error))?;
+        let panel_ids = panel_ids_from_layout(layout.layout.position_data.as_slice());
+        if panel_ids.is_empty() {
+            return Err(DeviceError::connection(
+                id,
+                format!(
+                    "Nanoleaf device {} exposes no addressable panels",
+                    discovered.info.name
+                ),
+            ));
+        }
+
+        let stream = NanoleafStreamSession::connect_with_udp_port(
+            discovered.ip,
+            discovered.api_port,
+            self.stream_port,
+            &auth_token,
+            panel_ids.clone(),
         )
         .await
-        .map_err(|error| DeviceError::write(self.device_id, error))
-        .map(|()| DeviceWriteOutcome::Sent);
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
+        .with_context(|| {
+            format!(
+                "failed to open Nanoleaf stream to {} ({})",
+                discovered.info.name, discovered.ip
+            )
+        })
+        .map_err(|error| DeviceError::connection(id, error))?;
+
+        let info = build_device_info(
+            &discovered.device_key,
+            &device_info.name,
+            Some(device_info.model.as_str()),
+            Some(device_info.firmware_version.as_str()),
+            layout.layout.position_data.as_slice(),
+            layout.global_orientation.value,
+        );
+
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                *id,
+                NanoleafDiscoveredDevice {
+                    device_key: discovered.device_key.clone(),
+                    ip: discovered.ip,
+                    api_port: discovered.api_port,
+                    info: info.clone(),
+                    panel_ids,
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata,
+                    claim: discovered.claim,
+                },
+            );
+
+        let led_count = usize::try_from(info.total_led_count()).unwrap_or(usize::MAX);
+        info!(
+            device_id = %id,
+            ip = %discovered.ip,
+            panels = info.total_led_count(),
+            "Connected to Nanoleaf device"
+        );
+        let label = info.name.clone();
+        let mut session = Session::new(
+            *id,
+            info,
+            NanoleafSession {
+                device_id: *id,
+                stream,
+                led_count,
+                transition_time: self.config.transition_time,
+                brightness: u8::MAX,
+                scaled_colors: Vec::new(),
+                last_size_mismatch_warn_at: None,
+            },
+        );
+        let decoder = NanoleafTouchDecoder::new(
+            &layout.layout.position_data,
+            layout.global_orientation.value,
+        );
+        if let Some(sink) = self.input_sink.clone()
+            && !decoder.is_empty()
+        {
+            let id = *id;
+            session.spawn(async move {
+                if let Err(error) = touch::run(
+                    discovered.ip,
+                    discovered.api_port,
+                    &auth_token,
+                    id,
+                    &label,
+                    decoder,
+                    sink,
+                )
+                .await
+                {
+                    warn!(device_id = %id, %error, "Nanoleaf touch input stopped");
+                }
+            });
+        }
+        Ok(session)
     }
 }
 
@@ -251,178 +364,40 @@ impl DeviceBackend for NanoleafBackend {
         &self,
         id: &DeviceId,
     ) -> std::result::Result<Option<DeviceInfo>, DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
-            return Ok(None);
-        };
-        Ok(Some(device.lock().await.info.clone()))
+        Ok(self.sessions.facts(id).map(|info| info.as_ref().clone()))
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
         true
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "connect performs credential lookup, metadata refresh, and stream bootstrap in one linear flow"
-    )]
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        if self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(id)
-        {
-            return Ok(());
-        }
-
-        let discovered = self
-            .discovered
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-
-        let auth_token = load_auth_token(
-            &self.credential_store,
-            &discovered.device_key,
-            discovered.ip,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "Nanoleaf device {} at {} requires pairing credentials",
-                discovered.info.name, discovered.ip
-            )
-        })
-        .map_err(|error| DeviceError::connection(id, error))?;
-
-        let device_info = fetch_device_info(discovered.ip, discovered.api_port, &auth_token)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to fetch Nanoleaf device info for {} ({})",
-                    discovered.info.name, discovered.ip
-                )
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let discovered = self
+                    .discovered
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .cloned();
+                let opener = self.opener();
+                async move {
+                    let discovered = discovered.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    opener.open_session(&id, discovered).await
+                }
             })
-            .map_err(|error| DeviceError::connection(id, error))?;
-        let layout = fetch_panel_layout(discovered.ip, discovered.api_port, &auth_token)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to fetch Nanoleaf panel layout for {} ({})",
-                    discovered.info.name, discovered.ip
-                )
-            })
-            .map_err(|error| DeviceError::connection(id, error))?;
-        let panel_ids = panel_ids_from_layout(layout.position_data.as_slice());
-        if panel_ids.is_empty() {
-            return Err(DeviceError::connection(
-                id,
-                format!(
-                    "Nanoleaf device {} exposes no addressable panels",
-                    discovered.info.name
-                ),
-            ));
-        }
-
-        let stream = NanoleafStreamSession::connect_with_udp_port(
-            discovered.ip,
-            discovered.api_port,
-            self.stream_port,
-            &auth_token,
-            panel_ids.clone(),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to open Nanoleaf stream to {} ({})",
-                discovered.info.name, discovered.ip
-            )
-        })
-        .map_err(|error| DeviceError::connection(id, error))?;
-
-        let info = build_device_info(
-            &discovered.device_key,
-            &device_info.name,
-            Some(device_info.model.as_str()),
-            Some(device_info.firmware_version.as_str()),
-            layout.position_data.as_slice(),
-        );
-
-        self.discovered
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                *id,
-                NanoleafDiscoveredDevice {
-                    device_key: discovered.device_key.clone(),
-                    ip: discovered.ip,
-                    api_port: discovered.api_port,
-                    info: info.clone(),
-                    panel_ids,
-                    connect_behavior: discovered.connect_behavior,
-                    metadata: discovered.metadata,
-                    claim: discovered.claim,
-                },
-            );
-
-        let device = NanoleafDeviceState {
-            device_key: discovered.device_key.clone(),
-            ip: discovered.ip,
-            api_port: discovered.api_port,
-            stream,
-            info,
-            brightness: u8::MAX,
-            scaled_colors: Vec::new(),
-            last_size_mismatch_warn_at: None,
-        };
-        let device = Arc::new(Mutex::new(device));
-        let panels = device
-            .try_lock()
-            .ok()
-            .map_or(0, |device| device.info.total_led_count());
-        self.devices
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, device);
-
-        info!(
-            device_id = %id,
-            ip = %discovered.ip,
-            panels,
-            "Connected to Nanoleaf device"
-        );
-        Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-        if let Some(device) = device {
-            let device = device.lock().await;
-            info!(
-                device_id = %id,
-                ip = %device.ip,
-                api_port = device.api_port,
-                device_key = %device.device_key,
-                "Disconnected from Nanoleaf device"
-            );
-            Ok(())
-        } else {
-            Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            })
-        }
+        self.sessions.close(id).await?;
+        info!(device_id = %id, "Disconnected from Nanoleaf device");
+        Ok(())
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        self.sessions.retire().await
     }
 
     async fn write_colors(
@@ -430,18 +405,7 @@ impl DeviceBackend for NanoleafBackend {
         id: &DeviceId,
         colors: &[[u8; 3]],
     ) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-        Self::write_device_colors(id, &device, colors, self.config.transition_time, None)
-            .await
-            .map_err(|error| DeviceError::write(id, error))
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(
@@ -449,34 +413,15 @@ impl DeviceBackend for NanoleafBackend {
         id: &DeviceId,
         brightness: u8,
     ) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-        device.lock().await.brightness = brightness;
+        self.sessions.require(id)?.admit().await?.brightness = brightness;
         Ok(())
     }
 
-    fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
-        Some(10)
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(10))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .map(|device| {
-                Arc::new(NanoleafFrameSink {
-                    device_id: *id,
-                    device: Arc::clone(device),
-                    transition_time: self.config.transition_time,
-                }) as Arc<dyn DeviceFrameSink>
-            })
+        self.sessions.frame_sink(id)
     }
 }

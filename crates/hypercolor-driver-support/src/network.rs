@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
 
+use hypercolor_driver_api::DriverTrackedDevice;
+use hypercolor_types::device::DeviceFingerprint;
+
 /// Errors produced by the shared network validation helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
@@ -87,6 +90,20 @@ pub fn network_ip_from_metadata(metadata: Option<&HashMap<String, String>>) -> O
         .and_then(|values| values.get("ip"))
         .and_then(|value| value.parse::<IpAddr>().ok())
         .and_then(|ip| validate_ip(ip).ok())
+}
+
+/// The fingerprints the host tracks devices under, by their recorded address.
+#[must_use]
+pub fn tracked_fingerprints_by_ip(
+    tracked_devices: &[DriverTrackedDevice],
+) -> HashMap<IpAddr, DeviceFingerprint> {
+    tracked_devices
+        .iter()
+        .filter_map(|tracked| {
+            let ip = network_ip_from_metadata(Some(&tracked.metadata))?;
+            Some((ip, tracked.fingerprint.clone()?))
+        })
+        .collect()
 }
 
 /// Parse a validated port from a metadata key.

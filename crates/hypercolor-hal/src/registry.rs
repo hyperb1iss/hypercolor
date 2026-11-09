@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::protocol::Protocol;
 use crate::transport::input::TransportInputSink;
@@ -164,6 +164,12 @@ pub struct DeviceDescriptor {
 
     /// How to treat this device's reported USB serial, when it lies.
     pub serial_quirk: Option<SerialQuirk>,
+
+    /// Release label. Hardware nobody has run this descriptor on is
+    /// [`DriverStability::Experimental`]; it still claims devices like any
+    /// other descriptor (Spec 89). Descriptors that share a protocol id
+    /// must agree on it.
+    pub stability: DriverStability,
 }
 
 /// Known defects in a device family's reported USB serial number.
@@ -176,6 +182,17 @@ pub enum SerialQuirk {
 }
 
 impl DeviceDescriptor {
+    /// Label this descriptor experimental: nobody has run it on real
+    /// hardware yet (Spec 89). The label changes nothing at runtime.
+    ///
+    /// Lets a family label a new device built by a helper it shares with
+    /// shipped ones: `descriptors.push(kraken_descriptor(..).experimental())`.
+    #[must_use]
+    pub const fn experimental(mut self) -> Self {
+        self.stability = DriverStability::Experimental;
+        self
+    }
+
     /// Whether `serial` is a factory placeholder rather than a real identity.
     ///
     /// Compared case-insensitively against the trimmed value, since these

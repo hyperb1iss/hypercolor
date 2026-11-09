@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use hypercolor_driver_api::{MailboxFrame, SkipReason};
 use hypercolor_hal::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ResponseStatus, ResponseTolerance,
+    FrameBatch, Protocol, ProtocolCommand, ProtocolError, ResponseStatus, ResponseTolerance,
 };
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceError, DeviceId, USB_OUTPUT_BACKEND_ID};
@@ -13,12 +14,31 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace, warn};
 
+use crate::device::held_frame_skip;
+
 use super::{
     AbortTaskOnDrop, DRAIN_REPORT_TIMEOUT, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF,
-    UsbBackend, UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload, describe_packet,
-    format_error_chain, format_hex_preview, map_hal_transport_error, map_transport_error,
-    record_usb_display_lane,
+    UsbBackend, UsbDeviceCommand, UsbDisplayPayload, describe_packet, format_error_chain,
+    format_hex_preview, map_hal_transport_error, map_transport_error, record_usb_display_lane,
 };
+
+/// Unsolicited reports one responding command reads past before it fails.
+///
+/// Devices that push status packets on their own schedule (fan and pump
+/// telemetry) can queue a few ahead of a reply; a device that only ever
+/// streams status and never answers must still end the command.
+const MAX_UNSOLICITED_REPORTS: u8 = 16;
+
+/// What one parsed response report means for the command awaiting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportOutcome {
+    /// The report is (part of) the reply.
+    Accepted,
+    /// Resend the command from the top.
+    Retry,
+    /// Not a reply; read the next report without resending.
+    Unsolicited,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameWriteDisposition {
@@ -55,8 +75,8 @@ impl UsbBackend {
         transport: Arc<dyn Transport>,
         active: Arc<AtomicBool>,
         lifecycle_gate: Arc<StdMutex<()>>,
-        frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
-        frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        frame_tx: watch::Sender<Option<Arc<MailboxFrame>>>,
+        frame_rx: watch::Receiver<Option<Arc<MailboxFrame>>>,
         display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
@@ -116,7 +136,7 @@ impl UsbBackend {
                 (frame_tx.send_replace(None), display_tx.send_replace(None))
             };
             if let Some(pending) = pending_frame {
-                pending.reject_pending(rejection.clone());
+                pending.reject(rejection.clone());
             }
             if let Some(pending) = pending_display {
                 pending.reject_unacknowledged(rejection);
@@ -164,7 +184,7 @@ impl UsbBackend {
         device_name: &'static str,
         protocol: Arc<dyn Protocol>,
         transport: Arc<dyn Transport>,
-        frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        frame_rx: watch::Receiver<Option<Arc<MailboxFrame>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
     ) -> Result<()> {
@@ -202,7 +222,7 @@ impl UsbBackend {
         device_name: &'static str,
         protocol: Arc<dyn Protocol>,
         transport: Arc<dyn Transport>,
-        frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        frame_rx: watch::Receiver<Option<Arc<MailboxFrame>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
     ) -> Result<()> {
@@ -230,7 +250,7 @@ impl UsbBackend {
         device_name: &'static str,
         protocol: Arc<dyn Protocol>,
         transport: Arc<dyn Transport>,
-        mut frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        mut frame_rx: watch::Receiver<Option<Arc<MailboxFrame>>>,
         mut command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
     ) -> Result<()> {
         let mut keepalive_interval = protocol.keepalive().map(|keepalive| {
@@ -508,7 +528,7 @@ impl UsbBackend {
         device_name: &'static str,
         protocol: Arc<dyn Protocol>,
         transport: Arc<dyn Transport>,
-        mut frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        mut frame_rx: watch::Receiver<Option<Arc<MailboxFrame>>>,
         mut display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         mut command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
     ) -> Result<()> {
@@ -696,7 +716,7 @@ impl UsbBackend {
         device_name: &'static str,
         protocol: Arc<dyn Protocol>,
         transport: Arc<dyn Transport>,
-        frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        frame_rx: watch::Receiver<Option<Arc<MailboxFrame>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
     ) -> Result<()> {
@@ -716,7 +736,7 @@ impl UsbBackend {
         device_id: DeviceId,
         protocol: &dyn Protocol,
         transport: &dyn Transport,
-        frame_rx: &mut watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        frame_rx: &mut watch::Receiver<Option<Arc<MailboxFrame>>>,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<bool> {
         if !frame_rx.has_changed().unwrap_or(false) {
@@ -736,63 +756,56 @@ impl UsbBackend {
         device_id: DeviceId,
         protocol: &dyn Protocol,
         transport: &dyn Transport,
-        frame: &UsbFramePayload,
+        frame: &MailboxFrame,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        if !frame.claim() {
+        let Some(attempt) = frame.claim() else {
             return Ok(());
-        }
-        protocol.encode_frame_into(frame.colors.as_slice(), commands);
-        if commands.is_empty() {
-            // Nothing was written: the frame changed nothing the device
-            // shows, or the protocol holds it behind unconfirmed output and
-            // will send the newest frame itself. Either way no transport I/O
-            // happened, so the delivery is not reported as completed.
-            if let Some(id) = frame.delivery_id {
-                frame.acknowledge(super::DeviceDeliveryAck::from_write_result(
-                    id,
-                    0,
-                    Duration::ZERO,
-                    Ok(hypercolor_driver_api::DeviceWriteOutcome::SuppressedCadence),
-                ));
+        };
+        let (pixel_bytes, completion) = match protocol.encode_frame_into(frame.colors(), commands) {
+            FrameBatch::Write {
+                pixel_bytes,
+                completion,
+            } => (pixel_bytes, completion),
+            FrameBatch::Unchanged => {
+                attempt.skip(SkipReason::Unchanged);
+                return Ok(());
             }
-            return Ok(());
+            FrameBatch::Held => {
+                attempt.skip(held_frame_skip(protocol));
+                return Self::run_held_commands(
+                    device_id,
+                    protocol,
+                    transport,
+                    frame.colors(),
+                    commands,
+                )
+                .await;
+            }
+        };
+        let transmission = attempt.start();
+        let written =
+            Self::run_encoded_frame(device_id, protocol, transport, frame.colors(), commands).await;
+        if let Some(token) = completion {
+            protocol.frame_write_finished(token, written.is_ok());
         }
-        // Bytes of this frame the protocol wrote: all of it, unless it
-        // wrote only the zones the frame changed.
-        let written_bytes = protocol
-            .written_frame_bytes()
-            .unwrap_or_else(|| frame.colors.len().saturating_mul(3));
-        frame.announce_transport_started();
-        let transport_started_at = Instant::now();
-        match Self::run_encoded_frame(device_id, protocol, transport, frame, commands).await {
+        match written {
             Ok(()) => {
-                if let Some(id) = frame.delivery_id {
-                    frame.acknowledge(super::DeviceDeliveryAck::completed(
-                        id,
-                        written_bytes,
-                        transport_started_at.elapsed(),
-                    ));
-                }
+                match pixel_bytes {
+                    Some(bytes) => transmission.written_part(bytes),
+                    None => transmission.written(),
+                };
                 Ok(())
             }
             Err(error)
                 if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
             {
-                let typed_error = map_hal_transport_error(
+                transmission.failed_transient(map_hal_transport_error(
                     device_id,
                     USB_OUTPUT_BACKEND_ID,
                     DeviceTransportOperation::Write,
                     &error,
-                );
-                if let Some(id) = frame.delivery_id {
-                    frame.acknowledge(super::DeviceDeliveryAck::failed_transient(
-                        id,
-                        true,
-                        transport_started_at.elapsed(),
-                        typed_error,
-                    ));
-                }
+                ));
                 warn!(
                     device_id = %device_id,
                     protocol = protocol.name(),
@@ -804,22 +817,45 @@ impl UsbBackend {
                 Ok(())
             }
             Err(error) => {
-                let typed_error = map_hal_transport_error(
+                transmission.failed(map_hal_transport_error(
                     device_id,
                     USB_OUTPUT_BACKEND_ID,
                     DeviceTransportOperation::Write,
                     &error,
-                );
-                if let Some(id) = frame.delivery_id {
-                    frame.acknowledge(super::DeviceDeliveryAck::failed(
-                        id,
-                        true,
-                        transport_started_at.elapsed(),
-                        typed_error,
-                    ));
-                }
+                ));
                 Err(error)
             }
+        }
+    }
+
+    /// Send what a held batch carries. It is not the frame, but a protocol
+    /// waiting on a confirmation needs its probe out to ever get one.
+    async fn run_held_commands(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
+        if commands.is_empty() {
+            return Ok(());
+        }
+        match Self::run_encoded_frame(device_id, protocol, transport, colors, commands).await {
+            Ok(()) => Ok(()),
+            Err(error)
+                if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
+            {
+                warn!(
+                    device_id = %device_id,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    error_chain = %format_error_chain(&error),
+                    "transient USB held batch write failed; actor will continue"
+                );
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -849,11 +885,11 @@ impl UsbBackend {
         device_id: DeviceId,
         protocol: &dyn Protocol,
         transport: &dyn Transport,
-        frame: &UsbFramePayload,
+        colors: &[[u8; 3]],
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        protocol.encode_frame_into(frame.colors.as_slice(), commands);
-        Self::run_encoded_frame(device_id, protocol, transport, frame, commands).await
+        protocol.encode_frame_into(colors, commands);
+        Self::run_encoded_frame(device_id, protocol, transport, colors, commands).await
     }
 
     /// Write a frame the protocol has already encoded into `commands`.
@@ -861,7 +897,7 @@ impl UsbBackend {
         device_id: DeviceId,
         protocol: &dyn Protocol,
         transport: &dyn Transport,
-        frame: &UsbFramePayload,
+        colors: &[[u8; 3]],
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
         if tracing::enabled!(tracing::Level::TRACE) {
@@ -874,7 +910,7 @@ impl UsbBackend {
                 device_id = %device_id,
                 protocol = protocol.name(),
                 transport = transport.name(),
-                led_count = frame.colors.len(),
+                led_count = colors.len(),
                 command_count = commands.len(),
                 first_packet = %first_packet,
                 "usb frame write requested"
@@ -976,20 +1012,9 @@ impl UsbBackend {
         if led_count > 0 {
             let black_frame = vec![[0, 0, 0]; led_count];
             let mut commands = Vec::new();
-            if let Err(error) = Self::run_device_frame(
-                device_id,
-                protocol,
-                transport,
-                &UsbFramePayload {
-                    colors: Arc::new(black_frame),
-                    delivery_id: None,
-                    delivery_observer: None,
-                    delivery_tx: StdMutex::new(None),
-                    delivery_state: std::sync::atomic::AtomicU8::new(super::DELIVERY_PENDING),
-                },
-                &mut commands,
-            )
-            .await
+            if let Err(error) =
+                Self::run_device_frame(device_id, protocol, transport, &black_frame, &mut commands)
+                    .await
             {
                 warn!(
                     device_id = %device_id,
@@ -1157,9 +1182,13 @@ impl UsbBackend {
         // A responding command always reads at least once, so a protocol that
         // leaves the count at zero still gets its reply.
         let report_count = u16::from(plan.count.max(1));
+        let mut report_index = 0_u16;
+        let mut unsolicited = 0_u8;
 
-        for report_index in 0..report_count {
-            let read = if report_index > 0 {
+        while report_index < report_count {
+            // Only the very first read sends the command; a report read in
+            // place of an unsolicited one is a plain receive.
+            let read = if report_index > 0 || unsolicited > 0 {
                 trace!(
                     protocol = protocol.name(),
                     transport = transport.name(),
@@ -1167,6 +1196,7 @@ impl UsbBackend {
                     total_commands,
                     report_index,
                     report_count,
+                    unsolicited,
                     "usb reading additional response report"
                 );
                 transport
@@ -1257,7 +1287,7 @@ impl UsbBackend {
             };
 
             let remaining_reports = report_count.saturating_sub(report_index).saturating_sub(1);
-            let retry = match Self::parse_response_report(
+            let outcome = match Self::parse_response_report(
                 protocol,
                 transport,
                 command,
@@ -1268,7 +1298,7 @@ impl UsbBackend {
             )
             .await
             {
-                Ok(retry) => retry,
+                Ok(outcome) => outcome,
                 // A parse failure aborts the batch, but the reports still
                 // queued for this command would otherwise answer whatever the
                 // next session asks first.
@@ -1278,12 +1308,34 @@ impl UsbBackend {
                 }
             };
 
-            if retry {
-                // The retry resends the whole command, so any report this
-                // attempt left queued would be read as a reply to the
-                // resend and desync every read after it.
-                Self::discard_queued_reports(transport, command, remaining_reports).await;
-                return Ok(true);
+            match outcome {
+                ReportOutcome::Accepted => report_index += 1,
+                ReportOutcome::Retry => {
+                    // The retry resends the whole command, so any report this
+                    // attempt left queued would be read as a reply to the
+                    // resend and desync every read after it.
+                    Self::discard_queued_reports(transport, command, remaining_reports).await;
+                    return Ok(true);
+                }
+                ReportOutcome::Unsolicited => {
+                    unsolicited = unsolicited.saturating_add(1);
+                    if unsolicited > MAX_UNSOLICITED_REPORTS {
+                        return Err(anyhow!(
+                            "{} sent {unsolicited} unsolicited reports and no reply to {}",
+                            protocol.name(),
+                            describe_packet(&command.data)
+                        ));
+                    }
+                    debug!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        unsolicited,
+                        report = %describe_packet(&response),
+                        "unsolicited report; reading the next one without resending"
+                    );
+                }
             }
         }
 
@@ -1332,8 +1384,9 @@ impl UsbBackend {
         }
     }
 
-    /// Parse one response report, answering whether the command should be
-    /// retried from the top.
+    /// Parse one response report, answering whether it was the reply, a
+    /// reason to retry the command from the top, or a report that answers
+    /// nothing and is read past.
     async fn parse_response_report(
         protocol: &dyn Protocol,
         transport: &dyn Transport,
@@ -1342,7 +1395,7 @@ impl UsbBackend {
         total_commands: usize,
         attempt: &mut u8,
         response: &[u8],
-    ) -> Result<bool> {
+    ) -> Result<ReportOutcome> {
         trace!(
             protocol = protocol.name(),
             transport = transport.name(),
@@ -1372,6 +1425,10 @@ impl UsbBackend {
                     parsed_data = %format_hex_preview(&parsed.data, 24),
                     "usb response parsed"
                 );
+                if parsed.status == ResponseStatus::Unsolicited {
+                    return Ok(ReportOutcome::Unsolicited);
+                }
+
                 if matches!(
                     parsed.status,
                     ResponseStatus::Busy | ResponseStatus::Timeout
@@ -1379,7 +1436,7 @@ impl UsbBackend {
                 {
                     *attempt = attempt.saturating_add(1);
                     tokio::time::sleep(RETRY_BACKOFF).await;
-                    return Ok(true);
+                    return Ok(ReportOutcome::Retry);
                 }
 
                 if parsed.status == ResponseStatus::Unsupported {
@@ -1389,14 +1446,14 @@ impl UsbBackend {
                     );
                 }
 
-                Ok(false)
+                Ok(ReportOutcome::Accepted)
             }
             Err(ProtocolError::DeviceError {
                 status: ResponseStatus::Busy | ResponseStatus::Timeout,
             }) if *attempt < MAX_RETRIES => {
                 *attempt = attempt.saturating_add(1);
                 tokio::time::sleep(RETRY_BACKOFF).await;
-                Ok(true)
+                Ok(ReportOutcome::Retry)
             }
             Err(error) => {
                 warn!(

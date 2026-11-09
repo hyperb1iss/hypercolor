@@ -761,6 +761,20 @@ pub(crate) fn ZoneLayoutProvider(
         }),
         drain_commits: Callback::new(move |()| writer::wake()),
         gesture_active: Callback::new(move |()| set_layout.in_interaction()),
+        hardware_layout: Callback::new(move |(zone_id, device): (String, api::DeviceSummary)| {
+            if selected_zone_id.get_untracked().as_deref() != Some(&zone_id) {
+                return;
+            }
+            set_layout.update(|current| {
+                if let Some(layout) = current {
+                    crate::pages::studio::placement::restore_hardware_layout(
+                        &mut layout.zones,
+                        &device,
+                        (layout.canvas_width, layout.canvas_height),
+                    );
+                }
+            });
+        }),
     }));
     on_cleanup(move || studio_history.attach_editor(None));
 

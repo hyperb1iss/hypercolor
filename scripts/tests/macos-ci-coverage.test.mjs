@@ -35,7 +35,7 @@ test('workspace artifacts and capability fixtures run in separate lanes', () => 
     'Install nextest', 'Clippy macOS interop', 'Clippy macOS capture fixtures',
     'Clippy macOS host input and ownership', 'Run macOS interop fixtures',
     'Run macOS capture fixtures', 'Run macOS host input and ownership fixtures',
-    'Run macOS status API fixtures',
+    'Run macOS status API fixtures', 'Run macOS app bundle install fixtures',
   ]) assert.equal(condition(name), "matrix.lane == 'capabilities'");
   assert.equal(condition('Qualify macOS runner and SDK'), undefined);
   assert.equal(condition('Verify macOS signing secret transport'), undefined);
@@ -58,14 +58,15 @@ test('publication retains every validation gate while compilation overlaps it', 
   }
   const validation = [
     'release-credentials', 'rust-check-shared', 'rust-check-macos', 'rust-test',
-    'rust-test-servo', 'rust-windows', 'rust-windows-gpu', 'rust-deny', 'sdk', 'ui', 'e2e',
+    'rust-test-servo', 'rust-windows', 'rust-windows-update-service', 'windows-installer', 'rust-windows-gpu', 'rust-deny', 'sdk', 'ui', 'e2e',
     'web-assets', 'python', 'python-generated',
   ];
   assert.deepEqual(needs('sign-macos'), ['build-native-app', 'release-credentials', 'web-assets']);
   // Apple notarization never gates the release: create-release waits for
   // the unsigned builds and validation only, and attach-macos adds the
-  // signed macOS assets once sign-macos succeeds.
-  assert.deepEqual(needs('create-release'), ['build-release', 'build-native-app', ...validation]);
+  // signed macOS assets once sign-macos succeeds. Windows signing takes
+  // minutes and owns the installer on a signing run, so it does gate.
+  assert.deepEqual(needs('create-release'), ['build-release', 'build-native-app', 'sign-windows', ...validation]);
   assert.deepEqual(needs('attach-macos'), ['create-release', 'sign-macos']);
   // Preserve GitHub's implicit success() gate: failed or skipped validation
   // must never become publishable through always() or !cancelled().

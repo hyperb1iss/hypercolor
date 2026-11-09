@@ -242,7 +242,7 @@ function sendAndWaitForAck(
 async function main(): Promise<void> {
     const opts = parseArgs(process.argv.slice(2))
 
-    const displays = await api<DisplaySummary[]>(opts.daemon, '/displays')
+    const { items: displays } = await api<{ items: DisplaySummary[] }>(opts.daemon, '/displays')
     const simulators: Array<{ deviceId: string; variantKey: string; label: string }> = []
     for (const [name, variantKey] of [
         [ROUND_SIMULATOR, 'default'],

@@ -1,7 +1,9 @@
 //! Razer laptop descriptors.
 //!
-//! Blade 14 / 15 / 17 / Pro / Stealth family and Book 13. All use USB
-//! control-transfer transport instead of HID.
+//! Blade 14 / 15 / 17 / Pro / Stealth family and Book 13. All reach the
+//! lighting feature report on interface 2 through the host HID stack;
+//! `laptop_descriptor` in the parent module records why that interface is
+//! never claimed.
 
 use crate::registry::DeviceDescriptor;
 
@@ -14,43 +16,43 @@ use super::{
     build_matrix_standard_extended_6x16_laptop_protocol,
     build_matrix_standard_extended_6x25_laptop_protocol,
     build_matrix_standard_modern_1x16_laptop_protocol,
-    build_matrix_standard_modern_6x16_laptop_keepalive_protocol, control_descriptor,
-    push_control_group,
+    build_matrix_standard_modern_6x16_laptop_keepalive_protocol, laptop_descriptor,
+    push_laptop_group,
 };
 
 pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
-    descriptors.push(control_descriptor(
+    descriptors.push(laptop_descriptor(
         PID_BLADE_14_2021,
         "Razer Blade 14 (2021)",
         "razer/blade-14-2021",
         build_blade_14_2021_protocol,
     ));
-    descriptors.push(control_descriptor(
+    descriptors.push(laptop_descriptor(
         PID_BLADE_PRO_2016,
         "Razer Blade Pro (2016)",
         "razer/blade-pro-2016",
         build_blade_pro_2016_protocol,
     ));
-    descriptors.push(control_descriptor(
+    descriptors.push(laptop_descriptor(
         PID_BLADE_15_LATE_2021_ADVANCED,
         "Razer Blade 15 (Late 2021 Advanced)",
         "razer/blade-15-late-2021-advanced",
         build_blade_15_late_2021_advanced_protocol,
     ));
-    descriptors.push(control_descriptor(
+    descriptors.push(laptop_descriptor(
         PID_BLADE_15_2022,
         "Razer Blade 15 (2022)",
         "razer/blade-15-2022",
         build_blade_15_2022_protocol,
     ));
-    descriptors.push(control_descriptor(
+    descriptors.push(laptop_descriptor(
         PID_BLADE_14_2023,
         "Razer Blade 14 (2023)",
         "razer/blade-14-2023",
         build_blade_14_2023_protocol,
     ));
 
-    push_control_group(
+    push_laptop_group(
         descriptors,
         "razer/matrix-standard-3f-laptop-6x16",
         build_matrix_standard_extended_6x16_laptop_protocol,
@@ -78,7 +80,7 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
             (0x0239, "Razer Blade Stealth (2019)"),
         ],
     );
-    push_control_group(
+    push_laptop_group(
         descriptors,
         "razer/matrix-standard-3f-laptop-6x25",
         build_matrix_standard_extended_6x25_laptop_protocol,
@@ -87,7 +89,7 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
             (0x022F, "Razer Blade Pro (2017 FullHD)"),
         ],
     );
-    push_control_group(
+    push_laptop_group(
         descriptors,
         "razer/matrix-standard-3f-laptop-1x1",
         build_matrix_standard_extended_1x1_laptop_protocol,
@@ -97,7 +99,7 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
             (0x0252, "Razer Blade Stealth (2020)"),
         ],
     );
-    push_control_group(
+    push_laptop_group(
         descriptors,
         "razer/matrix-standard-3f-laptop-1x16",
         build_matrix_standard_extended_1x16_laptop_protocol,
@@ -107,13 +109,13 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
             (0x0259, "Razer Blade Stealth (Late 2020)"),
         ],
     );
-    push_control_group(
+    push_laptop_group(
         descriptors,
         "razer/matrix-standard-1f-laptop-1x16",
         build_matrix_standard_modern_1x16_laptop_protocol,
         &[(0x027A, "Razer Blade 15 (2021 Base)")],
     );
-    push_control_group(
+    push_laptop_group(
         descriptors,
         "razer/matrix-standard-1f-laptop-6x16",
         build_matrix_standard_modern_6x16_laptop_keepalive_protocol,

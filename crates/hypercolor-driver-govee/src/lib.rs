@@ -13,11 +13,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding,
-    PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, CoverageGap, DeviceBackend, DeviceBackendFactory, DiscoveredDevice,
+    DiscoveryBatch, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
+    DriverConfigProvider, DriverConfigView, DriverContext, DriverControlProvider, DriverDescriptor,
+    DriverError, DriverHost, DriverModule, DriverPresentationProvider, DriverRuntimeCacheProvider,
+    DriverTrackedDevice, OutputBinding, PairingCapability, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::validate_ip;
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
@@ -58,7 +59,8 @@ pub use capabilities::{
 };
 pub use config::GoveeConfig;
 pub use lan::discovery::{
-    GoveeKnownDevice, GoveeLanDevice, build_device_info, parse_scan_response,
+    GoveeKnownDevice, GoveeLanDevice, MAX_SCAN_RESPONSES, build_device_info, offer_scan_response,
+    parse_scan_response, scan_admission,
 };
 
 const GOVEE_ACCOUNT_CREDENTIAL_KEY: &str = "account";
@@ -180,7 +182,7 @@ impl DriverModule for GoveeDriverModule {
 impl DeviceBackendFactory for GoveeDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let resolved_config = self.resolved_config(config)?;
@@ -279,29 +281,41 @@ impl DiscoveryCapability for GoveeDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = self.resolved_config(config)?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let cached_devices = load_cached_probe_devices(host).map_err(DriverError::discovery)?;
         let known_devices =
             resolve_govee_probe_devices(&config, &tracked_devices, cached_devices.as_slice());
         let mut scanner = GoveeLanScanner::new(known_devices, request.timeout);
-        let mut devices = scanner.scan().await.map_err(DriverError::discovery)?;
+        let mut outcome = scanner.scan().await.map_err(DriverError::discovery)?;
 
-        if let Some(api_key) = account_api_key(host)
-            .await
-            .map_err(DriverError::discovery)?
-        {
-            let client = self.cloud_client(api_key).map_err(DriverError::discovery)?;
-            match client.list_v1_devices().await {
-                Ok(cloud_devices) => merge_cloud_inventory(&mut devices, cloud_devices),
-                Err(error) => {
-                    warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
-                }
+        match self.cloud_inventory(host).await {
+            Ok(Some(cloud_devices)) => merge_cloud_inventory(&mut outcome.found, cloud_devices),
+            Ok(None) => {}
+            Err(error) => {
+                warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
+                outcome.gaps.push(CoverageGap::SourceFailed {
+                    source_name: "Govee cloud inventory".to_owned(),
+                    reason: format!("{error:#}"),
+                });
             }
         }
 
-        Ok(devices)
+        Ok(outcome.into_batch(|device| device))
+    }
+}
+
+impl GoveeDriverModule {
+    /// Devices the Govee cloud account lists, when an account is paired.
+    async fn cloud_inventory(&self, host: &dyn DriverHost) -> Result<Option<Vec<V1Device>>> {
+        let Some(api_key) = account_api_key(host).await? else {
+            return Ok(None);
+        };
+        self.cloud_client(api_key)?
+            .list_v1_devices()
+            .await
+            .map(Some)
     }
 }
 

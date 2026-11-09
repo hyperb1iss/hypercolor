@@ -122,8 +122,7 @@ impl HueDiscoveredBridge {
     /// Convert into the generic discovery representation.
     #[must_use]
     pub fn into_discovered(self) -> DiscoveredDevice {
-        let fingerprint =
-            DeviceFingerprint::mint(FingerprintNamespace::Net, "hue", &self.bridge_id);
+        let fingerprint = fingerprint_for_bridge(&self.bridge_id);
         // The bridge id is MAC-derived and fixed for the life of the
         // bridge, which is exactly what a portable identity requires.
         let claim = PortableIdentityClaim::driver_identifier("hue", &self.bridge_id, self.ip);
@@ -136,6 +135,12 @@ impl HueDiscoveredBridge {
             claim,
         }
     }
+}
+
+/// Fingerprint for a bridge id.
+#[must_use]
+pub fn fingerprint_for_bridge(bridge_id: &str) -> DeviceFingerprint {
+    DeviceFingerprint::mint(FingerprintNamespace::Net, "hue", bridge_id)
 }
 
 /// Choose the preferred entertainment configuration by ID or name.
@@ -170,7 +175,7 @@ pub fn build_device_info(
     entertainment_config: Option<&HueEntertainmentConfig>,
     lights: &[HueLight],
 ) -> DeviceInfo {
-    let fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Net, "hue", bridge_id);
+    let fingerprint = fingerprint_for_bridge(bridge_id);
     let device_id = fingerprint.stable_device_id();
     let lights_by_id: HashMap<&str, &HueLight> = lights
         .iter()

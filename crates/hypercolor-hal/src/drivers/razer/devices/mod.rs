@@ -20,7 +20,7 @@ mod peripherals;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceFamily, SegmentLayoutHint};
+use hypercolor_types::device::{DeviceFamily, DriverStability, SegmentLayoutHint};
 use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 
 use crate::protocol::Protocol;
@@ -28,6 +28,7 @@ use crate::registry::{
     DeviceDescriptor, HidRawReportMode, ProtocolBinding, ProtocolFactory, TransportType,
 };
 
+use super::argb::{ARGB_REPORT_LEN, RazerArgbProtocol};
 use super::crc::RAZER_REPORT_LEN;
 use super::kraken::{KRAKEN_OUTPUT_REPORT_ID, KRAKEN_REPORT_LEN, KrakenModel, KrakenProtocol};
 use super::protocol::RazerProtocol;
@@ -44,6 +45,8 @@ const RAZER_CONSUMER_USAGE_PAGE: u16 = 0x000C;
 const RAZER_CONSUMER_USAGE: u16 = 0x0001;
 const RAZER_VENDOR_USAGE_PAGE: u16 = 0xFF53;
 const RAZER_VENDOR_USAGE: u16 = 0x0004;
+const RAZER_MOUSE_USAGE_PAGE: u16 = 0x0001;
+const RAZER_MOUSE_USAGE: u16 = 0x0002;
 const HID_REPORT_ID_DEFAULT: u8 = 0x00;
 const HID_REPORT_ID_ALT_0X07: u8 = 0x07;
 
@@ -70,6 +73,21 @@ pub const PID_KRAKEN_ULTIMATE: u16 = 0x0527;
 
 /// HID interface carrying the Kraken memory-access reports.
 const KRAKEN_HID_INTERFACE: u8 = 3;
+
+/// HID interface carrying the Blade and Book lighting feature report.
+///
+/// Interface 2 on these laptops is a live HID input interface bound by
+/// `usbhid` (class 3, mouse protocol, its own interrupt endpoint), next to
+/// the two keyboard interfaces 0 and 1. The 90-byte report rides its mouse
+/// collection, so it must be reached through the host HID stack and never
+/// claimed.
+const RAZER_LAPTOP_HID_INTERFACE: u8 = 2;
+
+/// Razer Chroma Addressable RGB Controller.
+pub const PID_CHROMA_ARGB_CONTROLLER: u16 = 0x0F1F;
+
+/// HID interface carrying the ARGB controller's frame reports.
+const CHROMA_ARGB_FRAME_INTERFACE: u8 = 1;
 
 /// Razer Blade 14 (2021).
 pub const PID_BLADE_14_2021: u16 = 0x0270;
@@ -219,6 +237,26 @@ pub fn build_seiren_v3_protocol() -> Box<dyn Protocol> {
 /// Build a Kraken Ultimate protocol instance.
 pub fn build_kraken_ultimate_protocol() -> Box<dyn Protocol> {
     Box::new(KrakenProtocol::new(KrakenModel::Ultimate))
+}
+
+fn build_kraken_v2_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::V2))
+}
+
+fn build_kraken_tournament_edition_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::TournamentEdition))
+}
+
+fn build_kraken_kitty_v2_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::KittyV2))
+}
+
+fn build_kraken_chroma_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::Chroma))
+}
+
+fn build_chroma_argb_protocol() -> Box<dyn Protocol> {
+    Box::new(RazerArgbProtocol::new())
 }
 
 /// Build a Blade 15 (Late 2021 Advanced) protocol instance.
@@ -391,6 +429,52 @@ macro_rules! razer_laptop_builder {
     };
 }
 
+// Custom-frame apply packet that OpenRGB and OpenRazer both send to
+// extended-matrix accessories: class 0x0F, id 0x02, a declared 12-byte
+// payload, and arguments [NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME].
+const REFERENCE_APPLY_DATA_SIZE: u8 = 0x0C;
+const REFERENCE_APPLY_ARGS: [u8; 5] = [NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x00];
+const REFERENCE_APPLY_ARGS_LEN: u8 = 3;
+
+razer_matrix_builder!(
+    build_tomahawk_atx_protocol,
+    RazerProtocolVersion::Modern,
+    RazerLightingCommandSet::Extended,
+    RazerMatrixType::Extended,
+    (1, 20),
+    LED_ID_ZERO,
+    .with_extended_custom_effect_activation(
+        REFERENCE_APPLY_DATA_SIZE,
+        REFERENCE_APPLY_ARGS,
+        REFERENCE_APPLY_ARGS_LEN
+    )
+);
+razer_matrix_builder!(
+    build_raptor_27_protocol,
+    RazerProtocolVersion::Modern,
+    RazerLightingCommandSet::Extended,
+    RazerMatrixType::Extended,
+    (1, 12),
+    LED_ID_ZERO,
+    .with_extended_custom_effect_activation(
+        REFERENCE_APPLY_DATA_SIZE,
+        REFERENCE_APPLY_ARGS,
+        REFERENCE_APPLY_ARGS_LEN
+    )
+);
+razer_matrix_builder!(
+    build_core_x_chroma_protocol,
+    RazerProtocolVersion::Extended,
+    RazerLightingCommandSet::Extended,
+    RazerMatrixType::Extended,
+    (1, 16),
+    LED_ID_ZERO,
+    .with_extended_custom_effect_activation(
+        REFERENCE_APPLY_DATA_SIZE,
+        REFERENCE_APPLY_ARGS,
+        REFERENCE_APPLY_ARGS_LEN
+    )
+);
 razer_matrix_builder!(
     build_matrix_extended_modern_1x1_backlight_protocol,
     RazerProtocolVersion::Modern,
@@ -897,6 +981,35 @@ fn hidapi_descriptor(
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: DriverStability::Stable,
+    }
+}
+
+/// The Chroma Addressable RGB Controller takes color frames as a 320-byte
+/// feature report on interface 1. That interface's report descriptor is one
+/// consumer-control collection holding only the feature report, with no
+/// input or output fields, so no input device hangs off it.
+fn chroma_argb_descriptor() -> DeviceDescriptor {
+    DeviceDescriptor {
+        vendor_id: RAZER_VENDOR_ID,
+        product_id: PID_CHROMA_ARGB_CONTROLLER,
+        name: "Razer Chroma Addressable RGB Controller",
+        family: DeviceFamily::new_static("razer", "Razer"),
+        transport: TransportType::UsbHidApi {
+            interface: Some(CHROMA_ARGB_FRAME_INTERFACE),
+            report_id: HID_REPORT_ID_DEFAULT,
+            report_mode: HidRawReportMode::FeatureReport,
+            max_report_len: ARGB_REPORT_LEN + 1,
+            usage_page: Some(RAZER_CONSUMER_USAGE_PAGE),
+            usage: Some(RAZER_CONSUMER_USAGE),
+        },
+        protocol: ProtocolBinding {
+            id: "razer/chroma-argb-controller",
+            build: build_chroma_argb_protocol,
+        },
+        firmware_predicate: None,
+        serial_quirk: None,
+        stability: DriverStability::Experimental,
     }
 }
 
@@ -928,31 +1041,30 @@ fn kraken_descriptor(
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: DriverStability::Stable,
     }
 }
 
-fn control_descriptor(
+/// Blade and Book laptops send the shared 90-byte feature report to the
+/// mouse collection of interface 2 through the host HID stack, the same
+/// path the `BlackWidow` keyboards use, so `usbhid` stays bound and the
+/// keyboard and touchpad keep working.
+fn laptop_descriptor(
     product_id: u16,
     name: &'static str,
     protocol_id: &'static str,
     build: ProtocolFactory,
 ) -> DeviceDescriptor {
-    DeviceDescriptor {
-        vendor_id: RAZER_VENDOR_ID,
+    hidapi_descriptor(
         product_id,
         name,
-        family: DeviceFamily::new_static("razer", "Razer"),
-        transport: TransportType::UsbControl {
-            interface: 2,
-            report_id: HID_REPORT_ID_DEFAULT,
-        },
-        protocol: ProtocolBinding {
-            id: protocol_id,
-            build,
-        },
-        firmware_predicate: None,
-        serial_quirk: None,
-    }
+        protocol_id,
+        Some(RAZER_LAPTOP_HID_INTERFACE),
+        HID_REPORT_ID_DEFAULT,
+        Some(RAZER_MOUSE_USAGE_PAGE),
+        Some(RAZER_MOUSE_USAGE),
+        build,
+    )
 }
 
 #[expect(
@@ -983,7 +1095,7 @@ fn push_hidapi_group(
     }));
 }
 
-fn push_control_group(
+fn push_laptop_group(
     descriptors: &mut Vec<DeviceDescriptor>,
     protocol_id: &'static str,
     build: ProtocolFactory,
@@ -992,7 +1104,7 @@ fn push_control_group(
     descriptors.extend(
         devices
             .iter()
-            .map(|&(product_id, name)| control_descriptor(product_id, name, protocol_id, build)),
+            .map(|&(product_id, name)| laptop_descriptor(product_id, name, protocol_id, build)),
     );
 }
 
@@ -1008,11 +1120,11 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     // - Custom-matrix generic devices (DeathAdder Chroma, Naga Epic Chroma,
     //   Mamba 2012, Orbweaver Chroma) because they need
     //   device-specific LED/effect packet routing instead of shared matrix I/O.
-    // - Chroma ARGB Controller, Kraken classic/V2/TE/Kitty V2/V3/V4, Hanbo,
-    //   and other specialty controller families because they use dedicated
-    //   controllers. Kraken Ultimate is the exception: it registers on the
-    //   memory-access protocol in `kraken`, which the V2, TE, and Kitty V2
-    //   share but which is untested on them.
+    // - Hanbo Chroma (its own report layout), Kraken V3 and V4 headsets
+    //   (13-byte and 64-byte reports), and the on/off-only Kraken 7.1
+    //   Classic. Spec 17 section 6.3 records their wire facts. The
+    //   memory-access Kraken headsets register through `kraken`, and the
+    //   Chroma Addressable RGB Controller through `argb`.
     // - Kraken Kitty Black Edition (VID/PID 1532:0F21) because it collides
     //   with Thunderbolt 4 Dock Chroma and Hypercolor's descriptor selection is
     //   still VID/PID-first.

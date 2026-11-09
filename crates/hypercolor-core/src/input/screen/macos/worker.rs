@@ -1,7 +1,7 @@
 #[cfg(feature = "macos-capture-fixtures")]
 use super::BackendWorkerCommand;
 #[cfg(feature = "macos-capture-fixtures")]
-use super::InputSource;
+use super::ManagedSource;
 use super::admission::prepare_macos_exact_runtime;
 use super::publication::{capture_source_id, publish_frame};
 use super::{

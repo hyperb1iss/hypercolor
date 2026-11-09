@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!("launching Hypercolor app shell");
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(hypercolor_app::supervisor::SupervisorState::default())
         .manage(hypercolor_app::supervisor::openrgb::OpenRgbSupervisor::default())
         .manage(hypercolor_app::tray::TrayRuntime::default())
@@ -51,6 +51,7 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::ownership::choose_daemon_owner,
             hypercolor_app::ownership::execute_macos_daemon_owner_offline_remedy,
             hypercolor_app::ownership::macos_daemon_owner_offline_status,
+            hypercolor_app::macos_update::macos_app_startup_hold,
             hypercolor_app::ownership::restart_macos_capture_owner,
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::detect_daemon_launcher,
@@ -72,9 +73,22 @@ fn main() -> anyhow::Result<()> {
             } else if let Err(error) = hypercolor_app::window::show_main(app) {
                 tracing::warn!(%error, "failed to show main window from forwarded invocation");
             }
-        }))
-        .plugin(autostart_plugin())
+        }));
+    // Autostart records this executable's path, which a translocated copy
+    // loses when it exits, so that copy never gets the plugin that writes it.
+    let builder = if hypercolor_app::macos_update::launched_translocated() {
+        tracing::warn!("macOS translocated this copy of the app; autostart stays off");
+        builder
+    } else {
+        builder.plugin(autostart_plugin())
+    };
+
+    builder
         .setup(move |app| {
+            hypercolor_app::autostart::keep_on_the_launcher();
+            let adoption = hypercolor_app::macos_update::prepare_adoption();
+            hypercolor_app::macos_update::serve_app_control(app.handle());
+            hypercolor_app::windows_update::follow_update_service(app.handle());
             let control_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) =
@@ -115,7 +129,7 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::tray::register(app.handle())?;
             tracing::info!("tray icon registered");
 
-            hypercolor_app::supervisor::start(app.handle(), url.clone())?;
+            hypercolor_app::macos_update::start_supervision(app.handle(), url.clone(), adoption)?;
             tracing::info!("daemon supervisor started");
 
             Ok(())

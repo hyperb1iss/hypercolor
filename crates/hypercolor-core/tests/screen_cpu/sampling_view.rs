@@ -14,8 +14,8 @@ use hypercolor_core::input::screen::implementer::{
     SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenCursorCapabilities, ScreenRational, ScreenResourceApi,
+    CaptureBackendId, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenBackendResourceIdentity, ScreenCursorCapabilities, ScreenRational, ScreenResourceApi,
     ScreenSourceReflection, ScreenSourceSelector,
 };
 
@@ -46,12 +46,7 @@ fn source(
             format,
             CaptureColorimetry::from_known(KnownCaptureColorimetry::SRGB),
             cursor_capabilities,
-            ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
-                resource_api,
-                7,
-                11,
-            ),
+            ScreenBackendResourceIdentity::new(CaptureBackendId::Synthetic, resource_api, 7, 11),
         ),
     )
 }

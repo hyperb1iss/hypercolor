@@ -1,0 +1,30 @@
+[package]
+name = "hypercolor-driver-adalight"
+description = "Adalight and AWA serial LED controller driver for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-driver-api = { workspace = true }
+hypercolor-driver-support = { workspace = true }
+hypercolor-types = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-serial = "5"
+tracing = { workspace = true }
+
+[dev-dependencies]
+hypercolor-driver-conformance = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }

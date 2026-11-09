@@ -120,8 +120,8 @@ exit 0
 
     $invocations = @(Get-Content $env:HYPERCOLOR_TEST_ARGUMENT_CAPTURE |
         ForEach-Object { ,(ConvertFrom-Json $_) })
-    if ($invocations.Count -ne 17) {
-        throw "Expected 17 Windows Cargo invocations, captured $($invocations.Count)"
+    if ($invocations.Count -ne 22) {
+        throw "Expected 22 Windows Cargo invocations, captured $($invocations.Count)"
     }
     # PowerShell passes comma-separated features as an array; the wrapper
     # stringifies it into one space-separated Cargo feature argument.
@@ -142,6 +142,15 @@ exit 0
             '--test', 'startup_tests',
             'public_startup_recovers_interrupted_setup_without_private_extensions',
             '--', '--exact', '--nocapture'
+        )
+        'SMBus broker build' = @(
+            'cargo', 'build', '--locked', '-p', 'hypercolor-windows-pawnio',
+            '--bin', 'hypercolor-smbus-service'
+        )
+        'install platform proofs' = @(
+            'cargo', 'nextest', 'run', '--locked',
+            '-p', 'hypercolor-install', '-p', 'hypercolor-windows-install-native',
+            '--run-ignored', 'only', '--no-tests=fail', '--test-threads=1'
         )
     }
     foreach ($entry in $requiredInvocations.GetEnumerator()) {

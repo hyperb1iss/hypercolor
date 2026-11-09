@@ -5,8 +5,8 @@
 //! appends `"hypercolor"` as the final component and layers the test
 //! overrides on top.
 
-use std::path::PathBuf;
-use std::sync::{LazyLock, PoisonError, RwLock};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError, RwLock};
 
 use hypercolor_platform_fs::user_dirs;
 
@@ -16,6 +16,20 @@ const APP_DIR: &str = "hypercolor";
 static DATA_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
 static CONFIG_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
 static STATE_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
+static CACHE_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
+static RUNTIME_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> =
+    LazyLock::new(|| RwLock::new(None));
+/// Whether a fixture holds the process-wide directory overrides.
+static USER_DIRS_CLAIMED: Mutex<bool> = Mutex::new(false);
+static USER_DIRS_RELEASED: Condvar = Condvar::new();
+
+fn read_override(slot: &RwLock<Option<PathBuf>>) -> Option<PathBuf> {
+    slot.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+fn write_override(slot: &RwLock<Option<PathBuf>>, path: Option<PathBuf>) {
+    *slot.write().unwrap_or_else(PoisonError::into_inner) = path;
+}
 
 /// Returns the platform-appropriate configuration directory.
 ///
@@ -124,7 +138,120 @@ pub fn set_state_dir_override(path: Option<PathBuf>) {
 /// - **Linux:** `$XDG_CACHE_HOME/hypercolor/` (default `~/.cache/hypercolor/`)
 /// - **Windows:** `%LOCALAPPDATA%\hypercolor\cache\`
 pub fn cache_dir() -> PathBuf {
+    if let Some(override_path) = read_override(&CACHE_DIR_OVERRIDE) {
+        return override_path;
+    }
+
     user_dirs::app_cache_dir(APP_DIR).expect("cache directory must be resolvable")
+}
+
+/// Returns the per-user runtime directory that host IPC sockets live under.
+///
+/// Linux sessions publish it as `$XDG_RUNTIME_DIR`; services such as
+/// blocksd put their sockets beneath it. Returns `None` when the session
+/// has no runtime directory.
+pub fn runtime_dir() -> Option<PathBuf> {
+    read_override(&RUNTIME_DIR_OVERRIDE)
+        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
+}
+
+/// Where a fixture's user directories live.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserDirPaths {
+    /// Data directory.
+    pub data: PathBuf,
+    /// Config directory.
+    pub config: PathBuf,
+    /// Machine-local state directory.
+    pub state: PathBuf,
+    /// Cache directory.
+    pub cache: PathBuf,
+    /// Session runtime directory.
+    pub runtime: PathBuf,
+}
+
+impl UserDirPaths {
+    /// One subdirectory of `root` per user directory.
+    #[must_use]
+    pub fn under(root: &Path) -> Self {
+        Self {
+            data: root.join("data"),
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+            runtime: root.join("run"),
+        }
+    }
+}
+
+/// A fixture's claim on every Hypercolor user directory.
+///
+/// Points data, config, state, cache, and runtime resolution at fixture
+/// paths until the last owner of the claim drops, then clears the overrides.
+/// The overrides are process-wide, so claims serialize: a second claim in
+/// the same process waits for the first to release. Whatever composes a
+/// daemon from a claim keeps a share of it, so the directories cannot fall
+/// back to the real user's while that daemon lives.
+#[doc(hidden)]
+pub struct IsolatedUserDirs {
+    paths: UserDirPaths,
+}
+
+impl IsolatedUserDirs {
+    /// Claim the user directories for a fixture rooted at `root`.
+    ///
+    /// The directories themselves are created lazily by whatever writes
+    /// them; `root` only needs to outlive the claim.
+    #[must_use]
+    pub fn claim(root: &Path) -> Arc<Self> {
+        Self::claim_paths(UserDirPaths::under(root))
+    }
+
+    /// Claim the user directories at exactly `paths`.
+    #[must_use]
+    pub fn claim_paths(paths: UserDirPaths) -> Arc<Self> {
+        let mut claimed = USER_DIRS_CLAIMED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while *claimed {
+            claimed = USER_DIRS_RELEASED
+                .wait(claimed)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *claimed = true;
+        drop(claimed);
+        write_override(&DATA_DIR_OVERRIDE, Some(paths.data.clone()));
+        write_override(&CONFIG_DIR_OVERRIDE, Some(paths.config.clone()));
+        write_override(&STATE_DIR_OVERRIDE, Some(paths.state.clone()));
+        write_override(&CACHE_DIR_OVERRIDE, Some(paths.cache.clone()));
+        write_override(&RUNTIME_DIR_OVERRIDE, Some(paths.runtime.clone()));
+        Arc::new(Self { paths })
+    }
+
+    /// The claimed directories.
+    #[must_use]
+    pub const fn paths(&self) -> &UserDirPaths {
+        &self.paths
+    }
+}
+
+impl Drop for IsolatedUserDirs {
+    fn drop(&mut self) {
+        for slot in [
+            &*DATA_DIR_OVERRIDE,
+            &*CONFIG_DIR_OVERRIDE,
+            &*STATE_DIR_OVERRIDE,
+            &*CACHE_DIR_OVERRIDE,
+            &*RUNTIME_DIR_OVERRIDE,
+        ] {
+            write_override(slot, None);
+        }
+        *USER_DIRS_CLAIMED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
+        USER_DIRS_RELEASED.notify_one();
+    }
 }
 
 /// Returns the current user's home directory when the platform can resolve it.
@@ -141,6 +268,9 @@ pub fn home_dir() -> Option<PathBuf> {
 /// data-local `cache/` used by [`cache_dir`]) is preserved to keep existing
 /// caches reachable.
 pub fn servo_runtime_cache_dir() -> PathBuf {
+    if let Some(cache_override) = read_override(&CACHE_DIR_OVERRIDE) {
+        return cache_override.join("servo-runtime");
+    }
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(APP_DIR)

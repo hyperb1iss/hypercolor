@@ -39,7 +39,7 @@ updates:
       # core's use-jemalloc feature lands on the crate Servo links. A bump
       # on its own adds a second, unused copy and silently drops jemalloc.
       - dependency-name: "servo-allocator"
-      # vendor/servo-script replaces servo-script 0.6.0 through
+      # vendor/servo-script replaces servo-script 0.7.0 through
       # [patch.crates-io]. servo pins its script crate exactly, so any servo
       # bump, even a patch release, pulls in another servo-script version,
       # leaves the patch unused behind a single cargo warning, and would

@@ -13,22 +13,22 @@ use hypercolor_core::input::screen::implementer::{
     ScreenWorkerExactLedgerBuilder, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenExtentRequest,
-    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
-    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
-    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationHub,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy, ScreenWorkerBinding,
-    ScreenWorkerBindingState, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
-    ScreenWorkerRetirement,
+    CaptureBackendId, RegisteredScreenBranchDemand, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenExtentRequest, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
+    ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile, ScreenPublicationExecutorRequest,
+    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparation,
+    ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 use hypercolor_core::input::screen::planner::{
     ScreenBranchLease, ScreenNativeExecutionPolicy, ScreenNativeExecutionUnavailableReason,
     ScreenRendererExecutionState,
 };
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+    InputData, InputManager, InteractionSource, InteractionSourceRole, ManagedSource,
     ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind, SourceRoleBinding,
 };
 use tokio::sync::Notify;
@@ -262,7 +262,7 @@ impl ScreenDemandSource {
                     CapturePixelFormat::Rgba8,
                     CaptureColorimetry::SRGB,
                     ScreenBackendResourceIdentity::new(
-                        ScreenCaptureBackend::Synthetic,
+                        CaptureBackendId::Synthetic,
                         ScreenResourceApi::Cpu,
                         1,
                         1,
@@ -314,7 +314,7 @@ impl ScreenDemandSource {
     }
 }
 
-impl InputSource for ScreenDemandSource {
+impl ManagedSource for ScreenDemandSource {
     fn name(&self) -> &'static str {
         "screen_demand"
     }
@@ -494,7 +494,7 @@ impl CountingSource {
     }
 }
 
-impl InputSource for CountingSource {
+impl ManagedSource for CountingSource {
     fn name(&self) -> &'static str {
         "counting"
     }
@@ -529,7 +529,7 @@ impl InteractionSource for CountingSource {
     }
 }
 
-impl InputSource for BlockingStartInteractionSource {
+impl ManagedSource for BlockingStartInteractionSource {
     fn name(&self) -> &'static str {
         "blocking_start_interaction"
     }
@@ -564,7 +564,7 @@ impl SourceRoleBinding for BlockingStartInteractionSource {
 
 impl InteractionSource for BlockingStartInteractionSource {}
 
-impl InputSource for BlockingCapabilityInteractionSource {
+impl ManagedSource for BlockingCapabilityInteractionSource {
     fn name(&self) -> &'static str {
         "blocking_capability_interaction"
     }
@@ -1295,7 +1295,7 @@ struct DeviceDemandProbeSource {
     running: bool,
 }
 
-impl InputSource for DeviceDemandProbeSource {
+impl ManagedSource for DeviceDemandProbeSource {
     fn name(&self) -> &'static str {
         "device_demand_probe"
     }

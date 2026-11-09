@@ -26,11 +26,9 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
             let request = read_http_request(&mut stream)
                 .await
                 .expect("read HTTP request");
-            let response = if request
-                .starts_with("GET /api/v1/test-token/panelLayout/layout HTTP/1.1")
-            {
+            let response = if request.starts_with("GET /api/v1/test-token/panelLayout HTTP/1.1") {
                 json_response(
-                    r#"{"positionData":[{"panelId":41,"x":0,"y":0,"o":0,"shapeType":7},{"panelId":42,"x":10,"y":10,"o":90,"shapeType":17},{"panelId":10,"x":20,"y":20,"o":180,"shapeType":12}]}"#,
+                    r#"{"globalOrientation":{"value":0},"layout":{"positionData":[{"panelId":41,"x":0,"y":0,"o":0,"shapeType":7},{"panelId":42,"x":10,"y":10,"o":90,"shapeType":17},{"panelId":10,"x":20,"y":20,"o":180,"shapeType":12}]}}"#,
                 )
             } else if request.starts_with("GET /api/v1/test-token HTTP/1.1") {
                 json_response(
@@ -80,6 +78,7 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
             Some("Shapes"),
             None,
             &[],
+            0.0,
         ),
         panel_ids: Vec::new(),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
@@ -204,4 +203,269 @@ async fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&buf[..total]).into_owned())
+}
+
+#[derive(Debug)]
+enum TouchObservation {
+    Attached,
+    Edges(Vec<hypercolor_types::device_input::DeviceInputEdge>),
+    Detached,
+}
+
+struct TouchRecorder(tokio::sync::mpsc::UnboundedSender<TouchObservation>);
+struct TouchPublisher(tokio::sync::mpsc::UnboundedSender<TouchObservation>);
+
+impl hypercolor_driver_api::DeviceInputSink for TouchRecorder {
+    fn attach(
+        &self,
+        _device_id: hypercolor_types::device::DeviceId,
+        _label: &str,
+    ) -> Box<dyn hypercolor_driver_api::DeviceInputPublisher> {
+        let _ = self.0.send(TouchObservation::Attached);
+        Box::new(TouchPublisher(self.0.clone()))
+    }
+}
+
+impl hypercolor_driver_api::DeviceInputPublisher for TouchPublisher {
+    fn publish(&self, edges: &[hypercolor_types::device_input::DeviceInputEdge]) -> bool {
+        self.0.send(TouchObservation::Edges(edges.to_vec())).is_ok()
+    }
+}
+
+impl Drop for TouchPublisher {
+    fn drop(&mut self) {
+        let _ = self.0.send(TouchObservation::Detached);
+    }
+}
+
+#[tokio::test]
+async fn touch_stream_reconnects_and_disconnect_retires_input_with_retained_frame_sink()
+-> TestResult {
+    touch_stream_lifecycle(TouchShutdown::Disconnect).await
+}
+
+#[tokio::test]
+async fn dropping_backend_retires_touch_input_with_retained_frame_sink() -> TestResult {
+    touch_stream_lifecycle(TouchShutdown::Drop).await
+}
+
+#[tokio::test]
+async fn retiring_backend_retires_touch_input_and_prevents_reopening() -> TestResult {
+    touch_stream_lifecycle(TouchShutdown::Retire).await
+}
+
+enum TouchShutdown {
+    Disconnect,
+    Retire,
+    Drop,
+}
+
+async fn touch_stream_lifecycle(shutdown: TouchShutdown) -> TestResult {
+    use hypercolor_types::device_input::DeviceInputEdge;
+    let api = TcpListener::bind("127.0.0.1:0").await?;
+    let api_port = api.local_addr()?.port();
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        answer_touch_setup(&api).await?;
+        let mut first = open_touch_stream(&api).await?;
+        close_rx.await?;
+        first.shutdown().await?;
+        drop(first);
+        let mut second = open_touch_stream(&api).await?;
+        let mut byte = [0];
+        assert_eq!(second.read(&mut byte).await?, 0, "disconnect closes SSE");
+        TestResult::Ok(())
+    });
+    let output = UdpSocket::bind("127.0.0.1:0").await?;
+    let tempdir = tempfile::tempdir()?;
+    let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
+    store
+        .store_driver_json(
+            "nanoleaf",
+            "touch",
+            serde_json::json!({"auth_token":"touch-secret"}),
+        )
+        .await?;
+    let (tx, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let backend = NanoleafBackend::new(NanoleafConfig::default(), store)
+        .with_stream_port(output.local_addr()?.port())
+        .with_device_input(Arc::new(TouchRecorder(tx)));
+    let discovered = NanoleafDiscoveredDevice {
+        device_key: "touch".to_owned(),
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        api_port,
+        info: build_device_info("touch", "Touch Shapes", Some("NL42"), None, &[], 0.0),
+        panel_ids: Vec::new(),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        metadata: HashMap::from([
+            ("device_key".to_owned(), "touch".to_owned()),
+            ("ip".to_owned(), "127.0.0.1".to_owned()),
+            ("api_port".to_owned(), api_port.to_string()),
+        ]),
+        claim: None,
+    };
+    let id = discovered.info.id;
+    backend.adopt_device(&discovered.into_discovered())?;
+    backend.connect(&id).await?;
+    let retained = backend.frame_sink(&id).expect("frame sink");
+    assert!(matches!(
+        next_touch(&mut observations).await?,
+        TouchObservation::Attached
+    ));
+    let TouchObservation::Edges(edges) = next_touch(&mut observations).await? else {
+        panic!("touch edge expected");
+    };
+    assert!(matches!(
+        &edges[..],
+        [DeviceInputEdge::TouchBegan { contact: 41, .. }]
+    ));
+    close_tx.send(()).expect("close first stream");
+    assert!(matches!(
+        next_touch(&mut observations).await?,
+        TouchObservation::Detached
+    ));
+    assert!(matches!(
+        next_touch(&mut observations).await?,
+        TouchObservation::Attached
+    ));
+    let TouchObservation::Edges(edges) = next_touch(&mut observations).await? else {
+        panic!("touch edge expected");
+    };
+    assert!(matches!(
+        &edges[..],
+        [DeviceInputEdge::TouchBegan { contact: 41, .. }]
+    ));
+    backend.write_colors(&id, &[[1, 2, 3]]).await?;
+    let mut frame = [0; 32];
+    assert_eq!(
+        timeout(Duration::from_secs(2), output.recv(&mut frame)).await??,
+        10
+    );
+    match shutdown {
+        TouchShutdown::Disconnect => backend.disconnect(&id).await?,
+        TouchShutdown::Retire => {
+            backend.retire().await?;
+            assert!(backend.connect(&id).await.is_err());
+        }
+        TouchShutdown::Drop => drop(backend),
+    }
+    assert!(retained.is_closed());
+    assert!(
+        retained
+            .write_direct(id, Arc::new(vec![[1, 2, 3]]))
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        next_touch(&mut observations).await?,
+        TouchObservation::Detached
+    ));
+    timeout(Duration::from_secs(2), server).await???;
+    drop(retained);
+    Ok(())
+}
+
+async fn next_touch(
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<TouchObservation>,
+) -> TestResult<TouchObservation> {
+    Ok(timeout(Duration::from_secs(3), receiver.recv())
+        .await?
+        .expect("touch observation"))
+}
+
+async fn answer_touch_setup(api: &TcpListener) -> TestResult {
+    for _ in 0..3 {
+        let (mut stream, _) = api.accept().await?;
+        let request = read_http_request(&mut stream).await?;
+        let body = if request.starts_with("GET /api/v1/touch-secret/panelLayout ") {
+            r#"{"globalOrientation":{"value":0},"layout":{"positionData":[{"panelId":41,"x":0,"y":0,"o":0,"shapeType":7}]}}"#
+        } else if request.starts_with("GET /api/v1/touch-secret HTTP") {
+            r#"{"name":"Touch Shapes","model":"NL42","serialNo":"TOUCH","firmwareVersion":"12.0.0"}"#
+        } else {
+            assert!(request.starts_with("PUT /api/v1/touch-secret/effects HTTP"));
+            "{}"
+        };
+        stream.write_all(&json_response(body)).await?;
+    }
+    Ok(())
+}
+
+async fn open_touch_stream(api: &TcpListener) -> TestResult<TcpStream> {
+    let (mut stream, peer) = api.accept().await?;
+    let request = read_http_request(&mut stream).await?;
+    assert!(request.starts_with("GET /api/v1/touch-secret/events?id=4 HTTP"));
+    let port = request
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("TouchEventsPort")
+                .then(|| value.trim().parse::<u16>().expect("touch UDP port"))
+        })
+        .expect("TouchEventsPort header");
+    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n:\n\n\r\n").await?;
+    let udp = UdpSocket::bind("127.0.0.1:0").await?;
+    udp.send_to(
+        &[0, 1, 0, 41, 0x1f, 0xff, 0xff],
+        SocketAddr::new(peer.ip(), port),
+    )
+    .await?;
+    Ok(stream)
+}
+
+#[tokio::test]
+async fn unsupported_touch_subscription_leaves_lighting_available() -> TestResult {
+    let api = TcpListener::bind("127.0.0.1:0").await?;
+    let api_port = api.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        answer_touch_setup(&api).await?;
+        let (mut stream, _) = api.accept().await?;
+        let request = read_http_request(&mut stream).await?;
+        assert!(request.starts_with("GET /api/v1/touch-secret/events?id=4 HTTP"));
+        stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await?;
+        TestResult::Ok(())
+    });
+    let output = UdpSocket::bind("127.0.0.1:0").await?;
+    let tempdir = tempfile::tempdir()?;
+    let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
+    store
+        .store_driver_json(
+            "nanoleaf",
+            "touch",
+            serde_json::json!({"auth_token":"touch-secret"}),
+        )
+        .await?;
+    let (tx, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let backend = NanoleafBackend::new(NanoleafConfig::default(), store)
+        .with_stream_port(output.local_addr()?.port())
+        .with_device_input(Arc::new(TouchRecorder(tx)));
+    let discovered = NanoleafDiscoveredDevice {
+        device_key: "touch".to_owned(),
+        ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        api_port,
+        info: build_device_info("touch", "Touch Shapes", Some("NL42"), None, &[], 0.0),
+        panel_ids: Vec::new(),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        metadata: HashMap::from([
+            ("device_key".to_owned(), "touch".to_owned()),
+            ("ip".to_owned(), "127.0.0.1".to_owned()),
+            ("api_port".to_owned(), api_port.to_string()),
+        ]),
+        claim: None,
+    };
+    let id = discovered.info.id;
+    backend.adopt_device(&discovered.into_discovered())?;
+    backend.connect(&id).await?;
+    timeout(Duration::from_secs(2), server).await???;
+    backend.write_colors(&id, &[[3, 4, 5]]).await?;
+    let mut frame = [0; 32];
+    let length = timeout(Duration::from_secs(2), output.recv(&mut frame)).await??;
+    assert_eq!(&frame[..length], &[0, 1, 0, 41, 3, 4, 5, 0, 0, 1]);
+    backend.disconnect(&id).await?;
+    assert!(matches!(
+        observations.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    Ok(())
 }

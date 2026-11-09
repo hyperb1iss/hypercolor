@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ControlValueKind(StrEnum):
+class ControlValueKind(TolerantStrEnum):
     BOOL = "bool"
     COLOR_LINEAR = "color_linear"
     COLOR_RGB = "color_rgb"

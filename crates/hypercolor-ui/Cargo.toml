@@ -4,7 +4,7 @@ description = "Leptos CSR web frontend for the Hypercolor lighting engine"
 # This crate is excluded from the root workspace (standalone trunk/WASM
 # build), so it cannot inherit workspace.package fields. scripts/set-version.ts
 # stamps the version here explicitly.
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
 license = "Apache-2.0"
@@ -17,7 +17,13 @@ rust-version = "1.95"
 leptos = { version = "0.8", features = ["csr"] }
 leptos_router = "0.8"
 leptos_meta = "0.8"
-leptos-use = "0.19"
+leptos-use-device-pixel-ratio = "0.20"
+leptos-use-document = "0.20"
+leptos-use-element-size = "0.20"
+leptos-use-element-visibility = "0.20"
+leptos-use-event-listener = "0.20"
+leptos-use-fn-debounce-throttle = "0.20"
+leptos-use-intersection-observer = "0.20"
 gloo-net = { version = "0.7", features = ["http"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
@@ -64,6 +70,7 @@ web-sys = { version = "0.3", features = [
     "History",
     "CanvasRenderingContext2d",
     "DomRect",
+    "DomRectList",
     "DomRectReadOnly",
     "ImageData",
     "ImageBitmap",
@@ -89,6 +96,7 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "KeyboardEvent",
     "Location",
+    "MediaQueryList",
     "MessageEvent",
     "Worker",
     "BinaryType",
@@ -98,6 +106,8 @@ web-sys = { version = "0.3", features = [
     "DataTransfer",
     "ResizeObserver",
     "ResizeObserverEntry",
+    "ScrollBehavior",
+    "ScrollToOptions",
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

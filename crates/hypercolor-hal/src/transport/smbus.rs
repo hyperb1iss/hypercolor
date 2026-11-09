@@ -620,6 +620,10 @@ impl Transport for SmBusTransport {
 
     async fn close(&self) -> Result<(), TransportError> {
         self.closed.store(true, Ordering::Release);
+        // A transaction runs on a blocking thread with the native handle and
+        // holds its claim until it ends, even when its waiter was cancelled,
+        // so getting the whole bus proves none of ours is left.
+        drop(self.bus_arbiter.acquire(SmBusClaim::Bus).await);
         Ok(())
     }
 }
@@ -868,6 +872,10 @@ impl Transport for SmBusTransport {
 
     async fn close(&self) -> Result<(), TransportError> {
         self.closed.store(true, Ordering::Release);
+        // A transaction runs on a blocking thread with the native handle and
+        // holds its claim until it ends, even when its waiter was cancelled,
+        // so getting the whole bus proves none of ours is left.
+        drop(self.bus_arbiter.acquire(SmBusClaim::Bus).await);
         Ok(())
     }
 }

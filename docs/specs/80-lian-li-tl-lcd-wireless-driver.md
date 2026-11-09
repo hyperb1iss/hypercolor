@@ -639,6 +639,36 @@ on each chunk command; the encoder owns this pacing, not the caller). The
 reference driver ships 1 ms between slices; 2 ms is what its RGB path's
 inter-envelope header repeat uses.
 
+Between whole frames the transport keeps the vendor's **air gap**
+(`wireless/transport.rs`, `air_gap`): a frame to another receiver, or of
+another sub-command, waits until 10 ms have passed since the TX took the
+last slice of an RGB frame, or 5 ms after any other frame. The rule is
+lian-li-linux's `RfPacer`, written after a receiver that heard a frame too
+soon after another receiver's latched the earlier frame's trailing bytes
+as its own address and duty; L-Connect spaces its traffic the same way
+(5 ms between devices in `SyncPwm`, 10 ms after an effect upload in
+`SyncRgbData`). The envelope's command-specific bytes [14..18] are what
+such a receiver reads as slot and channel, which is why the clock blob
+keeps them at the `0x14` sentinel (§6.8) and RGB tags set the high bit of
+[14] (§6.7). Neither makes a latch harmless: the fans in lian-li-linux
+PR 237 latched out-of-range values (CPU temperatures in the slot byte) and
+still dropped off the receiver, so the gap is the protection and no kind
+of frame is exempt from it.
+
+Frames of one kind to one receiver (a transfer's header repeats and data
+envelopes) follow each other freely, so a single-cluster stream pays the
+gap only at its upkeep transitions. A stream to several clusters pays it
+at every switch from one cluster's transfer to the next, which is real
+time out of each frame: lian-li-linux uploads at most five times a second,
+where that costs nothing, but a live stream switches several times a
+frame. The protocol therefore orders each batch of RGB transfers to switch
+as rarely as it can: a batch starts with the cluster the last transfer
+went to and continues around the table from there (two clusters go A B,
+B A, A B; three go A B C, C A B, B C A), so a frame pays one switch fewer. By the transfer timings a two-cluster rig still
+loses a little against the 30 fps ceiling (roughly 28 fps against 22
+without the ordering); measure the delivered rate on a multi-cluster rig
+rather than assume it.
+
 ### 6.3 RF sub-commands
 
 | Name | Byte | Purpose |
@@ -788,7 +818,15 @@ carry the packet index at [18] and up to 220 compressed bytes at
 of a live transfer is unique per send: an FNV-1a hash of the frame's
 pixels mixed with a send number that runs for the whole process from a
 wall-clock seed, never zero, and never the tag the cluster echoes at that
-moment. The tag a
+moment. Its first byte always has the high bit set, as lian-li-linux
+`WirelessRgbUpload` sets it: the index rides at envelope [14..18], where
+targeted frames carry the receiver slot, so a receiver that latches an RGB
+frame's bytes as its address reads that byte as its slot, and the bit
+keeps it off every valid one. That is defence in depth, not a guarantee
+(out-of-range latched values still strand fans, §6.2); the air gap is the
+protection. The bit also keeps every send apart from the firmware's own
+indices, `00000000` and `00000001`, which a
+receiver echoes once it falls back to its onboard lighting. The tag a
 receiver echoes in its record (record bytes 20 to 23) therefore names
 exactly one transfer, which makes it the acknowledgement RGB delivery paces
 on (§6.11); the pixel hash alone identifies what a frame shows.
@@ -805,26 +843,57 @@ documented optimization path for static effects.
 
 ### 6.8 Steady-state upkeep: the v1 keepalive policy
 
-Two facts force a policy: fans revert to firmware-default speed when PWM
-traffic goes silent (V2 receivers default 1000 RPM), and missing the 1 Hz
-clock broadcast puts fan firmware into an autonomous fallback that
-occasionally spikes RPM.
+Two facts shape the policy: fans revert to firmware-default speed when
+PWM traffic goes silent for long enough (V2 receivers default 1000 RPM;
+the silence that triggers it is unmeasured on V1, and L-Connect itself
+sends no fan speed while duty holds), and missing the 1 Hz clock broadcast
+puts fan firmware into an autonomous fallback that occasionally spikes
+RPM. A revert shows as a drift in the cluster's reported duty, which is
+what the fan-speed rule below watches for.
 
 **v1 policy — hold-steady, decided:** while Hypercolor owns the dongle, it
 
-1. captures each cluster's current per-slot PWM from GetDev records at
-   connect,
-2. re-broadcasts those observed values via RF_PWM_CMD at 1 Hz (payload:
-   envelope + rx_type/channel/slot at [14..17], 4 PWM bytes at [17..21]);
-   values are never invented — only observed duty is held. Undetected slots
-   send 0,
-3. emits RF_CLOCK_SYNC at 1 Hz: first an init frame (bytes [14..64] filled
-   with the `0x14` sentinel), then frames carrying real date/time at
-   [32..39], zeroed CPU/GPU sensor fields, and the per-receiver fan blocks
-   (14 × 12 bytes at [50..218]) left zero. The hardware-tested reference
-   sends those blocks zeroed as well (`clock_sync.rs` "defaults for now"),
-   so zero is the validated value; filling them from observed state is a
-   follow-up gated on hardware, not a v1 requirement,
+1. captures each cluster's per-slot PWM from the GetDev records the
+   session hears for it, and holds that duty for the session once the
+   tables still report it (within the tolerance below) at least a second
+   after first sight, so one stale or glitched record is never enforced;
+   nothing is sent for the cluster before then,
+2. sends RF_PWM_CMD (payload: envelope + rx_type/channel/slot at
+   [14..17], 4 PWM bytes at [17..21]) to a cluster only when a slot it
+   reports drifts more than 5 off the duty it holds, the tolerance of
+   L-Connect 2.1.29's `MasterDevice.NeedSyncPwm`. A cluster at its duty
+   gets no fan-speed traffic. Values are never invented: only observed
+   duty is held, and undetected slots hold what they reported (0 when
+   empty). Until 2026-10-31 the driver re-sent every cluster's latest
+   reported duty every second, which held nothing (it echoed whatever the
+   fans said) and put a fan-speed envelope into every second of the RGB
+   stream. L-Connect also skips a device whose effect upload is still
+   unconfirmed (`SyncPwm`, `changingEffect`); a live stream always has
+   transfers out, so the driver cannot defer that way and pays a restore
+   instead. A session that begins while a cluster is being recovered from
+   a stall (§6.10) also sends that cluster its held duty once, so a
+   recovering connect still reaches the fans with fan speed as every
+   connect did when the only recovery seen on hardware happened. It
+   carries the slot and channel the cluster reports, so it repeats the
+   address rather than correcting a latched one (L-Connect sends its
+   intended `target_rx_type` and `MasterChannel` instead; doing the same
+   is a separate change),
+3. emits RF_CLOCK_SYNC at 1 Hz, the same layout every time, as L-Connect
+   2.1.29 builds it (`MasterDevice.SyncMasterClock` over `cpuInfoParam`):
+   the 220-byte blob at envelope bytes [14..234], its 50-byte fixed region
+   filled with the `0x14` "unset" sentinel except for the real local date
+   and time at blob [32..39] (envelope [46..53]), and the per-receiver fan
+   blocks (14 × 12 bytes at blob [50..218]) left zero, since Hypercolor
+   configures no fan LCD themes over the radio. The sentinel is a safety
+   property, not filler: envelope bytes 14 and 15 are where targeted frames
+   carry the receiver slot and channel, and a receiver that latches a clock
+   broadcast as a targeted frame takes its address from them. lian-li-linux
+   measured 11 of 12 unexplained slot changes matching the CPU temperature
+   it broadcast there, and fans that latched channel 0 dropped off the
+   receiver until power-cycled (PR 237, 2026-10-06). Until 2026-10-31 this
+   driver sent an all-sentinel first frame (which overwrote the date with
+   `0x14`, reading as year 5140) and then zeros at bytes 14 and 15 on every
+   later tick, the exact shape PR 237 retired,
 4. sends nothing after disconnect/shutdown — fans revert to firmware
    defaults, which is the same behavior as L-Connect exiting; documented, not
    hidden,
@@ -836,11 +905,11 @@ occasionally spikes RPM.
    a channel query restarts a video stream.
 
 PWM writes can interrupt direct RGB output and briefly expose the receiver's
-onboard rainbow effect. After writing the PWM batch, upkeep immediately
-re-sends each cluster's latest RGB frame through the normal transfer codec,
-before clock or pairing work. The restore goes through the pacing window
-(§6.11): every upkeep leaves each cluster owing one, sent right away where
-the window has room and with the next room otherwise. Recovery starts only after a frame has been encoded,
+onboard rainbow effect. After writing a cluster's PWM, upkeep re-sends that
+cluster's latest RGB frame through the normal transfer codec, before clock
+or pairing work. The restore goes through the pacing window (§6.11): a
+cluster that got PWM owes one, sent right away where the window has room
+and with the next room otherwise. Recovery starts only after a frame has been encoded,
 preserves black frames, and never re-arms streaming mode. The cached frame
 belongs to the connection session and is cleared on init.
 The upstream driver documents the same interruption in
@@ -853,17 +922,34 @@ This holds user-set speeds steady without making Hypercolor a fan-curve
 product. Exact clock-blob field values are validated on hardware before the
 descriptor ships enabled (§11). Both upkeep streams and the GetDev poll run
 on the 1 Hz keepalive, in this order:
-streaming preamble (first tick only), PWM per cluster, the paced restore,
-the clock broadcast, then the two-page table poll, which comes after the
+streaming preamble (first tick only), PWM for a cluster that drifted, its
+paced restore, the clock broadcast, then the two-page table poll, which comes after the
 sends so its reply can only confirm a transfer already on its way.
 
-That is the minimum the protocol needs, per second: one PWM envelope per
-cluster and one clock envelope (four TX packets each), the restore when
-the window is open (twelve TX packets per three-fan cluster), and one
-two-page table poll on the RX. A still scene with one cluster therefore
-costs 20 TX packets and one RX poll a second. The master query L-Connect
-repeats every second is not needed: nothing in this driver moves the TX
-off its channel after init.
+That is the minimum the protocol needs, per second: one clock envelope
+(four TX packets) and one two-page table poll on the RX, plus a PWM
+envelope and a restore (twelve TX packets per three-fan cluster) only for
+a cluster whose duty drifted. A still scene with one cluster at its duty
+therefore costs 4 TX packets and one RX poll a second.
+
+The TX answers every command with a status packet (§6), and nothing
+reads them while frames stream. L-Connect reads the TX once a second,
+after its 1 Hz master query: `WinUsb.RfRead` flushes WinUSB's pipe buffer
+(`FlushPipe`, host-side only), then `ReadAll` reads until a read waits
+10 ms, at most three packets (its third copy overruns the 64-byte buffer
+and the exception is swallowed). This driver does not repeat the query,
+because nothing moves the TX off its channel after init and repeated
+channel selection is the suspect in the bench freezes (item 5). The
+driver-owned transport drains instead (`wireless/transport.rs`): once a
+second, after the last slice of a frame that is not RGB (in steady state,
+the clock broadcast), it reads and discards up to 16 status packets,
+stopping at the first read that waits 10 ms, and it does the same before
+every master query, so the reply read after one is never a status left
+from an earlier session's stream. It never drains inside an RGB transfer
+or after a command whose reply a caller reads, and a drain read that
+times out is an empty queue, not a wedge. While frames stream the queue
+refills within milliseconds; whether a full status queue is what hangs a
+V1 TX is unknown (§11.12).
 
 ### 6.9 tinyuz compression
 
@@ -923,14 +1009,16 @@ hardware. Whether `15` through the RX revives a V1 `SLV3TX` that has fully
 hung, rather than one whose endpoint has only stalled, is the first thing to
 check when a wedge next happens (§11.12).
 
-A TX can also fail without refusing a write: it takes every packet while its
-fans stop confirming frames. Only the protocol sees that (§6.11), so it asks
-for the reset by writing `15` to the RX itself. The transport treats that
-write as the protocol's verdict: it records a wedge with cause
-`Undelivered`, logs `L-Wireless TX stopped delivering`, sends the reset once,
-and ends the session with a disconnect exactly as for a refused write. The
-first TX write after the reset closes the wedge; whether the fans confirm
-frames again shows in the delivery report.
+A TX can also take every packet while its fans stop confirming frames.
+Only the protocol sees that (§6.11), and it is not a wedge: nothing is
+recorded in `health.rs`, and the TX is not reset. L-Connect resets a dongle
+only after writes to it fail (five in a row, or five empty reads) and never
+on its fans' echoes, and on this hardware the echo-loss reset never earned
+its keep. Three of them did not clear the 2026-09-29 stall below, and on
+2026-10-24 the driver reset the TX 69 times in three and a half hours while
+it refused no write, each reset ending the session and showing the fans'
+onboard rainbow. Until 2026-10-31 the protocol asked for the partner reset
+here (cause `Undelivered`); it now resyncs instead, as below.
 
 The fans can also stop taking frames when the TX is fine. On the owner's rig
 on 2026-09-29 (UTC), 29 minutes into a soak at a steady 28 fps, the fans
@@ -951,13 +1039,18 @@ sequence, only the first clock broadcast of a session (§6.8) and the
 fan-speed envelopes reach the fans, and both went out in the three
 reconnects that failed. The rest of the sequence is local to the TX and RX:
 the TX's own reset, the master query, the table poll, the RX setup, and the
-streaming preamble.
+streaming preamble. (Since 2026-10-31 the clock has no distinct first
+frame, and fan speed goes out at connect only to a cluster the session is
+recovering, once, §6.8.)
 
 The driver therefore recovers in stages, per cluster (by radio MAC), across
 sessions:
 
-1. **TX resets.** Two, as above, each ending the session for a reconnect.
-2. **Rests and reconnects.** Once the resets are spent, the cluster's RGB
+1. **Resyncs.** Two, each a fresh connect at once: the protocol asks the
+   backend to connect afresh (`Protocol::session_restart`), the backend ends
+   the session as a disconnect, writing nothing more, and the lifecycle
+   reconnects. Nothing is written to reset the TX.
+2. **Rests and reconnects.** Once the resyncs are spent, the cluster's RGB
    rests while upkeep holds its fans' speed and clock, then the protocol
    asks the backend for a fresh connect (`Protocol::session_restart`). The
    backend ends the session as a disconnect, writing nothing more, and the
@@ -974,7 +1067,7 @@ budget. How short a rest suffices is unknown: each rest is logged with its
 length and attempt number, the stalled cluster's record is logged as the RX
 reports it (channel, slot, echo, command sequence, PWM, RPM), and a recovery
 logs `L-Wireless fans confirm frames again after reconnecting` with the
-resets and reconnects it took.
+resyncs and reconnects it took. The record is logged at each resync too.
 
 ### 6.11 Acknowledgement-paced RGB delivery
 
@@ -1029,7 +1122,7 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   holdoff or recovery: with clusters
   halving alone, the others kept the shared queue full, and three
   clusters on a slow radio at a one-second status grew past the 5 s stall
-  verdict into a TX reset in simulation. The minute-long base delay
+  verdict into a resync in simulation. The minute-long base delay
   matters too: with a 10 s memory the base rose with a backlog that grew
   by less than a status interval per span, and two clusters sharing a slow
   radio grew without bound in simulation.
@@ -1050,9 +1143,9 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   reads as a backlog until its base delay catches up (about a minute),
   and its halvings reach its neighbours. In simulation, a 1.5 to 2.5 s
   jump on one of two clusters left the other at 29 to 31 fps throughout,
-  while the jumped cluster regrew by one frame per status. A frame's delivery acknowledgement counts only the
-  pixels written (`Protocol::written_frame_bytes`); a frame written to no
-  cluster is acknowledged as suppressed.
+  while the jumped cluster regrew by one frame per status. A frame's receipt counts only the
+  pixels written (`FrameBatch::Write::pixel_bytes`); a frame written to no
+  cluster is `FrameBatch::Held` while a newer frame waits, or `Unchanged`.
 - **The frame pump.** The protocol's frame pump (`Protocol::frame_pump_interval`
   and `pump_frame_into`) runs every 5 ms and returns nothing when nothing is
   due. It polls the table while sends are unconfirmed and sends the held
@@ -1077,8 +1170,8 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   window but keep their tags in a bounded history of 128, so a late echo
   still counts as delivery and a window full of lost sends cannot block
   the recovery probe.
-- **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
-  owing a restore, paid by the next room in its window.
+- **Restores after upkeep.** A cluster that upkeep sends fan speed owes a
+  restore, paid by the next room in its window.
 - **Unheard fans.** A cluster missing from every table reply for 3 s is sent
   nothing until it answers; then the sends out are given up and the newest
   frame goes out. A complete table that omits a cluster marks it missing at
@@ -1088,12 +1181,12 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
 - **Stall verdict.** A cluster that is heard (in a reply within the last
   second, and not omitted from the latest complete table) but confirms
   nothing for 5 s, after a recovery probe went out and that first probe's
-  full timeout expired, gets the partner reset (§6.10), and nothing more is
-  sent. Later probes and cached status replies never move that deadline.
+  full timeout expired, gets a resync (§6.10), and nothing more is sent.
+  Later probes and cached status replies never move that deadline.
   The first return from a brief omission since the last confirmed frame
   restarts the probe budget; later brief returns keep the earlier probes
   and their deadline, and only an absence past 3 s restarts it again. Each
-  cluster (by radio MAC) can cause two such resets per process until it
+  cluster (by radio MAC) can cause two such resyncs per process until it
   confirms a frame again. Once they are spent, the stall is taken to be the
   fans': the cluster's RGB rests, then the session ends for a fresh connect,
   on the growing schedule in §6.10, while clusters that still confirm keep
@@ -1395,8 +1488,10 @@ Registration and data surfaces:
     fans: real GetDev records, the live RGB tick rate (§11.4), the
     clock-blob tolerance (§11.3), receiver serial uniqueness (§11.7), and
     whether the TX's per-command status packets, which the RF send path
-    never reads (the reference does not read them either), ever back up
-    the device under sustained streaming.
+    never read (lian-li-linux does not read them either; L-Connect reads up
+    to three a second, §6.8), ever back up the device under sustained
+    streaming. The transport has drained up to 16 a second since
+    2026-10-31.
 11. **DES/`slv3tuzx` in open source.** The key is already public in multiple
     repos and in every L-Connect install; shipping it is documentation of an
     interoperability fact, not a secret. Noting for license/audit review.
@@ -1409,9 +1504,11 @@ Registration and data surfaces:
     hang is the suspected cause. The trigger is unconfirmed. Two measured facts bound it. First, in steady state the
     driver sends about 358 TX packets a second (about 28 frames of twelve
     packets plus upkeep), which is about 90 RF envelopes a second, and reads
-    nothing back from the TX. L-Connect also leaves the TX's per-command
-    status packets unread outside its 1 Hz master query, so the unread
-    replies are not a Hypercolor-only deviation. Second, no hardware-tested
+    nothing back from the TX. L-Connect reads some of them: after its 1 Hz
+    master query, `WinUsb.ReadAll` reads up to three packets until a read
+    waits 10 ms (corrected 2026-10-31 from the 2.1.29 decompile; this item
+    first said L-Connect left them unread). The driver now drains on the
+    same cadence (§6.8). Second, no hardware-tested
     reference streams per-frame RGB this fast: L-Connect sends RGB only
     until the receiver echoes the wanted effect index, the reference Linux
     driver uploads looping animations once, and the OpenRGB fork ticks at

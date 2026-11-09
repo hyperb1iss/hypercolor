@@ -12,10 +12,10 @@ use hypercolor_core::input::screen::implementer::{
     CaptureRotation, CaptureTransferFunction, KnownCaptureColorimetry, PhysicalOrigin, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration, LedToneMapCalibrationError,
-    RegisteredScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenColorTuning,
+    CaptureBackendId, LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration,
+    LedToneMapCalibrationError, RegisteredScreenBranchDemand, ResolvedScreenColorTransform,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenColorTransformCapabilities, ScreenColorTuning,
     ScreenCursorCapabilities, ScreenExtentRequest, ScreenHdrPolicy, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutorRequest,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
@@ -223,7 +223,7 @@ fn source_with_storage_format(
             colorimetry,
             ScreenCursorCapabilities::clean_only(),
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 7,
                 11,

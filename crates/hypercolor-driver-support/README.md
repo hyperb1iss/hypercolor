@@ -13,18 +13,34 @@ and wire values remain in `hypercolor-driver-api`.
   `hypercolor-persistence`, and `hypercolor-platform-fs`; never
   `hypercolor-core` or the daemon.
 - Consumed by network drivers, `hypercolor-driver-builtin`, and the daemon.
-- Owns native dependencies such as `aes-gcm`, `mdns-sd`, and filesystem I/O.
+- Owns native dependencies such as `aes-gcm`, `mdns-sd`, `reqwest`, and
+  filesystem I/O. Drivers reach HTTP through this crate rather than depending
+  on `reqwest`, which keeps its unbounded readers out of driver code.
 
 ## Public Surface
 
 - `CredentialStore` implements `DriverCredentialStore` with encrypted,
   driver-scoped JSON values and private file permissions.
-- `MdnsBrowser` resolves deterministic IPv4 service endpoints.
+- `MdnsBrowser` resolves deterministic IPv4 service endpoints, keeping a
+  bounded set of hosts beyond the ones the caller already knows.
 - `MdnsService` carries one resolved endpoint and its TXT properties.
+- `discovery` bounds a scan: `CandidateAdmission` caps what unsolicited replies
+  can make it retain and gives known targets priority, `probe_candidates`
+  bounds concurrency under a deadline, and `ScanOutcome` carries what they
+  found beside the coverage gaps those bounds cost.
 - `control_apply` validates and persists driver-owned control changes.
 - `control_surface` builds canonical control documents and revisions.
+- `framing` reads bounded lines on absolute deadlines and writes whole frames
+  through a writer that gives up its stream when one fails.
+- `http` bounds finite replies with a `ReadBudget`, an absolute deadline and
+  byte cap enforced as body chunks arrive. SSE subscriptions bound header
+  receipt and each event or standalone comment, while allowing quiet streams
+  to stay connected.
 - `network` validates endpoints and extracts typed discovery metadata.
 - `pairing` coordinates post-pair activation and post-unpair disconnects.
+- `SessionTable`, `Session`, and `SessionSink` are revocable device sessions:
+  one owner per connection, frame sinks that hold no transport, and close and
+  retirement that end a session the same way in every driver.
 
 ---
 

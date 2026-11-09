@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, OutputPolicy,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
@@ -31,7 +31,7 @@ pub const SIMULATED_DISPLAY_BACKEND_ID: &str = "simulator";
 const SIMULATED_DISPLAY_FAMILY: &str = "simulator";
 const DEFAULT_SIMULATED_DISPLAY_FPS: u32 = 15;
 
-pub use hypercolor_types::api::simulators::SimulatedDisplay as SimulatedDisplayConfig;
+use hypercolor_types::api::simulators::SimulatedDisplay;
 
 /// Daemon-side behavior of a simulated display resource.
 pub trait SimulatedDisplayExt: Sized {
@@ -46,7 +46,7 @@ pub trait SimulatedDisplayExt: Sized {
     fn fingerprint(&self) -> DeviceFingerprint;
 }
 
-impl SimulatedDisplayExt for SimulatedDisplayConfig {
+impl SimulatedDisplayExt for SimulatedDisplay {
     fn normalized(mut self) -> Self {
         self.name = self.name.trim().to_owned();
         if self.name.is_empty() {
@@ -108,13 +108,13 @@ impl SimulatedDisplayExt for SimulatedDisplayConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PersistedSimulatedDisplaySnapshot {
     #[serde(default)]
-    displays: Vec<SimulatedDisplayConfig>,
+    displays: Vec<SimulatedDisplay>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SimulatedDisplayStore {
     path: PathBuf,
-    displays: HashMap<DeviceId, SimulatedDisplayConfig>,
+    displays: HashMap<DeviceId, SimulatedDisplay>,
 }
 
 impl SimulatedDisplayStore {
@@ -144,23 +144,23 @@ impl SimulatedDisplayStore {
     }
 
     #[must_use]
-    pub fn list(&self) -> Vec<SimulatedDisplayConfig> {
+    pub fn list(&self) -> Vec<SimulatedDisplay> {
         let mut displays: Vec<_> = self.displays.values().cloned().collect();
         displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.0.cmp(&right.id.0)));
         displays
     }
 
     #[must_use]
-    pub fn get(&self, id: DeviceId) -> Option<SimulatedDisplayConfig> {
+    pub fn get(&self, id: DeviceId) -> Option<SimulatedDisplay> {
         self.displays.get(&id).cloned()
     }
 
-    pub fn upsert(&mut self, config: SimulatedDisplayConfig) {
+    pub fn upsert(&mut self, config: SimulatedDisplay) {
         let normalized = config.normalized();
         self.displays.insert(normalized.id, normalized);
     }
 
-    pub fn remove(&mut self, id: DeviceId) -> Option<SimulatedDisplayConfig> {
+    pub fn remove(&mut self, id: DeviceId) -> Option<SimulatedDisplay> {
         self.displays.remove(&id)
     }
 
@@ -318,6 +318,22 @@ impl DeviceBackend for SimulatedDisplayBackend {
         Ok(())
     }
 
+    /// The simulator belongs to the daemon and no driver ever retires it,
+    /// so there is no later connect to refuse.
+    async fn retire(&self) -> Result<(), DeviceError> {
+        let open: Vec<DeviceId> = self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect();
+        for id in open {
+            self.disconnect(&id).await?;
+        }
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if colors.is_empty() {
             return Ok(());
@@ -347,8 +363,8 @@ impl DeviceBackend for SimulatedDisplayBackend {
             .map_err(|error| DeviceError::write(id, error))
     }
 
-    fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
-        Some(DEFAULT_SIMULATED_DISPLAY_FPS)
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(DEFAULT_SIMULATED_DISPLAY_FPS))
     }
 }
 
@@ -408,7 +424,7 @@ pub async fn activate_simulated_displays(
 }
 
 #[must_use]
-pub fn default_layout_device_id(config: &SimulatedDisplayConfig) -> String {
+pub fn default_layout_device_id(config: &SimulatedDisplay) -> String {
     DeviceLifecycleManager::canonical_layout_device_id(
         &config.device_info(),
         Some(&config.fingerprint()),

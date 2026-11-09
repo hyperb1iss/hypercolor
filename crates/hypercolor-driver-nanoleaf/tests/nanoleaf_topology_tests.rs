@@ -67,6 +67,7 @@ fn build_device_info_filters_non_led_panels_and_preserves_order() {
         Some("Shapes"),
         Some("12.3.4"),
         panels.as_slice(),
+        0.0,
     );
 
     assert_eq!(

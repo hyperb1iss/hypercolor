@@ -5,13 +5,14 @@
 use std::str::FromStr;
 
 use dom_struct::dom_struct;
+use itertools::Itertools;
 use js::context::NoGC;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSObject, Value};
 use js::rust::MutableHandleObject;
 use malloc_size_of::MallocSizeOf;
 use rustc_hash::FxHashMap;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::id::{CryptoKeyId, CryptoKeyIndex};
 use servo_constellation_traits::{SerializableCryptoKey, SerializableCryptoKeyHandle};
 use strum::VariantArray;
@@ -20,6 +21,7 @@ use zeroize::Zeroizing;
 use crate::dom::bindings::codegen::Bindings::CryptoKeyBinding::{
     CryptoKeyMethods, CryptoKeyPair, KeyType, KeyUsage,
 };
+use crate::dom::bindings::error::{Error, ErrorResult};
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::serializable::Serializable;
 use crate::dom::bindings::structuredclone::StructuredData;
@@ -65,6 +67,8 @@ pub(crate) enum Handle {
     MlKem512PublicKey(ml_kem::EncapsulationKey<ml_kem::MlKem512>),
     MlKem768PublicKey(ml_kem::EncapsulationKey<ml_kem::MlKem768>),
     MlKem1024PublicKey(ml_kem::EncapsulationKey<ml_kem::MlKem1024>),
+    MlKem768X25519PrivateKey(x_wing::DecapsulationKey),
+    MlKem768X25519PublicKey(x_wing::EncapsulationKey),
     MlDsa44PrivateKey(ml_dsa::SigningKey<ml_dsa::MlDsa44>),
     MlDsa65PrivateKey(ml_dsa::SigningKey<ml_dsa::MlDsa65>),
     MlDsa87PrivateKey(ml_dsa::SigningKey<ml_dsa::MlDsa87>),
@@ -141,7 +145,8 @@ impl CryptoKey {
         usages: Vec<KeyUsage>,
         handle: Handle,
     ) -> DomRoot<CryptoKey> {
-        let crypto_key = reflect_dom_object_with_cx(
+        let crypto_key = reflect_dom_object(
+            cx,
             Box::new(CryptoKey::new_inherited(
                 key_type,
                 extractable,
@@ -150,7 +155,6 @@ impl CryptoKey {
                 handle,
             )),
             global,
-            cx,
         );
 
         // Create and store a cached object of algorithm
@@ -180,6 +184,20 @@ impl CryptoKey {
 
     pub(crate) fn handle(&self) -> &Handle {
         &self.handle
+    }
+
+    /// Ensure that the [[type]] internal slot of key is same as `expected`. If the [[type]]
+    /// internal slot of key is not same as `expected`, then throw an InvalidAccessError.
+    pub(crate) fn ensure_type(&self, expected: KeyType) -> ErrorResult {
+        if self.key_type == expected {
+            Ok(())
+        } else {
+            Err(Error::InvalidAccess(Some(match expected {
+                KeyType::Public => "The key is not a public key".into(),
+                KeyType::Private => "The key is not a private key".into(),
+                KeyType::Secret => "The key is not a secret key".into(),
+            })))
+        }
     }
 }
 
@@ -318,6 +336,8 @@ impl MallocSizeOf for Handle {
             Handle::MlKem512PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlKem768PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlKem1024PublicKey(public_key) => public_key.size_of(ops),
+            Handle::MlKem768X25519PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::MlKem768X25519PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlDsa44PrivateKey(private_key) => private_key.size_of(ops),
             Handle::MlDsa65PrivateKey(private_key) => private_key.size_of(ops),
             Handle::MlDsa87PrivateKey(private_key) => private_key.size_of(ops),
@@ -436,6 +456,16 @@ impl TryFrom<SerializableCryptoKeyHandle> for Handle {
             SerializableCryptoKeyHandle::MlKem1024PublicKey(public_key) => {
                 Ok(Handle::MlKem1024PublicKey(
                     ml_kem::TryKeyInit::new_from_slice(public_key).map_err(|_| ())?,
+                ))
+            },
+            SerializableCryptoKeyHandle::MlKem768X25519PrivateKey(private_key) => {
+                Ok(Handle::MlKem768X25519PrivateKey(
+                    x_wing::KeyInit::new_from_slice(private_key).map_err(|_| ())?,
+                ))
+            },
+            SerializableCryptoKeyHandle::MlKem768X25519PublicKey(public_key) => {
+                Ok(Handle::MlKem768X25519PublicKey(
+                    x_wing::TryKeyInit::new_from_slice(public_key).map_err(|_| ())?,
                 ))
             },
             SerializableCryptoKeyHandle::MlDsa44PrivateKey(private_key) => {
@@ -592,6 +622,16 @@ impl TryFrom<&Handle> for SerializableCryptoKeyHandle {
                     ml_kem::KeyExport::to_bytes(public_key).as_slice().to_vec(),
                 ))
             },
+            Handle::MlKem768X25519PrivateKey(private_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem768X25519PrivateKey(
+                    private_key.as_bytes().to_vec(),
+                ))
+            },
+            Handle::MlKem768X25519PublicKey(public_key) => {
+                Ok(SerializableCryptoKeyHandle::MlKem768X25519PublicKey(
+                    x_wing::KeyExport::to_bytes(public_key).to_vec(),
+                ))
+            },
             Handle::MlDsa44PrivateKey(private_key) => {
                 Ok(SerializableCryptoKeyHandle::MlDsa44PrivateKey(
                     private_key.as_seed().as_slice().to_vec(),
@@ -633,16 +673,21 @@ impl TryFrom<&Handle> for SerializableCryptoKeyHandle {
     }
 }
 
-/// The trait providing helper functions for [`Vec<KeyUsage>`]
-pub(crate) trait KeyUsageVecHelper {
+/// The trait providing helper functions for `&[KeyUsage]`
+pub(crate) trait KeyUsageSliceHelper {
     /// <https://w3c.github.io/webcrypto/#concept-usage-intersection>
     fn usage_intersection(&self, other: &[KeyUsage]) -> Vec<KeyUsage>;
 
     /// <https://w3c.github.io/webcrypto/#concept-normalized-usages>
     fn normalized_value(&self) -> Vec<KeyUsage>;
+
+    /// Ensure that the key usage list only contains entries which are in `allowed`. If the key
+    /// usage list contains an entry which is not in `allowed`, then throw a SyntaxError. Note that,
+    /// if `allowed` is set to empty, it throws a SyntaxError when the key usage list is not empty.
+    fn ensure_only_contain_entries_from(&self, allowed: &[KeyUsage]) -> ErrorResult;
 }
 
-impl KeyUsageVecHelper for Vec<KeyUsage> {
+impl KeyUsageSliceHelper for [KeyUsage] {
     fn usage_intersection(&self, other: &[KeyUsage]) -> Vec<KeyUsage> {
         // When this specification says to calculate the usage intersection of two sequences, a and
         // b the result shall be a sequence containing each recognized key usage value that appears
@@ -665,5 +710,20 @@ impl KeyUsageVecHelper for Vec<KeyUsage> {
         // the result shall be the usage intersection of usages and a sequence containing all
         // recognized key usage values.
         self.usage_intersection(KeyUsage::VARIANTS)
+    }
+
+    fn ensure_only_contain_entries_from(&self, allowed: &[KeyUsage]) -> ErrorResult {
+        if self.iter().all(|usage| allowed.contains(usage)) {
+            Ok(())
+        } else {
+            Err(Error::Syntax(Some(if allowed.is_empty() {
+                "Usages is not empty".into()
+            } else {
+                format!(
+                    "Usages contains an entry which is not {}",
+                    allowed.iter().map(|usage| usage.as_ref()).join(" or "),
+                )
+            })))
+        }
     }
 }

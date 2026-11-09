@@ -8,6 +8,7 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.driver_module_kind import DriverModuleKind
+from ..models.driver_stability import DriverStability
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -32,6 +33,12 @@ class DriverModuleDescriptor:
         module_kind (DriverModuleKind): High-level module category used for driver registry introspection.
         transports (list[DriverTransportDescriptor]): Transport categories used by this driver and their platform
             support.
+        stability (DriverStability | Unset): Release label of a driver module or of one protocol it contributes.
+
+            A label, not a gate: experimental drivers are enabled and claim devices
+            exactly like stable ones. It records that nobody has run the code on
+            real hardware yet. A protocol with a known safety hazard is not
+            registered at all until it is safe. See Spec 89.
         vendor_name (None | str | Unset): Optional vendor or organization name.
     """
 
@@ -43,6 +50,7 @@ class DriverModuleDescriptor:
     id: str
     module_kind: DriverModuleKind
     transports: list[DriverTransportDescriptor]
+    stability: DriverStability | Unset = UNSET
     vendor_name: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -66,6 +74,10 @@ class DriverModuleDescriptor:
             transports_item = transports_item_data.to_dict()
             transports.append(transports_item)
 
+        stability: str | Unset = UNSET
+        if not isinstance(self.stability, Unset):
+            stability = self.stability.value
+
         vendor_name: None | str | Unset
         if isinstance(self.vendor_name, Unset):
             vendor_name = UNSET
@@ -86,6 +98,8 @@ class DriverModuleDescriptor:
                 "transports": transports,
             }
         )
+        if stability is not UNSET:
+            field_dict["stability"] = stability
         if vendor_name is not UNSET:
             field_dict["vendor_name"] = vendor_name
 
@@ -120,6 +134,13 @@ class DriverModuleDescriptor:
 
             transports.append(transports_item)
 
+        _stability = d.pop("stability", UNSET)
+        stability: DriverStability | Unset
+        if isinstance(_stability, Unset):
+            stability = UNSET
+        else:
+            stability = DriverStability(_stability)
+
         def _parse_vendor_name(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -138,6 +159,7 @@ class DriverModuleDescriptor:
             id=id,
             module_kind=module_kind,
             transports=transports,
+            stability=stability,
             vendor_name=vendor_name,
         )
 

@@ -65,7 +65,7 @@ interface SimulatorConfig {
 }
 
 async function ensureSimulators(): Promise<SimulatorConfig[]> {
-    const existing = await api<SimulatorConfig[]>('/simulators/displays')
+    const { items: existing } = await api<{ items: SimulatorConfig[] }>('/simulators/displays')
     const ready: SimulatorConfig[] = []
     for (const wanted of SIMULATORS) {
         const found = existing.find(

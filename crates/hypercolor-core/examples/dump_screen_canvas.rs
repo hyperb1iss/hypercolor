@@ -21,7 +21,7 @@ fn main() {
         use std::time::{Duration, Instant};
 
         use hypercolor_core::input::screen::consumer::{CaptureConfig, ScreenCaptureInput};
-        use hypercolor_core::input::{InputData, InputSource};
+        use hypercolor_core::input::{InputData, ManagedSource};
         use hypercolor_windows_capture::DesktopDuplicator;
 
         let path = std::env::args()

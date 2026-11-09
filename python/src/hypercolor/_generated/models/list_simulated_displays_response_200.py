@@ -9,7 +9,7 @@ from typing_extensions import Self
 
 if TYPE_CHECKING:
     from ..models.response_meta import ResponseMeta
-    from ..models.simulated_display_list_item import SimulatedDisplayListItem
+    from ..models.simulated_display_list_response import SimulatedDisplayListResponse
 
 
 T = TypeVar("T", bound="ListSimulatedDisplaysResponse200")
@@ -19,21 +19,20 @@ T = TypeVar("T", bound="ListSimulatedDisplaysResponse200")
 class ListSimulatedDisplaysResponse200:
     """
     Attributes:
-        data (list[SimulatedDisplayListItem]):
+        data (SimulatedDisplayListResponse): Canonical list payload: honest pagination or none at all.
+
+            `page: None` means the response is complete — no fabricated
+            `limit`/`has_more` block pretending a paging contract that doesn't
+            exist. `page: Some` means the endpoint genuinely pages.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
-    data: list[SimulatedDisplayListItem]
+    data: SimulatedDisplayListResponse
     meta: ResponseMeta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        data = []
-        for componentsschemas_simulated_display_list_item_data in self.data:
-            componentsschemas_simulated_display_list_item = (
-                componentsschemas_simulated_display_list_item_data.to_dict()
-            )
-            data.append(componentsschemas_simulated_display_list_item)
+        data = self.data.to_dict()
 
         meta = self.meta.to_dict()
 
@@ -51,21 +50,12 @@ class ListSimulatedDisplaysResponse200:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.response_meta import ResponseMeta
-        from ..models.simulated_display_list_item import (
-            SimulatedDisplayListItem,
+        from ..models.simulated_display_list_response import (
+            SimulatedDisplayListResponse,
         )
 
         d = dict(src_dict)
-        data = []
-        _data = d.pop("data")
-        for componentsschemas_simulated_display_list_item_data in _data:
-            componentsschemas_simulated_display_list_item = (
-                SimulatedDisplayListItem.from_dict(
-                    componentsschemas_simulated_display_list_item_data
-                )
-            )
-
-            data.append(componentsschemas_simulated_display_list_item)
+        data = SimulatedDisplayListResponse.from_dict(d.pop("data"))
 
         meta = ResponseMeta.from_dict(d.pop("meta"))
 

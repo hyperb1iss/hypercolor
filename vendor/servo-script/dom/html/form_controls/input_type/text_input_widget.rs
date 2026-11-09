@@ -12,6 +12,8 @@ use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::{Dom, DomRoot};
+use script_bindings::str::DOMString;
+use servo_base::text::{RangeAny, Utf32CodeUnits};
 use style::selector_parser::PseudoElement;
 
 use crate::dom::characterdata::CharacterData;
@@ -44,7 +46,7 @@ impl TextInputWidget {
             }
         }
 
-        let element = text_control_element.upcast::<Element>();
+        let element = text_control_element.as_element();
         let shadow_root = element
             .shadow_root()
             .unwrap_or_else(|| element.attach_ua_shadow_root(cx, true));
@@ -65,6 +67,20 @@ impl TextInputWidget {
     ) {
         self.get_or_create_shadow_tree(cx, element)
             .update_placeholder(cx, element);
+    }
+
+    /// Returns whether `new_range` was successfully set on an existing text run
+    pub(crate) fn set_text_run_selection(
+        &self,
+        new_range: Option<RangeAny<Utf32CodeUnits>>,
+    ) -> bool {
+        if let Some(shadow_tree) = &*self.shadow_tree.borrow() &&
+            let Some(character_data) = shadow_tree.value_character_data()
+        {
+            character_data.set_text_run_selection(new_range)
+        } else {
+            false
+        }
     }
 }
 
@@ -136,7 +152,7 @@ impl TextInputWidgetShadowTree {
         element: &impl TextControlElement,
     ) -> Option<DomRoot<Element>> {
         if let Some(placeholder_container) = &*self.placeholder_container.borrow() {
-            return Some(placeholder_container.root_element());
+            return Some(placeholder_container.as_rooted());
         }
         // If there is no placeholder text and we haven't already created one then it is
         // not necessary to initialize a new placeholder container.
@@ -145,6 +161,7 @@ impl TextInputWidgetShadowTree {
             return None;
         }
 
+        let element = element.as_element();
         let placeholder_container = create_ua_widget_div_with_text_node(
             cx,
             &element.owner_document(),
@@ -195,8 +212,8 @@ impl TextInputWidgetShadowTree {
         // <https://drafts.csswg.org/css-ui/#element-with-default-preferred-size>.
         //
         // This is also used to ensure that the caret will still be rendered when the input is empty.
-        // TODO: Could append `<br>` element to prevent collapses and avoid this hack, but we would
-        //       need to fix the rendering of caret beforehand.
+        // TODO: when this hack is removed, let `TextInput::sorted_selection_character_offsets_range`
+        // rely on `Rope::last_index()` to use an unbounded end in the `RangeAny` it returns.
         let value = element.value_text();
         let value_text = match (value.is_empty(), element.is_password_field()) {
             // For a password input, we replace all of the character with its replacement char.
@@ -207,7 +224,7 @@ impl TextInputWidgetShadowTree {
                 .collect::<String>()
                 .into(),
             (false, _) => value,
-            (true, _) => "\u{200B}".into(),
+            (true, _) => DOMString::from_static("\u{200B}"),
         };
 
         if let Some(character_data) = self.value_character_data() &&
@@ -243,7 +260,7 @@ fn create_ua_widget_div_with_text_node(
         .unwrap();
     el.upcast::<Node>()
         .set_implemented_pseudo_element(implemented_pseudo);
-    let text_node = document.CreateTextNode(cx, "".into());
+    let text_node = document.CreateTextNode(cx, DOMString::new());
 
     if !as_first_child {
         el.upcast::<Node>()

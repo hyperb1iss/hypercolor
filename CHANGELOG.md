@@ -5,6 +5,63 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-03
+
+Portable setup backup and restore lands end to end: export a full configuration as a verified archive, preview it, and restore it through durable transactions with device remapping. The release also brings a phone-first UI pass, Lian Li wireless driver correctness work, and a move to Servo 0.7.0.
+
+### Added
+
+- Add **portable setup backup and restore**: streamed archive export, preview, and apply across scenes, layouts, media, templates, device bindings, and custom HTML effect bundles (`portable_setup`, `domain/portable_setup/`, d84a10d, cc3c8e8, 3081aeb)
+- Add `/backups` REST endpoints for export, preview, and apply, with locked route inventory coverage and generated Python client models (38572f4, b8599fb, 948564c)
+- Add **configuration-only transfer** so a backup can move settings without local resource files (b65d1ee)
+- Add backup download and restore controls to the UI, gated on peer capabilities for remote installations (772396b, cb2f201)
+- Add **write-behind admission** to the atomic writer, with durable-transaction waits, controlled-shutdown release, and flush timeout reporting that names the destination (5085c0d, 4748458, 5f601c5, feff7ec)
+- Add a phone layout signal at the `md` boundary plus a bottom sheet component, docked now-playing strip, and player sheet (3ba1b52, 02c2b08, 293b5e6)
+- Add phone-specific navigation and views: extension items behind a **More** tab, Effects split into Browse and Controls, Media details in a sheet, and a Studio zone summary in place of the editor (e8115b7, dc689f0, 1fafdb2, ec8944a)
+- Add shared transactional storage for terminal and client preferences (4127e9f, `client_preferences`)
+
+### Changed
+
+- Move to **Servo 0.7.0** with `servo-script` vendored unmodified (00cd235)
+- Bump the vendored `libsqlite3-sys` to 0.36.0 with SQLite 3.51.3 bundled (4f7fd21, 37cf258)
+- Cancel and drain admitted API work before shutdown completes, bounding request dispatch future storage (a23843f, d75c72a, 4567afb)
+- Reduce UI work: localize ambient hue updates to visual consumers, share scene reads with active effect controls, and drop unused telemetry and repeated effect definitions (686e696, c6478b9, e246cb2)
+- Write the runtime session behind scene mutations instead of on the mutation path (2e871a0)
+- Give small controls finger-sized hit targets on touch, show hover-only actions on touch, and gate custom hover styles on hover-capable pointers (b4baae1, a92f159, 9e6d515)
+- Stop naming the daemon in user-facing errors and call the running Hypercolor an installation in user copy (8b7b918, cd01a23)
+- Separate portable contracts from domain services and share profile validation between attachments and setup restore (5f2439c, 49e1b34, a7222da)
+
+### Fixed
+
+- Fix SQLite defects by bundling 3.51.3 in the vendored `libsqlite3-sys`: a close/open **mutex-ordering deadlock**, wrong results when an `EXISTS` subquery is converted to a join, and database corruption on WAL reset (37cf258; vendored unmodified in 4f7fd21)
+- Release the extra reference held on every script private, and collect garbage after sustained script evaluation, so long-running HTML effects stop leaking (29083c0, 321479f)
+- Fix Lian Li TL LCD wireless transport: flush the TX's statuses before a master query (9c97547), drain status packets once a second (172c88a), keep the vendor's air gap between RF frames (92f6fb4), order RGB batches to switch clusters less often (3cd83e0), keep RGB tags off valid receiver slots (3fda9d0), send fan speed only when a cluster drifts (d3071f3), resync stalled fans instead of resetting the TX (1f712a0), confirm a held fan duty on recovery (730ff2d), and keep the clock broadcast's address bytes at the sentinel (1c2cc5a)
+- Recover portable restores before ordinary state writers run at startup, and restore the default scene independently of selection (80c8d75, f96a700, c41b286)
+- Preserve captured scene geometry after restart and keep layout metadata when creating a primary zone (56e1e70, 81f78c0)
+- Preserve valid scenes, authored device references, and unavailable default faces while display targets are offline (7e90dd7, 2d34480, 9a6563f)
+- Close retirement readers and retired templates before atomic replacement (1673924, e632351)
+- Fix UI listener and focus leaks: remove the modal keydown listener on unmount, stop the Devices page leaking its Escape listener, and keep Tab inside modals past roving tabindex groups (130bf64, 6803fd7, 84b12ec)
+- Contain overscroll in every phone scroll owner, let nested lists chain to the page, and keep the phone Effects view in the URL as a complete tabs pattern (5b4e5ff, 77237cc, 9893a17, fdf20c4)
+- Fix sheet flick decay across a pause and allow one frame of grace (8502b92, 4cec525)
+- Scope flush attempt counts to the last landing and compile shutdown waits in Windows production builds (e8db80b, 7200262)
+- Smooth Studio tab, panel, and drag interactions (e8cf9bb)
+
+### Security
+
+- Update `libz-sys` past the environment logging advisory (9e121a1)
+
+### Removed
+
+- Remove the vendored `utoipa-swagger-ui` tree in favor of the upstream 10.0.2 release (a61e9c6)
+
+### Metrics
+
+- Total Commits: 137
+- Files Changed: 912
+- Insertions: +643,692
+- Deletions: -26,317
+<!-- -------------------------------------------------------------- -->
+
 ## [0.8.1] - 2026-10-28
 
 ### Fixed

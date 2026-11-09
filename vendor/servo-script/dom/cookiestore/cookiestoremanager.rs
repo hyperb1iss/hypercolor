@@ -2,16 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::rc::Rc;
-
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsval::UndefinedValue;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::root::{Dom, DomRoot};
 use servo_url::ServoUrl;
 
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::CookieStoreBinding::CookieStoreGetOptions;
 use crate::dom::bindings::codegen::Bindings::CookieStoreManagerBinding::CookieStoreManagerMethods;
 use crate::dom::bindings::error::Error;
@@ -55,7 +54,7 @@ impl CookieStoreManager {
     ) -> DomRoot<CookieStoreManager> {
         // The cookies getter steps are to return this's associated
         // CookieStoreManager object.
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited(registration)), global, cx)
+        reflect_dom_object(cx, Box::new(Self::new_inherited(registration)), global)
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestoremanager-subscribe>
@@ -105,7 +104,7 @@ impl CookieStoreManagerMethods<crate::DomTypeHolder> for CookieStoreManager {
         &self,
         cx: &mut JSContext,
         subscriptions: Vec<CookieStoreGetOptions>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let settings be this's relevant settings object.
         // Step 2. Let registration be this's registration.
         // Step 3. Let p be a new promise.
@@ -142,7 +141,7 @@ impl CookieStoreManagerMethods<crate::DomTypeHolder> for CookieStoreManager {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestoremanager-getsubscriptions>
-    fn GetSubscriptions(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn GetSubscriptions(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1. Let registration be this's registration.
         // Step 2. Let p be a new promise.
         let promise = Promise::new(cx, &self.global());
@@ -162,7 +161,7 @@ impl CookieStoreManagerMethods<crate::DomTypeHolder> for CookieStoreManager {
         &self,
         cx: &mut JSContext,
         subscriptions: Vec<CookieStoreGetOptions>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let settings be this's relevant settings object.
         // Step 2. Let registration be this's registration.
         // Step 3. Let p be a new promise.

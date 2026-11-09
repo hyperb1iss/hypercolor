@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::num::NonZeroU8;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -7,8 +8,8 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DiscoveryRequest, DriverConfigView, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputCadence,
-    ValidatedControlChanges,
+    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, InstallationId,
+    OutputPolicy, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
@@ -149,23 +150,66 @@ fn driver_config_view_keeps_raw_arrays_and_untagged_objects() {
 }
 
 #[test]
-fn output_cadence_tracks_optional_maximum_frame_silence() {
-    let cadence = OutputCadence::from_fps(50).with_max_frame_silence(Duration::from_millis(1_250));
+fn output_policy_tracks_optional_maximum_frame_silence() {
+    let cadence = OutputPolicy::from_fps(50).with_replay_after(Duration::from_millis(1_250));
 
-    assert_eq!(cadence.target_fps(), 50);
-    assert_eq!(
-        cadence.max_frame_silence(),
-        Some(Duration::from_millis(1_250))
-    );
-    assert_eq!(cadence.max_frame_silence_ms(), Some(1_250));
+    assert_eq!(cadence.display_fps(), 50);
+    assert_eq!(cadence.replay_after(), Some(Duration::from_millis(1_250)));
+    assert_eq!(cadence.replay_after_ms(), Some(1_250));
 }
 
 #[test]
 fn zero_maximum_frame_silence_disables_cached_payload_replay() {
-    let cadence = OutputCadence::from_fps(60).with_max_frame_silence(Duration::ZERO);
+    let cadence = OutputPolicy::from_fps(60).with_replay_after(Duration::ZERO);
 
-    assert_eq!(cadence.max_frame_silence(), None);
-    assert_eq!(cadence.max_frame_silence_ms(), None);
+    assert_eq!(cadence.replay_after(), None);
+    assert_eq!(cadence.replay_after_ms(), None);
+}
+
+#[test]
+fn output_policy_defaults_to_one_copy() {
+    for policy in [
+        OutputPolicy::from_fps(60),
+        OutputPolicy::from_fps(0),
+        OutputPolicy::from_min_interval(Duration::from_millis(25)),
+        OutputPolicy::default(),
+    ] {
+        assert_eq!(policy.copies_before_idle(), NonZeroU8::MIN);
+    }
+}
+
+#[test]
+fn output_policy_copies_opt_in() {
+    let copies = NonZeroU8::new(3).expect("nonzero");
+    let policy = OutputPolicy::from_fps(0)
+        .with_replay_after(Duration::from_millis(800))
+        .with_copies_before_idle(copies);
+    assert_eq!(policy.copies_before_idle(), copies);
+    assert_eq!(policy.replay_after(), Some(Duration::from_millis(800)));
+}
+
+#[test]
+fn display_fps_comes_from_the_interval() {
+    assert_eq!(OutputPolicy::from_fps(0).display_fps(), 0);
+    assert_eq!(OutputPolicy::from_fps(1).display_fps(), 1);
+    assert_eq!(OutputPolicy::from_fps(30).display_fps(), 30);
+    assert_eq!(OutputPolicy::from_fps(60).display_fps(), 60);
+    assert_eq!(
+        OutputPolicy::from_min_interval(Duration::from_millis(50)).display_fps(),
+        20
+    );
+    assert_eq!(
+        OutputPolicy::from_min_interval(Duration::from_secs(6)).display_fps(),
+        0,
+        "slower than one frame a second has no whole frame rate"
+    );
+}
+
+#[test]
+fn replay_cannot_outrun_the_minimum_interval() {
+    let policy = OutputPolicy::from_min_interval(Duration::from_secs(2))
+        .with_replay_after(Duration::from_millis(500));
+    assert_eq!(policy.replay_after(), Some(Duration::from_secs(2)));
 }
 
 #[test]
@@ -484,6 +528,7 @@ static PROTOCOL_ONLY_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = Lazy
         transport: DriverTransportKind::Usb,
         route_backend_id: "usb".to_owned(),
         presentation: None,
+        stability: hypercolor_types::device::DriverStability::Stable,
     }]
 });
 
@@ -758,6 +803,9 @@ fn pair_device_status_serde_uses_snake_case() {
 }
 
 #[test]
-fn hosts_offer_no_device_input_by_default() {
-    assert!(NoopDriverHost.device_input().is_none());
+fn installation_ids_compare_by_their_text() {
+    let id = InstallationId::new("install-a");
+    assert_eq!(id.as_str(), "install-a");
+    assert_eq!(id, InstallationId::new("install-a"));
+    assert_ne!(id, InstallationId::new("install-b"));
 }

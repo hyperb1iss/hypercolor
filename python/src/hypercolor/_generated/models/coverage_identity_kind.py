@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class CoverageIdentityKind(StrEnum):
+class CoverageIdentityKind(TolerantStrEnum):
     DEVICE = "device"
     SERIAL = "serial"
     SMBUS = "smbus"

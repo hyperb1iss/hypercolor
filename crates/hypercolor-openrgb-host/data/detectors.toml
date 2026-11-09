@@ -122,3 +122,46 @@ detectors = [
   "ASUS Aura SMBus Motherboard",
   "ENE SMBus DRAM",
 ]
+
+# NZXT names come from detector_usb_ids.toml (OpenRGB 1.0 udev output)
+# rather than a fresh OpenRGB.json. Only detectors whose ids the nzxt
+# driver claims are seeded; Hue+, Smart Device V1, Kraken X2/M2, and Lift
+# stay bridgeable through the per-device id map.
+[[family]]
+driver_id = "nzxt"
+prefixes = ["NZXT "]
+detectors = [
+  "NZXT B650E Motherboard",
+  "NZXT Hue 2",
+  "NZXT Hue 2 Ambient",
+  "NZXT Hue 2 Motherboard",
+  "NZXT Kraken 2024 ELITE Series RGB",
+  "NZXT Kraken X3 Series",
+  "NZXT Kraken X3 Series RGB",
+  "NZXT RGB & Fan Controller",
+  "NZXT RGB & Fan Controller 2024",
+  "NZXT RGB Controller",
+  "NZXT Smart Device V2",
+]
+
+# Wooting names come from detector_usb_ids.toml (OpenRGB 1.0 udev output).
+# Every detector there claims only PIDs the wooting driver registers, so
+# the whole family is withheld while the native driver owns a device.
+[[family]]
+driver_id = "wooting"
+prefixes = ["Wooting "]
+detectors = [
+  "Wooting 60HE",
+  "Wooting 60HE (ARM)",
+  "Wooting 60HE+",
+  "Wooting 60HEv2",
+  "Wooting 80HE",
+  "Wooting One",
+  "Wooting One (Legacy)",
+  "Wooting Two",
+  "Wooting Two (Legacy)",
+  "Wooting Two HE",
+  "Wooting Two HE (ARM)",
+  "Wooting Two Lekker Edition",
+  "Wooting UwU RGB",
+]

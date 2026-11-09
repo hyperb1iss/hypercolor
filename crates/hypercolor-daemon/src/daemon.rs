@@ -7,7 +7,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_core::config::{BootConfig, ConfigManager, LoadedConfig};
-use hypercolor_core::session::SessionMonitor;
 use hypercolor_types::api::system::DaemonStartupPhase;
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
@@ -27,7 +26,7 @@ use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
 use crate::render_thread::{RenderFailureRecord, RenderSupervision};
-use crate::startup::{DaemonState, StartupProgress, config_sources};
+use crate::startup::{DaemonState, HostPorts, StartupProgress, config_sources};
 
 const MAIN_RUNTIME_WORKERS: usize = 4;
 const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
@@ -86,8 +85,6 @@ pub struct DaemonRunOptions {
     /// Corroborated launcher identity resolved by the process host before
     /// runtime startup. On macOS the durable owner snapshot supersedes it.
     pub service_status: Option<ServiceStatus>,
-    /// Platform session monitors supplied by the process host.
-    pub session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
     /// API credentials beyond the environment keys, supplied by a
     /// downstream build. It is needed before any listener is bound,
     /// because it decides whether a network bind is allowed.
@@ -109,6 +106,7 @@ pub struct ApiListenerLease {
 #[doc(hidden)]
 pub struct PreparedDaemon {
     options: DaemonRunOptions,
+    host: HostPorts,
     config: BootConfig,
     config_manager: Arc<ConfigManager>,
     listen_addr: String,
@@ -202,6 +200,7 @@ impl PreparedDaemon {
             self.config_manager,
             self.options.macos_owner_snapshot,
             self.options.service_status.take(),
+            self.host,
             progress.clone(),
         )?;
         let render_supervision = daemon_state.domains.output.render_supervision().clone();
@@ -211,7 +210,6 @@ impl PreparedDaemon {
             Some(RENDER_FAILURE_EXIT_DEADLINE),
         ));
         let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
-        daemon_state.session_monitors = self.options.session_monitors.take();
         record_api_binding(
             &mut daemon_state,
             api_listen_addresses,
@@ -625,8 +623,12 @@ pub fn build_main_runtime() -> Result<tokio::runtime::Runtime> {
 /// # Errors
 ///
 /// Returns an error when startup, serving, or graceful shutdown fails.
-pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-    Box::pin(run_with_extensions(options, shutdown_rx, &[])).await
+pub async fn run(
+    options: DaemonRunOptions,
+    host: HostPorts,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<()> {
+    Box::pin(run_with_extensions(options, host, shutdown_rx, &[])).await
 }
 
 /// Run the daemon with downstream extension installers.
@@ -637,11 +639,12 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
 /// shutdown fails.
 pub async fn run_with_extensions(
     mut options: DaemonRunOptions,
+    host: HostPorts,
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
     adopt_credential_authority(&mut options, extension_installers)?;
-    let prepared = prepare(options).await?;
+    let prepared = prepare(options, host).await?;
     Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
 }
 
@@ -653,7 +656,7 @@ pub async fn run_with_extensions(
 /// Returns an error when configuration, address resolution, authentication
 /// validation, or any final listener bind fails.
 #[doc(hidden)]
-pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
+pub async fn prepare(options: DaemonRunOptions, host: HostPorts) -> Result<PreparedDaemon> {
     // Must land before any registry scan, which resolves the bundled catalog
     // the first time it enumerates effects.
     if options.effects_dir.is_some() {
@@ -757,6 +760,7 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
 
     Ok(PreparedDaemon {
         options,
+        host,
         config,
         config_manager,
         listen_addr,
@@ -1530,31 +1534,23 @@ mod tests {
     };
     use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
-    use crate::startup::{DaemonState, default_config};
+    use crate::startup::{DaemonState, HostPorts, default_config};
 
-    /// Serializes the tests here that relocate the process-wide directories.
-    static PATH_OVERRIDES: std::sync::LazyLock<tokio::sync::Mutex<()>> =
-        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
-
-    /// Relocates the config and data directories, and with them the state
-    /// directory, into one fixture root for the life of the guard.
+    /// Relocates every user directory into one fixture root for the life
+    /// of the guard.
     struct PathOverrides {
-        _lock: tokio::sync::MutexGuard<'static, ()>,
+        dirs: Arc<hypercolor_core::config::paths::IsolatedUserDirs>,
     }
 
     impl PathOverrides {
-        async fn install(root: &std::path::Path) -> Self {
-            let lock = PATH_OVERRIDES.lock().await;
-            ConfigManager::set_config_dir_override(Some(root.join("config")));
-            ConfigManager::set_data_dir_override(Some(root.join("data")));
-            Self { _lock: lock }
+        fn install(root: &std::path::Path) -> Self {
+            Self {
+                dirs: hypercolor_core::config::paths::IsolatedUserDirs::claim(root),
+            }
         }
-    }
 
-    impl Drop for PathOverrides {
-        fn drop(&mut self) {
-            ConfigManager::set_data_dir_override(None);
-            ConfigManager::set_config_dir_override(None);
+        fn host(&self) -> HostPorts {
+            HostPorts::isolated(&self.dirs)
         }
     }
 
@@ -1696,16 +1692,19 @@ mod tests {
     #[tokio::test]
     async fn api_ready_hooks_receive_the_serving_state_in_registration_order() {
         let directory = tempfile::tempdir().expect("daemon test directory should be created");
-        let _paths = PathOverrides::install(directory.path()).await;
+        let paths = PathOverrides::install(directory.path());
         let mut config = default_config();
         config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
         let config_manager = Arc::new(ConfigManager::from_config_unchecked(
             directory.path().join("hypercolor.toml"),
             config.clone(),
         ));
-        let mut daemon =
-            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
-                .expect("daemon test state should initialize");
+        let mut daemon = DaemonState::initialize(
+            BootConfig::from_config_unchecked(config),
+            config_manager,
+            paths.host(),
+        )
+        .expect("daemon test state should initialize");
         let state = Arc::new(AppState::new_with_data_dir(directory.path().join("api")));
         let calls = Arc::new(Mutex::new(Vec::new()));
         for name in ["first", "second"] {
@@ -1739,16 +1738,19 @@ mod tests {
     #[tokio::test]
     async fn extension_installers_observe_the_same_resolved_ui_directory_as_the_router() {
         let directory = tempfile::tempdir().expect("daemon test directory should be created");
-        let _paths = PathOverrides::install(directory.path()).await;
+        let paths = PathOverrides::install(directory.path());
         let mut config = default_config();
         config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
         let config_manager = Arc::new(ConfigManager::from_config_unchecked(
             directory.path().join("hypercolor.toml"),
             config.clone(),
         ));
-        let mut daemon =
-            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
-                .expect("daemon test state should initialize");
+        let mut daemon = DaemonState::initialize(
+            BootConfig::from_config_unchecked(config),
+            config_manager,
+            paths.host(),
+        )
+        .expect("daemon test state should initialize");
         let observed = Arc::new(Mutex::new(None));
         let probe = UiDirProbe(Arc::clone(&observed));
         let ui_dir = directory.path().join("ui");
@@ -2010,16 +2012,19 @@ mod tests {
     #[tokio::test]
     async fn extension_installers_observe_the_bound_api_addresses() {
         let directory = tempfile::tempdir().expect("daemon test directory should be created");
-        let _paths = PathOverrides::install(directory.path()).await;
+        let paths = PathOverrides::install(directory.path());
         let mut config = default_config();
         config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
         let config_manager = Arc::new(ConfigManager::from_config_unchecked(
             directory.path().join("hypercolor.toml"),
             config.clone(),
         ));
-        let mut daemon =
-            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
-                .expect("daemon test state should initialize");
+        let mut daemon = DaemonState::initialize(
+            BootConfig::from_config_unchecked(config),
+            config_manager,
+            paths.host(),
+        )
+        .expect("daemon test state should initialize");
         assert!(daemon.api_listen_addresses().is_empty());
         assert!(!daemon.api_bind_overridden_at_launch());
 

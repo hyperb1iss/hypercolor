@@ -1,20 +1,20 @@
-//! The manifest a Windows release unit carries (RFC 57, B1.3).
+//! The manifest a Windows release unit carries (RFC 57, B1.3 and B2.5).
 //!
 //! A Windows unit is the installed application tree: the app, daemon and
 //! CLI programs at its root beside their DLLs, with the UI, bundled effects
 //! and tools beneath. Members carry a permission class instead of a unix
 //! mode, and every path component is a name the Win32 layer reads the way
-//! the handle-relative store does. The unit's identity is the SHA-256 of
-//! these exact bytes.
+//! the handle-relative store does. The manifest also names each program
+//! that keeps its vendor's own signature instead of ours. The unit's
+//! identity is the SHA-256 of these exact bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 
-use hypercolor_platform_fs::windows_child_name_is_valid;
-use serde::Deserialize;
+use hypercolor_platform_fs::windows_file_name_is_valid;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::payload::ReleasePayloadError;
+use super::error::ReleasePayloadError;
 use crate::model::UnitId;
 
 /// Maximum accepted byte length of `manifest.json`.
@@ -27,6 +27,8 @@ pub const MAX_RELEASE_PATH_BYTES: usize = 1024;
 pub const MAX_RELEASE_MEMBER_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Maximum combined size of all files described by one release manifest.
 pub const MAX_RELEASE_PAYLOAD_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+/// Maximum number of programs one manifest lists as vendor-signed.
+pub const MAX_VENDOR_SIGNED: usize = 32;
 
 pub(super) const MANIFEST_NAME: &str = "manifest.json";
 const MAX_IDENTITY_BYTES: usize = 128;
@@ -40,7 +42,7 @@ const REQUIRED_PROGRAMS: [&str; 3] = [
 const REQUIRED_ASSET_DIRECTORIES: [&str; 2] = ["ui", "effects/bundled"];
 
 /// How an installed member may be used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionClass {
     /// Code the release runs: everyone who may read the unit may also
@@ -50,13 +52,35 @@ pub enum PermissionClass {
     Data,
 }
 
+/// Whose signature a redistributed program keeps. Every other program in a
+/// unit carries ours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsVendor {
+    /// Microsoft, which signs the Visual C++ runtime the programs load.
+    Microsoft,
+    /// PawnIO's author, who signs the PawnIO setup program.
+    Pawnio,
+}
+
+/// A parsed unit manifest. Elsewhere only the producer reads one, for its
+/// digest and vendor list; the tree it describes is what the Windows store
+/// stages and proves.
 #[derive(Debug)]
 pub(super) struct ValidatedManifest {
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(super) bytes: Vec<u8>,
     pub(super) unit_id: UnitId,
+    /// The release version the manifest states.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(super) version: String,
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(super) members: BTreeMap<String, Member>,
     /// Child names of every directory member, the root as "".
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(super) children: BTreeMap<String, Vec<String>>,
+    /// Programs that keep their vendor's signature, by member path.
+    pub(super) vendor_signed: BTreeMap<String, WindowsVendor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +114,14 @@ struct RawManifest {
     rust_target: String,
     programs: Vec<String>,
     members: Vec<RawMember>,
+    vendor_signed: Vec<RawVendorSigned>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawVendorSigned {
+    path: String,
+    vendor: WindowsVendor,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,7 +170,7 @@ impl RawManifest {
         let mut total_size = 0_u64;
         for raw in self.members {
             let path = validate_member_path(&raw.path)?;
-            if !folded.insert(path.to_lowercase()) {
+            if !folded.insert(fold_case(&path)) {
                 return invalid(format!(
                     "manifest member {path} repeats a path a case-insensitive volume merges"
                 ));
@@ -200,6 +232,8 @@ impl RawManifest {
             }
         }
 
+        let vendor_signed = validate_vendor_signed(self.vendor_signed, &members)?;
+
         let digest = hex::encode(Sha256::digest(&bytes));
         let unit_id = UnitId::new(digest).map_err(|error| {
             ReleasePayloadError::InvalidManifest(format!("invalid manifest digest: {error}"))
@@ -207,10 +241,50 @@ impl RawManifest {
         Ok(ValidatedManifest {
             bytes,
             unit_id,
+            version: self.version,
             members,
             children,
+            vendor_signed,
         })
     }
+}
+
+/// Require every vendor-signed entry to name a distinct program file of the
+/// unit, within the bound a signed release entry may list.
+fn validate_vendor_signed(
+    entries: Vec<RawVendorSigned>,
+    members: &BTreeMap<String, Member>,
+) -> Result<BTreeMap<String, WindowsVendor>, ReleasePayloadError> {
+    if entries.len() > MAX_VENDOR_SIGNED {
+        return invalid(format!(
+            "manifest lists more than {MAX_VENDOR_SIGNED} vendor-signed programs"
+        ));
+    }
+    let mut vendor_signed = BTreeMap::new();
+    for entry in entries {
+        if !matches!(
+            members.get(&entry.path),
+            Some(Member::File {
+                class: PermissionClass::Program,
+                ..
+            })
+        ) {
+            return invalid(format!(
+                "vendor-signed {:?} is not a program file of the unit",
+                entry.path
+            ));
+        }
+        if vendor_signed
+            .insert(entry.path.clone(), entry.vendor)
+            .is_some()
+        {
+            return invalid(format!(
+                "vendor-signed {:?} is listed more than once",
+                entry.path
+            ));
+        }
+    }
+    Ok(vendor_signed)
 }
 
 impl RawMember {
@@ -236,6 +310,14 @@ impl RawMember {
     }
 }
 
+/// A path as a case-insensitive Windows volume compares it. NTFS folds each
+/// UTF-16 unit to its uppercase form, so `ς` and `σ` name one entry even
+/// though their lowercase forms differ. Full Unicode uppercasing also merges
+/// a few names NTFS keeps apart (`ß` with `SS`), which only refuses more.
+pub(super) fn fold_case(path: &str) -> String {
+    path.chars().flat_map(char::to_uppercase).collect()
+}
+
 /// Split a member path into its parent ("" at the root) and final name.
 pub(super) fn split_parent(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
@@ -244,10 +326,8 @@ pub(super) fn split_parent(path: &str) -> (&str, &str) {
 fn validate_member_path(path: &str) -> Result<String, ReleasePayloadError> {
     let valid = !path.is_empty()
         && path.len() <= MAX_RELEASE_PATH_BYTES
-        && !path.eq_ignore_ascii_case(MANIFEST_NAME)
-        && path
-            .split('/')
-            .all(|name| !name.is_empty() && windows_child_name_is_valid(OsStr::new(name)));
+        && fold_case(path) != fold_case(MANIFEST_NAME)
+        && path.split('/').all(windows_file_name_is_valid);
     if valid {
         Ok(path.to_owned())
     } else {
@@ -275,3 +355,7 @@ fn valid_sha256(value: &str) -> bool {
 fn invalid<T>(message: impl Into<String>) -> Result<T, ReleasePayloadError> {
     Err(ReleasePayloadError::InvalidManifest(message.into()))
 }
+
+#[cfg(test)]
+#[path = "manifest_tests.rs"]
+mod tests;

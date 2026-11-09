@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_query_map;
-use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
+use leptos_use_intersection_observer::{
+    UseIntersectionObserverOptions, use_intersection_observer_with_options,
+};
+use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -235,6 +238,34 @@ pub fn SettingsPage() -> impl IntoView {
         members: Vec<&'static str>,
     }
 
+    // On a phone only a few tabs fit, so the strip follows the scroll spy:
+    // the active tab slides to the middle as its section scrolls by.
+    let tab_strip_ref = NodeRef::<leptos::html::Div>::new();
+    let phone = crate::viewport::is_phone_layout();
+    Effect::new(move |_| {
+        active_section.track();
+        if !phone.get() {
+            return;
+        }
+        request_animation_frame(move || {
+            let Some(strip) = tab_strip_ref.try_get_untracked().flatten() else {
+                return;
+            };
+            let Ok(Some(tab)) = strip.query_selector("[aria-current=true]") else {
+                return;
+            };
+            let Ok(tab) = tab.dyn_into::<web_sys::HtmlElement>() else {
+                return;
+            };
+            let target = f64::from(tab.offset_left())
+                - (f64::from(strip.client_width()) - f64::from(tab.offset_width())) / 2.0;
+            let options = web_sys::ScrollToOptions::new();
+            options.set_left(target.max(0.0));
+            options.set_behavior(web_sys::ScrollBehavior::Smooth);
+            strip.scroll_to_with_scroll_to_options(&options);
+        });
+    });
+
     let mut tabs = vec![
         TabEntry {
             id: "audio",
@@ -296,7 +327,10 @@ pub fn SettingsPage() -> impl IntoView {
                     </div>
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    <div class="flex items-center gap-0.5 w-full h-full overflow-x-auto scrollbar-none">
+                    <div
+                        node_ref=tab_strip_ref
+                        class="flex items-center gap-0.5 w-full h-full overflow-x-auto scrollbar-none max-md:edge-fade-x"
+                    >
                         {tabs.into_iter().map(|tab| {
                             let id = tab.id;
                             let members = tab.members.clone();
@@ -324,6 +358,7 @@ pub fn SettingsPage() -> impl IntoView {
                                 // so the light theme stays legible.
                                 <button
                                     class="accent-yellow flex items-center gap-1.5 px-3 h-full text-[13px] shrink-0 relative transition-colors duration-200 cursor-pointer"
+                                    aria-current=move || is_active.get().then_some("true")
                                     class=("text-fg-primary", is_active)
                                     class=("text-fg-tertiary/60", move || !is_active.get())
                                     on:click=move |_| scroll_to(id)
@@ -352,7 +387,7 @@ pub fn SettingsPage() -> impl IntoView {
             </PageHeader>
 
             // Scrollable content
-            <div class="ambient-scroll flex-1 overflow-y-auto scroll-smooth" style:--ambient-hue=crate::ambient::hue_style()>
+            <div class="ambient-scroll page-scroll flex-1 overflow-y-auto scroll-smooth" style:--ambient-hue=crate::ambient::hue_style()>
                 // Loading skeleton
                 {move || {
                     if !config_loaded.get() {

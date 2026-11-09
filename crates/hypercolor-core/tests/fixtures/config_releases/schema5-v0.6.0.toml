@@ -1,0 +1,165 @@
+schema_version = 5
+
+[daemon]
+listen_address = "127.0.0.1"
+port = 9420
+unix_socket = true
+target_fps = 30
+canvas_width = 640
+canvas_height = 480
+max_devices = 32
+log_level = "info"
+log_file = ""
+start_scene = "last"
+shutdown_behavior = "hardware_default"
+shutdown_color = "#1a1a2e"
+state_history_generations = 10
+state_history_min_interval_secs = 30
+
+[web]
+enabled = true
+open_browser = false
+cors_origins = []
+websocket_fps = 30
+interactive_preview_resource_bytes = 1073741824
+
+[mcp]
+enabled = false
+base_path = "/mcp"
+stateful_mode = true
+json_response = false
+sse_keep_alive_secs = 15
+
+[effect_engine]
+preferred_renderer = "auto"
+servo_enabled = true
+wgpu_backend = "auto"
+compositor_acceleration_mode = "auto"
+effect_error_fallback = "none"
+extra_effect_dirs = []
+watch_effects = true
+watch_config = true
+
+[rendering.servo_gpu_import]
+mode = "auto"
+
+[media]
+max_video_producers = 2
+max_livestream_producers = 1
+stream_private_network_allowlist = []
+
+[audio]
+enabled = true
+device = "default"
+fft_size = 1024
+smoothing = 0.8
+noise_gate = 0.02
+beat_sensitivity = 0.6
+
+[capture]
+enabled = false
+source = "auto"
+capture_fps = 30
+cadence = "fixed"
+grid_cols = 8
+grid_rows = 6
+smoothing = 0.3
+scene_cut_threshold = 100.0
+letterbox = false
+letterbox_threshold = 0.02
+saturation = 1.0
+brightness = 1.0
+gamma = 1.0
+target_led_white_x = 0.3127
+target_led_white_y = 0.329
+target_led_reference_white_nits = 203.0
+target_led_peak_nits = 406.0
+exposure_ev = 0.0
+
+[input]
+enabled = false
+keyboard = true
+mouse = true
+daemon_route = "host"
+preview_route = "browser"
+
+[display]
+face_fps_cap = 30
+
+[discovery]
+background_enabled = true
+mdns_enabled = true
+scan_interval_secs = 300
+blocks_scan = true
+
+[network]
+access_mode = "local_only"
+client_scope = "local_subnets"
+mdns_publish = true
+remote_access = false
+allow_unauthenticated_remote_access = false
+allowed_clients = []
+
+[drivers.asus]
+enabled = true
+
+[drivers.corsair]
+enabled = true
+
+[drivers.dygma]
+enabled = true
+
+[drivers.govee]
+enabled = true
+
+[drivers.hue]
+enabled = true
+
+[drivers.lianli]
+enabled = true
+
+[drivers.nanoleaf]
+enabled = true
+
+[drivers.nollie]
+enabled = true
+
+[drivers.openrgb]
+enabled = false
+
+[drivers.prismrgb]
+enabled = true
+
+[drivers.push2]
+enabled = true
+
+[drivers.qmk]
+enabled = true
+
+[drivers.razer]
+enabled = true
+
+[drivers.wled]
+enabled = true
+
+[session]
+enabled = true
+idle_enabled = true
+idle_backend = "auto"
+idle_dim_timeout_secs = 120
+idle_off_timeout_secs = 600
+off_output_behavior = "static"
+off_output_color = "#000000"
+on_screen_lock = "ignore"
+screen_lock_brightness = 0.0
+screen_lock_scene = ""
+screen_lock_fade_ms = 2000
+screen_unlock_fade_ms = 500
+on_suspend = "off"
+suspend_fade_ms = 300
+resume_fade_ms = 150
+on_lid_close = "off"
+lid_close_brightness = 0.0
+lid_close_scene = ""
+lid_close_fade_ms = 500
+lid_open_fade_ms = 300

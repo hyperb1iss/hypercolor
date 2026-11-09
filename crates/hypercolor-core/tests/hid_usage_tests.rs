@@ -2,6 +2,7 @@
 //! observations.
 
 use hypercolor_core::device::{HidUsageIndex, UsbObservation};
+use hypercolor_hal::transport::TransportError;
 use hypercolor_hal::transport::hidapi::HidCollectionInfo;
 
 const CONSUMER: u16 = 0x000C;
@@ -18,6 +19,7 @@ fn unit(product_id: u16, serial: Option<&str>, bus_path: &str) -> UsbObservation
         device_class: 0,
         interface_classes: vec![0x03],
         descriptor_driver_id: None,
+        descriptor_experimental: false,
         hid_usage_pages: Vec::new(),
     }
 }
@@ -215,17 +217,28 @@ fn nothing_is_known_without_collections_or_hid_interfaces() {
 }
 
 #[test]
-fn a_live_enumeration_joins_nothing_onto_a_device_it_never_saw() {
-    // Whatever this host exposes, or if its HID stack refuses to start, no
-    // collection carries this reserved vendor ID.
+fn an_enumeration_joins_nothing_onto_a_device_it_never_saw() {
+    // Neither a populated enumeration nor a HID stack that refused to start
+    // vouches for a device none of its collections belong to. Fixture
+    // collections stand in for the host, which a test never enumerates.
     let mut ghost = unit(0x0000, None, "9-9.9");
     ghost.vendor_id = 0xFFFF;
     ghost.product_id = 0xFFFF;
+    let enumerated = HidUsageIndex::from_enumeration(Ok(vec![
+        collection(0x48F0, Some(0), CONSUMER),
+        at_path(collection(0x48F1, Some(1), GENERIC_DESKTOP), "1-1.2"),
+    ]));
+    let refused = HidUsageIndex::from_enumeration(Err(TransportError::IoError {
+        detail: "HID stack unavailable".to_owned(),
+    }));
 
+    assert!(enumerated.usage_pages_for(&ghost, &[0], false).is_empty());
+    assert!(refused.usage_pages_for(&ghost, &[0], false).is_empty());
     assert!(
-        HidUsageIndex::enumerate()
-            .usage_pages_for(&ghost, &[0], false)
-            .is_empty()
+        refused
+            .usage_pages_for(&unit(0x48F0, None, "1-1.2"), &[0], false)
+            .is_empty(),
+        "a failed enumeration knows no device's usage pages"
     );
 }
 

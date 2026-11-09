@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
@@ -154,7 +156,7 @@ impl QueuedTaskConversion for SharedWorkerScriptMsg {
 
 unsafe_no_jsmanaged_fields!(TaskQueue<SharedWorkerScriptMsg>);
 
-// https://html.spec.whatwg.org/multipage/#shared-workers-and-the-sharedworkerglobalscope-interface
+/// <https://html.spec.whatwg.org/multipage/#shared-workers-and-the-sharedworkerglobalscope-interface>
 #[dom_struct]
 pub(crate) struct SharedWorkerGlobalScope {
     workerglobalscope: WorkerGlobalScope,

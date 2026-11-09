@@ -42,7 +42,7 @@ pub(in crate::api::config) async fn apply_input_config_change(
     // Only the host hardware source is consent-gated; the browser injection
     // source is always registered and must survive enable/disable toggles.
     let had_source = input_manager.has_host_capture_source();
-    let mut replacement = crate::startup::services::build_interaction_source(&input);
+    let mut replacement = (state.capabilities.interaction_source)(&input);
 
     // Rebuild on any change so keyboard/mouse toggles apply, not just enable
     // and disable.

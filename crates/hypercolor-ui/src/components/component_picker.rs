@@ -10,7 +10,7 @@ use hypercolor_leptos_ext::prelude::{
 };
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
-use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
+use leptos_use_event_listener::{UseEventListenerOptions, use_event_listener_with_options};
 
 use crate::api;
 use crate::icons::*;

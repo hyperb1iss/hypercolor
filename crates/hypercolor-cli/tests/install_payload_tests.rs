@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
-use hypercolor_cli::install::bind_macos_release_provenance;
-use hypercolor_cli::install::{
+use hypercolor_install::bind_macos_release_provenance;
+use hypercolor_install::{
     InstallLock, InstallStore, MAX_RELEASE_MANIFEST_BYTES, ReleasePayloadError, UnitId, UnitRecord,
     copy_installed_release_unit, retain_linux_unit, stage_release_payload,
     stage_release_payload_from_authority, validate_release_payload,
@@ -1254,7 +1254,7 @@ fn installed_copy_crosses_filesystems_without_renaming_source() {
 
 #[test]
 fn cold_recorded_prior_selects_exact_historical_path_and_original_inode() {
-    use hypercolor_cli::install::{
+    use hypercolor_install::{
         LinuxInstallExecutor as _, LinuxNativeExecutor, LinuxPublicTree, LinuxSystemdConnection,
     };
     let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("owned home");
@@ -1363,8 +1363,8 @@ fn cold_prior_binding(unit: &UnitRecord, store: &InstallStore) -> Value {
         "daemon_inode": metadata.ino(), "version": "0.3.2"})
 }
 
-fn cold_prior_record(binding: &Value) -> hypercolor_cli::install::PlatformTransactionRecord {
-    hypercolor_cli::install::PlatformTransactionRecord::linux(
+fn cold_prior_record(binding: &Value) -> hypercolor_install::PlatformTransactionRecord {
+    hypercolor_install::PlatformTransactionRecord::linux(
         1,
         serde_json::to_vec(&json!({
             "candidate": binding, "prior": binding,

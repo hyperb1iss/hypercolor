@@ -3,16 +3,19 @@
 //! Keypads (Tartarus), headsets (Kraken, Tiamat), microphones (Seiren),
 //! speakers (Nommo, Leviathan), docks and hubs (Mouse Dock, Base Station,
 //! Thunderbolt Dock, Charging Pad, Mouse Bungee, Laptop Stand, Mug Holder),
-//! enclosures (Core, Chroma PC Case Lighting Kit, Chroma HDK), and
-//! case-mounted Razer Edition gear.
+//! enclosures and cases (Core, Core X Chroma, Tomahawk ATX, Chroma PC Case
+//! Lighting Kit, Chroma HDK), the Chroma Addressable RGB Controller, monitors
+//! (Raptor 27), and case-mounted Razer Edition gear.
 
 use crate::registry::DeviceDescriptor;
 
 use super::{
     HID_REPORT_ID_ALT_0X07, HID_REPORT_ID_DEFAULT, PID_KRAKEN_ULTIMATE, PID_SEIREN_EMOTE,
     PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_CONSUMER_USAGE, RAZER_CONSUMER_USAGE_PAGE,
-    RAZER_VENDOR_USAGE, RAZER_VENDOR_USAGE_PAGE, build_kraken_ultimate_protocol,
-    build_matrix_extended_extended_1x12_backlight_protocol,
+    RAZER_VENDOR_USAGE, RAZER_VENDOR_USAGE_PAGE, build_core_x_chroma_protocol,
+    build_kraken_chroma_protocol, build_kraken_kitty_v2_protocol,
+    build_kraken_tournament_edition_protocol, build_kraken_ultimate_protocol,
+    build_kraken_v2_protocol, build_matrix_extended_extended_1x12_backlight_protocol,
     build_matrix_extended_extended_1x15_zero_protocol,
     build_matrix_extended_extended_1x17_backlight_protocol,
     build_matrix_extended_extended_2x8_backlight_protocol,
@@ -27,8 +30,9 @@ use super::{
     build_matrix_extended_modern_2x9_zero_protocol, build_matrix_extended_modern_4x6_zero_protocol,
     build_matrix_extended_modern_4x16_zero_protocol,
     build_matrix_linear_extended_1x15_backlight_device_mode_protocol,
-    build_matrix_standard_extended_1x9_backlight_protocol, build_seiren_emote_protocol,
-    build_seiren_v3_protocol, build_tartarus_chroma_protocol, hidapi_descriptor, kraken_descriptor,
+    build_matrix_standard_extended_1x9_backlight_protocol, build_raptor_27_protocol,
+    build_seiren_emote_protocol, build_seiren_v3_protocol, build_tartarus_chroma_protocol,
+    build_tomahawk_atx_protocol, chroma_argb_descriptor, hidapi_descriptor, kraken_descriptor,
     push_hidapi_group,
 };
 
@@ -73,6 +77,44 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
         "razer/kraken-ultimate",
         build_kraken_ultimate_protocol,
     ));
+    descriptors.push(
+        kraken_descriptor(
+            0x0510,
+            "Razer Kraken 7.1 V2",
+            "razer/kraken-v2",
+            build_kraken_v2_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        kraken_descriptor(
+            0x0520,
+            "Razer Kraken Tournament Edition",
+            "razer/kraken-tournament-edition",
+            build_kraken_tournament_edition_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        kraken_descriptor(
+            0x0560,
+            "Razer Kraken Kitty V2",
+            "razer/kraken-kitty-v2",
+            build_kraken_kitty_v2_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        kraken_descriptor(
+            0x0504,
+            "Razer Kraken 7.1 Chroma",
+            "razer/kraken-7-1-chroma",
+            build_kraken_chroma_protocol,
+        )
+        .experimental(),
+    );
+
+    descriptors.push(chroma_argb_descriptor());
 
     push_hidapi_group(
         descriptors,
@@ -257,5 +299,51 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
             (0x0F21, "Razer Thunderbolt 4 Dock Chroma"),
             (0x0F52, "Razer Thunderbolt 5 Dock Chroma"),
         ],
+    );
+
+    // OpenRazer-only accessories. OpenRazer addresses every accessory
+    // report to interface 0 (wIndex 0) whichever interface its HID driver
+    // binds, so these open the interface 0 node without a usage filter.
+    descriptors.push(
+        hidapi_descriptor(
+            0x0F17,
+            "Razer Tomahawk ATX",
+            "razer/tomahawk-atx",
+            Some(0),
+            HID_REPORT_ID_DEFAULT,
+            None,
+            None,
+            build_tomahawk_atx_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        hidapi_descriptor(
+            0x0F12,
+            "Razer Raptor 27",
+            "razer/raptor-27",
+            Some(0),
+            HID_REPORT_ID_DEFAULT,
+            None,
+            None,
+            build_raptor_27_protocol,
+        )
+        .experimental(),
+    );
+
+    // OpenRGB's detector for the Core X Chroma names interface 2 and the
+    // generic desktop mouse usage, like the other enclosures above.
+    descriptors.push(
+        hidapi_descriptor(
+            0x0F1A,
+            "Razer Core X Chroma",
+            "razer/core-x-chroma",
+            Some(2),
+            HID_REPORT_ID_DEFAULT,
+            Some(0x0001),
+            Some(0x0002),
+            build_core_x_chroma_protocol,
+        )
+        .experimental(),
     );
 }

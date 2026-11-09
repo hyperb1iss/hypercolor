@@ -8,6 +8,7 @@
 mod backend;
 mod config;
 mod controls;
+mod delivery;
 mod descriptor;
 mod discovery;
 mod driver_discovery;
@@ -18,22 +19,29 @@ mod module;
 mod pairing;
 
 pub use backend::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryObserver,
+    DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy, OutputPolicy,
 };
 pub use config::{DriverConfigProvider, DriverConfigView};
 pub use controls::{
     BackendRebindActions, ControlApplyTarget, DeviceControlStore, DriverControlHost,
     DriverControlProvider, DriverControlStore, DriverLifecycleActions, ValidatedControlChanges,
 };
+pub use delivery::{
+    Attempt, DeliveryResult, DeviceDeliveryId, Frame, FrameObserver, IoStage, MailboxFrame,
+    PeerDisposition, Readiness, Receipt, ReceiptWait, SkipReason, Submission, Transmission,
+};
 pub use descriptor::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor};
 pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
-pub use driver_discovery::{DiscoveryCapability, DiscoveryRequest};
+pub use driver_discovery::{
+    CoverageGap, DiscoveryBatch, DiscoveryCapability, DiscoveryCoverage, DiscoveryObservation,
+    DiscoveryRequest,
+};
 pub use error::{DriverError, ErrorRecoverability};
 pub use host::{
-    DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
-    DriverTrackedDevice, TrackedDeviceCtx,
+    DriverConfigSource, DriverContext, DriverContextProvider, DriverCredentialStore,
+    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice, InstallationId,
+    TrackedDeviceCtx,
 };
 pub use input::{DeviceInputPublisher, DeviceInputSink};
 pub use module::{

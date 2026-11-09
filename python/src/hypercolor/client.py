@@ -129,7 +129,7 @@ from .models import (
     DeviceSummary,
     DiagnoseResponse,
     DisplayFaceResponse,
-    DisplaySummaryListItem,
+    DisplaySummary,
     DriverSummary,
     EffectCoverImage,
     EffectPlaylist,
@@ -643,7 +643,7 @@ class HypercolorClient:
         if params:
             kwargs["params"] = params
         payload = await self._generated_payload(kwargs)
-        surfaces = payload.get("surfaces") if isinstance(payload, dict) else None
+        surfaces = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(surfaces, list):
             return []
         return [
@@ -1084,9 +1084,9 @@ class HypercolorClient:
             ActivatePlaylistResponse.from_dict,
         )
 
-    async def list_displays(self) -> list[DisplaySummaryListItem]:
+    async def list_displays(self) -> list[DisplaySummary]:
         """List devices that expose display faces."""
-        return await self._request_list("GET", "/displays", DisplaySummaryListItem.from_dict)
+        return await self._request_items("GET", "/displays", DisplaySummary.from_dict)
 
     async def set_display_face(
         self,
@@ -1260,22 +1260,6 @@ class HypercolorClient:
         data = self._unwrap_data(response)
         items = data["items"] if isinstance(data, dict) else []
         return [self._decode(item, decoder) for item in items]
-
-    async def _request_list(
-        self,
-        method: str,
-        path: str,
-        decoder: Callable[[Mapping[str, Any]], ModelT],
-        *,
-        body: Mapping[str, Any] | None = None,
-        params: Mapping[str, Any] | None = None,
-    ) -> list[ModelT]:
-        response = await self._raw_request(method, path, body=body, params=params)
-        data = self._unwrap_data(response)
-        if not isinstance(data, list):
-            message = "Unexpected Hypercolor list response"
-            raise HypercolorApiError(message)
-        return [self._decode(item, decoder) for item in data]
 
     async def _request_model(
         self,

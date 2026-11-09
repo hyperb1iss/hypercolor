@@ -15,6 +15,7 @@ const GENERIC_CHANNEL_PROTOCOL_IDS: &[&str] = &[
     "nollie/nollie-32-nos2",
     "nollie/nollie-32-nos2-alt",
     "prismrgb/prism-mini",
+    "razer/chroma-argb-controller",
 ];
 
 #[must_use]
@@ -43,9 +44,10 @@ pub fn normalize_attachment_profile_slots(
 /// Offer fan, AIO, heatsink, and ring templates on strip slots that are really
 /// ARGB headers.
 ///
-/// A generic channel controller (Nollie, Prism Mini) reports every header as a
-/// strip because the controller cannot see what is plugged in. The same is
-/// true one level up for any bridged controller: the bridge relays whatever
+/// A generic channel controller (Nollie, Prism Mini, the Razer Chroma
+/// Addressable RGB Controller) reports every header as a strip because the
+/// controller cannot see what is plugged in. The same is true one level up
+/// for any bridged controller: the bridge relays whatever
 /// zone shape the external server reports, and OpenRGB models hub channels as
 /// resizable strips. In both cases the person wiring the rig knows a fan ring
 /// hangs off the header, so the slot must accept fan-class templates or the

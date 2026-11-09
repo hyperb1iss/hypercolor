@@ -12,6 +12,12 @@ Hypercolor talks to RGB hardware through two parallel systems: a **Hardware Abst
 
 This section covers how the transport stack is organized, what device families are supported, and how to get each one working. The [compatibility matrix](@/hardware/compatibility.md) is the authoritative device list; start there if you want to confirm whether your hardware is supported.
 
+### Supported, verified, and experimental
+
+"Supported" in the matrix means a Hypercolor driver exists for the device. Its **Verified** column says whether anyone has confirmed that driver on the real thing: **Hardware** when a maintainer ran it, **Community** when a user reported it working, and **Unverified** when the driver was built from a protocol spec or captures and is waiting for its first owner to try it. Unverified devices are enabled like any other, so if you own one, you are probably the first to test it, and an issue saying it works (or doesn't) moves it along.
+
+Drivers written for hardware nobody has run yet also carry an `experimental` label. It changes nothing at runtime; you see it as `stability` in `GET /api/v1/drivers`, as `experimental` on a device in `GET /api/v1/devices`, and in the Tier column of `hypercolor drivers list`. Code with a known safety risk, such as a protocol path that could take over your keyboard's input driver, is not shipped at all until that risk is fixed.
+
 ---
 
 ## Device categories
@@ -36,6 +42,10 @@ Transport types live in the `TransportType` enum in `hal/src/registry.rs` and ar
 
 Getting USB devices working on Linux requires udev rules. Getting SMBus/I2C devices working on Linux requires the `i2c-dev` kernel module and correct permissions on `/dev/i2c-*`. These are separate permission paths with separate failure modes. See [USB devices](@/hardware/usb-devices.md) and [SMBus/I2C](@/hardware/smbus-i2c.md) for each.
 
+### Serial LED controllers
+
+DIY strips behind an Arduino, ESP8266, ESP32, or RP2040 running Adalight or HyperSerial (AWA) firmware are driven by the `adalight` driver crate. These boards use generic USB-serial chips, so they are never detected by USB id: you list each board's port, baud rate, protocol, and LED count in the config, and Hypercolor opens only those ports. Output is paced to what the serial line can carry. See [Adalight serial controllers](@/hardware/adalight.md).
+
 ### Network devices
 
 Network drivers live in separate crates behind the `hypercolor-driver-api` trait boundary. The `hypercolor-network` crate provides only the registry and orchestration shell; protocol logic belongs to each driver crate. Current network backends:
@@ -46,9 +56,14 @@ Network drivers live in separate crates behind the `hypercolor-driver-api` trait
 | Nanoleaf | HTTP pairing + UDP External Control | mDNS `_nanoleafapi._tcp.local.` | Hold power button 5-7 s to enter pairing mode |
 | WLED | DDP (default) or E1.31/sACN | mDNS `_wled._tcp.local.` | No authentication needed |
 | Govee | LAN UDP + optional cloud API | UDP multicast `239.255.255.250:4001` | LAN control must be enabled in the Govee Home app first |
+| Pixel controllers | E1.31 (sACN), Art-Net 4, or DDP over unicast UDP | None: devices are listed in config | Falcon, FPP, ESPixelStick, and DMX nodes; experimental |
+| LIFX | LIFX LAN protocol over UDP | UDP broadcast `GetService` to port 56700 | No authentication; experimental, not yet verified on hardware |
+| Twinkly | Local REST API + real-time UDP frames | UDP broadcast discovery datagram to port 5555 | No pairing; experimental, not yet verified on hardware |
+| WiZ | Local UDP JSON (`setPilot`) | UDP broadcast registration to port 38899 | No pairing; homes with verified controls need the signing key; experimental |
+| Yeelight | LAN Control: TCP JSON plus music mode | SSDP-style search to `239.255.255.250:1982` | LAN Control must be enabled per light in the Yeelight app; experimental |
 | OpenRGB bridge | OpenRGB SDK over TCP | Connects on demand to the Hypercolor-managed server on `127.0.0.1:6742` | Fallback bridge; drives only hardware no enabled native driver covers; disabled by default |
 
-The ROLI Blocks bridge is a fifth registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
+The ROLI Blocks bridge is another registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
 
 See [network devices](@/hardware/network-devices.md) for the setup overview, then follow the per-vendor guide for pairing details.
 
@@ -72,12 +87,17 @@ graph TD
     S -->|per-zone colors| BM[BackendManager]
     BM --> HAL[hypercolor-hal]
     BM --> NET[Network drivers]
+    BM --> ADA[Adalight serial]
     HAL --> USB[USB transports]
     HAL --> SMB[SMBus transport]
     NET --> HUE[Hue DTLS :2100]
     NET --> NL[Nanoleaf UDP :60222]
     NET --> WLED[WLED DDP :4048]
     NET --> GV[Govee LAN UDP :4003]
+    NET --> LX[LIFX LAN UDP :56700]
+    NET --> TW[Twinkly real-time UDP :7777]
+    NET --> WZ[WiZ UDP :38899]
+    NET --> YL[Yeelight TCP :55443]
     NET --> ORG[OpenRGB SDK :6742]
     USB --> Razer[Razer peripherals]
     USB --> Corsair[Corsair devices]
@@ -87,7 +107,7 @@ graph TD
     SMB --> ASUS_SMB[ASUS motherboard / GPU / DRAM]
 {% </mermaid> %}
 
-Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
+Device fingerprints are stable across reconnects. USB devices key on VID/PID plus descriptor heuristics. Network devices key on the identity the hardware reports, usually a MAC address or serial (`net:<driver>:<id>`), or on the bridge serial for Hue and Nanoleaf, so a DHCP IP change does not lose pairing. Adalight serial boards key on the `id` from their config entry (`usb:adalight:<id>`), so moving a board to another port keeps its layout.
 
 ---
 
@@ -98,7 +118,7 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | Family | Transport | Highlights | Status |
 |---|---|---|---|
 | **Razer** | USB HID | Keyboards, mice, mousepads, laptops, headsets | Supported |
-| **Corsair** | USB HID | Peripherals (Bragi + legacy HID), Lighting Node, iCUE LINK hub, LCD modules | Supported |
+| **Corsair** | USB HID | Peripherals (Bragi and NXP/CUE), Lighting Node, iCUE LINK hub, LCD modules | Supported |
 | **ASUS** | USB HID + SMBus/I2C | Aura USB peripherals; motherboard/GPU/DRAM Aura over SMBus | Supported |
 | **Lian Li** | USB HID / USB Vendor | Uni Hub (ENE), TL Fan Hub; AL firmware 1.0 uses vendor transport, 1.7 uses HID | Supported |
 | **PrismRGB** | USB HID | Custom chunked protocol; Prism 8 is a Nollie 8 v2 rebrand | Supported |
@@ -109,11 +129,16 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **Nanoleaf** | Network / UDP | mDNS discovery, token pairing, UDP External Control | Supported |
 | **WLED** | Network / UDP | DDP and E1.31/sACN; RGB and RGBW; no authentication | Supported |
 | **Govee** | Network / UDP + Cloud | LAN UDP control; optional cloud API fallback | Supported |
+| **LIFX** | Network / UDP | Bulbs, multizone strips and beams, Tile chains, Candle, Ceiling, and other matrix products over the LAN protocol | Experimental (unverified on hardware) |
+| **Twinkly** | Network / HTTP + UDP | Per-LED strings, curtains, Squares, and trees; layout from the Twinkly app | Experimental (unverified on hardware) |
+| **WiZ** | Network / UDP | Color, tunable white, and dimmable white bulbs, strips, and fixtures, one color per light | Experimental (unverified on hardware) |
+| **Yeelight** | Network / TCP | Color and white bulbs, strips, and lamps, one color per light; music mode for real-time streaming | Experimental (unverified on hardware) |
 | **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
 | **[ROLI Blocks bridge](@/hardware/roli-blocks.md)** | Unix socket / blocksd | Lightpad grids and 24 LUMI key colors | Supported with matching blocksd capabilities (Unix only) |
-| **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
+| **[Adalight serial](@/hardware/adalight.md)** | Serial port | Adalight sketches, WLED serial input, and HyperSerial (AWA) on Arduino, ESP8266, ESP32, RP2040; configured by hand | Supported (experimental) |
+| **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, off by default | Blocked |
 
-Neither bridge is counted among the 12 driver families with shipping device support. The OpenRGB bridge ships compiled in but its config entry is minted disabled; run `hypercolor devices coverage` first and enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md) only when a device reads `unclaimed` or `none`. The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
+Neither bridge counts as a driver family above. Drivers marked experimental ship enabled but nobody has verified them on real hardware yet. The OpenRGB bridge ships compiled in but its config entry is minted disabled; run `hypercolor devices coverage` first and enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md) only when a device reads `unclaimed` or `none`. The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is implemented in the tree but ships disabled (`drivers.dygma.enabled = false`) because no Dygma device lights up yet.
 
 {% <callout type="warning"> %}
 If another RGB manager (Aura Sync, openrazer daemon, iCUE via Wine, or an OpenRGB you started yourself) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. The OpenRGB server Hypercolor manages is exempt: it is configured to skip natively owned devices. See [conflicting software](@/hardware/conflicting-software.md).
@@ -127,7 +152,9 @@ Hypercolor discovers devices automatically at startup and whenever a rescan is t
 
 **USB/SMBus:** scans for known VID/PID combinations and probes `/dev/i2c-*` bus nodes at startup. Hotplug events trigger rescan automatically when the daemon is running.
 
-**Network:** runs mDNS browsing for each network driver's service type. Devices can also be added by IP address in the config; the key differs per driver (`known_ips` for WLED and Govee, `bridge_ips` for Hue, `device_ips` for Nanoleaf) for networks where mDNS is blocked across VLANs. See [network discovery troubleshooting](@/troubleshooting/network-discovery.md) for the exact snippets.
+**Network:** runs each network driver's own discovery (mDNS, UDP broadcast, or SSDP-style search). Devices can also be added by IP address in the config; the key differs per driver (`known_ips` for WLED and Govee, `bridge_ips` for Hue, `device_ips` for Nanoleaf, LIFX, Twinkly, WiZ, and Yeelight) for networks where discovery is blocked across VLANs. See [network discovery troubleshooting](@/troubleshooting/network-discovery.md) for the exact snippets.
+
+**Serial:** never scanned. Each discovery pass turns the `drivers.adalight.devices` entries into devices without opening a port; the port opens only when the device connects.
 
 Trigger a manual scan:
 
@@ -152,11 +179,16 @@ Each transport path has its own setup page because the failure modes are differe
 
 - [USB devices](@/hardware/usb-devices.md): udev rules, hidraw vs hidapi, replug, hotplug
 - [SMBus/I2C](@/hardware/smbus-i2c.md): ASUS Aura motherboard, GPU, DRAM lighting; `i2c-dev` module; `/dev/i2c-*` permissions
+- [Adalight serial controllers](@/hardware/adalight.md): port paths, baud rate and protocol, serial bandwidth limits, RGBW white handling
 - [Network devices](@/hardware/network-devices.md): mDNS discovery, known-IP config, pairing overview
 - [Philips Hue](@/hardware/hue.md): link-button pairing, DTLS streaming
 - [Nanoleaf](@/hardware/nanoleaf.md): power-button pairing, panel layout
 - [WLED](@/hardware/wled.md): DDP vs E1.31, RGB vs RGBW
 - [Govee](@/hardware/govee.md): LAN control setup, Razer-streaming SKUs, cloud API key
+- [LIFX](@/hardware/lifx.md): broadcast discovery, zone and tile mapping, the message budget
+- [Twinkly](@/hardware/twinkly.md): discovery, the one-login rule, layouts, frame rate
+- [WiZ](@/hardware/wiz.md): broadcast discovery, the verified-controls signing key, update rate
+- [Yeelight](@/hardware/yeelight.md): LAN Control, music mode, the command quota
 - [OpenRGB fallback](@/hardware/openrgb-fallback.md): coverage view, per-platform install, the managed server and detector partition, zone sizes
 - [My device isn't supported](@/hardware/unsupported-devices.md): native status, unclaimed hardware, the bridge, and a prefilled device-support request
 - [Device quirks](@/hardware/device-quirks.md): rebrands, firmware splits, known edge cases

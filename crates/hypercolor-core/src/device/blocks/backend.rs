@@ -2,15 +2,15 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 
 use anyhow::Result;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceInputSink, DeviceWriteOutcome, DiscoveredDevice,
-    DriverRuntimeActions,
+    BackendInfo, DeviceBackend, DeviceInputSink, DiscoveredDevice, DriverRuntimeActions, Frame,
+    OutputPolicy, PeerDisposition, Receipt, Submission,
 };
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
@@ -29,7 +29,7 @@ pub struct BlocksBackend {
     /// Touch and button input, when the host accepts device input.
     input: Option<BlocksInput>,
     /// Device-change watcher, when the host accepts discovery requests.
-    watcher: Option<BlocksDeviceWatcher>,
+    watcher: StdMutex<Option<BlocksDeviceWatcher>>,
 }
 
 #[derive(Clone)]
@@ -45,6 +45,7 @@ struct BlocksBackendState {
     devices: HashMap<DeviceId, BlocksDevice>,
     /// Per-device brightness (applied by blocksd).
     brightness: HashMap<DeviceId, u8>,
+    retired: bool,
 }
 
 struct BlocksDevice {
@@ -66,9 +67,10 @@ impl BlocksBackend {
                 connection: None,
                 devices: HashMap::new(),
                 brightness: HashMap::new(),
+                retired: false,
             }),
             input: None,
-            watcher: None,
+            watcher: StdMutex::new(None),
         }
     }
 
@@ -91,11 +93,12 @@ impl BlocksBackend {
         runtime: Arc<dyn DriverRuntimeActions>,
         driver_id: &str,
     ) -> Self {
-        self.watcher =
+        let watcher =
             BlocksDeviceWatcher::spawn(self.socket_path.clone(), runtime, Arc::from(driver_id));
-        if self.watcher.is_none() {
+        if watcher.is_none() {
             warn!("no Tokio runtime for the blocksd device watcher; relying on periodic scans");
         }
+        self.watcher = StdMutex::new(watcher);
         self
     }
 
@@ -110,18 +113,16 @@ impl BlocksBackend {
     /// A negative acknowledgement is a decline, not a failure: blocksd kept
     /// the connection, so the device stays connected and the next frame goes
     /// out on the same socket. Only transport and protocol errors drop it.
-    async fn write_frame(
-        &self,
-        id: &DeviceId,
-        colors: &[[u8; 3]],
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
+    async fn write_frame(&self, id: &DeviceId, frame: Frame) -> Receipt {
+        let (colors, attempt) = frame.into_parts();
         let mut state = self.state.lock().await;
-        let device = state.devices.get(id).ok_or_else(|| DeviceError::NotFound {
-            device: id.to_string(),
-        })?;
-
+        let Some(device) = state.devices.get(id) else {
+            return attempt.reject(DeviceError::NotFound {
+                device: id.to_string(),
+            });
+        };
         if !device.connected {
-            return Err(DeviceError::Disconnected {
+            return attempt.reject(DeviceError::Disconnected {
                 device: id.to_string(),
             });
         }
@@ -129,20 +130,26 @@ impl BlocksBackend {
         let uid = device.uid;
         let surface = device.surface;
 
-        let conn = state
-            .connection
-            .as_mut()
-            .ok_or_else(|| DeviceError::Disconnected {
+        let Some(conn) = state.connection.as_mut() else {
+            return attempt.reject(DeviceError::Disconnected {
                 device: id.to_string(),
-            })?;
+            });
+        };
 
-        let result = match surface {
-            BlocksSurface::Grid => conn.write_frame_binary(uid, colors).await,
+        let (transmission, result) = match surface {
+            BlocksSurface::Grid => {
+                let transmission = attempt.start();
+                (transmission, conn.write_frame_binary(uid, &colors).await)
+            }
             BlocksSurface::Keys => {
-                let keys = colors.try_into().map_err(|_| {
-                    DeviceError::write(id, "LUMI key frames require exactly 24 colors")
-                })?;
-                conn.write_key_frame(uid, keys).await
+                let Ok(keys) = colors.as_slice().try_into() else {
+                    return attempt.reject(DeviceError::write(
+                        id,
+                        "LUMI key frames require exactly 24 colors",
+                    ));
+                };
+                let transmission = attempt.start();
+                (transmission, conn.write_key_frame(uid, keys).await)
             }
         };
         match result {
@@ -150,15 +157,15 @@ impl BlocksBackend {
                 if let Some(device) = state.devices.get_mut(id) {
                     device.frames_sent += 1;
                 }
-                Ok(DeviceWriteOutcome::Sent)
+                transmission.answered(PeerDisposition::Accepted)
             }
             Ok(false) => {
                 debug!(%id, uid, "blocksd declined the frame");
-                Ok(DeviceWriteOutcome::Declined)
+                transmission.answered(PeerDisposition::Declined)
             }
             Err(error) => {
                 state.handle_disconnect();
-                Err(DeviceError::write(id, error))
+                transmission.failed(DeviceError::write(id, error))
             }
         }
     }
@@ -268,6 +275,12 @@ impl DeviceBackend for BlocksBackend {
             .cloned()
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
         let mut state = self.state.lock().await;
+        if state.retired {
+            return Err(DeviceError::connection(
+                id,
+                "the blocks backend was retired",
+            ));
+        }
         state
             .ensure_connected(&self.socket_path)
             .await
@@ -280,9 +293,35 @@ impl DeviceBackend for BlocksBackend {
             frames_sent: 0,
         });
         device.connected = true;
-        drop(state);
+        // Under the lock retirement sets its flag with, so input either lands
+        // before retirement shuts it down or never starts.
         if let Some(input) = &self.input {
             input.connect(pending.uid, *id, &pending.info.name);
+        }
+        Ok(())
+    }
+
+    /// End everything this backend owns: the device sessions and the
+    /// blocksd socket they share, the input stream, and the device watcher.
+    async fn retire(&self) -> Result<(), DeviceError> {
+        {
+            let mut state = self.state.lock().await;
+            state.retired = true;
+            state.connection = None;
+            for device in state.devices.values_mut() {
+                device.connected = false;
+            }
+        }
+        if let Some(input) = &self.input {
+            input.shut_down().await;
+        }
+        let watcher = self
+            .watcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(watcher) = watcher {
+            watcher.stop().await;
         }
         Ok(())
     }
@@ -301,17 +340,15 @@ impl DeviceBackend for BlocksBackend {
     ///
     /// Direct writes such as identify flashes ride out a declined frame the
     /// way they ride out a suppressed one. The output pipeline goes through
-    /// [`Self::write_colors_shared_outcome`], which reports the decline.
+    /// [`Self::submit_frame`], which reports the decline.
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.write_frame(id, colors).await.map(|_| ())
+        let frame = Frame::direct(*id, Arc::new(colors.to_vec()));
+        self.write_frame(id, frame).await.into_result()
     }
 
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write_frame(id, colors.as_slice()).await
+    /// A decline comes back as the peer's answer on a written frame.
+    async fn submit_frame(&self, device_id: &DeviceId, frame: Frame) -> Submission {
+        self.write_frame(device_id, frame).await.into()
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
@@ -319,6 +356,11 @@ impl DeviceBackend for BlocksBackend {
         let device = state.devices.get(id).ok_or_else(|| DeviceError::NotFound {
             device: id.to_string(),
         })?;
+        if state.retired || !device.connected {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
+        }
 
         let uid = device.uid;
 
@@ -341,7 +383,7 @@ impl DeviceBackend for BlocksBackend {
         }
     }
 
-    fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
-        Some(25)
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(25))
     }
 }

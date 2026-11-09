@@ -8,19 +8,10 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.component_category_type_0 import ComponentCategoryType0
-from ..models.component_category_type_1 import ComponentCategoryType1
-from ..models.component_category_type_2 import ComponentCategoryType2
-from ..models.component_category_type_3 import ComponentCategoryType3
-from ..models.component_category_type_4 import ComponentCategoryType4
-from ..models.component_category_type_5 import ComponentCategoryType5
-from ..models.component_category_type_6 import ComponentCategoryType6
-from ..models.component_category_type_7 import ComponentCategoryType7
-from ..models.component_category_type_8 import ComponentCategoryType8
-from ..models.component_category_type_9 import ComponentCategoryType9
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.component_category_type_10 import ComponentCategoryType10
+    from ..models.component_category_type_1 import ComponentCategoryType1
 
 
 T = TypeVar("T", bound="ComponentSlot")
@@ -37,10 +28,8 @@ class ComponentSlot:
         name (str): User-facing port/channel name.
         allow_custom (bool | Unset): Whether user-authored templates may be bound here.
         allowed_templates (list[str] | Unset): Explicit template IDs that should be offered regardless of category.
-        suggested_categories (list[ComponentCategoryType0 | ComponentCategoryType1 | ComponentCategoryType10 |
-            ComponentCategoryType2 | ComponentCategoryType3 | ComponentCategoryType4 | ComponentCategoryType5 |
-            ComponentCategoryType6 | ComponentCategoryType7 | ComponentCategoryType8 | ComponentCategoryType9] | Unset):
-            Template categories that make sense here.
+        suggested_categories (list[ComponentCategoryType0 | ComponentCategoryType1] | Unset): Template categories that
+            make sense here.
     """
 
     id: str
@@ -50,20 +39,7 @@ class ComponentSlot:
     allow_custom: bool | Unset = UNSET
     allowed_templates: list[str] | Unset = UNSET
     suggested_categories: (
-        list[
-            ComponentCategoryType0
-            | ComponentCategoryType1
-            | ComponentCategoryType10
-            | ComponentCategoryType2
-            | ComponentCategoryType3
-            | ComponentCategoryType4
-            | ComponentCategoryType5
-            | ComponentCategoryType6
-            | ComponentCategoryType7
-            | ComponentCategoryType8
-            | ComponentCategoryType9
-        ]
-        | Unset
+        list[ComponentCategoryType0 | ComponentCategoryType1] | Unset
     ) = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -87,36 +63,7 @@ class ComponentSlot:
             suggested_categories = []
             for suggested_categories_item_data in self.suggested_categories:
                 suggested_categories_item: dict[str, Any] | str
-                if (
-                    isinstance(suggested_categories_item_data, ComponentCategoryType0)
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType1
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType2
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType3
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType4
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType5
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType6
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType7
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType8
-                    )
-                    or isinstance(
-                        suggested_categories_item_data, ComponentCategoryType9
-                    )
-                ):
+                if isinstance(suggested_categories_item_data, ComponentCategoryType0):
                     suggested_categories_item = suggested_categories_item_data.value
                 else:
                     suggested_categories_item = suggested_categories_item_data.to_dict()
@@ -144,8 +91,8 @@ class ComponentSlot:
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
-        from ..models.component_category_type_10 import (
-            ComponentCategoryType10,
+        from ..models.component_category_type_1 import (
+            ComponentCategoryType1,
         )
 
         d = dict(src_dict)
@@ -163,20 +110,7 @@ class ComponentSlot:
 
         _suggested_categories = d.pop("suggested_categories", UNSET)
         suggested_categories: (
-            list[
-                ComponentCategoryType0
-                | ComponentCategoryType1
-                | ComponentCategoryType10
-                | ComponentCategoryType2
-                | ComponentCategoryType3
-                | ComponentCategoryType4
-                | ComponentCategoryType5
-                | ComponentCategoryType6
-                | ComponentCategoryType7
-                | ComponentCategoryType8
-                | ComponentCategoryType9
-            ]
-            | Unset
+            list[ComponentCategoryType0 | ComponentCategoryType1] | Unset
         ) = UNSET
         if _suggested_categories is not UNSET:
             suggested_categories = []
@@ -184,19 +118,7 @@ class ComponentSlot:
 
                 def _parse_suggested_categories_item(
                     data: object,
-                ) -> (
-                    ComponentCategoryType0
-                    | ComponentCategoryType1
-                    | ComponentCategoryType10
-                    | ComponentCategoryType2
-                    | ComponentCategoryType3
-                    | ComponentCategoryType4
-                    | ComponentCategoryType5
-                    | ComponentCategoryType6
-                    | ComponentCategoryType7
-                    | ComponentCategoryType8
-                    | ComponentCategoryType9
-                ):
+                ) -> ComponentCategoryType0 | ComponentCategoryType1:
                     try:
                         if not isinstance(data, str):
                             raise TypeError()
@@ -207,103 +129,13 @@ class ComponentSlot:
                         return componentsschemas_component_category_type_0
                     except (TypeError, ValueError, AttributeError, KeyError):
                         pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_1 = (
-                            ComponentCategoryType1(data)
-                        )
-
-                        return componentsschemas_component_category_type_1
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_2 = (
-                            ComponentCategoryType2(data)
-                        )
-
-                        return componentsschemas_component_category_type_2
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_3 = (
-                            ComponentCategoryType3(data)
-                        )
-
-                        return componentsschemas_component_category_type_3
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_4 = (
-                            ComponentCategoryType4(data)
-                        )
-
-                        return componentsschemas_component_category_type_4
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_5 = (
-                            ComponentCategoryType5(data)
-                        )
-
-                        return componentsschemas_component_category_type_5
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_6 = (
-                            ComponentCategoryType6(data)
-                        )
-
-                        return componentsschemas_component_category_type_6
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_7 = (
-                            ComponentCategoryType7(data)
-                        )
-
-                        return componentsschemas_component_category_type_7
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_8 = (
-                            ComponentCategoryType8(data)
-                        )
-
-                        return componentsschemas_component_category_type_8
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
-                    try:
-                        if not isinstance(data, str):
-                            raise TypeError()
-                        componentsschemas_component_category_type_9 = (
-                            ComponentCategoryType9(data)
-                        )
-
-                        return componentsschemas_component_category_type_9
-                    except (TypeError, ValueError, AttributeError, KeyError):
-                        pass
                     if not isinstance(data, dict):
                         raise TypeError()
-                    componentsschemas_component_category_type_10 = (
-                        ComponentCategoryType10.from_dict(data)
+                    componentsschemas_component_category_type_1 = (
+                        ComponentCategoryType1.from_dict(data)
                     )
 
-                    return componentsschemas_component_category_type_10
+                    return componentsschemas_component_category_type_1
 
                 suggested_categories_item = _parse_suggested_categories_item(
                     suggested_categories_item_data

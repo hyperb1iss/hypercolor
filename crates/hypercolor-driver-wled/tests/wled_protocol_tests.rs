@@ -7,14 +7,18 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior,
+    DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryCoverage,
+    DiscoveryObservation,
 };
+use hypercolor_driver_conformance::{
+    DeliveryLog, OfferToBackend, SessionRig, assert_session_contract, assert_unchanged,
+    assert_written,
+};
+use hypercolor_driver_support::MdnsScope;
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,
@@ -26,6 +30,7 @@ use hypercolor_types::device::{
     SegmentInfo,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
@@ -38,14 +43,6 @@ const DDP_FLAG_PUSH: u8 = 0x01;
 const DDP_DTYPE_RGB8: u8 = 0x0B;
 const DDP_DTYPE_RGBW8: u8 = 0x1B;
 const DDP_ID_DEFAULT: u8 = 0x01;
-
-struct CountingDeliveryObserver(Arc<AtomicUsize>);
-
-impl DeviceDeliveryObserver for CountingDeliveryObserver {
-    fn transport_started(&self, _id: DeviceDeliveryId) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 // ── DDP Header Layout Tests ────────────────────────────────────────────
 
@@ -968,12 +965,18 @@ fn negotiated_target_fps_uses_unreported_heuristics() {
 // ── WledBackend Lifecycle Tests ────────────────────────────────────────
 
 fn adopt_test_device(backend: &WledBackend, device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) {
+    backend
+        .adopt_device(&test_discovery(device_id, ip, info))
+        .expect("WLED backend should adopt test discovery metadata");
+}
+
+fn test_discovery(device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) -> DiscoveredDevice {
     let color_format = if info.rgbw {
         DeviceColorFormat::Rgbw
     } else {
         DeviceColorFormat::Rgb
     };
-    let discovered = DiscoveredDevice {
+    DiscoveredDevice {
         fingerprint: DeviceFingerprint::mint(
             hypercolor_types::device::FingerprintNamespace::Net,
             "wled",
@@ -1013,10 +1016,7 @@ fn adopt_test_device(backend: &WledBackend, device_id: DeviceId, ip: IpAddr, inf
             ("mac".to_owned(), info.mac),
         ]),
         claim: None,
-    };
-    backend
-        .adopt_device(&discovered)
-        .expect("WLED backend should adopt test discovery metadata");
+    }
 }
 
 #[tokio::test]
@@ -1193,6 +1193,215 @@ async fn backend_disconnect_sends_final_black_frame_after_output() {
     assert_eq!(&packet[10..22], &[0; 12]);
 }
 
+/// WLED's JSON API on loopback, recording each realtime state change.
+#[derive(Default)]
+struct FakeWledApi {
+    live_states: Mutex<Vec<bool>>,
+}
+
+async fn serve_json_api(listener: tokio::net::TcpListener, api: Arc<FakeWledApi>) {
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let api = Arc::clone(&api);
+        tokio::spawn(async move {
+            let mut buffer = vec![0_u8; 4096];
+            let mut read = 0;
+            loop {
+                match stream.read(&mut buffer[read..]).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(count) => read += count,
+                }
+                let text = String::from_utf8_lossy(&buffer[..read]);
+                let Some((headers, body)) = text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if body.len() < length {
+                    continue;
+                }
+                if headers.starts_with("POST /json/state") {
+                    let state: serde_json::Value =
+                        serde_json::from_str(body).expect("realtime state is JSON");
+                    // A slow exit lands after any session that raced ahead.
+                    if state["live"] == false {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    api.live_states
+                        .lock()
+                        .expect("api lock")
+                        .push(state["live"].as_bool().expect("live is a bool"));
+                }
+                let response =
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
+            }
+        });
+    }
+}
+
+struct WledRig {
+    backend: WledBackend,
+    id: DeviceId,
+    receiver: UdpSocket,
+    api: Arc<FakeWledApi>,
+}
+
+#[async_trait::async_trait]
+impl SessionRig for WledRig {
+    const TEARDOWN_ANSWERED: bool = true;
+
+    fn backend(&self) -> &dyn DeviceBackend {
+        &self.backend
+    }
+
+    fn device_id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn frame(&self, shade: u8) -> Vec<[u8; 3]> {
+        vec![[shade, 0, 255]; 4]
+    }
+
+    async fn saw_traffic(&mut self, window: Duration) -> bool {
+        let mut buffer = [0_u8; 64];
+        timeout(window, self.receiver.recv_from(&mut buffer))
+            .await
+            .is_ok_and(|received| received.is_ok())
+    }
+
+    async fn discard_traffic(&mut self) {
+        let mut buffer = [0_u8; 64];
+        while self.receiver.try_recv_from(&mut buffer).is_ok() {}
+    }
+
+    /// The UDP socket is shared across the backend, so the device itself is
+    /// the proof: every session that entered realtime mode has left it.
+    /// `closing_one_session_leaves_the_shared_socket_running` proves sharing.
+    async fn assert_transport_released(&mut self) {
+        let states = self.api.live_states.lock().expect("api lock");
+        let entered = states.iter().filter(|live| **live).count();
+        assert_eq!(
+            entered,
+            states.len() - entered,
+            "every realtime entry must have its exit: {states:?}"
+        );
+    }
+
+    async fn teardowns(&mut self) -> usize {
+        let states = self.api.live_states.lock().expect("api lock");
+        states.iter().filter(|live| !**live).count()
+    }
+
+    async fn engaged(&mut self) -> bool {
+        let states = self.api.live_states.lock().expect("api lock");
+        states.last() == Some(&true)
+    }
+}
+
+#[tokio::test]
+async fn wled_sessions_keep_the_contract() {
+    let _guard = ddp_test_port_guard().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback JSON API");
+    let api_port = listener.local_addr().expect("API address").port();
+    let api = Arc::new(FakeWledApi::default());
+    let server = tokio::spawn(serve_json_api(listener, Arc::clone(&api)));
+
+    let backend = WledBackend::new();
+    let id = DeviceId::new();
+    let mut discovered = test_discovery(
+        id,
+        "127.0.0.1".parse().expect("valid loopback IP"),
+        test_wled_info(4, false, 30, true),
+    );
+    discovered
+        .metadata
+        .insert("api_port".to_owned(), api_port.to_string());
+    backend.adopt_device(&discovered).expect("adopt");
+
+    let mut rig = WledRig {
+        backend,
+        id,
+        receiver,
+        api,
+    };
+    assert_session_contract(&mut rig).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn closing_one_session_leaves_the_shared_socket_running() {
+    let _guard = ddp_test_port_guard().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new();
+    backend.set_realtime_http_enabled(false);
+    let ip: IpAddr = "127.0.0.1".parse().expect("valid loopback IP");
+    let (first, second) = (DeviceId::new(), DeviceId::new());
+    for id in [first, second] {
+        adopt_test_device(&backend, id, ip, test_wled_info(4, false, 30, true));
+        backend.connect(&id).await.expect("connect");
+    }
+    let shared = backend.shared_socket_local_addr().expect("shared socket");
+    assert_eq!(backend.connected_socket_local_addr(&second), Some(shared));
+
+    backend.disconnect(&first).await.expect("disconnect");
+
+    let sink = backend.frame_sink(&second).expect("second sink");
+    sink.write_direct(second, Arc::new(vec![[1, 2, 3]; 4]))
+        .await
+        .expect("the other session keeps its socket");
+    let mut packet = [0_u8; 64];
+    let (_, source) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("a frame from the surviving session")
+        .expect("recv");
+    assert_eq!(source.port(), shared.port());
+}
+
+#[tokio::test]
+async fn repeated_connect_keeps_the_open_session() {
+    let _guard = ddp_test_port_guard().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new();
+    backend.set_realtime_http_enabled(false);
+    let id = DeviceId::new();
+    adopt_test_device(
+        &backend,
+        id,
+        "127.0.0.1".parse().expect("valid loopback IP"),
+        test_wled_info(4, false, 30, true),
+    );
+    backend.connect(&id).await.expect("connect");
+    let sink = backend.frame_sink(&id).expect("sink");
+
+    backend.connect(&id).await.expect("repeated connect");
+
+    assert!(!sink.is_closed());
+    sink.write_direct(id, Arc::new(vec![[1, 2, 3]; 4]))
+        .await
+        .expect("the open session keeps streaming");
+    let mut packet = [0_u8; 64];
+    timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("a frame")
+        .expect("recv");
+}
+
 #[tokio::test]
 async fn backend_write_to_disconnected_fails() {
     let backend = WledBackend::new();
@@ -1244,12 +1453,17 @@ async fn backend_connect_reuses_shared_socket_and_allocates_e131_universes() {
     );
     assert_eq!(backend.connected_e131_start_universe(&device_a), Some(1));
     assert_eq!(backend.connected_e131_start_universe(&device_b), Some(3));
-    assert_eq!(backend.target_fps(&device_a), Some(30));
+    assert_eq!(
+        backend
+            .output_policy(&device_a)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(30)
+    );
     let cadence = backend
-        .output_cadence(&device_a)
+        .output_policy(&device_a)
         .expect("connected WLED device should declare an output cadence");
-    assert_eq!(cadence.target_fps(), 30);
-    assert_eq!(cadence.max_frame_silence(), Some(Duration::from_secs(2)));
+    assert_eq!(cadence.display_fps(), 30);
+    assert_eq!(cadence.replay_after(), Some(Duration::from_secs(2)));
 }
 
 #[tokio::test]
@@ -1274,11 +1488,8 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
         .expect("connect should succeed");
 
     let colors = Arc::new(vec![[1, 2, 3], [4, 5, 6]]);
-    let first_outcome = backend
-        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
-        .await
-        .expect("first write should succeed");
-    assert_eq!(first_outcome, DeviceWriteOutcome::Sent);
+    let first_outcome = backend.offer(&device_id, Arc::clone(&colors)).await;
+    assert_written(&first_outcome);
 
     let mut packet = [0_u8; 64];
     let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
@@ -1288,11 +1499,8 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     assert_eq!(len, DDP_HEADER_SIZE + 12);
     assert_eq!(&packet[10..22], &[1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0]);
 
-    let duplicate_outcome = backend
-        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
-        .await
-        .expect("duplicate write should succeed");
-    assert_eq!(duplicate_outcome, DeviceWriteOutcome::SuppressedDuplicate);
+    let duplicate_outcome = backend.offer(&device_id, Arc::clone(&colors)).await;
+    assert_unchanged(&duplicate_outcome);
     let mut dedup_packet = [0_u8; 64];
     assert!(
         timeout(
@@ -1305,11 +1513,8 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     );
 
     tokio::time::sleep(Duration::from_millis(2_100)).await;
-    let keepalive_outcome = backend
-        .write_colors_shared_outcome(&device_id, colors)
-        .await
-        .expect("keepalive write should succeed");
-    assert_eq!(keepalive_outcome, DeviceWriteOutcome::Sent);
+    let keepalive_outcome = backend.offer(&device_id, colors).await;
+    assert_written(&keepalive_outcome);
     let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
         .await
         .expect("expected keepalive DDP frame")
@@ -1341,22 +1546,11 @@ async fn frame_sink_reports_wled_dedup_as_suppressed() {
     let sink = backend
         .frame_sink(&device_id)
         .expect("connected WLED device should expose a frame sink");
-    let colors = Arc::new(vec![[7, 8, 9], [1, 2, 3]]);
-    let starts = Arc::new(AtomicUsize::new(0));
-    let observer: Arc<dyn DeviceDeliveryObserver> =
-        Arc::new(CountingDeliveryObserver(Arc::clone(&starts)));
-    let first_ack = sink
-        .deliver_colors_shared_observed(
-            DeviceDeliveryId {
-                queue_generation: 41,
-                sequence: 1,
-            },
-            Arc::clone(&colors),
-            Arc::clone(&observer),
-        )
-        .await;
-    assert_eq!(first_ack.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    let colors = vec![[7, 8, 9], [1, 2, 3]];
+    let log = Arc::new(DeliveryLog::default());
+    let _ = sink.submit(log.frame(device_id, 1, colors.clone())).await;
+    assert_written(&log.settled(1).await[0]);
+    assert_eq!(log.started(), [1]);
 
     let mut packet = [0_u8; 64];
     timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
@@ -1364,21 +1558,9 @@ async fn frame_sink_reports_wled_dedup_as_suppressed() {
         .expect("expected first DDP frame")
         .expect("recv first DDP frame");
 
-    let duplicate_ack = sink
-        .deliver_colors_shared_observed(
-            DeviceDeliveryId {
-                queue_generation: 41,
-                sequence: 2,
-            },
-            colors,
-            observer,
-        )
-        .await;
-    assert_eq!(
-        duplicate_ack.status,
-        DeviceDeliveryStatus::SuppressedDuplicate
-    );
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    let _ = sink.submit(log.frame(device_id, 2, colors)).await;
+    assert_unchanged(&log.settled(2).await[1]);
+    assert_eq!(log.started(), [1], "a skipped frame never starts transport");
 
     assert!(
         timeout(Duration::from_millis(150), receiver.recv_from(&mut packet))
@@ -1718,7 +1900,12 @@ async fn scanner_shutdown_drains_mdns_status_receiver() {
         .expect("mDNS test log store should not be poisoned")
         .clear();
 
-    let mut scanner = WledScanner::with_known_ips(Vec::new(), true, Duration::from_millis(50));
+    // Loopback keeps the browse off the developer's LAN.
+    let mut scanner = WledScanner::with_known_ips(
+        Vec::new(),
+        Some(MdnsScope::Loopback),
+        Duration::from_millis(50),
+    );
     scanner
         .scan()
         .await
@@ -1739,19 +1926,29 @@ async fn scanner_shutdown_drains_mdns_status_receiver() {
 #[tokio::test]
 async fn scanner_skips_stale_known_ip_without_enrichment() {
     let ip: IpAddr = "192.0.2.1".parse().expect("valid documentation IP");
-    let mut scanner = WledScanner::with_known_ips(vec![ip], false, Duration::from_millis(50));
+    let mut scanner = WledScanner::with_known_ips(vec![ip], None, Duration::from_millis(50));
 
-    let discovered = scanner.scan().await.expect("scan should complete");
+    let batch = scanner.scan().await.expect("scan should complete");
     assert!(
-        discovered.is_empty(),
+        batch.observations.is_empty(),
         "known IPs that cannot be enriched should not surface as placeholder devices"
+    );
+    assert_eq!(
+        batch.coverage,
+        DiscoveryCoverage::Complete,
+        "a known address that does not answer is gone, not a gap"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
     let _guard = mdns_test_guard().await;
+    // Publisher and scanner both stay on loopback, so the fake WLED
+    // announcement and the browse never reach the developer's LAN.
     let mdns = ServiceDaemon::new().expect("mDNS daemon should start");
+    MdnsScope::Loopback
+        .restrict(&mdns)
+        .expect("publisher should restrict to loopback");
     let service_info = ServiceInfo::new(
         "_wled._tcp.local.",
         "hypercolor-placeholder-test",
@@ -1768,11 +1965,20 @@ async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
         .expect("placeholder service should register");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut scanner = WledScanner::with_known_ips(Vec::new(), true, Duration::from_secs(2));
-    let discovered = scanner.scan().await.expect("scan should complete");
+    let mut scanner = WledScanner::with_known_ips(
+        Vec::new(),
+        Some(MdnsScope::Loopback),
+        Duration::from_secs(2),
+    );
+    let batch = scanner.scan().await.expect("scan should complete");
 
-    let placeholder = discovered
+    let placeholder = batch
+        .observations
         .iter()
+        .filter_map(|observation| match observation {
+            DiscoveryObservation::Device(device) => Some(device),
+            DiscoveryObservation::Present(_) => None,
+        })
         .find(|device| {
             device
                 .metadata
@@ -1786,9 +1992,15 @@ async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
         DiscoveryConnectBehavior::Deferred
     );
     assert_eq!(placeholder.info.capabilities.led_count, 0);
+    let ip: IpAddr = placeholder
+        .metadata
+        .get("ip")
+        .expect("placeholder discovery should still include the resolved address")
+        .parse()
+        .expect("placeholder address should parse");
     assert!(
-        placeholder.metadata.contains_key("ip"),
-        "placeholder discovery should still include the resolved address"
+        ip.is_loopback(),
+        "a loopback-scoped scan should only resolve loopback addresses, got {ip}"
     );
 
     let unregister = mdns

@@ -12,7 +12,9 @@ use hypercolor_types::device::{
 };
 use tracing::warn;
 
-use crate::protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};
+use crate::protocol::{
+    FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+};
 
 pub(super) const GEN1_LEDS_PER_PACKET: usize = 21;
 pub(super) const LEGACY_LEDS_PER_PACKET: usize = 20;
@@ -486,7 +488,11 @@ impl Protocol for NollieProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         match self.model.protocol_kind() {
             NollieProtocolKind::ModernGen1 => {
                 super::gen1::encode_frame_into(self, colors, commands);
@@ -507,6 +513,7 @@ impl Protocol for NollieProtocol {
                 super::stream65::encode_frame_into(self, colors, commands);
             }
         }
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

@@ -799,6 +799,19 @@ kbd {
 // API Endpoint Cards — glass bg, colored method badges
 // ---------------------------------------------------------------------------
 
+// A long route must break anywhere so a card header never widens a
+// phone-width page. The doubled class outranks `.doc :not(pre) > code`.
+.doc .api-endpoint__path {
+  overflow-wrap: anywhere;
+}
+
+// Explicit schema anchors on the generated REST schemas page sit just above
+// their heading; the offset keeps a jumped-to type clear of the sticky nav.
+.schema-anchor {
+  display: block;
+  scroll-margin-top: 80px;
+}
+
 .api-endpoint {
   background: var(--glass-bg);
   backdrop-filter: blur(8px);
@@ -820,6 +833,7 @@ kbd {
 
   &__header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
   }
@@ -847,10 +861,95 @@ kbd {
     color: var(--text-primary);
   }
 
+  // Generated cards carry the operation summary and a deep link. The summary
+  // takes the remaining width, so the anchor sits flush right.
+  &__summary {
+    flex: 1 1 12rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+
+  &__anchor {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-tertiary);
+    opacity: 0;
+    transition:
+      opacity var(--duration-normal) var(--ease-silk),
+      color var(--duration-normal) var(--ease-silk);
+
+    &:hover,
+    &:focus-visible {
+      color: var(--accent);
+      opacity: 1;
+    }
+  }
+
+  &:hover &__anchor,
+  &:target &__anchor {
+    opacity: 1;
+  }
+
   &__body {
     margin-top: 12px;
     font-size: 0.85rem;
     color: var(--text-tertiary);
     line-height: 1.6;
+
+    > :last-child {
+      margin-bottom: 0;
+    }
+
+    table {
+      margin: 8px 0 12px;
+      font-size: 0.8rem;
+    }
+
+    th {
+      font-size: 0.75rem;
+      padding: 6px 10px;
+    }
+
+    td {
+      padding: 6px 10px;
+      vertical-align: top;
+    }
+
+    // Parameter, field, and status names stay on one line.
+    td:first-child code {
+      white-space: nowrap;
+    }
+
+    strong {
+      color: var(--text-secondary);
+    }
+  }
+
+  // Collapsed response field tables.
+  details {
+    margin: 4px 0 0;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 8px;
+  }
+
+  summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-weight: 600;
+    width: fit-content;
+    transition: color var(--duration-normal) var(--ease-silk);
+
+    &:hover,
+    &:focus-visible {
+      color: var(--accent);
+    }
+  }
+
+  // The sticky top nav would otherwise cover a card reached by its anchor.
+  scroll-margin-top: 80px;
+
+  &:target {
+    border-color: var(--accent);
+    box-shadow: 0 0 20px var(--ambient-glow);
   }
 }

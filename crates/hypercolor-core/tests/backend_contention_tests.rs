@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use hypercolor_core::device::BackendManager;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink, Frame, Submission};
 use hypercolor_types::device::{DeviceError, DeviceId};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -82,7 +82,13 @@ impl BlockingFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for BlockingFrameSink {
-    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    fn is_closed(&self) -> bool {
+        false
+    }
+
+    async fn submit(&self, frame: Frame) -> Submission {
+        let (_, attempt) = frame.into_parts();
+        let transmission = attempt.start();
         self.entered.store(true, Ordering::Release);
         self.entered_notify.notify_waiters();
 
@@ -92,7 +98,7 @@ impl DeviceFrameSink for BlockingFrameSink {
 
         self.write_count.fetch_add(1, Ordering::AcqRel);
         self.write_notify.notify_waiters();
-        Ok(())
+        transmission.written().into()
     }
 }
 
@@ -163,6 +169,10 @@ impl DeviceBackend for MultiDeviceSinkBackend {
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -241,6 +251,10 @@ impl DeviceBackend for ContentionMockBackend {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 

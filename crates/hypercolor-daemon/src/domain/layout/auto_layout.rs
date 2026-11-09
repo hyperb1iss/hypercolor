@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::channel_name_matches_slot_alias;
-use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint, SegmentPlacement};
 use hypercolor_types::scene::{Zone, ZoneRole};
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -54,6 +54,15 @@ pub(super) fn append_auto_layout_zones_for_device(
         .collect::<HashSet<_>>()
         .len();
     let slot_center = auto_layout_slot_center(existing_device_count);
+    let physical = SegmentPlacement::fit_all(
+        &eligible_segments
+            .iter()
+            .map(|segment| segment.layout_hint.as_ref().and_then(|hint| hint.placement))
+            .collect::<Vec<_>>(),
+        slot_center,
+        NormalizedPosition::new(0.26, 0.18),
+        (layout.canvas_width, layout.canvas_height),
+    );
 
     for (index, segment_info) in eligible_segments.iter().enumerate() {
         let layout_hint = segment_info.layout_hint.as_ref();
@@ -66,12 +75,15 @@ pub(super) fn append_auto_layout_zones_for_device(
             eligible_segments.len(),
             &segment_info.topology,
         );
-        let position = layout_hint
+        let default_position = layout_hint
             .filter(|hint| hint.co_located)
             .map_or(default_position, |_| slot_center);
-        let size = layout_hint
+        let default_size = layout_hint
             .and_then(|hint| hint.size)
             .unwrap_or(default_size);
+        let placement = physical[index];
+        let position = placement.map_or(default_position, |placement| placement.position);
+        let size = placement.map_or(default_size, |placement| placement.size);
         let zone_id = unique_auto_zone_id(layout, layout_device_id, &segment_info.name);
         let zone_name = if eligible_segments.len() == 1 {
             device_info.name.clone()
@@ -86,7 +98,7 @@ pub(super) fn append_auto_layout_zones_for_device(
             zone_name: Some(segment_info.name.clone()),
             position,
             size,
-            rotation: 0.0,
+            rotation: placement.map_or(0.0, |placement| placement.rotation),
             scale: 1.0,
             display_order: 0,
             orientation: None,
@@ -185,6 +197,24 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
         }) {
             let mut changed = false;
 
+            // A newly discovered panel outline must inherit physical aspect,
+            // while keeping the area and center of an existing placement.
+            if zone.shape != expected_shape
+                && let Some(physical) = layout_hint.and_then(|hint| hint.placement)
+                && let Some(fitted) = SegmentPlacement::fit_all(
+                    &[Some(physical)],
+                    zone.position,
+                    zone.size,
+                    (layout.canvas_width, layout.canvas_height),
+                )[0]
+            {
+                let area_scale =
+                    (zone.size.x * zone.size.y / (fitted.size.x * fitted.size.y)).sqrt();
+                zone.size =
+                    NormalizedPosition::new(fitted.size.x * area_scale, fitted.size.y * area_scale);
+                changed = true;
+            }
+
             if zone.zone_name.as_deref() != Some(segment_info.name.as_str()) {
                 zone.zone_name = Some(segment_info.name.clone());
                 changed = true;
@@ -205,7 +235,10 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
                 zone.shape.clone_from(&expected_shape);
                 changed = true;
             }
-            if zone.size != expected_size {
+            // Physical assemblies are fitted together on insertion. Their
+            // canvas transform subsequently belongs to the user's layout.
+            if layout_hint.is_none_or(|hint| hint.placement.is_none()) && zone.size != expected_size
+            {
                 zone.size = expected_size;
                 changed = true;
             }
@@ -389,6 +422,7 @@ mod tests {
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
         DeviceOrigin, DeviceTopologyHint, DisplayFrameFormat, SegmentInfo, SegmentLayoutHint,
+        SegmentPlacement,
     };
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout, ZoneShape,
@@ -620,6 +654,69 @@ mod tests {
             LedTopology::Custom { positions } => assert_eq!(positions.len(), 4),
             other => panic!("expected repaired custom topology, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn physical_outline_upgrade_preserves_authored_area_and_subsequent_size_edits() {
+        let mut panel = segment("Panel 1", 1, DeviceTopologyHint::Point);
+        let mut layout = layout();
+        let initial = device(vec![panel.clone()]);
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "net:panels", &initial),
+            1
+        );
+        let position = NormalizedPosition::new(0.72, 0.61);
+        let old_size = NormalizedPosition::new(0.2, 0.15);
+        layout.zones[0].position = position;
+        layout.zones[0].size = old_size;
+        layout.zones[0].rotation = 37.0;
+        layout.zones[0].scale = 1.25;
+        assert!(layout.zones[0].shape.is_none());
+        let shape = ZoneShape::Custom {
+            vertices: vec![
+                NormalizedPosition::new(0.5, 0.0),
+                NormalizedPosition::new(0.0, 1.0),
+                NormalizedPosition::new(1.0, 1.0),
+            ],
+        };
+        let centroid = NormalizedPosition::new(0.5, 2.0 / 3.0);
+        panel.layout_hint = Some(SegmentLayoutHint {
+            topology: Some(LedTopology::Custom {
+                positions: vec![centroid],
+            }),
+            shape: Some(shape.clone()),
+            placement: Some(SegmentPlacement {
+                position: NormalizedPosition::new(0.0, 0.0),
+                size: NormalizedPosition::new(150.0, 75.0 * 3.0_f32.sqrt()),
+                rotation: 0.0,
+            }),
+            ..SegmentLayoutHint::default()
+        });
+        let upgraded = device(vec![panel]);
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "net:panels", &upgraded),
+            1
+        );
+        let zone = &layout.zones[0];
+        assert_eq!(zone.position, position);
+        assert_eq!(zone.rotation, 37.0);
+        assert_eq!(zone.scale, 1.25);
+        assert_eq!(zone.shape, Some(shape));
+        assert_eq!(zone.led_positions, vec![centroid]);
+        assert!((zone.size.x * zone.size.y - old_size.x * old_size.y).abs() < 0.000_001);
+        let pixel_aspect =
+            zone.size.y * layout.canvas_height as f32 / (zone.size.x * layout.canvas_width as f32);
+        assert!((pixel_aspect - 3.0_f32.sqrt() / 2.0).abs() < 0.000_001);
+
+        let edited_size = NormalizedPosition::new(0.31, 0.07);
+        layout.zones[0].size = edited_size;
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "net:panels", &upgraded),
+            0
+        );
+        assert_eq!(layout.zones[0].size, edited_size);
+        assert_eq!(layout.zones[0].position, position);
+        assert_eq!(layout.zones[0].rotation, 37.0);
     }
 
     #[test]

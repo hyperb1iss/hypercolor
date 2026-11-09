@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ControlAvailabilityState(StrEnum):
+class ControlAvailabilityState(TolerantStrEnum):
     AVAILABLE = "available"
     DISABLED = "disabled"
     HIDDEN = "hidden"

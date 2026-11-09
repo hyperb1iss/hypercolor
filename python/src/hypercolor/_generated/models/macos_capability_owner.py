@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class MacosCapabilityOwner(StrEnum):
+class MacosCapabilityOwner(TolerantStrEnum):
     APP = "app"
     APP_SIDECAR = "app_sidecar"
     BROKER = "broker"

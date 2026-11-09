@@ -44,8 +44,8 @@ pub use hypercolor_types::host_input::HostInputBatch;
 #[doc(hidden)]
 pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use shared::{
-    PendingEvents, RawInputConfig, RawInputError, RawInputResult, RawKeyPrefix, SessionState,
-    WorkerState, normalize_windows_key_event,
+    PendingEvents, RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState,
+    normalize_windows_key_event,
 };
 
 #[cfg(target_os = "windows")]

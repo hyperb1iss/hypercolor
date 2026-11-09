@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class PairingFlowKind(StrEnum):
+class PairingFlowKind(TolerantStrEnum):
     CREDENTIALS_FORM = "credentials_form"
     PHYSICAL_ACTION = "physical_action"
 

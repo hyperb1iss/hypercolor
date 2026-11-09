@@ -2,7 +2,9 @@ use std::io::Cursor;
 use std::time::Duration;
 
 use hypercolor_hal::drivers::push2::{Push2Protocol, build_push2_protocol};
-use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
+use hypercolor_hal::protocol::{
+    FrameBatch, Protocol, ProtocolCommand, ResponseStatus, TransferType,
+};
 use hypercolor_types::device::{
     DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload,
 };
@@ -556,9 +558,22 @@ fn push2_reply_for_a_different_palette_index_acknowledges_nothing() {
     protocol
         .parse_response(&palette_reply((ack + 1) % 128, [1, 2, 3, 4]))
         .expect("stale palette reply still parses");
-    let held = protocol.encode_frame(&colors);
+    let mut held = Vec::new();
+    assert_eq!(
+        protocol.encode_frame_into(&colors, &mut held),
+        FrameBatch::Held,
+        "a probe is not the frame"
+    );
     assert_eq!(held.len(), 1, "the lane holds and sends only a probe");
     assert_eq!(held[0].data[6], 0x04);
+
+    // Between probes there is nothing to send, and the frame is still held.
+    let mut quiet = Vec::new();
+    assert_eq!(
+        protocol.encode_frame_into(&colors, &mut quiet),
+        FrameBatch::Held
+    );
+    assert!(quiet.is_empty());
 
     // The reply to the probe releases it.
     protocol

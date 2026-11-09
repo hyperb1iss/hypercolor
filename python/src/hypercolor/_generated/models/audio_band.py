@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class AudioBand(StrEnum):
+class AudioBand(TolerantStrEnum):
     BASS = "bass"
     BEAT_PULSE = "beat_pulse"
     MID = "mid"

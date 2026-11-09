@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use hypercolor_core::device::{SmBusBackend, SmBusScanner};
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceDeliveryStatus, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice,
-    DiscoveryConnectBehavior,
+    DeliveryResult, DeviceBackend, DeviceDeliveryId, DeviceFrameSink, DeviceLifecyclePolicy,
+    DiscoveredDevice, DiscoveryConnectBehavior, Frame, FrameObserver, Receipt, SkipReason,
+    Submission,
 };
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use hypercolor_hal::SmBusProbeError;
@@ -28,12 +28,20 @@ use hypercolor_types::device::{
     SegmentInfo,
 };
 use tempfile::tempdir;
+use tokio::sync::Semaphore;
 
 struct ScriptedTransport {
     send_receive_results: StdMutex<Vec<Result<Vec<u8>, TransportError>>>,
     send_results: StdMutex<Vec<Result<(), TransportError>>>,
     sent_packets: Arc<StdMutex<Vec<Vec<u8>>>>,
     close_count: Arc<AtomicUsize>,
+    /// Stands in for the native handle: its count falls when this drops.
+    native_handle: Option<Arc<()>>,
+    /// Holds `send_receive` back, so a test can keep an open in flight.
+    gate: Option<Arc<Semaphore>>,
+    /// Holds `close` back, the way a transaction still running on its
+    /// blocking thread does on a real bus.
+    close_gate: Option<Arc<Semaphore>>,
 }
 
 impl ScriptedTransport {
@@ -48,7 +56,25 @@ impl ScriptedTransport {
             send_results: StdMutex::new(send_results),
             sent_packets,
             close_count,
+            native_handle: None,
+            gate: None,
+            close_gate: None,
         }
+    }
+
+    fn close_held_by(mut self, gate: &Arc<Semaphore>) -> Self {
+        self.close_gate = Some(Arc::clone(gate));
+        self
+    }
+
+    fn holding(mut self, native_handle: &Arc<()>) -> Self {
+        self.native_handle = Some(Arc::clone(native_handle));
+        self
+    }
+
+    fn gated(mut self, gate: &Arc<Semaphore>) -> Self {
+        self.gate = Some(Arc::clone(gate));
+        self
     }
 }
 
@@ -86,6 +112,9 @@ impl Transport for ScriptedTransport {
         data: &[u8],
         _timeout: Duration,
     ) -> Result<Vec<u8>, TransportError> {
+        if let Some(gate) = &self.gate {
+            let _permit = gate.acquire().await.expect("gate stays open");
+        }
         self.sent_packets
             .lock()
             .expect("sent packet lock should not be poisoned")
@@ -105,6 +134,9 @@ impl Transport for ScriptedTransport {
     }
 
     async fn close(&self) -> Result<(), TransportError> {
+        if let Some(gate) = &self.close_gate {
+            let _permit = gate.acquire().await.expect("gate stays open");
+        }
         self.close_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -555,6 +587,138 @@ async fn smbus_backend_preserves_transport_timeout_without_private_retry() {
     );
 }
 
+#[tokio::test]
+async fn retirement_empties_the_native_handle_out_of_retained_sinks() {
+    let device_id = DeviceId::new();
+    let native_handle = Arc::new(());
+    let backend = SmBusBackend::with_transport_factory({
+        let native_handle = Arc::clone(&native_handle);
+        move |_bus_path, _address, _bus_arbiter| {
+            Ok(Box::new(
+                ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    Vec::new(),
+                    Arc::default(),
+                    Arc::default(),
+                )
+                .holding(&native_handle),
+            ))
+        }
+    });
+    backend
+        .adopt_device(&discovered_smbus_device(device_id))
+        .expect("adopt");
+    backend.connect(&device_id).await.expect("connect");
+    let sink = backend.frame_sink(&device_id).expect("sink");
+    assert_eq!(Arc::strong_count(&native_handle), 3, "factory and session");
+
+    backend.retire().await.expect("retire");
+
+    assert_eq!(
+        Arc::strong_count(&native_handle),
+        2,
+        "only the factory's own copy is left"
+    );
+    assert!(sink.is_closed());
+    backend
+        .connect(&device_id)
+        .await
+        .expect_err("a retired backend refuses connects");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retirement_waits_for_an_open_in_flight_and_closes_it() {
+    let device_id = DeviceId::new();
+    let gate = Arc::new(Semaphore::new(0));
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let backend = Arc::new(SmBusBackend::with_transport_factory({
+        let gate = Arc::clone(&gate);
+        let close_count = Arc::clone(&close_count);
+        move |_bus_path, _address, _bus_arbiter| {
+            Ok(Box::new(
+                ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    Vec::new(),
+                    Arc::default(),
+                    Arc::clone(&close_count),
+                )
+                .gated(&gate),
+            ))
+        }
+    }));
+    backend
+        .adopt_device(&discovered_smbus_device(device_id))
+        .expect("adopt");
+
+    let connect = tokio::spawn({
+        let backend = Arc::clone(&backend);
+        async move { backend.connect(&device_id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let retire = tokio::spawn({
+        let backend = Arc::clone(&backend);
+        async move { backend.retire().await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!retire.is_finished(), "the open still holds the transport");
+
+    gate.add_permits(8);
+
+    retire.await.expect("retire task").expect("retire");
+    assert_eq!(
+        close_count.load(Ordering::SeqCst),
+        1,
+        "the transport closed before retirement returned"
+    );
+    connect
+        .await
+        .expect("connect task")
+        .expect_err("the open lost to retirement");
+    assert!(backend.frame_sink(&device_id).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retirement_waits_for_native_work_that_outlived_settlement() {
+    let device_id = DeviceId::new();
+    let native_work = Arc::new(Semaphore::new(0));
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let backend = Arc::new(SmBusBackend::with_transport_factory({
+        let native_work = Arc::clone(&native_work);
+        let close_count = Arc::clone(&close_count);
+        move |_bus_path, _address, _bus_arbiter| {
+            Ok(Box::new(
+                ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    Vec::new(),
+                    Arc::default(),
+                    Arc::clone(&close_count),
+                )
+                .close_held_by(&native_work),
+            ))
+        }
+    }));
+    backend
+        .adopt_device(&discovered_smbus_device(device_id))
+        .expect("adopt");
+    backend.connect(&device_id).await.expect("connect");
+
+    let retire = tokio::spawn({
+        let backend = Arc::clone(&backend);
+        async move { backend.retire().await }
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !retire.is_finished(),
+        "the transaction still holds the native handle"
+    );
+    assert_eq!(close_count.load(Ordering::SeqCst), 0);
+
+    native_work.add_permits(1);
+
+    retire.await.expect("retire task").expect("retire");
+    assert_eq!(close_count.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smbus_backend_instances_share_one_physical_bus_arbiter() {
     let first_id = DeviceId::new();
@@ -602,8 +766,8 @@ async fn smbus_backend_instances_share_one_physical_bus_arbiter() {
     probe.begin();
     let writes = tokio::time::timeout(Duration::from_secs(2), async {
         tokio::join!(
-            first_sink.write_colors_shared(Arc::new(vec![[0x10, 0x20, 0x30]; 8])),
-            second_sink.write_colors_shared(Arc::new(vec![[0x40, 0x50, 0x60]; 8])),
+            first_sink.write_direct(first_id, Arc::new(vec![[0x10, 0x20, 0x30]; 8])),
+            second_sink.write_direct(second_id, Arc::new(vec![[0x40, 0x50, 0x60]; 8])),
         )
     })
     .await
@@ -624,7 +788,7 @@ async fn smbus_backend_instances_share_one_physical_bus_arbiter() {
         .await
         .expect("second disconnect should succeed");
     let stale_sink_error = first_sink
-        .write_colors_shared(Arc::new(vec![[0, 0, 0]; 8]))
+        .write_direct(first_id, Arc::new(vec![[0, 0, 0]; 8]))
         .await
         .expect_err("stale sink should reject writes after disconnect");
     assert!(stale_sink_error.to_string().contains("disconnected"));
@@ -672,8 +836,8 @@ async fn smbus_frame_writes_overlap_across_devices_while_bus_claims_exclude_them
         let second_colors = Arc::new(second_colors.clone());
         async move {
             tokio::join!(
-                first_sink.write_colors_shared(first_colors),
-                second_sink.write_colors_shared(second_colors),
+                first_sink.write_direct(first_id, first_colors),
+                second_sink.write_direct(second_id, second_colors),
             )
         }
     });
@@ -731,8 +895,8 @@ async fn smbus_frame_writes_overlap_across_devices_while_bus_claims_exclude_them
         let second_sink = Arc::clone(&second_sink);
         async move {
             tokio::join!(
-                first_sink.write_colors_shared(Arc::new(vec![[1, 2, 3]; 8])),
-                second_sink.write_colors_shared(Arc::new(vec![[4, 5, 6]; 8])),
+                first_sink.write_direct(first_id, Arc::new(vec![[1, 2, 3]; 8])),
+                second_sink.write_direct(second_id, Arc::new(vec![[4, 5, 6]; 8])),
             )
         }
     });
@@ -808,10 +972,12 @@ struct CountingDeliveryObserver {
     started: AtomicUsize,
 }
 
-impl DeviceDeliveryObserver for CountingDeliveryObserver {
+impl FrameObserver for CountingDeliveryObserver {
     fn transport_started(&self, _id: DeviceDeliveryId) {
         self.started.fetch_add(1, Ordering::SeqCst);
     }
+
+    fn settled(&self, _receipt: &Receipt) {}
 }
 
 struct ScriptedDram {
@@ -875,19 +1041,23 @@ impl ScriptedDram {
         }
     }
 
-    async fn deliver(&mut self, colors: Vec<[u8; 3]>) -> DeviceDeliveryAck {
+    async fn deliver(&mut self, colors: Vec<[u8; 3]>) -> Receipt {
         self.sequence += 1;
-        let observer: Arc<dyn DeviceDeliveryObserver> = self.observer.clone();
-        self.sink
-            .deliver_colors_shared_observed(
-                DeviceDeliveryId {
-                    queue_generation: 1,
-                    sequence: self.sequence,
-                },
-                Arc::new(colors),
-                observer,
-            )
-            .await
+        let observer: Arc<dyn FrameObserver> = self.observer.clone();
+        let frame = Frame::new(
+            self.device_id,
+            DeviceDeliveryId {
+                queue_generation: 1,
+                sequence: self.sequence,
+            },
+            observer,
+            Instant::now(),
+            Arc::new(colors),
+        );
+        match self.sink.submit(frame).await {
+            Submission::Settled(receipt) => receipt,
+            Submission::Pending => panic!("SMBus writes inline"),
+        }
     }
 
     fn take_frames(&self) -> Vec<Vec<SmBusOperation>> {
@@ -900,6 +1070,13 @@ impl ScriptedDram {
         .iter()
         .map(|packet| decode_operations(packet).expect("frame packet should decode"))
         .collect()
+    }
+}
+
+fn written_bytes(receipt: &Receipt) -> u64 {
+    match receipt.result() {
+        DeliveryResult::Written { bytes, .. } => *bytes,
+        other => panic!("expected a written frame, got {other:?}"),
     }
 }
 
@@ -919,8 +1096,7 @@ async fn smbus_backend_writes_only_changed_leds_after_a_confirmed_frame() {
     let mut dram = ScriptedDram::connect(Vec::new()).await;
 
     let first = dram.deliver(steady_dram_frame()).await;
-    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(first.completed_payload_bytes, 24);
+    assert_eq!(written_bytes(&first), 24);
     let frames = dram.take_frames();
     assert_eq!(frames.len(), 1);
     assert_eq!(block_writes(&frames[0]), 8);
@@ -928,10 +1104,10 @@ async fn smbus_backend_writes_only_changed_leds_after_a_confirmed_frame() {
     let mut changed = steady_dram_frame();
     changed[3] = [0x01, 0x02, 0x03];
     let second = dram.deliver(changed).await;
-    assert_eq!(second.status, DeviceDeliveryStatus::Completed);
     assert_eq!(
-        second.completed_payload_bytes, 3,
-        "the acknowledgement should count only the LED that was written"
+        written_bytes(&second),
+        3,
+        "the receipt should count only the LED that was written"
     );
     let frames = dram.take_frames();
     assert_eq!(frames.len(), 1);
@@ -951,11 +1127,10 @@ async fn smbus_backend_rewrites_every_led_after_a_failed_write() {
     changed[6] = [0xFF, 0xFF, 0xFF];
 
     let first = dram.deliver(steady_dram_frame()).await;
-    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(written_bytes(&first), 24);
     let failed = dram.deliver(changed.clone()).await;
-    assert_eq!(failed.status, DeviceDeliveryStatus::Failed);
+    assert!(failed.into_result().is_err());
     let retried = dram.deliver(changed).await;
-    assert_eq!(retried.status, DeviceDeliveryStatus::Completed);
 
     let frames = dram.take_frames();
     assert_eq!(frames.len(), 3);
@@ -965,7 +1140,7 @@ async fn smbus_backend_rewrites_every_led_after_a_failed_write() {
         8,
         "a failed write leaves the DIMM's colors unknown, so every LED is rewritten"
     );
-    assert_eq!(retried.completed_payload_bytes, 24);
+    assert_eq!(written_bytes(&retried), 24);
 
     dram.backend
         .disconnect(&dram.device_id)
@@ -996,10 +1171,12 @@ async fn smbus_backend_skips_the_bus_for_a_frame_the_dimm_already_shows() {
     dram.take_frames();
     let started_before = dram.observer.started.load(Ordering::SeqCst);
 
-    let ack = dram.deliver(changed).await;
+    let receipt = dram.deliver(changed).await;
 
-    assert_eq!(ack.status, DeviceDeliveryStatus::SuppressedDuplicate);
-    assert!(!ack.transport_started);
+    assert_eq!(
+        receipt.result(),
+        &DeliveryResult::NotWritten(SkipReason::Unchanged)
+    );
     assert!(dram.take_frames().is_empty());
     assert_eq!(dram.observer.started.load(Ordering::SeqCst), started_before);
 
@@ -1018,7 +1195,7 @@ async fn smbus_backend_reasserts_direct_mode_after_a_failed_write() {
     dram.deliver(steady_dram_frame()).await;
     dram.deliver(changed.clone()).await;
     let failed = dram.deliver(steady_dram_frame()).await;
-    assert_eq!(failed.status, DeviceDeliveryStatus::Failed);
+    assert!(failed.into_result().is_err());
     dram.deliver(steady_dram_frame()).await;
 
     let frames = dram.take_frames();

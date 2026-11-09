@@ -230,7 +230,14 @@ async fn execute_unclaimed(client: &DaemonClient, ctx: &OutputContext) -> Result
                             .muted(if classes.is_empty() { "-" } else { &classes }),
                         device.claimable_by.as_deref().map_or_else(
                             || ctx.painter.muted("no native protocol"),
-                            |driver| ctx.painter.name(&format!("{driver} (disabled)")),
+                            |driver| {
+                                let state = if device.experimental {
+                                    "disabled, experimental"
+                                } else {
+                                    "disabled"
+                                };
+                                ctx.painter.name(&format!("{driver} ({state})"))
+                            },
                         ),
                     ]
                 })
@@ -374,9 +381,14 @@ async fn execute_list(
             let rows: Vec<Vec<String>> = devices
                 .iter()
                 .map(|d| {
+                    let driver = if d.experimental {
+                        format!("{} (experimental)", d.origin.driver_id)
+                    } else {
+                        d.origin.driver_id.clone()
+                    };
                     vec![
                         ctx.painter.name(&d.name),
-                        ctx.painter.muted(&d.origin.driver_id),
+                        ctx.painter.muted(&driver),
                         ctx.painter.muted(&d.origin.backend_id),
                         ctx.painter.number(&d.total_leds.to_string()),
                         ctx.painter.device_state(&d.status),
@@ -679,10 +691,10 @@ async fn device_control_surfaces(
             urlencoded(device)
         ))
         .await?;
-    if response.surfaces.is_empty() {
+    if response.items.is_empty() {
         bail!("Device {device} does not expose control surfaces");
     }
-    Ok(response.surfaces)
+    Ok(response.items)
 }
 
 fn available_field_ids(surfaces: &[ControlSurfaceDocument]) -> String {

@@ -10,17 +10,16 @@ use hypercolor_core::input::screen::implementer::{
     PlatformGpuApi, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    AdmittedScreenNativeTargetPreparation, InputPublicationDemandRevision,
+    AdmittedScreenNativeTargetPreparation, CaptureBackendId, InputPublicationDemandRevision,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenSource,
     ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
-    ScreenCursorCapabilities, ScreenExecutorColorCapabilities, ScreenExtentRequest,
-    ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetPreparation,
-    ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanGeneration,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationError,
-    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
+    ScreenBackendResourceIdentity, ScreenColorTransformCapabilities, ScreenCursorCapabilities,
+    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
+    ScreenNativeRetentionQuote, ScreenNativeTargetPreparation, ScreenNativeTargetPreparationError,
+    ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
+    ScreenPlanGeneration, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenPublicationError, ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenResourceApi,
     ScreenSourceReflection, ScreenSourceSelector,
@@ -751,13 +750,13 @@ fn source(
     .expect("test geometry is valid");
     let resources = match device {
         Some(device) => ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-            ScreenCaptureBackend::DesktopDuplication,
+            CaptureBackendId::DesktopDuplication,
             api,
             device,
             3,
             5,
         ),
-        None => ScreenBackendResourceIdentity::new(ScreenCaptureBackend::Synthetic, api, 3, 5),
+        None => ScreenBackendResourceIdentity::new(CaptureBackendId::Synthetic, api, 3, 5),
     };
     ResolvedScreenSource::new(
         ScreenSourceSelector::Configured,

@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ControlAccess(StrEnum):
+class ControlAccess(TolerantStrEnum):
     READ_ONLY = "read_only"
     READ_WRITE = "read_write"
     WRITE_ONLY = "write_only"

@@ -7,11 +7,17 @@ use hypercolor_platform_fs::{
     DirectoryAuthority, DirectoryEntryKind, PrivateStagingDirectory, ReadOnlyDirectoryAuthority,
 };
 
+mod bundle;
 #[cfg(target_os = "macos")]
 mod macos;
 mod manifest;
 mod tree;
 
+pub(crate) use bundle::publish_macos_bundle_launcher;
+pub use bundle::{
+    bind_macos_bundle_unit, describe_macos_bundle_unit, retain_macos_bundle_unit,
+    stage_macos_bundle_unit, stage_macos_bundle_unit_from_authority, verified_macos_bundle_cli,
+};
 #[cfg(target_os = "macos")]
 pub use macos::{MacosReleaseProvenance, bind_macos_release_provenance};
 pub use manifest::{
@@ -165,6 +171,7 @@ fn stage_validated_payload(
                 source,
             }
         })?;
+        tree::finish_unit_root(&existing)?;
         tree::validate_installed(&existing, &manifest)?;
         return unit_record(store, manifest.unit_id, &existing);
     }
@@ -173,7 +180,7 @@ fn stage_validated_payload(
     if let Err(error) = tree::populate_staging(&staging, source, &manifest, mode)
         .and_then(|()| tree::validate_copy_source(source, &manifest, mode))
         .and_then(|()| tree::finalize_staging(&staging, &manifest))
-        .and_then(|()| tree::validate_installed(staging.directory(), &manifest))
+        .and_then(|()| tree::validate_staged(staging.directory(), &manifest))
     {
         return remove_failed_staging(staging, error);
     }
@@ -185,6 +192,7 @@ fn stage_validated_payload(
                 operation: "publish the digest unit without replacement",
                 source,
             })?;
+    tree::finish_unit_root(&published)?;
     tree::validate_installed(&published, &manifest)?;
     unit_record(store, manifest.unit_id, &published)
 }

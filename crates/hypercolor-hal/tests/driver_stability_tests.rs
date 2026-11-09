@@ -1,0 +1,173 @@
+//! Spec 89 stability labels on HAL descriptors, modules, and protocols.
+
+use hypercolor_hal::database::ProtocolDatabase;
+use hypercolor_hal::registry::{DeviceDescriptor, ProtocolBinding};
+use hypercolor_types::device::{DeviceFamily, DriverStability};
+
+/// A copy of a registered descriptor moved into a fake family, so the
+/// tests reuse a real protocol factory without touching the static
+/// database.
+fn fake_descriptor(
+    protocol_id: &'static str,
+    product_id: u16,
+    stability: DriverStability,
+) -> DeviceDescriptor {
+    let template = ProtocolDatabase::all()
+        .first()
+        .expect("the HAL database registers descriptors")
+        .clone();
+    DeviceDescriptor {
+        vendor_id: 0x1209,
+        product_id,
+        name: "Fake Controller",
+        family: DeviceFamily::new_static("fakefam", "Fake Family"),
+        protocol: ProtocolBinding {
+            id: protocol_id,
+            build: template.protocol.build,
+        },
+        stability,
+        ..template
+    }
+}
+
+#[test]
+fn the_label_never_changes_whether_a_registered_module_runs() {
+    let experimental = ProtocolDatabase::module_descriptors()
+        .iter()
+        .filter(|module| module.stability.is_experimental())
+        .collect::<Vec<_>>();
+    assert!(
+        !experimental.is_empty(),
+        "the database registers at least one experimental family"
+    );
+    for module in experimental {
+        assert!(
+            module.default_enabled,
+            "{} stays enabled by default",
+            module.id
+        );
+    }
+}
+
+#[test]
+fn only_dygma_starts_disabled_among_hal_families() {
+    let disabled = ProtocolDatabase::module_descriptors()
+        .iter()
+        .filter(|module| !module.default_enabled)
+        .map(|module| module.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(disabled, vec!["dygma"]);
+
+    // Off by default still recognizes the hardware, so a user can turn it on.
+    let defy_wireless =
+        ProtocolDatabase::lookup(0x35EF, 0x0012).expect("Defy Wireless stays registered");
+    assert_eq!(defy_wireless.family.id(), "dygma");
+}
+
+const RAZER_VID: u16 = 0x1532;
+
+/// Razer accessories registered from captures and specs without a hardware
+/// run: Kraken 7.1 V2, Tournament Edition, Kitty V2, Kraken 7.1 Chroma,
+/// Tomahawk ATX, Raptor 27, and Core X Chroma.
+const UNTESTED_RAZER_PIDS: [u16; 7] = [0x0510, 0x0520, 0x0560, 0x0504, 0x0F17, 0x0F12, 0x0F1A];
+
+#[test]
+fn untested_razer_accessories_are_labeled_experimental() {
+    for product_id in UNTESTED_RAZER_PIDS {
+        let descriptor = ProtocolDatabase::lookup(RAZER_VID, product_id)
+            .unwrap_or_else(|| panic!("Razer {product_id:04x} is registered"));
+        assert_eq!(
+            descriptor.stability,
+            DriverStability::Experimental,
+            "{}",
+            descriptor.name
+        );
+        let protocol = ProtocolDatabase::protocol_descriptors_for_driver("razer")
+            .into_iter()
+            .find(|protocol| protocol.product_id == Some(product_id))
+            .unwrap_or_else(|| panic!("Razer {product_id:04x} has a protocol descriptor"));
+        assert_eq!(protocol.stability, DriverStability::Experimental);
+    }
+}
+
+#[test]
+fn razer_stays_a_stable_module_around_its_experimental_accessories() {
+    let kraken_ultimate =
+        ProtocolDatabase::lookup(RAZER_VID, 0x0527).expect("Kraken Ultimate is registered");
+    assert_eq!(kraken_ultimate.stability, DriverStability::Stable);
+
+    let razer = ProtocolDatabase::module_descriptors()
+        .iter()
+        .find(|module| module.id == "razer")
+        .expect("Razer module is registered");
+    assert_eq!(razer.stability, DriverStability::Stable);
+    assert!(razer.default_enabled);
+}
+
+#[test]
+fn registered_protocol_ids_carry_one_label_each() {
+    assert_eq!(
+        ProtocolDatabase::stability_conflicts(ProtocolDatabase::all()),
+        Vec::<&str>::new()
+    );
+}
+
+#[test]
+fn stability_conflicts_name_protocols_that_mix_labels() {
+    let descriptors = [
+        fake_descriptor("fakefam/shared", 0x0001, DriverStability::Stable),
+        fake_descriptor("fakefam/shared", 0x0002, DriverStability::Experimental),
+        fake_descriptor("fakefam/solo", 0x0003, DriverStability::Experimental),
+    ];
+
+    assert_eq!(
+        ProtocolDatabase::stability_conflicts(&descriptors),
+        vec!["fakefam/shared"]
+    );
+}
+
+#[test]
+fn a_family_of_only_experimental_descriptors_is_an_experimental_module() {
+    let descriptors = [
+        fake_descriptor("fakefam/one", 0x0001, DriverStability::Experimental),
+        fake_descriptor("fakefam/two", 0x0002, DriverStability::Experimental),
+    ];
+
+    let modules = ProtocolDatabase::derive_module_descriptors(&descriptors);
+
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].id, "fakefam");
+    assert_eq!(modules[0].stability, DriverStability::Experimental);
+    assert!(
+        modules[0].default_enabled,
+        "the label never changes whether a module runs"
+    );
+}
+
+#[test]
+fn one_stable_descriptor_keeps_a_mixed_family_stable() {
+    let descriptors = [
+        fake_descriptor("fakefam/proven", 0x0001, DriverStability::Stable),
+        fake_descriptor("fakefam/untested", 0x0002, DriverStability::Experimental),
+    ];
+
+    let modules = ProtocolDatabase::derive_module_descriptors(&descriptors);
+
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].stability, DriverStability::Stable);
+    assert!(modules[0].default_enabled);
+}
+
+#[test]
+fn protocol_descriptors_carry_the_descriptor_label() {
+    let untested = fake_descriptor("fakefam/untested", 0x0002, DriverStability::Experimental);
+    let proven = fake_descriptor("fakefam/proven", 0x0001, DriverStability::Stable);
+
+    let untested = ProtocolDatabase::protocol_descriptor_for(&untested);
+    let proven = ProtocolDatabase::protocol_descriptor_for(&proven);
+
+    assert_eq!(untested.driver_id, "fakefam");
+    assert_eq!(untested.protocol_id, "fakefam/untested");
+    assert_eq!(untested.stability, DriverStability::Experimental);
+    assert_eq!(proven.stability, DriverStability::Stable);
+}

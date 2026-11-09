@@ -45,6 +45,21 @@ pub enum MacosDirectLaunchdState {
     },
 }
 
+/// What launchd holds for one agent label, whether or not it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosLaunchdJob {
+    /// The label is absent from the current user's GUI domain.
+    NotLoaded,
+    /// The label is loaded with no process: its program exited, and launchd
+    /// may start it again.
+    Idle,
+    /// The label is loaded with exactly one positive process ID.
+    Running {
+        /// Process ID reported by launchd for the loaded job.
+        pid: u32,
+    },
+}
+
 /// Injectable direct-launchd authority inspection used by exact owner proofs.
 pub trait MacosDirectLaunchdInspector {
     /// Inspect the fixed direct-launchd label in the current user's GUI domain.
@@ -86,13 +101,19 @@ impl MacosDirectLaunchdOwnerProof {
     }
 }
 
-/// Exact retained executable identity required from a direct publication.
+/// Exact executable identity required from a direct publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacosDirectLaunchdExecutableExpectation {
     path: PathBuf,
+    cdhash: String,
+    retained: Option<MacosDirectLaunchdRetainedExecutable>,
+}
+
+/// The immutable file and signing requirement behind one retained executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacosDirectLaunchdRetainedExecutable {
     designated_requirement: String,
     designated_requirement_hash: String,
-    cdhash: String,
     sha256: String,
     mode: u32,
     size: u64,
@@ -113,24 +134,7 @@ impl MacosDirectLaunchdExecutableExpectation {
         device: u64,
         inode: u64,
     ) -> Result<Self, MacosOwnerStoreError> {
-        let path = path.into();
-        let path_text = path
-            .to_str()
-            .ok_or(MacosOwnerStoreError::InvalidOwnerIdentity {
-                field: "executable_path",
-                detail: "must be valid UTF-8",
-            })?;
-        validate_bounded_identity_text(
-            "executable_path",
-            path_text,
-            MAX_MACOS_EXECUTABLE_PATH_BYTES,
-        )?;
-        if !crate::validation::is_macos_absolute_path(&path) {
-            return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
-                field: "executable_path",
-                detail: "must be absolute",
-            });
-        }
+        let path = validated_executable_path(path.into())?;
         let designated_requirement = designated_requirement.into();
         validate_bounded_identity_text(
             "designated_requirement",
@@ -149,17 +153,7 @@ impl MacosDirectLaunchdExecutableExpectation {
                 detail: "must be the SHA-256 of the exact designated requirement",
             });
         }
-        let cdhash = cdhash.into();
-        if cdhash.len() != 40
-            || !cdhash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
-                field: "executable_cdhash",
-                detail: "must be exactly 40 lowercase hexadecimal bytes",
-            });
-        }
+        let cdhash = validated_cdhash(cdhash.into())?;
         let sha256 = sha256.into();
         if !is_sha256(&sha256) {
             return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
@@ -183,23 +177,57 @@ impl MacosDirectLaunchdExecutableExpectation {
         }
         Ok(Self {
             path,
-            designated_requirement,
-            designated_requirement_hash,
             cdhash,
-            sha256,
-            mode,
-            size,
-            device,
-            inode,
+            retained: Some(MacosDirectLaunchdRetainedExecutable {
+                designated_requirement,
+                designated_requirement_hash,
+                sha256,
+                mode,
+                size,
+                device,
+                inode,
+            }),
         })
     }
 
-    /// Absolute immutable-unit executable path.
+    /// Bind an executable inside an installed app bundle to the cdhash of the
+    /// code that must run from it.
+    ///
+    /// Swapping a bundle replaces every inode behind this path, so nothing
+    /// about the file names the release. The cdhash the kernel reports for
+    /// the running process does, and the release's own signing checks stand
+    /// behind that cdhash.
+    pub fn bundled(
+        path: impl Into<PathBuf>,
+        cdhash: impl Into<String>,
+    ) -> Result<Self, MacosOwnerStoreError> {
+        Ok(Self {
+            path: validated_executable_path(path.into())?,
+            cdhash: validated_cdhash(cdhash.into())?,
+            retained: None,
+        })
+    }
+
+    /// Absolute executable path.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Architecture-selected dynamic code-directory hash.
+    #[must_use]
+    pub fn cdhash(&self) -> &str {
+        &self.cdhash
+    }
+
+    /// The retained immutable file, unless this names a bundled executable.
+    #[must_use]
+    pub const fn retained(&self) -> Option<&MacosDirectLaunchdRetainedExecutable> {
+        self.retained.as_ref()
+    }
+}
+
+impl MacosDirectLaunchdRetainedExecutable {
     /// Exact designated requirement bound by the signed release provenance.
     #[must_use]
     pub fn designated_requirement(&self) -> &str {
@@ -210,12 +238,6 @@ impl MacosDirectLaunchdExecutableExpectation {
     #[must_use]
     pub fn designated_requirement_hash(&self) -> &str {
         &self.designated_requirement_hash
-    }
-
-    /// Architecture-selected dynamic code-directory hash from signed provenance.
-    #[must_use]
-    pub fn cdhash(&self) -> &str {
-        &self.cdhash
     }
 
     /// SHA-256 of the exact retained executable bytes.
@@ -249,6 +271,41 @@ impl MacosDirectLaunchdExecutableExpectation {
     }
 }
 
+fn validated_executable_path(path: PathBuf) -> Result<PathBuf, MacosOwnerStoreError> {
+    let path_text = path
+        .to_str()
+        .ok_or(MacosOwnerStoreError::InvalidOwnerIdentity {
+            field: "executable_path",
+            detail: "must be valid UTF-8",
+        })?;
+    validate_bounded_identity_text(
+        "executable_path",
+        path_text,
+        MAX_MACOS_EXECUTABLE_PATH_BYTES,
+    )?;
+    if !crate::validation::is_macos_absolute_path(&path) {
+        return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
+            field: "executable_path",
+            detail: "must be absolute",
+        });
+    }
+    Ok(path)
+}
+
+fn validated_cdhash(cdhash: String) -> Result<String, MacosOwnerStoreError> {
+    if cdhash.len() != 40
+        || !cdhash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
+            field: "executable_cdhash",
+            detail: "must be exactly 40 lowercase hexadecimal bytes",
+        });
+    }
+    Ok(cdhash)
+}
+
 /// Immutable identity expected from a candidate or rollback unit publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacosDirectLaunchdPublicationExpectation {
@@ -274,25 +331,13 @@ impl MacosDirectLaunchdPublicationExpectation {
         self.after_epoch
     }
 
-    /// Exact executable path expected from the immutable unit.
+    /// Exact executable path expected from the publication.
     #[must_use]
     pub fn executable_path(&self) -> &Path {
         self.executable.path()
     }
 
-    /// Exact designated-requirement hash expected from the immutable unit.
-    #[must_use]
-    pub fn designated_requirement_hash(&self) -> &str {
-        self.executable.designated_requirement_hash()
-    }
-
-    /// Exact executable SHA-256 expected by the immutable unit manifest.
-    #[must_use]
-    pub fn executable_sha256(&self) -> &str {
-        self.executable.sha256()
-    }
-
-    /// Complete retained executable expectation.
+    /// Complete executable expectation.
     #[must_use]
     pub const fn executable(&self) -> &MacosDirectLaunchdExecutableExpectation {
         &self.executable
@@ -309,6 +354,27 @@ pub fn parse_direct_launchd_service_state(
     stdout: &[u8],
     stderr: &[u8],
 ) -> Result<MacosDirectLaunchdState, MacosOwnerExecutionError> {
+    match parse_launchd_job(MACOS_DIRECT_LAUNCHD_LABEL, uid, exit_code, stdout, stderr)? {
+        MacosLaunchdJob::NotLoaded => Ok(MacosDirectLaunchdState::NotLoaded),
+        MacosLaunchdJob::Idle => Err(MacosOwnerExecutionError::new(
+            "launchctl loaded service has no process pid",
+        )),
+        MacosLaunchdJob::Running { pid } => Ok(MacosDirectLaunchdState::Loaded { pid }),
+    }
+}
+
+/// Parse bounded `launchctl print` output for one agent label.
+///
+/// Status 113 is accepted only with launchctl's exact missing-service line,
+/// which current releases put after a `Bad request.` line. Successful output
+/// holds at most one process ID, and it must be positive.
+pub fn parse_launchd_job(
+    label: &str,
+    uid: u32,
+    exit_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<MacosLaunchdJob, MacosOwnerExecutionError> {
     if stdout.len() > MAX_LAUNCHCTL_OUTPUT_BYTES || stderr.len() > MAX_LAUNCHCTL_OUTPUT_BYTES {
         return Err(MacosOwnerExecutionError::new(
             "launchctl output exceeds 64 KiB",
@@ -321,16 +387,19 @@ pub fn parse_direct_launchd_service_state(
     match exit_code {
         Some(0) => {}
         Some(113) => {
-            let expected = format!(
-                "Could not find service \"{MACOS_DIRECT_LAUNCHD_LABEL}\" in domain for user gui: {uid}"
-            );
+            let expected =
+                format!("Could not find service \"{label}\" in domain for user gui: {uid}");
             let normalized_stderr = stderr.strip_suffix('\n').unwrap_or(stderr);
+            let normalized_stderr = normalized_stderr
+                .strip_prefix("Bad request.\n")
+                .unwrap_or(normalized_stderr);
             if stdout.is_empty() && normalized_stderr == expected {
-                return Ok(MacosDirectLaunchdState::NotLoaded);
+                return Ok(MacosLaunchdJob::NotLoaded);
             }
-            return Err(MacosOwnerExecutionError::new(
-                "launchctl returned status 113 without exact missing-service output",
-            ));
+            return Err(MacosOwnerExecutionError::new(format!(
+                "launchctl returned status 113 without exact missing-service output: {}",
+                stderr.trim()
+            )));
         }
         code => {
             return Err(MacosOwnerExecutionError::new(format!(
@@ -348,10 +417,8 @@ pub fn parse_direct_launchd_service_state(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| MacosOwnerExecutionError::new("launchctl returned a malformed service pid"))?;
     match pids.as_slice() {
-        [pid] if *pid > 0 => Ok(MacosDirectLaunchdState::Loaded { pid: *pid }),
-        [] => Err(MacosOwnerExecutionError::new(
-            "launchctl loaded service has no process pid",
-        )),
+        [] => Ok(MacosLaunchdJob::Idle),
+        [pid] if *pid > 0 => Ok(MacosLaunchdJob::Running { pid: *pid }),
         [_] => Err(MacosOwnerExecutionError::new(
             "launchctl returned a zero service pid",
         )),
@@ -417,9 +484,9 @@ pub fn corroborate_newer_direct_launchd_owner(
             "newer direct launchd publication has the wrong executable path",
         ));
     }
-    if record.active_identity.designated_requirement_hash
-        != expectation.executable.designated_requirement_hash
-    {
+    if expectation.executable.retained().is_some_and(|retained| {
+        record.active_identity.designated_requirement_hash != retained.designated_requirement_hash
+    }) {
         return Err(MacosOwnerExecutionError::new(
             "newer direct launchd publication has the wrong designated requirement",
         ));
@@ -427,7 +494,7 @@ pub fn corroborate_newer_direct_launchd_owner(
     require_direct_launchd_pid(record, inspector)?;
     if !inspector.publication_identity_matches(&record.active_identity, expectation.executable())? {
         return Err(MacosOwnerExecutionError::new(
-            "direct launchd process does not match the retained immutable executable",
+            "direct launchd process does not match its expected executable",
         ));
     }
     require_direct_launchd_pid(record, inspector)?;
@@ -547,9 +614,11 @@ pub use mutation::NativeMacosDirectLaunchdMutator;
 pub use mutation::{
     MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdBootstrapSource,
     MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator,
-    parse_direct_launchd_autostart_state,
+    parse_direct_launchd_autostart_state, parse_launchd_autostart_state,
 };
 #[cfg(target_os = "macos")]
 pub use native::NativeMacosDirectLaunchdInspector;
+#[cfg(target_os = "macos")]
+pub(crate) use native::open_macos_bundle;
 #[cfg(target_os = "macos")]
 pub use retained_code::validate_retained_macos_executable;

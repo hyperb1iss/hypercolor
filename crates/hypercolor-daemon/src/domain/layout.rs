@@ -779,7 +779,11 @@ impl LayoutContext {
         requested_layout_id: &str,
     ) -> Vec<Output> {
         self.convergence
-            .layout_outputs_for(runtime.discovery(), requested_layout_id)
+            .layout_outputs_for(
+                runtime.discovery(),
+                requested_layout_id,
+                self.render_canvas.get(),
+            )
             .await
     }
 

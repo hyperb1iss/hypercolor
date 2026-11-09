@@ -7,39 +7,36 @@
 //! session monitoring stay off.
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
+use hypercolor_core::config::paths::IsolatedUserDirs;
 use hypercolor_core::config::{BootConfig, ConfigManager};
 use hypercolor_core::effect::{bundled_html_effect_id, set_bundled_effects_root};
 use hypercolor_daemon::first_run::FIRST_RUN_FAVORITES;
-use hypercolor_daemon::startup::{DaemonState, default_config};
+use hypercolor_daemon::startup::{DaemonState, HostPorts, default_config};
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode, ServoGpuImportMode};
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::scene::SceneId;
-use tokio::sync::Mutex;
-
-static PATH_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Private daemon directories plus a bundled effect root holding fixture
 /// copies of the named picks, released together when dropped.
+///
+/// The user-directory claim also serializes the bundled root override.
 struct Install {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
+    dirs: Arc<IsolatedUserDirs>,
     root: tempfile::TempDir,
 }
 
 impl Install {
-    async fn with_bundled(stems: &[&str]) -> Self {
+    fn with_bundled(stems: &[&str]) -> Self {
         let fixtures: Vec<_> = stems.iter().map(|stem| (*stem, "ambient")).collect();
-        Self::with_fixtures(&fixtures).await
+        Self::with_fixtures(&fixtures)
     }
 
     /// Fixture copies of `(stem, category)` pairs under the bundled root.
-    async fn with_fixtures(fixtures: &[(&str, &str)]) -> Self {
-        let lock = PATH_OVERRIDE_LOCK.lock().await;
+    fn with_fixtures(fixtures: &[(&str, &str)]) -> Self {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        ConfigManager::set_config_dir_override(Some(root.path().join("config")));
-        ConfigManager::set_data_dir_override(Some(root.path().join("data")));
-        ConfigManager::set_state_dir_override(Some(root.path().join("state")));
+        let dirs = IsolatedUserDirs::claim(root.path());
 
         // Ids come from the stem under an `effects/hypercolor` root, which
         // is the layout a dev tree and every release share.
@@ -59,7 +56,7 @@ impl Install {
         }
         set_bundled_effects_root(Some(bundled));
 
-        Self { _lock: lock, root }
+        Self { dirs, root }
     }
 
     fn data_path(&self, file_name: &str) -> PathBuf {
@@ -75,8 +72,12 @@ impl Install {
             self.root.path().join("config").join("hypercolor.toml"),
             config.clone(),
         ));
-        DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
-            .expect("daemon should initialize")
+        DaemonState::initialize(
+            BootConfig::from_config_unchecked(config),
+            config_manager,
+            HostPorts::isolated(&self.dirs),
+        )
+        .expect("daemon should initialize")
     }
 
     async fn start(&self) -> DaemonState {
@@ -95,9 +96,6 @@ impl Install {
 impl Drop for Install {
     fn drop(&mut self) {
         set_bundled_effects_root(None);
-        ConfigManager::set_config_dir_override(None);
-        ConfigManager::set_data_dir_override(None);
-        ConfigManager::set_state_dir_override(None);
     }
 }
 
@@ -146,7 +144,7 @@ async fn primary_effect(state: &DaemonState) -> Option<EffectId> {
 
 #[tokio::test]
 async fn an_install_with_none_of_the_picks_writes_nothing() {
-    let install = Install::with_bundled(&[]).await;
+    let install = Install::with_bundled(&[]);
     let mut state = install.start().await;
 
     assert_eq!(primary_effect(&state).await, None);
@@ -160,7 +158,7 @@ async fn an_install_with_none_of_the_picks_writes_nothing() {
 #[cfg(not(feature = "servo"))]
 #[tokio::test]
 async fn a_build_that_cannot_render_html_seeds_nothing() {
-    let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+    let install = Install::with_bundled(FIRST_RUN_FAVORITES);
     let mut state = install.start().await;
 
     // The picks are registered, but this build has no renderer for them.
@@ -210,7 +208,7 @@ mod renderable {
 
     #[tokio::test]
     async fn a_fresh_install_starts_with_hyperbloom_and_the_curated_favorites() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         let mut state = install.start().await;
 
         let hyperbloom = bundled_html_effect_id(FIRST_RUN_SCENE_EFFECT);
@@ -248,7 +246,7 @@ mod renderable {
 
     #[tokio::test]
     async fn seeds_apply_once_and_never_return_after_the_user_clears_them() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         let hyperbloom = bundled_html_effect_id(FIRST_RUN_SCENE_EFFECT);
 
         let mut first = install.start().await;
@@ -309,7 +307,7 @@ mod renderable {
 
     #[tokio::test]
     async fn an_existing_empty_session_gets_no_seeds() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         runtime_state::save(
             &install.runtime_state_path(),
             &RuntimeSessionSnapshot {
@@ -334,7 +332,7 @@ mod renderable {
 
     #[tokio::test]
     async fn a_legacy_session_counts_as_an_existing_install() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         write_json(
             &install.data_path("runtime-state.json"),
             &serde_json::json!({
@@ -354,7 +352,7 @@ mod renderable {
 
     #[tokio::test]
     async fn an_unreadable_session_is_never_replaced() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         write_json(
             &install.runtime_state_path(),
             &serde_json::json!({ "retired_field": true }),
@@ -369,7 +367,7 @@ mod renderable {
 
     #[tokio::test]
     async fn a_session_written_after_initialization_is_never_replaced() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         let mut state = install.initialize();
         // Initialization found no session, but one exists by the time the
         // daemon restores; it fails to parse and still blocks the scene
@@ -387,7 +385,7 @@ mod renderable {
 
     #[tokio::test]
     async fn a_named_scene_store_blocks_the_seeds() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         write_json(
             &install.data_path("scenes.json"),
             &serde_json::json!({ "schema_version": 2, "scenes": {} }),
@@ -402,7 +400,7 @@ mod renderable {
 
     #[tokio::test]
     async fn an_existing_empty_library_gets_no_seeds() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         write_json(
             &install.library_path(),
             &serde_json::json!({
@@ -423,7 +421,7 @@ mod renderable {
 
     #[tokio::test]
     async fn a_library_whose_favorites_were_all_removed_stays_empty() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         write_json(
             &install.library_path(),
             &serde_json::json!({
@@ -447,7 +445,7 @@ mod renderable {
 
     #[tokio::test]
     async fn missing_picks_are_skipped_and_the_rest_keep_their_order() {
-        let install = Install::with_bundled(&["spectral-fire", "borealis"]).await;
+        let install = Install::with_bundled(&["spectral-fire", "borealis"]);
         let mut state = install.start().await;
 
         assert_eq!(
@@ -462,7 +460,7 @@ mod renderable {
 
     #[tokio::test]
     async fn the_scene_seed_needs_only_its_own_pick() {
-        let install = Install::with_bundled(&[FIRST_RUN_SCENE_EFFECT]).await;
+        let install = Install::with_bundled(&[FIRST_RUN_SCENE_EFFECT]);
         let mut state = install.start().await;
 
         assert_eq!(
@@ -477,8 +475,7 @@ mod renderable {
     #[tokio::test]
     async fn a_display_face_is_never_a_pick() {
         let install =
-            Install::with_fixtures(&[(FIRST_RUN_SCENE_EFFECT, "display"), ("borealis", "ambient")])
-                .await;
+            Install::with_fixtures(&[(FIRST_RUN_SCENE_EFFECT, "display"), ("borealis", "ambient")]);
         let mut state = install.start().await;
 
         assert_eq!(primary_effect(&state).await, None);
@@ -489,7 +486,7 @@ mod renderable {
 
     #[tokio::test]
     async fn a_configured_start_scene_skips_only_the_scene_seed() {
-        let install = Install::with_bundled(FIRST_RUN_FAVORITES).await;
+        let install = Install::with_bundled(FIRST_RUN_FAVORITES);
         let mut config = quiet_config();
         config.daemon.start_scene = "default".to_owned();
         let mut state = install.start_with(config).await;

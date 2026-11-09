@@ -102,6 +102,48 @@ fn create_refuses_a_taken_name() {
 }
 
 #[test]
+fn a_file_created_with_security_carries_exactly_that_descriptor() {
+    let (_guard, root) = scratch();
+    let directory = open_write(&root);
+    let user = WindowsSid::current_user().expect("current user");
+    let sddl = format!("D:P(A;;FA;;;{})", user.to_string_form());
+
+    let mut file = directory
+        .create_file_with_security(OsStr::new("record"), &sddl)
+        .expect("create");
+    file.write_all(b"held").expect("write");
+
+    let security = windows_file_security(&file).expect("security");
+    assert!(security.dacl_protected, "nothing inherited");
+    assert_eq!(security.aces.len(), 1, "{:?}", security.aces);
+    assert_eq!(security.aces[0].sid, user);
+    directory
+        .create_file_with_security(OsStr::new("record"), &sddl)
+        .expect_err("the name is taken");
+}
+
+#[test]
+fn rename_replaces_a_file_a_reader_holds_open() {
+    let (_guard, root) = scratch();
+    let directory = open_write(&root);
+    for (name, bytes) in [("staged", b"new".as_slice()), ("current", b"old")] {
+        let mut file = directory.create_file(OsStr::new(name)).expect("create");
+        file.write_all(bytes).expect("write");
+        file.sync_all().expect("sync");
+    }
+    let mut reader = directory.open_file(OsStr::new("current")).expect("open");
+
+    directory
+        .rename(OsStr::new("staged"), OsStr::new("current"), true)
+        .expect("a reader never blocks a replacement");
+
+    assert_eq!(fs::read(root.join("current")).expect("read"), b"new");
+    let mut held = Vec::new();
+    reader.read_to_end(&mut held).expect("read held file");
+    assert_eq!(held, b"old", "the reader keeps the bytes it opened");
+}
+
+#[test]
 fn rename_replaces_only_when_asked() {
     let (_guard, root) = scratch();
     let directory = open_write(&root);
@@ -216,6 +258,58 @@ fn names_that_win32_reads_differently_are_refused() {
     assert!(
         WindowsDirectory::open(&root.join("..").join("x"), WindowsDirectoryAccess::Read).is_err()
     );
+}
+
+#[test]
+fn appending_creates_once_then_only_adds_to_the_end() {
+    let (_guard, root) = scratch();
+    let directory = open_write(&root);
+    let mut first = directory
+        .open_append_file(OsStr::new("broker.log"))
+        .expect("create for append");
+    first.write_all(b"one\n").expect("first write");
+    drop(first);
+    let mut second = directory
+        .open_append_file(OsStr::new("broker.log"))
+        .expect("reopen for append");
+    second.write_all(b"two\n").expect("second write");
+    drop(second);
+    assert_eq!(
+        fs::read(root.join("broker.log")).expect("log"),
+        b"one\ntwo\n"
+    );
+
+    directory
+        .create_child_directory(OsStr::new("folder"))
+        .expect("folder");
+    assert!(
+        directory.open_append_file(OsStr::new("folder")).is_err(),
+        "a directory is never opened as a log"
+    );
+    fs::hard_link(root.join("broker.log"), root.join("second-name.log")).expect("hard link");
+    assert!(
+        directory
+            .open_append_file(OsStr::new("broker.log"))
+            .is_err(),
+        "a file with a second name is refused"
+    );
+    assert!(
+        WindowsDirectory::open(&root, WindowsDirectoryAccess::Read)
+            .expect("read-only")
+            .open_append_file(OsStr::new("other.log"))
+            .is_err(),
+        "a read-only authority cannot append"
+    );
+    assert!(!root.join("other.log").exists());
+
+    let target = root.join("target.log");
+    fs::write(&target, b"target").expect("target");
+    if let Err(error) = std::os::windows::fs::symlink_file(&target, root.join("link.log")) {
+        eprintln!("skipping the link refusal: {error}");
+        return;
+    }
+    assert!(directory.open_append_file(OsStr::new("link.log")).is_err());
+    assert_eq!(fs::read(&target).expect("target"), b"target");
 }
 
 #[test]

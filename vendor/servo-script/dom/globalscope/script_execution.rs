@@ -4,12 +4,12 @@
 
 use std::borrow::Cow;
 use std::ffi::CStr;
-use std::ptr::NonNull;
 use std::rc::Rc;
 
 use bitflags::bitflags;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use js::context::JSContext;
+use js::gc::Handle;
 use js::jsapi::{ExceptionStackBehavior, Heap, JSScript, SetScriptPrivate};
 use js::jsval::UndefinedValue;
 use js::panic::maybe_resume_unwind;
@@ -59,11 +59,6 @@ pub(crate) struct ClassicScript {
     /// On failure <https://html.spec.whatwg.org/multipage/#concept-script-error-to-rethrow>
     #[ignore_malloc_size_of = "mozjs"]
     pub record: Result<RootedTraceableBox<Heap<*mut JSScript>>, RethrowError>,
-    /// <https://html.spec.whatwg.org/multipage/#concept-script-script-fetch-options>
-    fetch_options: ScriptFetchOptions,
-    /// <https://html.spec.whatwg.org/multipage/#concept-script-base-url>
-    #[no_trace]
-    url: ServoUrl,
     /// The options that were used when compiling this script.
     options: ScriptOptions,
 }
@@ -119,23 +114,20 @@ impl GlobalScope {
             // Step 11.2. Return script.
             Err(RethrowError::from_pending_exception(cx))
         } else {
+            // Step 5. Set script's base URL to baseURL.
+            // Step 6. Set script's fetch options to options.
+            maybe_associate_with_script(cx, compiled_script.handle(), url, fetch_options);
+
             Ok(RootedTraceableBox::from_box(Heap::boxed(
                 compiled_script.get(),
             )))
         };
 
         // Step 3. Let script be a new classic script that this algorithm will subsequently initialize.
-        // Step 5. Set script's base URL to baseURL.
-        // Step 6. Set script's fetch options to options.
         // Step 7. Set script's muted errors to mutedErrors.
         // Step 12. Set script's record to result.
         // Step 13. Return script.
-        ClassicScript {
-            record,
-            url,
-            fetch_options,
-            options,
-        }
+        ClassicScript { record, options }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#run-a-classic-script>
@@ -183,18 +175,10 @@ impl GlobalScope {
                     )
                 },
                 // Step 7. Otherwise, set evaluationStatus to ScriptEvaluation(script's record).
-                Ok(compiled_script) => {
+                Ok(record) => {
                     rooted!(&in(cx) let mut fallback_value = UndefinedValue());
                     let return_value = return_value.unwrap_or_else(|| fallback_value.handle_mut());
-                    let script_ptr = NonNull::new(compiled_script.get())
-                        .expect("Compiled script must not be null");
-                    result = evaluate_script(
-                        cx,
-                        script_ptr,
-                        script.url,
-                        script.fetch_options,
-                        return_value,
-                    );
+                    result = unsafe { JS_ExecuteScript(cx, record.handle(), return_value) };
                 },
             }
 
@@ -353,24 +337,19 @@ pub(crate) fn fill_compile_options(
     options
 }
 
-/// <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation>
 #[expect(unsafe_code)]
-pub(crate) fn evaluate_script(
-    cx: &mut JSContext,
-    compiled_script: NonNull<JSScript>,
+pub(crate) fn maybe_associate_with_script(
+    cx: &JSContext,
+    script: Handle<*mut JSScript>,
     url: ServoUrl,
     fetch_options: ScriptFetchOptions,
-    rval: MutableHandleValue,
-) -> bool {
-    rooted!(&in(cx) let record = compiled_script.as_ptr());
+) {
     rooted!(&in(cx) let mut script_private = UndefinedValue());
-
-    unsafe { JS_GetScriptPrivate(*record, script_private.handle_mut()) };
+    unsafe { JS_GetScriptPrivate(script.get(), script_private.handle_mut()) };
 
     // When `ScriptPrivate` for the compiled script is undefined,
     // we need to set it so that it can be used in dynamic import context.
     if script_private.is_undefined() {
-        debug!("Set script private for {}", url);
         let module_script_data = Rc::new(ModuleScript::new(
             url,
             fetch_options,
@@ -381,9 +360,7 @@ pub(crate) fn evaluate_script(
         ));
 
         set_script_source_private(module_script_data, |private| unsafe {
-            SetScriptPrivate(*record, private)
+            SetScriptPrivate(script.get(), private)
         });
     }
-
-    unsafe { JS_ExecuteScript(cx, record.handle(), rval) }
 }

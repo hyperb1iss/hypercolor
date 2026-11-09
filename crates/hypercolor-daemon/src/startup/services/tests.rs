@@ -12,7 +12,7 @@ use super::CaptureConfigPersistenceUpdate;
 #[cfg(target_os = "windows")]
 use super::windows_capture_source_sink;
 use super::{
-    screen_capacity_plan, screen_capacity_plan_for_backend, screen_capture_config_from,
+    HostPorts, screen_capacity_plan, screen_capacity_plan_for_backend, screen_capture_config_from,
     screen_capture_config_with_capacity_from,
 };
 
@@ -332,9 +332,60 @@ fn screen_capture_config_conversion_rejects_unrepresentable_scheduler_cadence() 
     assert!(format!("{error:#}").contains("scheduler clock limit"));
 }
 
+#[tokio::test]
+async fn isolated_ports_compose_no_session_monitor() {
+    let directory = tempfile::tempdir().expect("fixture root is created");
+    let dirs = hypercolor_core::config::paths::IsolatedUserDirs::claim(directory.path());
+    let config = hypercolor_types::config::HypercolorConfig::default();
+    let manager = Arc::new(ConfigManager::from_config_unchecked(
+        directory.path().join("hypercolor.toml"),
+        config.clone(),
+    ));
+
+    let state = super::DaemonState::initialize(
+        BootConfig::from_config_unchecked(config),
+        manager,
+        HostPorts::isolated(&dirs),
+    )
+    .expect("isolated daemon initializes");
+
+    // An empty list replaces the platform monitors at start, so it never
+    // reaches logind or takes a sleep inhibitor.
+    assert!(
+        state
+            .session_monitors
+            .as_ref()
+            .is_some_and(std::vec::Vec::is_empty)
+    );
+    let host = state.capabilities;
+    assert!((host.hardware_broker)().is_none());
+    assert!((host.capture_monitors)().is_empty());
+    assert!((host.audio_devices)().expect("listing succeeds").is_empty());
+    assert!(matches!(
+        (host.running_software)(),
+        hypercolor_types::host_software::HostInventory::Listed(snapshot)
+            if snapshot == hypercolor_types::host_software::HostSoftwareSnapshot::default()
+    ));
+    let monitor = hypercolor_core::device::UsbHotplugMonitor::new(1);
+    assert!(
+        (host.usb_hotplug)(&monitor)
+            .expect("no watch to fail")
+            .is_none()
+    );
+    assert!((host.interaction_source)(&hypercolor_types::config::InputConfig::default()).is_none());
+    let audio = hypercolor_types::config::AudioConfig::default();
+    let spec = (host.audio_input)(&audio);
+    assert_eq!(spec.name, format!("AudioInput({})", audio.device));
+    assert_eq!(
+        spec.pipeline.source,
+        hypercolor_types::audio::AudioSourceType::None
+    );
+}
+
 #[test]
 fn daemon_initialization_rejects_invalid_capture_config_before_startup() {
     let directory = tempfile::tempdir().expect("test config directory is created");
+    let dirs = hypercolor_core::config::paths::IsolatedUserDirs::claim(directory.path());
     let config = hypercolor_types::config::HypercolorConfig {
         capture: hypercolor_types::config::CaptureConfig {
             capture_fps: 0,
@@ -347,7 +398,11 @@ fn daemon_initialization_rejects_invalid_capture_config_before_startup() {
         directory.path().join("hypercolor.toml"),
         config.clone(),
     ));
-    let result = super::DaemonState::initialize(BootConfig::from_config_unchecked(config), manager);
+    let result = super::DaemonState::initialize(
+        BootConfig::from_config_unchecked(config),
+        manager,
+        HostPorts::isolated(&dirs),
+    );
     let Err(error) = result else {
         panic!("invalid capture config must stop daemon initialization");
     };

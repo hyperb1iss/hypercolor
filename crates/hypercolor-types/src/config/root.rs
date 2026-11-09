@@ -73,6 +73,14 @@ pub struct HypercolorConfig {
 /// Current schema version for newly created configurations.
 pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
+/// The oldest config schema a build upgrades in memory when it loads.
+///
+/// Every schema from this floor through [`CURRENT_SCHEMA_VERSION`] shipped
+/// in a release, and every 1.x build keeps reading all of them. The floor
+/// only moves at a major release; anything older is refused with the exact
+/// hand edit that lands it here.
+pub const OLDEST_MIGRATED_SCHEMA_VERSION: u32 = 4;
+
 impl HypercolorConfig {
     /// Decode a config document from an authoritative source, refusing any
     /// key this build does not model.

@@ -14,8 +14,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 const PRISM_S_ATX_LEDS: usize = 120;
@@ -420,11 +420,16 @@ impl Protocol for PrismRgbProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         match self.model {
             PrismRgbModel::PrismS => self.encode_prism_s_frame_into(colors, commands),
             PrismRgbModel::PrismMini => self.encode_prism_mini_frame_into(colors, commands),
         }
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

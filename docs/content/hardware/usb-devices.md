@@ -38,6 +38,18 @@ silently see no keyboard or pointer activity.
 **AppImage and Flatpak installs do not apply udev rules automatically.** You must run the copy commands manually after installing through either of those distribution methods.
 {% </callout> %}
 
+## Reinstall the rules after upgrading
+
+A copy of the rules in `/etc/udev/rules.d/` does not update when Hypercolor does, and it takes precedence over a packaged copy with the same name. Reinstall after every upgrade:
+
+- From a source checkout, run `just udev-install`.
+- After a prebuilt one-liner install, repeat the [copy commands](@/guide/installation.md#linux-udev-rules-usb-and-input-device-access), which read from the active release.
+- The `.deb` and AUR packages update `/usr/lib/udev/rules.d/` and reload udev for you. If you ever copied the rules into `/etc/udev/rules.d/` on that machine, delete those copies so the packaged rules take effect.
+
+Then replug your devices or reboot. A device node keeps the group and mode it was created with until it is created again, so a reload alone can leave old access in place.
+
+Older rule files granted whole vendors to the `users` group, including the hidraw nodes that carry keystrokes on Razer, ASUS, Dygma, and QMK keyboards. Current rules narrow that access on purpose, as [Which devices get access](#which-devices-get-access) describes. Everything Hypercolor opens stays granted, but another tool that relied on those grants now needs its own udev rules. OpenRGB and Dygma's Bazecor both ship theirs.
+
 ## Replug or reboot after install
 
 `udevadm trigger` replays the rule against devices that are already connected, but the logind ACL (`TAG+="uaccess"`) can occasionally miss its replay for nodes that were opened before the rule was installed. If a device still fails after `just udev-install`, unplug it and plug it back in. A full reboot is the reliable fallback.
@@ -55,31 +67,47 @@ Two attributes matter for HID rules, and getting them backwards produces a rule 
 - `hidraw` rules use **`ATTRS{idVendor}`** (plural: walks up to the parent USB device node for the vendor/product match).
 - `usb` rules use **`ATTR{idVendor}`** (singular) together with `ENV{DEVTYPE}=="usb_device"` to match the `/dev/bus/usb/` node directly.
 
+Keyboards, mice, and headsets need one more piece. `idProduct` lives on the USB device and `bInterfaceNumber` on the USB interface, and all `ATTRS` keys in one rule must match the same parent, so a single rule cannot name both. The interface's **`ATTRS{modalias}`** carries vendor, product, and interface number together (`usb:v1532p026Cd*ic03isc*ip*in03`, with the hex in uppercase), and it never matches a device plugged in behind a hub. The Corsair section reaches the same result in two steps: it tags the product, then grants the interface in a second rule.
+
 The rules file also covers `SUBSYSTEM=="tty"` for serial devices (Dygma Focus-class keyboards, Nollie-class controllers) and `SUBSYSTEM=="i2c-dev"` for ASUS Aura motherboard and DRAM lighting over SMBus. See [SMBus/I2C devices](@/hardware/smbus-i2c.md) for that path.
 
-## Which vendors get access
+## Which devices get access
 
-The file uses vendor-wide rules for brands where new product IDs should work without a rule update, and PID-scoped rules for vendors where that scope would be too broad.
+Every `hidraw` rule names a product, so a new product ID needs its own rule, and `crates/hypercolor-hal/tests/udev_rules_tests.rs` fails until it has one. Keyboards, mice, and headsets get less still: only the interface Hypercolor opens, because their other interfaces carry keystrokes and pointer reports. They get no access to the USB device node either, since write access to it is enough to detach the kernel input driver.
 
 | Vendor | VID | Scope |
 |---|---|---|
-| Razer | `1532` | Vendor-wide |
-| Corsair | `1b1c` | Vendor-wide |
-| ASUS Aura | `0b05` | Vendor-wide |
-| Lian Li | `0416`, `0cf2` | Vendor-wide |
-| Ableton | `2982` | Vendor-wide |
-| Dygma | `35ef` | Vendor-wide |
-| Keychron (QMK) | `3434` | Vendor-wide |
-| ZSA (QMK) | `3297` | Vendor-wide |
-| Drop/OLKB (QMK) | `feed` | Vendor-wide |
-| Glorious (QMK) | `320f` | Vendor-wide |
-| PrismRGB | `16d0` | Vendor-wide |
-| PrismRGB / Nollie / GCS | `16d1`, `16d2`, `16d3`, `16d5` | PID-scoped |
-| Nollie Gen 2 | `3061` | Vendor-wide |
+| Razer | `1532` | Lighting interface, per product |
+| Corsair | `1b1c` | Keyboards, mice, and desk accessories: lighting interface, per product. Fan, LCD, and Lighting Node controllers: per product, with USB device access |
+| ASUS Aura | `0b05` | Interface 2 of the Aura USB controllers, per product |
+| Keychron, ZSA, Drop/OLKB, Glorious (QMK) | `3434`, `3297`, `feed`, `320f` | Raw HID interface, per product |
+| Dygma | `35ef` | Serial port only |
+| Lian Li | `0416`, `04fc`, `1cbe` | Per product |
+| Lian Li Uni Hub | `0cf2` | USB device nodes, vendor-wide |
+| PrismRGB / Nollie / GCS | `16d0`, `16d1`, `16d2`, `16d3`, `16d5`, `3061` | Per product |
+| Ableton | `2982` | USB device nodes, vendor-wide |
+| Wooting | `31e3` | Configuration interface of two PIDs only (see below) |
 
-The mixed PrismRGB / Nollie / GCS VID ranges are scoped where those vendors share
-IDs with unrelated hardware. PrismRGB `16d0`, Nollie Gen 2 `3061`, and Lian Li
-vendor IDs are granted vendor-wide in the udev rules.
+A few products carry lighting on an interface they share with input, so the narrowest working grant still exposes that input:
+
+- **Razer mice** use the mouse collection of interface 0, which also reports pointer motion and buttons.
+- **Razer Blade and Book laptops** use interface 2, a live mouse-protocol interface. The keyboard's interfaces 0 and 1 stay root-only.
+- **The Razer Seiren V3 Chroma** shares interface 3 with its mute and volume reports.
+
+Two grants match more loosely because no interface number is available. The Razer Thunderbolt 4 and 5 docks get every HID interface of their own lighting device; a dock has no keys or pointer, and the rule never matches what is plugged into it. QMK boards are matched by shape, since the raw HID interface number shifts with a firmware's enabled features: a non-boot HID interface with an IN and an OUT endpoint, which their keyboard, mouse, and media-key interfaces are not. Older firmware gave the debug console interface an OUT endpoint as well, so a build with the console enabled also exposes its debug text.
+
+Controllers have no input collections, so per-product rules are enough. Several of their vendor IDs are shared with unrelated hardware (`0416` is Winbond's, and many small makers use `16d0`), which is why none of those rules is vendor-wide.
+
+Wooting keyboards get the narrowest rules in the file. A vendor-wide or even a
+product-wide `hidraw` rule would also open the keyboard and analog report nodes
+to the fallback group, which is a keystroke feed, so no Wooting `usb` rule
+exists at all and each `hidraw` rule matches one product's configuration
+interface through its `modalias`. A rule exists only where a published
+descriptor dump confirms that interface, which today means two boards with
+gamepad emulation disabled: the Two HE (ARM) at `31e3:1232` and the 60HE (ARM)
+at `31e3:1312`. Every other Wooting board and gamepad mode needs Wooting's own
+[udev rules for Wootility](https://help.wooting.io/article/147-configuring-device-access-for-wootility-under-linux-udev-rules),
+which Wootility on Linux asks for anyway.
 
 ## Transport types
 
@@ -101,7 +129,7 @@ The `hidraw` rules cover this path as well.
 
 ### UsbControl
 
-Used by Razer laptop keyboards (Blade-class), which claim interface 2 directly. Razer peripherals use `UsbHidApi` instead. This path claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place, and the device node is in `/dev/bus/usb/`. The detach step is Linux-specific; Windows and macOS claim the interface without it.
+No registered device uses this path today. It claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers, so it is only safe on an interface with no input function. Razer laptop keyboards (Blade-class) carry their lighting report on interface 2, which is also a live HID input interface, so they use `UsbHidApi` like every other Razer device. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place, and the device node is in `/dev/bus/usb/`. The detach step is Linux-specific; Windows and macOS claim the interface without it.
 
 ### UsbHid
 

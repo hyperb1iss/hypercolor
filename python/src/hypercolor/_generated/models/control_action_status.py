@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ControlActionStatus(StrEnum):
+class ControlActionStatus(TolerantStrEnum):
     ACCEPTED = "accepted"
     COMPLETED = "completed"
     FAILED = "failed"

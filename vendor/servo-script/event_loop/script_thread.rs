@@ -17,6 +17,8 @@
 //! a page runs its course and the script thread returns to processing events in the main event
 //! loop.
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::default::Default;
@@ -44,14 +46,13 @@ use embedder_traits::user_contents::{UserContentManagerId, UserContents, UserScr
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
     InputEventOutcome, JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType,
-    Theme, ViewportDetails, WebDriverScriptCommand,
+    ViewportDetails, WebDriverScriptCommand,
 };
 use encoding_rs::Encoding;
 use fonts::{FontContext, SystemFontServiceProxy, WebFontLoadEvent};
 use headers::{HeaderMapExt, LastModified, ReferrerPolicy as ReferrerPolicyHeader};
 use http::header::REFRESH;
 use hyper_serde::Serde;
-use ipc_channel::router::ROUTER;
 use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
 use js::jsapi::{GCReason, JSContext as UnsafeJSContext, JSGCParamKey};
@@ -78,8 +79,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
 use script_traits::{
     ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, InitialScriptState,
-    NewPipelineInfo, Painter, ProgressiveWebMetricType, ScriptThreadMessage,
-    UpdatePipelineIdReason,
+    NewPipelineInfo, Painter, ScriptThreadMessage, UpdatePipelineIdReason, WebViewState,
 };
 use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
@@ -94,12 +94,13 @@ use servo_canvas_traits::webgl::WebGLPipeline;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
 use servo_config::{pref, prefs};
 use servo_constellation_traits::{
-    HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, RemoteFocusOperation,
-    ScreenshotReadinessResponse, ScriptToConstellationChan, ScriptToConstellationMessage,
-    ScrollStateUpdate, SessionHistoryTraversalRequest, StructuredSerializedData,
-    TargetSnapshotParams, TraversalDirection, WindowSizeType,
+    HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, PaintMetricEvent,
+    RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
+    ScriptToConstellationMessage, ScrollStateUpdate, SessionHistoryTraversalRequest,
+    StructuredSerializedData, TargetSnapshotParams, TraversalDirection, WindowSizeType,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, OriginSnapshot, ServoUrl};
+use smallvec::SmallVec;
 use storage_traits::StorageThreads;
 use storage_traits::webstorage_thread::WebStorageType;
 use style::context::QuirksMode;
@@ -148,7 +149,7 @@ use crate::event_loop::script_window_proxies::ScriptWindowProxies;
 use crate::event_loop::svg_font::SvgFontResolver;
 use crate::event_loop::webdriver_handlers::{self, jsval_to_webdriver};
 use crate::fetch::fetch::FetchCanceller;
-use crate::fetch::network_listener::{FetchResponseListener, submit_timing};
+use crate::fetch::network_listener::submit_timing;
 use crate::messaging::{
     CommonScriptMsg, MainThreadScriptMsg, MixedMessage, ScriptEventLoopSender,
     ScriptThreadReceivers, ScriptThreadSenders,
@@ -321,15 +322,25 @@ pub struct ScriptThread {
 
     /// <https://html.spec.whatwg.org/multipage/#last-render-opportunity-time>
     last_render_opportunity_time: Cell<Option<Instant>>,
+    /// State that is common to `WebView`s to be shared with all of their `Pipeline`s. Each
+    /// is stored as a `Weak` and pruned lazily so that there does not need to be any
+    /// management when `WebView`s are closed.
+
+    #[no_trace]
+    webview_states: RefCell<FxHashMap<WebViewId, Weak<WebViewState>>>,
 
     /// The documents for pipelines managed by this thread
     documents: DomRefCell<DocumentCollection>,
+
     /// The window proxies known by this thread
     window_proxies: Rc<ScriptWindowProxies>,
+
     /// A list of data pertaining to loads that have not yet received a network response
     incomplete_loads: DomRefCell<Vec<InProgressLoad>>,
+
     /// A vector containing parser contexts which have not yet been fully processed
     incomplete_parser_contexts: IncompleteParserContexts,
+
     /// An [`ImageCacheFactory`] to use for creating [`ImageCache`]s for all of the
     /// child `Pipeline`s.
     #[no_trace]
@@ -572,6 +583,26 @@ impl ScriptThreadFactory for ScriptThread {
 
 #[servo_tracing::instrument_all(skip_all)]
 impl ScriptThread {
+    /// Convert the provided [`WebViewState`] into a version shared with all
+    /// [`Window`]s that have the same `WebView` in this [`ScriptThread`], creating
+    /// it if this is the first time the `WebView` has been encountered.
+    fn shared_webview_state(&self, shared_state: &WebViewState) -> Rc<WebViewState> {
+        let mut webview_states = self.webview_states.borrow_mut();
+
+        // Prune any states that are no longer used by active pipelines.
+        webview_states.retain(|_, state| state.upgrade().is_some());
+
+        if let Some(existing_shared_state) =
+            webview_states.get(&shared_state.id).and_then(Weak::upgrade)
+        {
+            return existing_shared_state;
+        }
+
+        let shared_state = Rc::new(shared_state.clone());
+        webview_states.insert(shared_state.id, Rc::downgrade(&shared_state));
+        shared_state
+    }
+
     pub(crate) fn runtime_handle() -> ParentRuntime {
         with_optional_script_thread(|script_thread| {
             script_thread.unwrap().js_runtime.prepare_for_new_child()
@@ -594,24 +625,6 @@ impl ScriptThread {
 
     pub(crate) fn shared_style_locks(&self) -> &SharedRwLocks {
         &self.shared_style_locks
-    }
-
-    pub(crate) fn page_headers_available(
-        webview_id: WebViewId,
-        pipeline_id: PipelineId,
-        metadata: Option<&Metadata>,
-        origin: MutableOrigin,
-        cx: &mut js::context::JSContext,
-    ) -> Option<DomRoot<Document>> {
-        with_script_thread(|script_thread| {
-            script_thread.handle_page_headers_available(
-                webview_id,
-                pipeline_id,
-                metadata,
-                origin,
-                cx,
-            )
-        })
     }
 
     /// Process a single event as if it were the next event
@@ -638,7 +651,7 @@ impl ScriptThread {
         self.timer_scheduler.borrow_mut().cancel_timer(timer_id)
     }
 
-    // https://html.spec.whatwg.org/multipage/#await-a-stable-state
+    /// <https://html.spec.whatwg.org/multipage/#await-a-stable-state>
     pub(crate) fn await_stable_state(cx: &JSContext, task: Box<dyn MicrotaskRunnable>) {
         crate::runtime::job_queue::enqueue(cx, task);
     }
@@ -982,6 +995,7 @@ impl ScriptThread {
             Rc::new_cyclic(|weak_script_thread| {
                 runtime.set_script_thread(weak_script_thread.clone());
                 Self {
+                    webview_states: Default::default(),
                     documents: DomRefCell::new(DocumentCollection::default()),
                     last_render_opportunity_time: Default::default(),
                     window_proxies: Default::default(),
@@ -1221,21 +1235,24 @@ impl ScriptThread {
             let mut realm = enter_auto_realm(cx, &*document);
             let cx = &mut realm.current_realm();
 
-            // > 11. For each doc of docs, update animations and send events for doc, passing
-            // > in relative high resolution time given frameTimestamp and doc's relevant
-            // > global object as the timestamp [WEBANIMATIONS]
-            document.update_animations_and_send_events(cx);
+            // Do not update animations or run rAFs if a Document is throttled.
+            if !document.window().throttled() {
+                // > 11. For each doc of docs, update animations and send events for doc, passing
+                // > in relative high resolution time given frameTimestamp and doc's relevant
+                // > global object as the timestamp [WEBANIMATIONS]
+                document.update_animations_and_send_events(cx);
 
-            // TODO(#31866): Implement "run the fullscreen steps" from
-            // https://fullscreen.spec.whatwg.org/multipage/#run-the-fullscreen-steps.
+                // TODO(#31866): Implement "run the fullscreen steps" from
+                // https://fullscreen.spec.whatwg.org/multipage/#run-the-fullscreen-steps.
 
-            // TODO(#31868): Implement the "context lost steps" from
-            // https://html.spec.whatwg.org/multipage/#context-lost-steps.
+                // TODO(#31868): Implement the "context lost steps" from
+                // https://html.spec.whatwg.org/multipage/#context-lost-steps.
 
-            // > 14. For each doc of docs, run the animation frame callbacks for doc, passing
-            // > in the relative high resolution time given frameTimestamp and doc's
-            // > relevant global object as the timestamp.
-            document.run_the_animation_frame_callbacks(cx);
+                // > 14. For each doc of docs, run the animation frame callbacks for doc, passing
+                // > in the relative high resolution time given frameTimestamp and doc's
+                // > relevant global object as the timestamp.
+                document.run_the_animation_frame_callbacks(cx);
+            }
 
             // Run the resize observer steps.
             let mut depth = Default::default();
@@ -1268,8 +1285,6 @@ impl ScriptThread {
             // TODO(stevennovaryo): The time attribute should be relative to the time origin of the global object
             document.update_intersection_observer_steps(cx, CrossProcessInstant::now());
 
-            // TODO: Mark paint timing from https://w3c.github.io/paint-timing.
-
             // See <https://github.com/whatwg/html/issues/12704>.
             // Unspecified, but necessary: Any of the previous callbacks may have put the
             // document into a render-blocked state. If that's the case, then abort the
@@ -1277,6 +1292,9 @@ impl ScriptThread {
             if document.is_render_blocked() {
                 continue;
             }
+
+            // > 21. For each doc of docs, mark paint timing for doc.
+            // Note: Implemented inside `Document::update_the_rendering`
 
             // > Step 22: For each doc of docs, update the rendering or user interface of
             // > doc and its node navigable to reflect the current state.
@@ -1319,7 +1337,7 @@ impl ScriptThread {
         let running_animations = self.documents.borrow().iter().any(|(_, document)| {
             document.is_fully_active() &&
                 !document.window().throttled() &&
-                (document.animations().running_animation_count() != 0 ||
+                (document.animation_manager().running_animation_count() != 0 ||
                     document.has_active_request_animation_frame_callbacks())
         });
 
@@ -1393,7 +1411,7 @@ impl ScriptThread {
     /// Handle incoming messages from other tasks and the task queue.
     fn handle_msgs(&self, cx: &mut js::context::JSContext) -> bool {
         // Proritize rendering tasks and others, and gather all other events as `sequential`.
-        let mut sequential = vec![];
+        let mut sequential: SmallVec<[MixedMessage; 10]> = SmallVec::new();
 
         // Notify the background-hang-monitor we are waiting for an event.
         self.background_hang_monitor.notify_wait();
@@ -1449,7 +1467,7 @@ impl ScriptThread {
 
         // Process the gathered events.
         debug!("Processing events.");
-        for msg in sequential {
+        for msg in sequential.drain(..) {
             debug!("Processing event {:?}.", msg);
             let category = self.categorize_msg(&msg);
             let pipeline_id = msg.pipeline_id();
@@ -1496,7 +1514,7 @@ impl ScriptThread {
                                 self.handle_msg_from_script(inner_msg, $cx)
                             },
                             MixedMessage::FromDevtools(inner_msg) => {
-                                self.handle_msg_from_devtools(inner_msg, $cx)
+                                self.handle_msg_from_devtools(*inner_msg, $cx)
                             },
                             MixedMessage::FromImageCache(inner_msg) => {
                                 self.handle_msg_from_image_cache(inner_msg, $cx)
@@ -1842,8 +1860,8 @@ impl ScriptThread {
             ScriptThreadMessage::ResizeInactive(id, new_size) => {
                 self.handle_resize_inactive_msg(id, new_size)
             },
-            ScriptThreadMessage::ThemeChange(_, theme) => {
-                self.handle_theme_change_msg(theme);
+            ScriptThreadMessage::UpdateWebViewState(state) => {
+                self.handle_update_webview_state(cx, state);
             },
             ScriptThreadMessage::GetDocumentOrigin(pipeline_id, result_sender) => {
                 self.handle_get_document_origin(pipeline_id, result_sender);
@@ -1855,19 +1873,9 @@ impl ScriptThread {
             ScriptThreadMessage::SetDocumentActivity(pipeline_id, activity) => {
                 self.handle_set_document_activity_msg(cx, pipeline_id, activity)
             },
-            ScriptThreadMessage::SetThrottled(webview_id, pipeline_id, throttled) => {
-                self.handle_set_throttled_msg(webview_id, pipeline_id, throttled)
+            ScriptThreadMessage::SetThrottled(pipeline_id, throttled) => {
+                self.handle_set_throttled_msg(pipeline_id, throttled)
             },
-            ScriptThreadMessage::SetThrottledInContainingIframe(
-                _,
-                parent_pipeline_id,
-                browsing_context_id,
-                throttled,
-            ) => self.handle_set_throttled_in_containing_iframe_msg(
-                parent_pipeline_id,
-                browsing_context_id,
-                throttled,
-            ),
             ScriptThreadMessage::PostMessage {
                 target: target_pipeline_id,
                 source_webview,
@@ -1960,12 +1968,9 @@ impl ScriptThread {
             ) => {
                 self.handle_exit_pipeline_msg(webview_id, pipeline_id, discard_browsing_context, cx)
             },
-            ScriptThreadMessage::PaintMetric(
-                pipeline_id,
-                metric_type,
-                metric_value,
-                first_reflow,
-            ) => self.handle_paint_metric(cx, pipeline_id, metric_type, metric_value, first_reflow),
+            ScriptThreadMessage::PaintMetric(pipeline_id, event) => {
+                self.handle_paint_metric(cx, pipeline_id, event)
+            },
             ScriptThreadMessage::MediaSessionAction(pipeline_id, action) => {
                 self.handle_media_session_action(cx, pipeline_id, action)
             },
@@ -2049,6 +2054,9 @@ impl ScriptThread {
             },
             ScriptThreadMessage::SetAccessibilityActive(pipeline_id, active, epoch) => {
                 self.set_accessibility_active(pipeline_id, active, epoch);
+            },
+            ScriptThreadMessage::ForwardAccessibilityAction(pipeline_id, action_request) => {
+                self.forward_accessibility_action(pipeline_id, action_request);
             },
             ScriptThreadMessage::TriggerGarbageCollection => unsafe {
                 JS_GC(cx, GCReason::API);
@@ -2308,12 +2316,13 @@ impl ScriptThread {
                 devtools::handle_get_css_database(reply)
             },
             DevtoolScriptControlMsg::SimulateColorScheme(id, theme) => {
-                match documents.find_window(id) {
-                    Some(window) => {
-                        window.set_embedder_theme(theme);
-                    },
-                    None => warn!("Message sent to closed pipeline {}.", id),
-                }
+                let Some(document) = documents.find_document(id) else {
+                    return warn!("Message sent to closed pipeline {id}.");
+                };
+                // TODO: This override is supposed to apply to the entire WebView, so ideally this
+                // message would go immediately to the constellation and the override would be set
+                // there and then broadcast to all EventLoops.
+                document.set_theme_override(theme);
             },
             DevtoolScriptControlMsg::HighlightDomNode(id, node_id) => {
                 devtools::handle_highlight_dom_node(
@@ -2759,6 +2768,9 @@ impl ScriptThread {
                     mode,
                 )
             },
+            WebDriverScriptCommand::SetPermission(name, state, reply) => {
+                webdriver_handlers::set_permission(&documents, pipeline_id, name, state, reply)
+            },
         }
     }
 
@@ -2784,13 +2796,46 @@ impl ScriptThread {
     }
 
     /// Handle changes to the theme, triggering reflow if the theme actually changed.
-    fn handle_theme_change_msg(&self, theme: Theme) {
-        for (_, document) in self.documents.borrow().iter() {
-            document.window().set_embedder_theme(theme);
+    fn handle_update_webview_state(&self, cx: &mut JSContext, new_state: WebViewState) {
+        let Some(webview_state) = self
+            .webview_states
+            .borrow()
+            .get(&new_state.id)
+            .and_then(Weak::upgrade)
+        else {
+            return;
+        };
+
+        let new_theme = new_state.theme.get();
+        let theme_changed = webview_state.theme.replace(new_theme) != new_theme;
+        let new_has_system_focus = new_state.has_system_focus.get();
+        let system_focus_changed =
+            webview_state.has_system_focus.replace(new_has_system_focus) != new_has_system_focus;
+
+        if !theme_changed && !system_focus_changed {
+            return;
         }
-        let mut loads = self.incomplete_loads.borrow_mut();
-        for load in loads.iter_mut() {
-            load.embedder_theme = theme;
+
+        // We need to clone the documents here, because the subsequent updates fire DOM events
+        // and can then modify the document list. WebViewState updates aren't very common so
+        // the overhead here isn't much of a concern.
+        let documents: Vec<_> = self
+            .documents
+            .borrow()
+            .iter()
+            .map(|(_, document)| document)
+            .collect();
+
+        for document in documents {
+            if document.webview_id() != new_state.id {
+                continue;
+            }
+            if theme_changed {
+                document.window().refresh_theme();
+            }
+            if system_focus_changed {
+                document.gained_or_lost_system_focus(cx, new_has_system_focus);
+            }
         }
     }
 
@@ -2846,7 +2891,8 @@ impl ScriptThread {
                     .notify_pipeline_created(new_pipeline_info.new_pipeline_id);
 
                 // Kick off the fetch for the new resource.
-                self.pre_page_load(cx, InProgressLoad::new(new_pipeline_info));
+                let webview_state = self.shared_webview_state(&new_pipeline_info.webview_state);
+                self.pre_page_load(cx, InProgressLoad::new(new_pipeline_info, webview_state));
             },
         );
     }
@@ -2874,39 +2920,7 @@ impl ScriptThread {
         reports_chan.send(ProcessReports::new(reports));
     }
 
-    /// Updates iframe element after a change in visibility
-    fn handle_set_throttled_in_containing_iframe_msg(
-        &self,
-        parent_pipeline_id: PipelineId,
-        browsing_context_id: BrowsingContextId,
-        throttled: bool,
-    ) {
-        let iframe = self
-            .documents
-            .borrow()
-            .find_iframe(parent_pipeline_id, browsing_context_id);
-        if let Some(iframe) = iframe {
-            iframe.set_throttled(throttled);
-        }
-    }
-
-    fn handle_set_throttled_msg(
-        &self,
-        webview_id: WebViewId,
-        pipeline_id: PipelineId,
-        throttled: bool,
-    ) {
-        // Separate message sent since parent script thread could be different (Iframe of different
-        // domain)
-        self.senders
-            .pipeline_to_constellation_sender
-            .send((
-                webview_id,
-                pipeline_id,
-                ScriptToConstellationMessage::SetThrottledComplete(throttled),
-            ))
-            .unwrap();
-
+    fn handle_set_throttled_msg(&self, pipeline_id: PipelineId, throttled: bool) {
         let window = self.documents.borrow().find_window(pipeline_id);
         match window {
             Some(window) => {
@@ -2985,12 +2999,8 @@ impl ScriptThread {
 
         // This is separate from the next few lines in order to drop the borrow
         // on `document.iframes()`.
-        let iframe_element = browsing_context_id.and_then(|browsing_context_id| {
-            document
-                .iframes()
-                .get(browsing_context_id)
-                .map(|iframe| iframe.element.as_rooted())
-        });
+        let iframe_element = browsing_context_id
+            .and_then(|browsing_context_id| document.iframes().element(browsing_context_id));
 
         rooted!(&in(cx) let focusable_area = iframe_element
             .map(|iframe_element| FocusableArea::IFrameViewport {
@@ -3005,7 +3015,15 @@ impl ScriptThread {
         rooted!(&in(cx) let new_focus_chain = focusable_area.focus_chain());
         rooted!(&in(cx) let old_focus_chain = focus_handler.current_focus_chain());
 
-        focus_handler.focus_update_steps(cx, new_focus_chain, old_focus_chain, &focusable_area);
+        focus_handler.focus_update_steps(
+            cx,
+            new_focus_chain,
+            old_focus_chain,
+            &focusable_area,
+            false, /* for_system_focus_change */
+        );
+
+        document.refresh_focus_rendering();
     }
 
     fn handle_focus_document(
@@ -3063,7 +3081,10 @@ impl ScriptThread {
             new_focus_chain,
             old_focus_chain,
             &FocusableArea::Viewport,
+            false, /* for_system_focus_change */
         );
+
+        document.refresh_focus_rendering();
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -3208,7 +3229,7 @@ impl ScriptThread {
 
     /// We have received notification that the response associated with a load has completed.
     /// Kick off the document and frame tree creation process using the result.
-    fn handle_page_headers_available(
+    pub(crate) fn handle_page_headers_available(
         &self,
         webview_id: WebViewId,
         pipeline_id: PipelineId,
@@ -3311,7 +3332,7 @@ impl ScriptThread {
 
             // Clear any active animations and unroot all of the associated DOM objects.
             debug!("{pipeline_id}: Clearing animations");
-            document.animations().clear();
+            document.animation_manager().clear();
 
             if !document.window_detached() {
                 // We discard the browsing context after requesting layout shut down,
@@ -3334,6 +3355,8 @@ impl ScriptThread {
 
         // Prevent any further work for this Pipeline.
         self.closed_pipelines.borrow_mut().insert(pipeline_id);
+        self.task_queue
+            .remove_tasks_for_exiting_pipeline(&pipeline_id);
 
         debug!("{pipeline_id}: Sending PipelineExited message to constellation");
         self.senders
@@ -3349,6 +3372,7 @@ impl ScriptThread {
             .pipeline_exited(webview_id, pipeline_id, PipelineExitSource::Script);
 
         self.devtools_state.notify_pipeline_exited(pipeline_id);
+        self.pipeline_to_node_ids.borrow_mut().remove(&pipeline_id);
 
         debug!("{pipeline_id}: Finished pipeline exit");
     }
@@ -3363,7 +3387,7 @@ impl ScriptThread {
                 .borrow()
                 .iter()
                 .next()
-                .map(|load| (load.webview_id, load.pipeline_id)),
+                .map(|load| (load.webview_id(), load.pipeline_id)),
         );
         webview_and_pipeline_ids.extend(
             self.documents
@@ -3380,9 +3404,10 @@ impl ScriptThread {
         self.background_hang_monitor.unregister();
 
         // If we're in multiprocess mode, shut-down the IPC router for this process.
+        // If we are in single process but IPC mode there is only one ROUTER, so we should not shut it down.
         if opts::get().multiprocess {
             debug!("Exiting IPC router thread in script thread.");
-            ROUTER.shutdown();
+            ipc_channel::router::ROUTER.shutdown();
         }
 
         debug!("Exited script thread.");
@@ -3497,9 +3522,10 @@ impl ScriptThread {
         origin: MutableOrigin,
         cx: &mut js::context::JSContext,
     ) -> DomRoot<Document> {
+        let webview_id = incomplete.webview_id();
         let script_to_constellation_chan = ScriptToConstellationChan {
             sender: self.senders.pipeline_to_constellation_sender.clone(),
-            webview_id: incomplete.webview_id,
+            webview_id,
             pipeline_id: incomplete.pipeline_id,
         };
 
@@ -3521,7 +3547,7 @@ impl ScriptThread {
         let font_resolver = Arc::new(SvgFontResolver::new(font_context.clone()));
 
         let image_cache = self.image_cache_factory.create(
-            incomplete.webview_id,
+            webview_id,
             incomplete.pipeline_id,
             &self.paint_api,
             font_resolver,
@@ -3544,7 +3570,7 @@ impl ScriptThread {
 
         let layout_config = LayoutConfig {
             id: incomplete.pipeline_id,
-            webview_id: incomplete.webview_id,
+            webview_id,
             url: final_url.clone(),
             is_iframe: incomplete.parent_info.is_some(),
             script_chan: self.senders.constellation_sender.clone(),
@@ -3554,7 +3580,7 @@ impl ScriptThread {
             paint_api: self.paint_api.clone(),
             viewport_details: incomplete.viewport_details,
             user_stylesheets,
-            theme: incomplete.embedder_theme,
+            theme: incomplete.webview_state.theme.get(),
             embedder_chan: self.senders.pipeline_to_embedder_sender.clone(),
         };
 
@@ -3582,7 +3608,7 @@ impl ScriptThread {
             None => {
                 Window::new(
                     cx,
-                    incomplete.webview_id,
+                    incomplete.webview_state,
                     self.js_runtime.clone(),
                     self.senders.self_sender.clone(),
                     self.layout_factory.create(layout_config),
@@ -3621,7 +3647,6 @@ impl ScriptThread {
                     #[cfg(feature = "webgpu")]
                     self.gpu_id_hub.clone(),
                     incomplete.load_data.inherited_secure_context,
-                    incomplete.embedder_theme,
                     self.this.clone(),
                 )
             },
@@ -3772,7 +3797,7 @@ impl ScriptThread {
             &self.senders,
             &window,
             incomplete.browsing_context_id,
-            incomplete.webview_id,
+            webview_id,
             parent_info,
             iframe,
             incomplete.opener,
@@ -3796,7 +3821,7 @@ impl ScriptThread {
                 self.handle_update_pipeline_id(
                     parent_pipeline,
                     window_proxy.browsing_context_id(),
-                    window_proxy.webview_id(),
+                    webview_id,
                     incomplete.pipeline_id,
                     UpdatePipelineIdReason::Navigation,
                     cx,
@@ -3813,7 +3838,7 @@ impl ScriptThread {
                 );
                 self.senders
                     .pipeline_to_constellation_sender
-                    .send((incomplete.webview_id, incomplete.pipeline_id, msg))
+                    .send((webview_id, incomplete.pipeline_id, msg))
                     .expect("Failed to send to constellation.");
                 let is_parent_fully_active = result_receiver
                     .recv()
@@ -3843,14 +3868,14 @@ impl ScriptThread {
         self.senders
             .pipeline_to_constellation_sender
             .send((
-                incomplete.webview_id,
+                webview_id,
                 incomplete.pipeline_id,
                 ScriptToConstellationMessage::ActivateDocument,
             ))
             .unwrap();
 
         // Notify devtools that a new script global exists.
-        let incomplete_browsing_context_id: BrowsingContextId = incomplete.webview_id.into();
+        let incomplete_browsing_context_id: BrowsingContextId = webview_id.into();
         let is_top_level_global = incomplete_browsing_context_id == incomplete.browsing_context_id;
         self.notify_devtools(
             document.Title(),
@@ -3860,7 +3885,7 @@ impl ScriptThread {
                 incomplete.browsing_context_id,
                 incomplete.pipeline_id,
                 None,
-                incomplete.webview_id,
+                webview_id,
             ),
         );
 
@@ -3973,6 +3998,27 @@ impl ScriptThread {
             .window()
             .layout()
             .set_accessibility_active(active, epoch);
+    }
+
+    /// See the docs for [`ScriptThreadMessage::ForwardAccessibilityAction`].
+    fn forward_accessibility_action(
+        &self,
+        pipeline_id: PipelineId,
+        action_request: accesskit::ActionRequest,
+    ) {
+        if !(pref!(accessibility_enabled)) {
+            return;
+        }
+
+        let Some(document) = self.documents.borrow().find_document(pipeline_id) else {
+            error!("Trying to forward accessibility action to stale document: {pipeline_id}");
+            return;
+        };
+
+        document
+            .window()
+            .layout()
+            .handle_accessibility_action(action_request);
     }
 
     /// Handle a "navigate an iframe" message from the constellation.
@@ -4114,24 +4160,54 @@ impl ScriptThread {
     /// argument until a notification is received that the fetch is complete.
     #[servo_tracing::instrument(skip_all)]
     fn pre_page_load(&self, cx: &mut js::context::JSContext, mut incomplete: InProgressLoad) {
+        let origin_from_snapshot = || -> Option<MutableOrigin> {
+            match incomplete.load_data.load_origin {
+                LoadOrigin::Script(ref snapshot) => {
+                    Some(MutableOrigin::from_snapshot(snapshot.clone()))
+                },
+                _ => None,
+            }
+        };
+
+        let preserved_origin = || -> Option<MutableOrigin> {
+            // When loading `about:blank`, `about:srcdoc` and `javascript:`
+            // URLs, the specification says that the origin should be aliased
+            // from the creator origin. This means that changes to the creator
+            // origin via things like `document.domain` are reflected in the
+            // child Document. This code attempts to look up the creator
+            // Document and alias the origin for these type of pages.
+            //
+            // TODO: This should be eliminated by not having these types of pages
+            // use the parser at at all.
+            let creator_pipeline_id = incomplete.load_data.creator_pipeline_id?;
+            Some(
+                ScriptThread::find_document(creator_pipeline_id)?
+                    .origin()
+                    .clone(),
+            )
+        };
+
         let url_str = incomplete.load_data.url.as_str();
         if url_str == "about:blank" || incomplete.load_data.js_eval_result.is_some() {
-            self.start_synchronous_page_load(cx, incomplete);
+            let source_origin = preserved_origin().or(origin_from_snapshot());
+            self.start_synchronous_page_load(cx, incomplete, source_origin);
             return;
         }
         if url_str == "about:srcdoc" {
-            self.page_load_about_srcdoc(cx, incomplete);
+            let source_origin = preserved_origin().or(origin_from_snapshot());
+            self.page_load_about_srcdoc(cx, incomplete, source_origin);
             return;
         }
 
+        let source_origin = origin_from_snapshot();
         let context = ParserContext::new(
-            incomplete.webview_id,
+            incomplete.webview_id(),
             incomplete.pipeline_id,
             incomplete.load_data.url.clone(),
             incomplete.load_data.creation_sandboxing_flag_set,
             incomplete.parent_info,
             incomplete.target_snapshot_params,
-            incomplete.load_data.load_origin.clone(),
+            source_origin,
         );
         self.incomplete_parser_contexts
             .0
@@ -4161,14 +4237,14 @@ impl ScriptThread {
         };
 
         match message {
-            FetchResponseMsg::ProcessResponse(request_id, metadata) => {
-                self.handle_fetch_metadata(cx, pipeline_id, request_id, metadata)
+            FetchResponseMsg::ProcessResponse(_request_id, metadata) => {
+                self.handle_fetch_metadata(cx, pipeline_id, metadata)
             },
-            FetchResponseMsg::ProcessResponseChunk(request_id, chunk) => {
-                self.handle_fetch_chunk(cx, pipeline_id, request_id, chunk)
+            FetchResponseMsg::ProcessResponseChunk(_request_id, chunk) => {
+                self.handle_fetch_chunk(cx, pipeline_id, chunk)
             },
-            FetchResponseMsg::ProcessResponseEOF(request_id, eof, timing) => {
-                self.handle_fetch_eof(cx, pipeline_id, request_id, eof, timing)
+            FetchResponseMsg::ProcessResponseEOF(_request_id, eof, timing) => {
+                self.handle_fetch_eof(cx, pipeline_id, eof, timing)
             },
             FetchResponseMsg::ProcessCspViolations(request_id, violations) => {
                 self.handle_csp_violations(cx, pipeline_id, request_id, violations)
@@ -4182,7 +4258,6 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         id: PipelineId,
-        request_id: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
         match fetch_metadata {
@@ -4198,7 +4273,7 @@ impl ScriptThread {
             .iter_mut()
             .find(|&&mut (pipeline_id, _)| pipeline_id == id);
         if let Some(&mut (_, ref mut ctxt)) = parser {
-            ctxt.process_response(cx, request_id, fetch_metadata);
+            ctxt.process_response(self, cx, fetch_metadata);
         }
     }
 
@@ -4206,7 +4281,6 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         pipeline_id: PipelineId,
-        request_id: RequestId,
         chunk: Bytes,
     ) {
         let mut incomplete_parser_contexts = self.incomplete_parser_contexts.0.borrow_mut();
@@ -4214,7 +4288,7 @@ impl ScriptThread {
             .iter_mut()
             .find(|&&mut (parser_pipeline_id, _)| parser_pipeline_id == pipeline_id);
         if let Some(&mut (_, ref mut ctxt)) = parser {
-            ctxt.process_response_chunk(cx, request_id, chunk);
+            ctxt.process_response_chunk(cx, chunk);
         }
     }
 
@@ -4223,7 +4297,6 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         id: PipelineId,
-        request_id: RequestId,
         eof: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
@@ -4255,7 +4328,7 @@ impl ScriptThread {
                 submit_timing(cx, &iframe_ctx, &eof, &resource_timing);
             }
 
-            context.process_response_eof(cx, request_id, eof, timing);
+            context.process_response_eof(cx, eof, timing);
         }
     }
 
@@ -4345,15 +4418,16 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         mut incomplete: InProgressLoad,
+        source_origin: Option<MutableOrigin>,
     ) {
         let mut context = ParserContext::new(
-            incomplete.webview_id,
+            incomplete.webview_id(),
             incomplete.pipeline_id,
             incomplete.load_data.url.clone(),
             incomplete.load_data.creation_sandboxing_flag_set,
             incomplete.parent_info,
             incomplete.target_snapshot_params,
-            incomplete.load_data.load_origin.clone(),
+            source_origin,
         );
 
         let mut meta = Metadata::default(incomplete.load_data.url.clone());
@@ -4371,14 +4445,12 @@ impl ScriptThread {
         let about_base_url = incomplete.load_data.about_base_url.clone();
         self.incomplete_loads.borrow_mut().push(incomplete);
 
-        let dummy_request_id = RequestId::default();
-        context.process_response(cx, dummy_request_id, Ok(FetchMetadata::Unfiltered(meta)));
+        context.process_response(self, cx, Ok(FetchMetadata::Unfiltered(meta)));
         context.set_policy_container(policy_container.as_ref());
         context.set_about_base_url(about_base_url);
-        context.process_response_chunk(cx, dummy_request_id, chunk.into());
+        context.process_response_chunk(cx, chunk.into());
         context.process_response_eof(
             cx,
-            dummy_request_id,
             Ok(()),
             ResourceFetchTiming::new(ResourceTimingType::None),
         );
@@ -4389,6 +4461,7 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         mut incomplete: InProgressLoad,
+        source_origin: Option<MutableOrigin>,
     ) {
         let url = ServoUrl::parse("about:srcdoc").unwrap();
         let mut meta = Metadata::default(url.clone());
@@ -4401,12 +4474,11 @@ impl ScriptThread {
         let policy_container = incomplete.load_data.policy_container.clone();
         let creation_sandboxing_flag_set = incomplete.load_data.creation_sandboxing_flag_set;
 
-        let webview_id = incomplete.webview_id;
+        let webview_id = incomplete.webview_id();
         let pipeline_id = incomplete.pipeline_id;
         let parent_info = incomplete.parent_info;
         let about_base_url = incomplete.load_data.about_base_url.clone();
         let target_snapshot_params = incomplete.target_snapshot_params;
-        let load_origin = incomplete.load_data.load_origin.clone();
         self.incomplete_loads.borrow_mut().push(incomplete);
 
         let mut context = ParserContext::new(
@@ -4416,17 +4488,14 @@ impl ScriptThread {
             creation_sandboxing_flag_set,
             parent_info,
             target_snapshot_params,
-            load_origin,
+            source_origin,
         );
-        let dummy_request_id = RequestId::default();
-
-        context.process_response(cx, dummy_request_id, Ok(FetchMetadata::Unfiltered(meta)));
+        context.process_response(self, cx, Ok(FetchMetadata::Unfiltered(meta)));
         context.set_policy_container(policy_container.as_ref());
         context.set_about_base_url(about_base_url);
-        context.process_response_chunk(cx, dummy_request_id, Bytes::copy_from_slice(&chunk));
+        context.process_response_chunk(cx, Bytes::copy_from_slice(&chunk));
         context.process_response_eof(
             cx,
-            dummy_request_id,
             Ok(()),
             ResourceFetchTiming::new(ResourceTimingType::None),
         );
@@ -4502,7 +4571,7 @@ impl ScriptThread {
     fn handle_reload(&self, pipeline_id: PipelineId, cx: &mut js::context::JSContext) {
         let window = self.documents.borrow().find_window(pipeline_id);
         if let Some(window) = window {
-            window.Location(cx).reload_without_origin_check(cx);
+            window.Location(cx).reload_without_origin_check(cx, &window);
         }
     }
 
@@ -4510,17 +4579,13 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         pipeline_id: PipelineId,
-        metric_type: ProgressiveWebMetricType,
-        metric_value: CrossProcessInstant,
-        first_reflow: bool,
+        event: PaintMetricEvent,
     ) {
         match self.documents.borrow().find_document(pipeline_id) {
-            Some(document) => {
-                document.handle_paint_metric(cx, metric_type, metric_value, first_reflow)
+            Some(document) => document.handle_paint_metric(cx, event),
+            None => {
+                warn!("Received paint metric ({event:?}) for unknown document: {pipeline_id:?}")
             },
-            None => warn!(
-                "Received paint metric ({metric_type:?}) for unknown document: {pipeline_id:?}"
-            ),
         }
     }
 

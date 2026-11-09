@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ComponentOrigin(StrEnum):
+class ComponentOrigin(TolerantStrEnum):
     BUILT_IN = "built_in"
     USER = "user"
 

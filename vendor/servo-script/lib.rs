@@ -23,6 +23,9 @@ extern crate stylo_atoms;
 #[macro_use]
 mod tasks;
 
+#[macro_use]
+extern crate script_bindings;
+
 pub(crate) mod conversions;
 mod css;
 mod fetch;
@@ -49,7 +52,7 @@ mod xpath;
 
 pub use event_loop::script_thread::ScriptThread;
 pub(crate) use script_bindings::DomTypes;
-pub(crate) use script_bindings::reflector::{AssociatedMemory, DomObject, MutDomObject, Reflector};
+pub(crate) use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 
 pub(crate) use crate::dom::bindings::codegen::DomTypeHolder::DomTypeHolder;
 // These trait exports are public, because they are used in the DOM bindings.

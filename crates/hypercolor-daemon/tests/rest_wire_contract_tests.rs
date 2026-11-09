@@ -620,6 +620,20 @@ async fn config_key_reads_report_unknown_keys_through_the_error_envelope() {
 }
 
 #[tokio::test]
+async fn display_collections_report_complete_lists() {
+    let (state, _tmp) = isolated_state();
+    let app = test_app(&state);
+
+    for uri in ["/api/v1/displays", "/api/v1/simulators/displays"] {
+        let response = send(&app, get(uri)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let json = body_json(response).await;
+        assert_envelope(&json);
+        assert_complete_list(&json["data"], 0);
+    }
+}
+
+#[tokio::test]
 async fn config_schema_is_served_as_a_list_of_entries() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
@@ -629,7 +643,8 @@ async fn config_schema_is_served_as_a_list_of_entries() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    let entries = json["data"].as_array().expect("schema is a list");
+    assert_keys(&json["data"], &["items", "total"], "config schema list");
+    let entries = json["data"]["items"].as_array().expect("schema is a list");
     assert_keys(
         &entries[0],
         &[

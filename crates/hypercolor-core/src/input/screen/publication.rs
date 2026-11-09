@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Duration;
 
-use hypercolor_types::config::CaptureBackendId;
+/// Capture backend that owns the source session: one vocabulary shared
+/// with configuration validation and status reporting.
+pub use hypercolor_types::config::CaptureBackendId;
 use thiserror::Error;
 
 use super::plan::{ScreenNativeResourceBindingKey, ScreenNativeSharedResourceBindingKey};
@@ -58,12 +60,6 @@ pub enum ScreenSourceReflection {
     /// Reflect around both axes.
     Both,
 }
-
-/// Capture backend that owns the source session.
-///
-/// One vocabulary with configuration validation and status reporting; see
-/// [`CaptureBackendId`].
-pub type ScreenCaptureBackend = CaptureBackendId;
 
 /// Resource API backing a resolved capture source.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,7 +117,7 @@ impl PartialOrd for ScreenResourceApi {
 /// Exact backend resource identity fencing reusable publication work.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScreenBackendResourceIdentity {
-    backend: ScreenCaptureBackend,
+    backend: CaptureBackendId,
     api: ScreenResourceApi,
     physical_gpu_device: Option<ScreenPhysicalGpuDeviceIdentity>,
     device_generation: u64,
@@ -132,7 +128,7 @@ impl ScreenBackendResourceIdentity {
     /// Construct a complete backend resource fence.
     #[must_use]
     pub const fn new(
-        backend: ScreenCaptureBackend,
+        backend: CaptureBackendId,
         api: ScreenResourceApi,
         device_generation: u64,
         resource_generation: u64,
@@ -149,7 +145,7 @@ impl ScreenBackendResourceIdentity {
     /// Construct a resource fence owned by one stable physical GPU.
     #[must_use]
     pub const fn new_with_physical_gpu_device(
-        backend: ScreenCaptureBackend,
+        backend: CaptureBackendId,
         api: ScreenResourceApi,
         physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
         device_generation: u64,
@@ -166,7 +162,7 @@ impl ScreenBackendResourceIdentity {
 
     /// Capture backend identity.
     #[must_use]
-    pub const fn backend(&self) -> &ScreenCaptureBackend {
+    pub const fn backend(&self) -> &CaptureBackendId {
         &self.backend
     }
 

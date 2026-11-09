@@ -14,8 +14,9 @@ cache preserves probe IPs and device info across daemon restarts.
 ## Position in the Workspace
 
 - Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
-  `hypercolor-types`, `anyhow`, `async-trait`, `reqwest`, `serde`,
-  `serde_json`, `tokio`, `tracing`, `uuid`
+  `hypercolor-pixel-protocols`, `hypercolor-types`, `anyhow`,
+  `async-trait`, `serde`, `serde_json`, `tokio`, `tracing`,
+  `uuid`
 - Consumed by: `hypercolor-driver-builtin` (via the `wled` feature)
 
 ## Key Public Surface
@@ -25,9 +26,11 @@ cache preserves probe IPs and device info across daemon restarts.
 - `WledBackend`, `WledColorFormat`, `WledDevice`, `WledDeviceInfo`,
   `WledLiveReceiverConfig`, `WledProtocol`, `WledSegmentInfo`
 - `WledConfig`, `WledProtocolConfig`: driver config types
-- `DdpPacket`, `DdpSequence`, `build_ddp_frame`: DDP frame builder
+- `DdpPacket`, `DdpSequence`, `build_ddp_frame`: DDP frame builder,
+  re-exported from `hypercolor-pixel-protocols`
 - `E131Packet`, `E131SequenceTracker`, `E131_PIXELS_PER_UNIVERSE_RGB`,
-  `E131_PIXELS_PER_UNIVERSE_RGBW`, `universes_needed`: E1.31/sACN support
+  `E131_PIXELS_PER_UNIVERSE_RGBW`, `universes_needed`: E1.31/sACN support,
+  re-exported from `hypercolor-pixel-protocols`
 - `WledScanner`, `WledKnownTarget`: discovery scanner
 - `build_wled_backend`: backend factory merging config and cached hints
 - `resolve_wled_probe_ips_from_sources`, `resolve_wled_probe_targets_from_sources`

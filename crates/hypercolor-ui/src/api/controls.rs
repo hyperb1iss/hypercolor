@@ -20,9 +20,7 @@ async fn fetch_control_surfaces(
 ) -> ApiResult<Vec<ControlSurfaceDocument>> {
     let response: Option<ControlSurfaceListResponse> =
         client::fetch_json_optional(&control_surface_list_url(&query)).await?;
-    Ok(response
-        .map(|response| response.surfaces)
-        .unwrap_or_default())
+    Ok(response.map(|response| response.items).unwrap_or_default())
 }
 
 /// Fetch device, driver-owned device, and optional driver-level surfaces.

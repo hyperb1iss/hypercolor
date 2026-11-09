@@ -10,7 +10,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/displays",
             axum::routing::get(displays::list_displays),
-            [OperationDoc::get_vec::<
+            [OperationDoc::get_list::<
                 hypercolor_types::api::displays::DisplaySummary,
             >(
                 "list_displays", "displays", "List display devices"

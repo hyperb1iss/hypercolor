@@ -103,8 +103,8 @@ pub(super) fn restart_capture_owner_with(
     restart
 }
 
-pub(super) fn choose_daemon_owner_inner(
-    app: &AppHandle,
+pub(super) fn choose_daemon_owner_inner<R: Runtime>(
+    app: &AppHandle<R>,
     state: SupervisorState,
     requested_owner: MacosDaemonOwner,
 ) -> Result<MacosOwnerCoordinatorOutcome, anyhow::Error> {
@@ -133,6 +133,27 @@ pub(super) fn choose_daemon_owner_inner(
     .map_err(anyhow::Error::from)?;
     apply_owner_choice_outcome(&state, &outcome);
     Ok(outcome)
+}
+
+/// Record the direct agent, whose daemon already runs, as the daemon's owner.
+///
+/// The daemon published itself when it won the guard, so this is the choice
+/// that leaves autostart with the agent and tells the supervisor not to start
+/// a sidecar of its own.
+#[cfg(feature = "managed-update")]
+pub(crate) fn hand_daemon_to_direct_agent<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), anyhow::Error> {
+    use tauri::Manager as _;
+
+    let state = app.state::<SupervisorState>().inner().clone();
+    match choose_daemon_owner_inner(app, state, MacosDaemonOwner::DirectLaunchd)? {
+        MacosOwnerCoordinatorOutcome::Active {
+            owner: MacosDaemonOwner::DirectLaunchd,
+            ..
+        } => Ok(()),
+        outcome => anyhow::bail!("the daemon's handover ended as {outcome:?}"),
+    }
 }
 
 pub(super) fn apply_owner_choice_outcome(

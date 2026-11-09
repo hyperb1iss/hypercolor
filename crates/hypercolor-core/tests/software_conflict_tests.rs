@@ -515,3 +515,12 @@ fn every_builtin_entry_has_a_remedy_without_dashes() {
         );
     }
 }
+
+#[test]
+fn a_store_reads_only_the_inventory_it_was_given() {
+    let unwired = SoftwareConflictStore::new();
+    assert_eq!((unwired.inventory())(), HostInventory::Unsupported);
+
+    let wired = SoftwareConflictStore::new().with_inventory(|| HostInventory::Failed);
+    assert_eq!((wired.inventory())(), HostInventory::Failed);
+}

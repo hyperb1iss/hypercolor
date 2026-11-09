@@ -1,0 +1,36 @@
+[vendor]
+name = "Pixel Controllers (E1.31 / Art-Net / DDP)"
+vid = []
+notes = "Any receiver that accepts E1.31 (sACN), Art-Net 4 ArtDmx, or DDP over unicast UDP. Devices are configured by hand under drivers.pixel. Experimental: built and tested against the published standards, not yet run on real controllers."
+
+[[devices]]
+name = "Falcon F16V4 / F16V5"
+type = "argb_controller"
+status = "supported"
+driver = "pixel"
+transport = "network_udp"
+notes = "E1.31, Art-Net, or DDP input. Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "Falcon Player (FPP)"
+type = "argb_controller"
+status = "supported"
+driver = "pixel"
+transport = "network_udp"
+notes = "E1.31, Art-Net, or DDP input (DDP destination ID 1). Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "ESPixelStick"
+type = "argb_controller"
+status = "supported"
+driver = "pixel"
+transport = "network_udp"
+notes = "E1.31, Art-Net, or DDP input, RGB or RGBW pixels. Experimental, not yet tested on hardware."
+
+[[devices]]
+name = "Art-Net or sACN DMX node"
+type = "other"
+status = "supported"
+driver = "pixel"
+transport = "network_udp"
+notes = "DMX fixtures behind a node, addressed by universe and start channel. Experimental, not yet tested on hardware."

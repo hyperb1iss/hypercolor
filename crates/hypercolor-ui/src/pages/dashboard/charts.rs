@@ -630,7 +630,7 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
 
                 // ── Floating remove button, revealed on hover.
                 <button
-                    class="absolute top-2 right-2 z-10 p-1 rounded-full \
+                    class="touch-reveal touch-hit absolute top-2 right-2 z-10 p-1 rounded-full \
                            opacity-0 group-hover:opacity-100 \
                            transition-all duration-200 hover:scale-110 active:scale-95"
                     style="background: rgba(0, 0, 0, 0.55); \

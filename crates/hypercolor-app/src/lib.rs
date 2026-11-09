@@ -12,6 +12,7 @@ pub fn daemon_base_url() -> String {
     std::env::var(DAEMON_URL_ENV).unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_string())
 }
 
+pub mod autostart;
 pub mod cli;
 pub mod daemon_client;
 pub mod diagnostics;
@@ -19,6 +20,7 @@ pub mod first_run;
 pub mod helper_client;
 pub mod linux_webkit;
 pub mod logging;
+pub mod macos_update;
 pub mod ownership;
 pub mod process_ext;
 pub mod state;
@@ -26,3 +28,4 @@ pub mod supervisor;
 pub mod support;
 pub mod tray;
 pub mod window;
+pub mod windows_update;

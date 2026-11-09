@@ -18,7 +18,7 @@ pub(super) fn PresetActionButtons(
         <div class="flex items-center gap-0.5 shrink-0">
             // Save (overwrite current preset)
             <button
-                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action pointer-coarse:flex pointer-coarse:size-[44px] pointer-coarse:items-center pointer-coarse:justify-center
                        hover:text-[var(--status-success)] hover:bg-[var(--status-success)]/10"
                 title="Save controls to preset"
                 aria-label="Save controls to preset"
@@ -30,7 +30,7 @@ pub(super) fn PresetActionButtons(
 
             // New preset
             <button
-                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action pointer-coarse:flex pointer-coarse:size-[44px] pointer-coarse:items-center pointer-coarse:justify-center
                        hover:text-cyan hover:bg-cyan/10"
                 title="Create new preset"
                 aria-label="Create new preset"
@@ -41,7 +41,7 @@ pub(super) fn PresetActionButtons(
 
             // Edit name
             <button
-                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action pointer-coarse:flex pointer-coarse:size-[44px] pointer-coarse:items-center pointer-coarse:justify-center
                        hover:text-[var(--accent)] hover:bg-[var(--accent)]/10"
                 title="Rename preset"
                 aria-label="Rename preset"
@@ -53,7 +53,7 @@ pub(super) fn PresetActionButtons(
 
             // Delete
             <button
-                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action pointer-coarse:flex pointer-coarse:size-[44px] pointer-coarse:items-center pointer-coarse:justify-center
                        hover:text-[var(--status-error)] hover:bg-[var(--status-error)]/10"
                 title="Delete preset"
                 aria-label="Delete preset"
@@ -121,7 +121,7 @@ fn InlineNameButtons(
 ) -> impl IntoView {
     view! {
         <button
-            class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+            class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action pointer-coarse:flex pointer-coarse:size-[44px] pointer-coarse:items-center pointer-coarse:justify-center
                    hover:text-[var(--status-success)] hover:bg-[var(--status-success)]/10"
             title="Confirm"
             disabled=move || value.get().trim().is_empty()
@@ -135,7 +135,7 @@ fn InlineNameButtons(
             <Icon icon=LuCheck width="14px" height="14px" />
         </button>
         <button
-            class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+            class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action pointer-coarse:flex pointer-coarse:size-[44px] pointer-coarse:items-center pointer-coarse:justify-center
                    hover:text-[var(--status-error)] hover:bg-[var(--status-error)]/10"
             title="Cancel"
             on:click=move |_| on_cancel.run(())

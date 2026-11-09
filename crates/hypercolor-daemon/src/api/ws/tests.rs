@@ -22,7 +22,7 @@ use hypercolor_core::input::screen::planner::{
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
     DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphHandle, InputManager,
-    InputSource, InteractionSource, InteractionSourceRole, ManagedSourceKey, ManagedSourceRole,
+    InteractionSource, InteractionSourceRole, ManagedSource, ManagedSourceKey, ManagedSourceRole,
     SourceIssue, SourceKind, SourceRoleBinding, SourceSessionSlot, SourceStatusHandle,
     SourceStatusReporter, SourceSwapTarget,
 };
@@ -588,7 +588,7 @@ impl StatusEventTestSource {
     }
 }
 
-impl InputSource for StatusEventTestSource {
+impl ManagedSource for StatusEventTestSource {
     fn name(&self) -> &'static str {
         "Status Event Test"
     }
@@ -635,7 +635,7 @@ struct MutableSensorSource {
     running: bool,
 }
 
-impl InputSource for MutableSensorSource {
+impl ManagedSource for MutableSensorSource {
     fn name(&self) -> &'static str {
         "mutable-sensors"
     }
@@ -2911,7 +2911,7 @@ async fn preview_capacity_wait_yields_to_task_cancellation() {
 #[tokio::test]
 async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     let state = Arc::new(AppState::new());
-    let config = crate::simulators::SimulatedDisplayConfig {
+    let config = hypercolor_types::api::simulators::SimulatedDisplay {
         id: DeviceId::new(),
         name: "WS Preview Display".to_owned(),
         width: 240,
@@ -2987,7 +2987,7 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
 async fn relay_display_preview_attaches_when_an_unknown_device_connects() {
     let state = Arc::new(AppState::new());
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
-    let config = crate::simulators::SimulatedDisplayConfig {
+    let config = hypercolor_types::api::simulators::SimulatedDisplay {
         id: DeviceId::new(),
         name: "Late WS Preview Display".to_owned(),
         width: 240,

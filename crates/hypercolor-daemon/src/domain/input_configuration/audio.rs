@@ -3,9 +3,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing::info;
 
-use hypercolor_types::audio::AudioPipelineConfig;
-
 use crate::app_state::AppState;
+use crate::startup::AudioInputSpec;
 
 pub(crate) async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> {
     let Some(manager) = state.config_manager.as_ref() else {
@@ -17,8 +16,10 @@ pub(crate) async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::
         let latest_config = Arc::clone(&manager.get());
         let capture_active = current_live_audio_capture_demand(state).await;
         let audio_device = latest_config.audio.device.clone();
-        let audio_name = format!("AudioInput({audio_device})");
-        let effective_config = AudioPipelineConfig::from(&latest_config.audio);
+        let AudioInputSpec {
+            name: audio_name,
+            pipeline: effective_config,
+        } = (state.capabilities.audio_input)(&latest_config.audio);
         let (plan, previous_sources) = {
             let input_manager = state.input_manager();
             (

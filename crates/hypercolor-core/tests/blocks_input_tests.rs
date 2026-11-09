@@ -5,14 +5,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hypercolor_core::device::{BlocksBackend, BlocksScanner};
-use hypercolor_driver_api::{DeviceBackend, DeviceInputPublisher, DeviceInputSink};
+use hypercolor_driver_api::{
+    DeviceBackend, DeviceInputPublisher, DeviceInputSink, DriverRuntimeActions,
+};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::device_input::{DeviceInputEdge, TouchPosition};
 use hypercolor_types::event::InputButtonState;
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, timeout};
 
 const PAD_UID: u64 = 15_574_837_184_041_537_129;
 const STRANGER_UID: u64 = 42;
@@ -199,6 +201,114 @@ async fn serve_scan_and_ping_after(
         Ok(frames)
     };
     Ok((discovered, ping))
+}
+
+struct IdleRuntime;
+
+#[async_trait::async_trait]
+impl DriverRuntimeActions for IdleRuntime {
+    async fn activate_device(
+        &self,
+        _device_id: DeviceId,
+        _backend_id: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn disconnect_device(
+        &self,
+        _device_id: DeviceId,
+        _backend_id: &str,
+        _will_retry: bool,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn request_discovery(&self, _driver_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// Assert the far end hung up.
+async fn assert_closed(mut connection: BufReader<UnixStream>, what: &str) -> TestResult {
+    let mut line = String::new();
+    let read = timeout(Duration::from_secs(1), connection.read_line(&mut line))
+        .await
+        .map_err(|_| format!("{what} is still open"))??;
+    assert_eq!(read, 0, "{what} is still open");
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_ends_the_frame_socket_the_input_stream_and_the_watcher() -> TestResult {
+    let dir = tempdir()?;
+    let socket_path = dir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let sink = RecordingSink::default();
+
+    let scan = {
+        let path = socket_path.clone();
+        tokio::spawn(async move { BlocksScanner::new(path).scan().await })
+    };
+    let (discovered, _) = serve_scan_and_ping_after(&listener, scan).await?;
+    let backend = BlocksBackend::new(socket_path)
+        .with_device_input(Arc::new(sink.clone()))
+        .with_discovery_requests(Arc::new(IdleRuntime), "blocks");
+    backend.adopt_device(&discovered[0])?;
+    let device_id = discovered[0].info.id;
+
+    // The three connections arrive in whatever order the tasks reach them.
+    let serve = async {
+        let (mut frames, mut input, mut watcher) = (None, None, None);
+        while frames.is_none() || input.is_none() || watcher.is_none() {
+            let (stream, _) = listener.accept().await?;
+            let mut connection = BufReader::new(stream);
+            let first = read_line(&mut connection).await?;
+            if first["type"] == "ping" {
+                send(
+                    &mut connection,
+                    &[r#"{"type":"pong","version":"0.6.0","uptime_seconds":1,"device_count":1}"#],
+                )
+                .await?;
+                frames = Some(connection);
+            } else if first["events"] == serde_json::json!(["device"]) {
+                watcher = Some(connection);
+            } else {
+                input = Some(connection);
+            }
+        }
+        TestResult::Ok((frames, input, watcher))
+    };
+    let (connected, connections) = tokio::join!(backend.connect(&device_id), serve);
+    connected?;
+    let (frames, input, watcher) = connections?;
+
+    backend.retire().await?;
+
+    assert_closed(frames.ok_or("no frame socket")?, "the frame socket").await?;
+    assert_closed(input.ok_or("no input stream")?, "the input stream").await?;
+    assert_closed(watcher.ok_or("no watcher")?, "the watcher").await?;
+    let records = sink.records();
+    assert!(
+        records
+            .iter()
+            .any(|record| matches!(record, Record::Drop { .. })),
+        "the input lease ends with the backend: {records:?}"
+    );
+
+    assert!(
+        timeout(Duration::from_millis(400), listener.accept())
+            .await
+            .is_err(),
+        "nothing reconnects after retirement"
+    );
+    assert!(backend.connect(&device_id).await.is_err());
+    assert_eq!(
+        attaches(&sink.records()),
+        1,
+        "a refused connect attaches no input"
+    );
+    Ok(())
 }
 
 fn touch(uid: u64, action: &str, index: u8, x: f32) -> String {

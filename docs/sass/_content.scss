@@ -169,6 +169,9 @@
 
   h1, h2, h3, h4, h5, h6 {
     position: relative;
+    // Long type names (the generated REST schemas page) must wrap at phone
+    // width rather than widen the page.
+    overflow-wrap: break-word;
   }
 
   .zola-anchor {
@@ -242,6 +245,14 @@
     border-radius: $radius-sm;
     padding: 2px 6px;
     font-size: 0.9em;
+    // Long routes would otherwise push a phone-width page sideways.
+    overflow-wrap: break-word;
+  }
+
+  // A link around inline code takes the link color, so a type name or route
+  // that links somewhere reads as a link and not as plain code.
+  a > code:only-child {
+    color: inherit;
   }
 
   // ── Code Blocks — sunken surface, subtle border, glow ─────

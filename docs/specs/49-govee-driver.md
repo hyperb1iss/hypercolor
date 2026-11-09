@@ -691,7 +691,7 @@ Looks up the device, resolves its SKU profile, and sends a `turn:1` via LAN. If 
 
 If `razer_enabled`, send `RAZER_DISABLE`. Optional `turn:0` gated by config (`govee.power_off_on_disconnect`, default false). Clear `last_sent`.
 
-### `write_colors` and `write_colors_shared`
+### `submit`
 
 Behavior is driven by the SKU profile:
 
@@ -699,7 +699,7 @@ Behavior is driven by the SKU profile:
 - If `RAZER_STREAMING` and `colors.len() != razer_led_count` → compute the mean color across `colors` and fall back to `colorwc`. Log once per device at `warn`.
 - Otherwise → mean color, `colorwc`, honoring Kelvin of 0.
 
-Before every send, `rate_gate.ready()` enforces the configured frame floor. If not ready, the call returns `Ok(())` without sending; `write_colors_shared` semantics allow coalescing, and the engine never expects per-call guarantees.
+Before every send, `rate_gate.ready()` enforces the configured frame floor. If not ready, the frame settles as deferred without sending; `submit` semantics allow coalescing, and the engine never expects per-call guarantees.
 
 ### `health_check`
 

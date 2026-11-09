@@ -20,6 +20,7 @@ use crate::api;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::modal::Modal;
 use crate::components::shell::Shell;
+use crate::components::startup_hold_notice::StartupHoldNotice;
 use crate::components::welcome_overlay::WelcomeOverlay;
 use crate::config_state::{ConfigContext, ConfigSchemaContext};
 use crate::device_event_logic::should_refetch_devices_for_event;
@@ -532,6 +533,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     } = ext;
     provide_meta_context();
     provide_context(mount.clone());
+    crate::viewport::provide_phone_layout();
     leptoaster::provide_toaster();
     crate::toasts::install_root_context();
     provide_context(NavExtensionItems(extension_nav));
@@ -1113,6 +1115,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         </Show>
 
         <WelcomeOverlay />
+        <StartupHoldNotice />
 
         <div class="toast-host">
             <leptoaster::Toaster />
@@ -1152,7 +1155,7 @@ fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
             <div class="relative w-full max-w-sm rounded-lg border border-edge-subtle bg-surface-overlay p-5 modal-glow">
                 <div class="text-sm font-semibold text-fg-primary">"Network API Key"</div>
                 <div class="mt-1 text-xs text-fg-tertiary/75">
-                    "The connected computer requires a key for network access."
+                    "This installation requires a key for network access."
                 </div>
                 <input
                     node_ref=input_ref

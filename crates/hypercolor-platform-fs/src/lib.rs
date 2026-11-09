@@ -15,6 +15,7 @@ pub mod user_dirs;
 
 #[cfg(target_os = "windows")]
 mod windows;
+mod windows_names;
 
 #[cfg(unix)]
 pub use unix::{
@@ -27,8 +28,11 @@ pub use unix::{
 pub use windows::{
     DestinationIdentity, WindowsAce, WindowsAceKind, WindowsDirectory, WindowsDirectoryAccess,
     WindowsEntryKind, WindowsEntryMetadata, WindowsFileLock, WindowsSecurity, WindowsSid,
-    windows_child_name_is_valid, windows_file_security,
+    windows_adopt_inherited_pipe, windows_child_name_is_valid, windows_connect_pipe_client,
+    windows_create_pipe_server, windows_file_security, windows_named_pipe_server_process_id,
+    windows_wait_for_pipe,
 };
+pub use windows_names::windows_file_name_is_valid;
 
 /// Atomically replace `destination` with `source` and make the replacement
 /// durable.
@@ -61,6 +65,36 @@ pub fn durable_replace(source: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
+/// Flush a directory's entries to stable storage.
+///
+/// Call it after creating, renaming, or removing an entry so the change
+/// survives a crash. Unix syncs the directory handle; Windows opens the
+/// directory with write access and flushes it.
+///
+/// # Errors
+///
+/// Returns the platform filesystem error when the directory cannot be
+/// opened or flushed, and [`io::ErrorKind::Unsupported`] on platforms
+/// with no directory durability barrier.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(path).and_then(|directory| directory.sync_all())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        WindowsDirectory::open(path, WindowsDirectoryAccess::Write)
+            .and_then(|directory| directory.sync())
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = path;
+        Err(unsupported("directory sync"))
+    }
+}
+
 /// Create a new secret file, write all `contents`, and sync the file.
 ///
 /// The destination must not already exist. Unix files are created with mode
@@ -87,6 +121,18 @@ pub fn write_secret(path: &Path, contents: &[u8]) -> io::Result<()> {
         let _ = (path, contents);
         Err(unsupported("secret file creation"))
     }
+}
+
+/// Whether `path` lies under macOS App Translocation: the private read-only
+/// mount Gatekeeper runs a quarantined app from when Finder did not move it.
+/// The mount, and so the path, is gone once the app exits, so nothing may
+/// ever record one.
+#[must_use]
+pub fn is_macos_translocated_path(path: &Path) -> bool {
+    (path.starts_with("/private/var/folders") || path.starts_with("/var/folders"))
+        && path
+            .components()
+            .any(|component| component.as_os_str() == "AppTranslocation")
 }
 
 /// Open an existing file for reading without following a final symlink.

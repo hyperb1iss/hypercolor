@@ -6,8 +6,9 @@
 
 use std::net::{Ipv6Addr, SocketAddr};
 
+use hypercolor_core::config::paths::IsolatedUserDirs;
 use hypercolor_daemon::daemon::{DaemonRunOptions, build_main_runtime, prepare};
-use hypercolor_daemon::startup::default_config;
+use hypercolor_daemon::startup::{HostPorts, default_config};
 use hypercolor_types::config::NetworkAccessMode;
 
 /// Two distinct ports that were free a moment ago on both loopback
@@ -46,6 +47,7 @@ fn free_loopback_ports() -> (u16, u16) {
 #[test]
 fn prepare_serves_loopback_when_the_configured_interface_is_unavailable() {
     let directory = tempfile::tempdir().expect("config directory should be created");
+    let dirs = IsolatedUserDirs::claim(directory.path());
     let config_path = directory.path().join("hypercolor.toml");
     let (override_port, configured_port) = free_loopback_ports();
     let mut config = default_config();
@@ -63,11 +65,14 @@ fn prepare_serves_loopback_when_the_configured_interface_is_unavailable() {
 
     let runtime = build_main_runtime().expect("runtime should build");
     let prepared = runtime
-        .block_on(prepare(DaemonRunOptions {
-            config: Some(config_path),
-            port: Some(override_port),
-            ..DaemonRunOptions::default()
-        }))
+        .block_on(prepare(
+            DaemonRunOptions {
+                config: Some(config_path),
+                port: Some(override_port),
+                ..DaemonRunOptions::default()
+            },
+            HostPorts::isolated(&dirs),
+        ))
         .expect("an unavailable configured address must not stop a --port launch");
 
     assert_eq!(

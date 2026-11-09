@@ -19,10 +19,10 @@
 //!   at the HAL boundary. Upstream consumers decide whether to retry or
 //!   degrade.
 //! - **Every start and stop is on record.** As a service the broker logs
-//!   to `logs\smbus-broker.log` beside its executable: the PawnIO runtime
-//!   and modules it found, each state it reports, why it stopped (Stop,
-//!   system shutdown, or a failure with its exit code), any panic, and
-//!   the first request failure of each kind. Failures after the control
+//!   to `smbus-broker.log` in `%ProgramData%\Hypercolor\logs`: the
+//!   PawnIO runtime and modules it found, each state it reports, why it
+//!   stopped (Stop, system shutdown, or a failure with its exit code), any
+//!   panic, and the first request failure of each kind. Failures after the control
 //!   handler registers report `SERVICE_STOPPED` with a service-specific
 //!   exit code instead of leaving the service in `START_PENDING`.
 //!
@@ -35,6 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -61,7 +62,8 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
-use super::service_log::{broker_log_path, open_broker_log};
+use super::log_directory::{open_machine_log_directory, remove_machine_directory};
+use super::service_log::open_broker_log;
 use super::{
     CpuVendor, IOCTL_READ_MSR, IOCTL_READ_SMN, PAWNIO_MODULE_AMD_FAMILY_17,
     PAWNIO_MODULE_INTEL_MSR, PawnIoError, PawnIoHandle, PawnIoResult, PawnIoRuntime,
@@ -78,7 +80,7 @@ const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(10);
 /// How long a stopping broker waits for in-flight requests before its
 /// runtime is torn down regardless. Kept under the stop wait hint.
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
+const PIPE_NAME: &str = crate::BROKER_PIPE_NAME;
 /// Pause between attempts to create the next pipe instance.
 const PIPE_CREATE_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Consecutive pipe creation failures (ten seconds of retries) after which
@@ -95,6 +97,10 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_BATCH_DELAY_MS: u64 = 1_000;
 const CLIENT_CONNECT_ATTEMPTS: usize = 20;
 const CLIENT_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(10);
+/// `SECURITY_IDENTIFICATION`: whoever serves the pipe may learn who the
+/// client is, but never act as the client. Anyone who holds the name while
+/// the broker is down can serve it, and elevated tools connect here too.
+const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
 const DIRECT_ENV: &str = "HYPERCOLOR_PAWNIO_DIRECT";
 
 define_windows_service!(ffi_service_main, service_main);
@@ -251,6 +257,22 @@ pub(super) fn run_smbus_service() -> Result<()> {
         return run_console();
     }
 
+    // The elevated hardware setup keeps its transcript in the same
+    // directory, so it borrows the broker's checked open instead of trusting
+    // a path a standard user could have prepared.
+    if std::env::args_os().any(|arg| arg == "--prepare-log-directory") {
+        open_machine_log_directory().context("the machine log directory cannot be used safely")?;
+        return Ok(());
+    }
+
+    // The elevated uninstaller removes the machine directory under the same
+    // checks, so it never deletes through a link planted in a directory it
+    // would refuse.
+    if std::env::args_os().any(|arg| arg == "--remove-machine-directory") {
+        remove_machine_directory().context("the machine directory cannot be removed safely")?;
+        return Ok(());
+    }
+
     let log_path = init_service_tracing();
     install_panic_logger();
     info!(
@@ -278,7 +300,7 @@ pub(super) fn run_smbus_service() -> Result<()> {
 
 fn print_help() {
     println!(
-        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon.\nAs a service it logs to logs\\smbus-broker.log beside this executable."
+        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console | --prepare-log-directory | --remove-machine-directory]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon.\nAs a service it logs to %ProgramData%\\Hypercolor\\logs\\smbus-broker.log.\n--prepare-log-directory creates that directory, or checks the one there, and\nexits non-zero when a standard user could change it.\n--remove-machine-directory removes %ProgramData%\\Hypercolor under the same checks."
     );
 }
 
@@ -294,16 +316,13 @@ fn init_console_tracing() {
         .try_init();
 }
 
-/// Route tracing to the broker log beside the executable. A service has no
-/// console, so without this every message, failures included, is dropped.
-/// Falls back to console output when the log cannot be opened, which keeps
-/// a misconfigured install from also losing the broker itself.
+/// Route tracing to the broker log in the machine log directory. A service
+/// has no console, so without this every message, failures included, is
+/// dropped. Falls back to console output when the log cannot be opened,
+/// which keeps a misconfigured install from also losing the broker itself.
 fn init_service_tracing() -> Option<PathBuf> {
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| broker_log_path(&exe))?;
-    match open_broker_log(&path) {
-        Ok(file) => {
+    match open_broker_log() {
+        Ok((path, file)) => {
             let _ = tracing_subscriber::fmt()
                 .with_env_filter(broker_env_filter())
                 .with_target(true)
@@ -744,7 +763,12 @@ fn send_request_bytes(request: &[u8]) -> PawnIoResult<Vec<u8>> {
 fn open_pipe_client() -> PawnIoResult<std::fs::File> {
     let mut last_error = None;
     for attempt in 0..CLIENT_CONNECT_ATTEMPTS {
-        match OpenOptions::new().read(true).write(true).open(PIPE_NAME) {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(SECURITY_IDENTIFICATION)
+            .open(PIPE_NAME)
+        {
             Ok(file) => return Ok(file),
             Err(error) => {
                 last_error = Some(error);

@@ -5,6 +5,9 @@ mdns_enabled = false
 background_enabled = false
 blocks_scan = false
 
+[drivers.adalight]
+enabled = false
+
 [drivers.asus]
 enabled = false
 
@@ -26,13 +29,22 @@ enabled = false
 [drivers.lianli]
 enabled = false
 
+[drivers.lifx]
+enabled = false
+
 [drivers.nanoleaf]
 enabled = false
 
 [drivers.nollie]
 enabled = false
 
+[drivers.nzxt]
+enabled = false
+
 [drivers.openrgb]
+enabled = false
+
+[drivers.pixel]
 enabled = false
 
 [drivers.prismrgb]
@@ -50,10 +62,22 @@ enabled = false
 [drivers.smbus]
 enabled = false
 
+[drivers.twinkly]
+enabled = false
+
+[drivers.wiz]
+enabled = false
+
+[drivers.yeelight]
+enabled = false
+
 [drivers.usb]
 enabled = false
 
 [drivers.wled]
+enabled = false
+
+[drivers.wooting]
 enabled = false
 
 [mcp]

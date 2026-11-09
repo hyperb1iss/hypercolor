@@ -61,7 +61,7 @@ crates/
   hypercolor-macos-input/          # macOS CGEventTap keyboard and pointer capture
   hypercolor-macos-media/          # macOS now-playing media Automation adapters
   hypercolor-macos-session/        # macOS session and system-power monitoring
-  hypercolor-macos-owner/          # Shared durable macOS daemon ownership, launchd adapter, kqueue lifetime guard
+  hypercolor-macos-owner/          # Shared durable macOS daemon ownership, launchd adapter, kqueue lifetime guard, the app's update control socket
   hypercolor-windows-gpu-interop/  # Windows D3D11/Vulkan texture import boundary
   hypercolor-windows-pawnio/       # Windows SMBus access via the PawnIO kernel driver, with a broker service; stubbed on other platforms
   hypercolor-windows-capture/      # Windows DXGI Desktop Duplication screen capture
@@ -69,16 +69,26 @@ crates/
   hypercolor-windows-session/      # Windows session and power event monitors
   hypercolor-windows-telemetry/    # Windows WMI/PawnIO sensors and board identity (stubs elsewhere)
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
+  hypercolor-windows-launcher/     # Stable Windows launcher and update recovery bootstrap, the programs outside release units
+  hypercolor-windows-install-native/ # Audited Win32 process, service-state and firewall calls behind the Windows install platform
   hypercolor-platform-fs/          # Audited platform filesystem operations
-  hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd and macOS launchd platforms, payload validation
+  hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd, macOS launchd and Windows machine platforms, payload validation
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
-  hypercolor-driver-support/       # Native credential and discovery services layered on the driver API
+  hypercolor-driver-support/       # Native credential, discovery, device-session, bounded HTTP, and framing services layered on the driver API
+  hypercolor-driver-conformance/   # Contract tests every driver runs against its own emulator (dev-dependency only)
   hypercolor-driver-builtin/       # Compile-time bundle assembling HAL + network drivers into a registry via feature flags
   hypercolor-driver-hue/           # Philips Hue Bridge driver (Entertainment API over DTLS)
   hypercolor-driver-nanoleaf/      # Nanoleaf panels driver (HTTP pairing + UDP external control)
   hypercolor-driver-wled/          # WLED driver (DDP / E1.31 sACN streaming)
   hypercolor-driver-govee/         # Govee smart-lighting driver (LAN UDP + Govee Cloud API)
+  hypercolor-driver-lifx/          # LIFX LAN driver: bulbs, multizone strips, and matrix lights over UDP
+  hypercolor-driver-twinkly/       # Twinkly per-LED driver (REST login + real-time UDP frames)
+  hypercolor-driver-wiz/           # WiZ driver (UDP JSON setPilot, optional signed commands)
+  hypercolor-driver-yeelight/      # Yeelight driver (LAN control, music mode for frame streaming)
+  hypercolor-driver-pixel/         # Generic pixel controller driver: E1.31 sACN, Art-Net, DDP to configured hosts
+  hypercolor-pixel-protocols/      # Leaf: DDP, E1.31, Art-Net packet encoders and DMX universe math
+  hypercolor-driver-adalight/      # Adalight and HyperSerial AWA serial LED driver: manually configured ports, no USB-id claiming
   hypercolor-openrgb-sdk/          # Clean OpenRGB SDK protocol client
   hypercolor-driver-openrgb/       # OpenRGB fallback bridge driver (opt-in)
   hypercolor-openrgb-host/         # OpenRGB host integration: binary detection, server probe, install hints, permissions, managed config dir, headless server launch
@@ -134,15 +144,25 @@ graph TD
     DAPI & DS --> NL[hypercolor-driver-nanoleaf]
     DAPI & DS --> WLED[hypercolor-driver-wled]
     DAPI & DS --> GV[hypercolor-driver-govee]
-    ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
+    PP[hypercolor-pixel-protocols] --> WLED & PX[hypercolor-driver-pixel]
+    DAPI & DS --> PX
+    DAPI & DS --> ADA[hypercolor-driver-adalight]
+    DAPI & DS --> LX[hypercolor-driver-lifx]
+    DAPI & DS --> TW[hypercolor-driver-twinkly]
+    DAPI & DS --> WZ[hypercolor-driver-wiz]
+    DAPI & DS --> YL[hypercolor-driver-yeelight]
+    ORS[hypercolor-openrgb-sdk] & DAPI & DS --> ORD[hypercolor-driver-openrgb]
+    DS --> CORE
     ORS & PER --> OH[hypercolor-openrgb-host]
     OH --> APP & CLI
     DAPI --> NET[hypercolor-network]
-    CORE & DAPI & HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
+    CORE & DAPI & HAL & HUE & NL & WLED & GV & LX & TW & WZ & YL & PX & ADA & ORD & DS --> DB[hypercolor-driver-builtin]
     CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     PFS --> INST[hypercolor-install] --> CLI
+    PFS & INST --> WL[hypercolor-windows-launcher]
     MO -.->|macOS only| INST
+    INST -.->|Windows; macOS managed-update only| APP
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
     CORE & T --> APP[hypercolor-app]
@@ -165,12 +185,18 @@ and produce neutral vocabulary (`hypercolor-types`, `hypercolor-gpu-frame`)
 rather than mirroring it. `cfg(target_os)` is allowed only inside platform
 crates and at composition roots (`daemon/src/{process.rs,session.rs,
 startup/services.rs,render_thread/gpu_device.rs,render_thread/sparkleflinger/
-gpu/{runtime.rs,native_screen.rs},api/config/live/capture.rs,api/system/audio.rs}`
-plus `core/src/input/{media.rs,audio/mod.rs}` until their seams land).
-`rg -l 'cfg\(target_os' crates/hypercolor-core/src crates/hypercolor-daemon/src
-| rg -v '/tests?(\.rs|/)'` must stay at or under ten files (the unfiltered
-command also matches two test modules, so it returns twelve). Nothing enforces
-this budget today, so the number above is the only guard. Never add a
+gpu/{runtime.rs,native_screen.rs},domain/input_configuration/capture.rs,
+api/system/audio.rs}` plus `core/src/input/{media.rs,audio/mod.rs}` until their
+seams land). That list is the goal, not the current state: the old `rg -l
+'cfg\(target_os'` count missed every `all`/`any`/`not` and multi-line predicate.
+`just platform-cfg-budget-check` (`scripts/check-platform-cfg-budget.sh`) counts
+every non-test file in core and the daemon whose cfg predicate (attribute,
+`cfg!`, or `cfg_attr`) names `target_os`, `target_family`, `unix`, or `windows`,
+skipping comments, strings, test files, and `cfg(test)` items. The true count
+was 34 files on 2026-11-05 (23 of them name `target_os`), and the budget sits at
+that count so it can only ratchet down: when a seam lands and the count falls,
+lower the budget in the script. The check runs inside `just verify` and the Rust
+Check / Shared CI job, and lists the files when the count grows. Never add a
 `Macos*`/`Windows*`/`Linux*` type, variant, or field to shared code; carry
 per-platform facts as data (`Option`, unit variants, opaque diagnostics
 envelopes). See `docs/design/72-cross-platform-boundary-review.md`.
@@ -187,14 +213,11 @@ library, output, scene, scenes, simulators, system) plus the shared
 `envelope` module that owns `ApiResponse`, `ListResponse`, `PageInfo`, and
 `ApiErrorBody`. The daemon serializes these types; the web UI, the TUI, the
 CLI, the tray, and the desktop app shell deserialize them, and the Python
-client is generated from the same schemas. Most list routes answer
-`ListResponse { items, total, page }`, where `page` is present only on the
-routes that genuinely page (twelve routes answer `ListResponse` at all). Five
-collection routes do not, and the exceptions are
-contract: `GET /displays`, `/capture/monitors`, `/simulators/displays`, and
-`/config/schema` put a bare JSON array in `data` (they register through
-`OperationDoc::get_vec`), and `GET /control-surfaces` answers
-`{ surfaces: [...] }`. `GET /effects/console` is a cursor window over a log,
+client is generated from the same schemas. Every collection route answers
+`ListResponse { items, total, page }` (registered through
+`OperationDoc::get_list`), where `page` is present only on the routes that
+genuinely page; an OpenAPI test refuses any enveloped read whose `data` is a
+bare array. `GET /effects/console` is a cursor window over a log,
 `{ entries, next_seq, truncated }`, not a collection. Check the generated
 OpenAPI document before assuming a collection is paged. Diagnostic telemetry
 (system status internals, metrics) deliberately stays daemon-local; clients
@@ -236,16 +259,20 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 - **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
   Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
-  Long-running I/O is dispatched internally.
+  Long-running I/O is dispatched internally. Drivers keep their connections in `SessionTable`
+  (`driver-support/src/session.rs`): one generation per device at a time, opens run on tasks
+  the table owns so a cancelled connect leaves no native work behind, disconnect revokes every
+  retained sink and releases the transport, and `retire` does that for a whole backend, refuses
+  new sessions, and waits for everything in flight. `hypercolor-driver-conformance` holds that
+  contract as one shared test.
 - **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer implemented by
   `ServoRenderer` and the CPU builtins in `core/src/effect/builtin/`. There is no native GPU
   shader renderer; wgpu drives the SparkleFlinger compositor instead.
   Input: `FrameInput` (timing, audio, interaction, screen, sensors, sources). Output: `Canvas`.
 - **`ManagedSource`** (`core/src/input/traits.rs`): the base input-source trait, requiring `name`,
   `start`, `stop`, `sample`, and `is_running`, and refined by `AudioSource`, `ScreenSource`,
-  `InteractionSource`, and `DataSource` via `SourceRoleBinding`. `InputSource` is a legacy alias
-  for it (`pub use ManagedSource as InputSource`), so prefer the canonical name in new code.
-  One broken source never crashes the render loop.
+  `InteractionSource`, and `DataSource` via `SourceRoleBinding`. One broken source never crashes
+  the render loop.
 - **`Protocol`** (`hal/src/protocol.rs`): USB/HID wire-format encoding per device family.
   See hal-driver-development skill for implementation patterns.
 
@@ -321,13 +348,15 @@ without the runtime cliffs of unoptimized Servo.
 
 - **Edition 2024**, Rust 1.95+
 - **Tests:** integration and public-API coverage lives in `tests/` directories, named `{feature}_tests.rs`. Small private-internals unit tests may use `#[cfg(test)]` modules; avoid large inline test bodies.
-- **`unsafe_code` is forbidden** workspace-wide by default. The sixteen audited opt-outs are `linux-gpu-interop`, `linux-session`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `pipewire-interop`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-session`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
+- **`unsafe_code` is forbidden** workspace-wide by default. The eighteen audited opt-outs are `linux-gpu-interop`, `linux-session`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `pipewire-interop`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-session`, `windows-helper`, `windows-install-native`, `windows-launcher`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden**: use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors
+- **Bounded I/O:** drivers read HTTP through `hypercolor_driver_support::http` and delimited streams through `framing`. `deny.toml` bans a direct `reqwest` dependency in driver crates, so every reply has a deadline and a byte cap
 - **`tracing`** for all logging (never `println!` in library code)
 - **Serde** with `#[serde(rename_all = "snake_case")]` on enums, `#[serde(default)]` for compat
 - **Conventional commits**: `feat(scope):`, `fix(scope):`, `refactor(scope):`, etc.
+- **1.x stability**: `docs/content/api/stability.md` lists the interfaces semver covers from 1.0 (REST, WS frames and events, config schema, backups, effect SDK, Python client, CLI `--json` and exit codes, MCP tools). Changes to them are additive only; removals wait for 2.0. Config schemas 4 through current and backup schemas 1 through current must keep loading, and both have frozen release fixtures that prove it
 - **Apache-2.0** license
 
 ### Emoji
@@ -386,6 +415,25 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   it helps." No lowering baselines for the fuck of it. Preserve the intended ceiling and fix
   root causes with profiling, rendering changes, build/profile choices, adaptive policy that
   keeps the full baseline under headroom, or explicit user controls.
+- **Tests never reach the host, by construction.** What a daemon touches on its machine is
+  one value chosen at the composition root: `DaemonState::initialize`, `daemon::run`,
+  `daemon::run_with_extensions`, and `daemon::prepare` all require `HostPorts`. Production
+  passes `HostPorts::native()`. Tests pass `HostPorts::isolated(&claim)`, which takes a
+  share of a live `hypercolor_core::config::paths::IsolatedUserDirs`, and the daemon keeps
+  that share, so forgetting either does not compile and the directories stay claimed
+  while the daemon lives. Isolated ports compose offline drivers (full contract, no-op
+  discovery), a silent audio source, no other input source, and no session monitor. They
+  also carry `HostCapabilities::ISOLATED`: every reading a daemon takes on request
+  (running software, hardware broker, audio devices, capture monitors, USB hotplug) comes
+  back empty, and every factory a live configuration change rebuilds from yields a silent
+  source. `AppState::new()` and `AppStateBuilder` without an injected registry compose
+  the same way. New host reach belongs in `HostPorts` or `HostCapabilities`, never in a
+  direct call below them. Tests pass `Some(MdnsScope::Loopback)` or `None` to WLED
+  scanners, restrict each mDNS daemon with `MdnsScope::Loopback` before anything else
+  touches it, turn mDNS off on other scanners, and feed fixtures through seams such as
+  `HidUsageIndex::from_enumeration` and `SmBusScanner::with_dev_root`.
+  `just test-hermeticity-check` fails test code that picks the native ports or a
+  host-reaching construction, in test files and inline `cfg(test)` items.
 
 ## Agent Coordination
 
@@ -426,9 +474,16 @@ skills/                       # User-facing skills (shipped)
   effect-reviewer/            # Validates effects against LED hardware best practices
 ```
 
-**Driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD),
-Dygma, Ableton Push 2, QMK, PrismRGB, Nollie. Network backends: Hue, Nanoleaf, WLED, Govee,
-plus an opt-in OpenRGB SDK bridge as a fallback driver.
+**Driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD,
+peripherals), NZXT, Wooting, Dygma, Ableton Push 2, QMK, PrismRGB, Nollie. Network backends:
+Hue, Nanoleaf, WLED, Govee, LIFX, Twinkly, WiZ, Yeelight, and sACN/Art-Net/DDP pixel
+controllers, plus an opt-in OpenRGB SDK bridge as a fallback driver. Serial: Adalight and
+HyperSerial AWA boards on manually configured ports.
+
+**Adding a driver:** a standalone driver joins the bundle with one row in `BUILTIN_DRIVERS`
+(`hypercolor-driver-builtin/src/lib.rs`) plus its Cargo feature; registration and config
+seeding both read that table. The e2e fixture needs a disabled `[drivers.<id>]` entry, and
+the daemon's startup tests fail until it has one.
 
 For HAL driver implementation patterns (zerocopy structs, CommandBuffer, Protocol trait,
 wire-format gotchas), see the `hal-driver-development` skill. For protocol research

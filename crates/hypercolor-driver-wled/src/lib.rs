@@ -6,8 +6,8 @@
 //! overrides the driver-level default.
 
 pub mod backend;
-mod ddp;
-mod e131;
+#[cfg(test)]
+mod bounds_tests;
 mod scanner;
 
 use std::collections::{BTreeMap, HashSet};
@@ -19,14 +19,15 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverContext, DriverControlProvider,
     DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
     DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
-use hypercolor_driver_support::network::validate_ip;
-use hypercolor_driver_support::{control_apply, control_surface};
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget};
+use hypercolor_driver_support::network::{tracked_fingerprints_by_ip, validate_ip};
+use hypercolor_driver_support::{MdnsScope, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
@@ -42,8 +43,8 @@ pub use backend::{
     WledBackend, WledColorFormat, WledDevice, WledDeviceInfo, WledLiveReceiverConfig, WledProtocol,
     WledSegmentInfo,
 };
-pub use ddp::{DdpPacket, DdpSequence, build_ddp_frame};
-pub use e131::{
+pub use hypercolor_pixel_protocols::ddp::{DdpPacket, DdpSequence, build_ddp_frame};
+pub use hypercolor_pixel_protocols::e131::{
     E131_PIXELS_PER_UNIVERSE_RGB, E131_PIXELS_PER_UNIVERSE_RGBW, E131Packet, E131SequenceTracker,
     universes_needed,
 };
@@ -69,35 +70,40 @@ const PROTOCOL_DESCRIPTION: &str =
     "Realtime pixel transport. DDP is preferred; use E1.31 only for sACN workflows.";
 const DEDUP_THRESHOLD_DESCRIPTION: &str = "UDP frame suppression tolerance. Keep the default unless network load is causing trouble; 0 disables it.";
 
-static WLED_INFO_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())
-});
+/// Largest `/json/info` or `/json/cfg` reply read. WLED serializes both
+/// from a fixed JSON buffer of at most 32 KiB, so this is four times the
+/// largest stock build, with room for forks that enlarge the buffer.
+const WLED_JSON_REPLY_BYTES: usize = 128 * 1024;
+const WLED_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn wled_info_http_client() -> Result<&'static reqwest::Client> {
+static WLED_INFO_HTTP_CLIENT: LazyLock<Result<BoundedHttpClient, String>> =
+    LazyLock::new(|| BoundedHttpClient::new().map_err(|error| error.to_string()));
+
+fn wled_info_http_client() -> Result<&'static BoundedHttpClient> {
     WLED_INFO_HTTP_CLIENT
         .as_ref()
         .map_err(|error| anyhow!("Failed to build shared WLED HTTP client: {error}"))
 }
 
-async fn fetch_wled_info(ip: IpAddr) -> Result<backend::WledDeviceInfo> {
-    let url = format!("http://{ip}/json/info");
-    let client = wled_info_http_client()?;
-
-    let resp = client
-        .get(&url)
-        .send()
+async fn fetch_json(
+    client: &BoundedHttpClient,
+    url: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    client
+        .get(url)
+        .send(ReadBudget::new(WLED_JSON_REPLY_BYTES, timeout))
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("HTTP request to {url} failed"))?;
-
-    let json: serde_json::Value = resp
+        .and_then(BoundedResponse::error_for_status)
+        .with_context(|| format!("HTTP request to {url} failed"))?
         .json()
         .await
-        .with_context(|| format!("Failed to parse JSON from {url}"))?;
+        .with_context(|| format!("Failed to parse JSON from {url}"))
+}
 
+async fn fetch_wled_info(ip: IpAddr) -> Result<backend::WledDeviceInfo> {
+    let url = format!("http://{ip}/json/info");
+    let json = fetch_json(wled_info_http_client()?, &url, WLED_INFO_TIMEOUT).await?;
     backend::parse_wled_info(&json)
 }
 
@@ -197,7 +203,7 @@ impl DriverModule for WledDriverModule {
 impl DeviceBackendFactory for WledDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
@@ -225,7 +231,7 @@ impl DiscoveryCapability for WledDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let cached_probe_ips = load_cached_probe_ips(host).map_err(DriverError::discovery)?;
@@ -236,8 +242,9 @@ impl DiscoveryCapability for WledDriverModule {
             &cached_probe_ips,
             &cached_targets,
         );
-        let mut scanner =
-            WledScanner::with_known_targets(known_targets, request.mdns_enabled, request.timeout);
+        let mdns = request.mdns_enabled.then_some(MdnsScope::Network);
+        let mut scanner = WledScanner::with_known_targets(known_targets, mdns, request.timeout)
+            .with_tracked(tracked_fingerprints_by_ip(&tracked_devices));
         scanner.scan().await.map_err(DriverError::discovery)
     }
 }
@@ -900,22 +907,11 @@ pub fn resolve_wled_probe_targets_from_sources(
 fn tracked_wled_target(tracked: &DriverTrackedDevice) -> Option<WledKnownTarget> {
     let ip = tracked.metadata.get("ip")?.parse::<IpAddr>().ok()?;
     let ip = validate_ip(ip).ok()?;
-    let rgbw = tracked.info.segments.first().map(|segment| {
-        matches!(
-            segment.color_format,
-            hypercolor_types::device::DeviceColorFormat::Rgbw
-        )
-    });
 
     Some(WledKnownTarget {
         ip,
         hostname: tracked.metadata.get("hostname").cloned(),
         fingerprint: tracked.fingerprint.clone(),
-        name: Some(tracked.info.name.clone()),
-        led_count: Some(tracked.info.total_led_count()),
-        firmware_version: tracked.info.firmware_version.clone(),
-        max_fps: Some(tracked.info.capabilities.max_fps),
-        rgbw,
         extra: BTreeMap::new(),
     })
 }

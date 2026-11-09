@@ -347,7 +347,7 @@ pub fn CompactZoneTabs() -> impl IntoView {
                                 tabindex=move || if is_selected.get() { "0" } else { "-1" }
                                 title=title
                                 class=move || {
-                                    let base = "inline-flex min-w-0 max-w-[168px] items-center \
+                                    let base = "relative touch-hit-y inline-flex min-w-0 max-w-[168px] items-center \
                                                 rounded-full border px-2 py-1 text-[10px] font-medium \
                                                 backdrop-blur-sm transition-colors duration-150 btn-press \
                                                 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)] \

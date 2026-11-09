@@ -304,3 +304,135 @@ fn builder_matches_database_protocol() {
         direct.encode_frame(&[[1, 2, 3]])[0].data
     );
 }
+
+const KYLIE_LED_MODE: u16 = 0x172D;
+const RAINIE_LED_MODE: u16 = 0x1008;
+
+/// Every model on the memory-access protocol, its USB product ID, and the
+/// RAM address of its LED mode register.
+const MODELS: [(KrakenModel, u16, &str, &str, u16); 5] = [
+    (
+        KrakenModel::Ultimate,
+        0x0527,
+        "Razer Kraken Ultimate",
+        "razer/kraken-ultimate",
+        KYLIE_LED_MODE,
+    ),
+    (
+        KrakenModel::V2,
+        0x0510,
+        "Razer Kraken 7.1 V2",
+        "razer/kraken-v2",
+        KYLIE_LED_MODE,
+    ),
+    (
+        KrakenModel::TournamentEdition,
+        0x0520,
+        "Razer Kraken Tournament Edition",
+        "razer/kraken-tournament-edition",
+        KYLIE_LED_MODE,
+    ),
+    (
+        KrakenModel::KittyV2,
+        0x0560,
+        "Razer Kraken Kitty V2",
+        "razer/kraken-kitty-v2",
+        KYLIE_LED_MODE,
+    ),
+    (
+        KrakenModel::Chroma,
+        0x0504,
+        "Razer Kraken 7.1 Chroma",
+        "razer/kraken-7-1-chroma",
+        RAINIE_LED_MODE,
+    ),
+];
+
+#[test]
+fn kraken_chroma_writes_its_led_mode_at_the_rainie_address() {
+    let protocol = KrakenProtocol::new(KrakenModel::Chroma);
+    let commands = protocol.encode_frame(&[[0x12, 0x34, 0x56]]);
+
+    assert_eq!(commands.len(), 2);
+    assert_eq!(
+        commands[0].data,
+        [
+            &[0x40, 0x03, 0x11, 0x89, 0x12, 0x34, 0x56][..],
+            &[0_u8; 29][..]
+        ]
+        .concat(),
+        "custom color lands in the shared 0x1189 registers"
+    );
+    assert_eq!(
+        commands[1].data,
+        [&[0x40, 0x01, 0x10, 0x08, 0x01][..], &[0_u8; 31][..]].concat(),
+        "static-on effect lands in the Rainie 0x1008 register"
+    );
+
+    let init = protocol.init_sequence();
+    assert_eq!(init.len(), 1);
+    assert_eq!(init[0].data, commands[1].data);
+}
+
+#[test]
+fn every_model_shares_the_color_write_and_targets_its_led_mode_register() {
+    for (model, _, name, _, led_mode_address) in MODELS {
+        let protocol = KrakenProtocol::new(model);
+        let commands = protocol.encode_frame(&[[0xA1, 0xB2, 0xC3]]);
+
+        assert_eq!(commands.len(), 2, "{name}");
+        assert_eq!(commands[0].data, color_write([0xA1, 0xB2, 0xC3]), "{name}");
+        assert_eq!(
+            commands[1].data,
+            request_body(RAM_WRITE, led_mode_address, &[0x01], 1),
+            "{name}"
+        );
+        for command in &commands {
+            assert_write_only(command);
+        }
+        assert_eq!(protocol.model(), model);
+        assert_eq!(protocol.total_leds(), 1);
+    }
+}
+
+#[test]
+fn database_binds_every_kraken_model_to_output_reports_on_interface_three() {
+    for (model, product_id, name, protocol_id, led_mode_address) in MODELS {
+        let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, product_id)
+            .unwrap_or_else(|| panic!("{name} descriptor should exist"));
+
+        assert_eq!(descriptor.name, name);
+        assert_eq!(descriptor.protocol.id, protocol_id);
+        assert_eq!(descriptor.driver_id(), "razer");
+        assert_eq!(
+            descriptor.transport,
+            TransportType::UsbHidApi {
+                interface: Some(3),
+                report_id: KRAKEN_OUTPUT_REPORT_ID,
+                report_mode: HidRawReportMode::OutputReport,
+                max_report_len: KRAKEN_REPORT_LEN,
+                usage_page: Some(0x000C),
+                usage: Some(0x0001),
+            },
+            "{name}"
+        );
+
+        let built = (descriptor.protocol.build)();
+        let frame = built.encode_frame(&[[1, 2, 3]]);
+        assert_eq!(
+            frame[1].data,
+            request_body(RAM_WRITE, led_mode_address, &[0x01], 1),
+            "{name} ({model:?}) builder targets its own address map"
+        );
+    }
+}
+
+#[test]
+fn on_off_only_and_kraken_v3_headsets_stay_unregistered() {
+    for product_id in [0x0501, 0x0506, 0x0533, 0x0537, 0x0549, 0x0554] {
+        assert!(
+            ProtocolDatabase::lookup(RAZER_VENDOR_ID, product_id).is_none(),
+            "1532:{product_id:04X} needs a protocol Hypercolor does not encode"
+        );
+    }
+}

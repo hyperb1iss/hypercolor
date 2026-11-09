@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class Redaction(StrEnum):
+class Redaction(TolerantStrEnum):
     PLAIN = "plain"
     SECRET = "secret"
 

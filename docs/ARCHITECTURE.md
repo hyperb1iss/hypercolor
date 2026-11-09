@@ -138,6 +138,7 @@ graph TD
         WSES[hypercolor-windows-session]
         WTEL[hypercolor-windows-telemetry]
         WHLP[hypercolor-windows-helper]
+        WLCH[hypercolor-windows-launcher]
     end
 
     subgraph Storage
@@ -324,7 +325,7 @@ services, logind session events) has native counterparts where required.
 macOS screen capture uses ScreenCaptureKit; SMBus remains unsupported there.
 
 Application, driver, and domain crates inherit `unsafe_code = "forbid"`. There
-are exactly sixteen opt-outs, all audited platform crates plus the app shell:
+are exactly eighteen opt-outs, all audited platform crates plus the app shell:
 
 - `hypercolor-linux-gpu-interop`, `hypercolor-macos-gpu-interop`, and
   `hypercolor-windows-gpu-interop` for GPU surface import.
@@ -342,7 +343,12 @@ are exactly sixteen opt-outs, all audited platform crates plus the app shell:
   power notifications.
 - `hypercolor-windows-pawnio` for SMBus access through the PawnIO kernel
   driver.
+- `hypercolor-windows-install-native` for the process handles and firewall
+  rules behind the Windows install platform.
 - `hypercolor-windows-helper` for the signed elevated helper binary.
+- `hypercolor-windows-launcher` for the stable launcher and the update
+  service's recovery bootstrap: job objects, the failure dialog and the
+  service dispatch entry point.
 - `hypercolor-platform-fs` for privileged filesystem operations (unsafe is
   still forbidden there off Windows).
 - `hypercolor-app` for the Win32 power-event message pump.

@@ -62,6 +62,7 @@ mod acceleration;
 pub mod banner;
 mod config;
 mod discovery_worker;
+mod host;
 pub(crate) mod input_status_events;
 mod lifecycle;
 pub mod logging;
@@ -80,6 +81,8 @@ pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
+pub use host::HostPorts;
+pub(crate) use host::{AudioInputSpec, HostCapabilities};
 pub use progress::StartupProgress;
 pub(crate) use progress::startup_step;
 pub use signals::{
@@ -313,6 +316,9 @@ pub struct DaemonState {
 
     /// Explicit platform monitors supplied by the process host.
     pub(super) session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
+    pub(crate) capabilities: HostCapabilities,
+    /// Keeps a fixture's user directories claimed for as long as this state.
+    pub(crate) host_user_dirs: Option<Arc<hypercolor_core::config::paths::IsolatedUserDirs>>,
 
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,

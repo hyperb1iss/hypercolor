@@ -51,7 +51,7 @@ test('warm dispatch runs the release build jobs and nothing that signs or publis
   assert.match(workflow, /^ {10}- warm$/m);
   const builds = ['release-credentials', 'web-assets', 'build-native-app', 'build-release'];
   const sideEffects = [...jobs.keys()].filter((name) =>
-    name === 'sign-macos' || name === 'create-release' || name === 'attach-macos' || /^(publish|update)-/.test(name));
+    /^sign-/.test(name) || name === 'create-release' || name === 'attach-macos' || /^(publish|update)-/.test(name));
   assert.ok(sideEffects.length >= 8, `expected signing and publishing jobs, found ${sideEffects}`);
   for (const name of builds) {
     for (const run of ['tag', 'full', 'warm']) assert.equal(Boolean(evaluate(jobCondition(name), runs[run])), true, `${name} on ${run}`);
@@ -73,7 +73,7 @@ test('warm refuses every ref but main before signing can depend on it', () => {
   assert.match(refusal, /^ {10}exit 1$/m);
   assert.ok(credentials.indexOf('Refuse warm outside main') < credentials.indexOf('uses: actions/checkout'));
   // A failed credentials job skips every job that signs or builds a release.
-  for (const name of ['sign-macos', 'build-native-app', 'build-release']) {
+  for (const name of ['sign-macos', 'sign-windows', 'build-native-app', 'build-release']) {
     assert.match(jobs.get(name), /^    needs: \[[^\]]*release-credentials[^\]]*\]$/m, name);
   }
 });

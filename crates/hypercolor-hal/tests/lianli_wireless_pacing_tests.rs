@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, SessionEnd, content_of, moving_frame};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
-    ECHO_STALL, MAX_RESETS_WITHOUT_DELIVERY, MAX_WINDOW, resets_without_delivery,
+    DeliveryStats, ECHO_STALL, MAX_RESYNCS_WITHOUT_DELIVERY, MAX_WINDOW, resyncs_without_delivery,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
 
@@ -556,7 +556,7 @@ fn a_late_echo_counts_as_delivered_and_resyncs_the_timeout() {
 }
 
 #[test]
-fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
+fn fans_that_stop_confirming_end_in_one_resync_not_endless_resends() {
     let mut rig = Rig::connect(FakeRadio::one_cluster());
     rig.run_for(Duration::from_secs(2));
     assert!(rig.stats().frames_delivered > 0, "the radio worked first");
@@ -568,17 +568,21 @@ fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
     rig.run_for(Duration::from_secs(20));
 
     assert_eq!(
-        rig.radio.resets.len(),
+        rig.resyncs.len(),
         1,
-        "exactly one reset request: {:?}",
-        rig.radio.resets
+        "exactly one resync request: {:?}",
+        rig.resyncs
+    );
+    assert!(
+        rig.radio.resets.is_empty(),
+        "the TX took every write, so it is never reset"
     );
     // The transfer already on the air when the radio died starts the
     // stall, a frame or so before it was noticed here.
-    let after = rig.radio.resets[0].saturating_sub(failed_at);
+    let after = rig.resyncs[0].saturating_sub(failed_at);
     assert!(
         after + FRAME_PERIOD >= ECHO_STALL && after <= ECHO_STALL + Duration::from_secs(3),
-        "the reset follows the stall bound, not a hair trigger: {after:?}"
+        "the resync follows the stall bound, not a hair trigger: {after:?}"
     );
     let transfers = rig.transfers_since(failed_at);
     assert!(
@@ -586,41 +590,38 @@ fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
         "a dead radio gets a bounded number of resends, not a stream: {transfers}"
     );
     assert_eq!(
-        rig.commands_after_reset, 0,
-        "nothing follows the reset request; the transport ends the session"
+        rig.commands_after_resync, 0,
+        "nothing follows the resync request; the backend ends the session"
     );
 }
 
-/// Firmware whose echo never tracks live frames, or a TX a reset does not
-/// revive, must not turn into a reset loop across reconnects: each cluster
-/// gets a small reset budget until it confirms a frame again. Past it the
-/// cluster's lighting rests, with no RGB at all, and the session then asks
-/// to be connected afresh instead of resetting the TX again.
+/// Firmware whose echo never tracks live frames, or a radio a fresh connect
+/// does not revive, must not turn into a resync loop across reconnects:
+/// each cluster gets a small resync budget until it confirms a frame again.
+/// Past it the cluster's lighting rests, with no RGB at all, and the
+/// session then asks to be connected afresh after the rest.
 #[test]
-fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_rests() {
+fn a_tx_that_never_delivers_spends_a_bounded_resync_budget_then_rests() {
     let mut radio = FakeRadio::one_cluster();
     radio.rf_dead = true;
     let cluster = radio.clusters[0].mac;
     let mut rig = Rig::connect(radio);
 
-    let mut resets = 0;
-    for session in 0..=MAX_RESETS_WITHOUT_DELIVERY {
+    let mut resyncs = 0;
+    for session in 0..=MAX_RESYNCS_WITHOUT_DELIVERY {
         if session > 0 {
             rig = rig.reconnect();
         }
         rig.run_for(ECHO_STALL + Duration::from_secs(5));
         let settled = rig.now();
         rig.run_for(Duration::from_secs(20));
-        resets += rig.radio.resets.len();
-        if session < MAX_RESETS_WITHOUT_DELIVERY {
-            assert_eq!(
-                rig.radio.resets.len(),
-                1,
-                "session {session} resets the TX once"
-            );
+        resyncs += rig.resyncs.len();
+        assert!(rig.radio.resets.is_empty(), "the TX is never reset");
+        if session < MAX_RESYNCS_WITHOUT_DELIVERY {
+            assert_eq!(rig.resyncs.len(), 1, "session {session} resyncs once");
         } else {
             assert!(
-                rig.radio.resets.is_empty(),
+                rig.resyncs.is_empty(),
                 "the budget is spent, so the session rests instead"
             );
             assert_eq!(
@@ -633,15 +634,15 @@ fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_rests() {
                 "after the rest the session asks to be connected afresh"
             );
         }
-        assert_eq!(rig.commands_after_reset, 0);
+        assert_eq!(rig.commands_after_resync, 0);
     }
     assert_eq!(
-        u32::try_from(resets).expect("small"),
-        MAX_RESETS_WITHOUT_DELIVERY
+        u32::try_from(resyncs).expect("small"),
+        MAX_RESYNCS_WITHOUT_DELIVERY
     );
     assert_eq!(
-        resets_without_delivery(cluster),
-        MAX_RESETS_WITHOUT_DELIVERY
+        resyncs_without_delivery(cluster),
+        MAX_RESYNCS_WITHOUT_DELIVERY
     );
 
     // A power-cycled controller whose fans confirm again gets its budget
@@ -650,16 +651,16 @@ fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_rests() {
     let mut rig = rig.reconnect();
     rig.run_for(Duration::from_secs(2));
     assert!(rig.stats().frames_delivered > 0);
-    assert_eq!(resets_without_delivery(cluster), 0);
+    assert_eq!(resyncs_without_delivery(cluster), 0);
 }
 
-/// A healthy cluster confirming frames must not renew the reset budget of
-/// a cluster beside it that never does, or the controller would be reset
-/// forever. Once the failing cluster's budget is spent it rests between
+/// A healthy cluster confirming frames must not renew the resync budget of
+/// a cluster beside it that never does, or the controller would be
+/// reconnected forever. Once the failing cluster's budget is spent it rests between
 /// reconnects, and the healthy one streams through every rest, losing only
 /// the moment each reconnect takes.
 #[test]
-fn a_healthy_cluster_does_not_renew_a_failing_clusters_reset_budget() {
+fn a_healthy_cluster_does_not_renew_a_failing_clusters_resync_budget() {
     let mut radio = FakeRadio::two_clusters();
     radio.clusters[1].deaf = true;
     let failing = radio.clusters[1].mac;
@@ -673,14 +674,15 @@ fn a_healthy_cluster_does_not_renew_a_failing_clusters_reset_budget() {
 
     rig.run_for(Duration::from_mins(2));
     assert_eq!(
-        u32::try_from(rig.radio.resets.len()).expect("small"),
-        MAX_RESETS_WITHOUT_DELIVERY,
-        "the failing cluster's budget bounds the resets: {:?}",
+        u32::try_from(rig.resyncs.len()).expect("small"),
+        MAX_RESYNCS_WITHOUT_DELIVERY,
+        "the failing cluster's budget bounds the resyncs: {:?}",
         rig.session_ends
     );
+    assert!(rig.radio.resets.is_empty(), "the TX is never reset");
     assert_eq!(
-        resets_without_delivery(failing),
-        MAX_RESETS_WITHOUT_DELIVERY
+        resyncs_without_delivery(failing),
+        MAX_RESYNCS_WITHOUT_DELIVERY
     );
     assert!(
         rig.session_ends.contains(&SessionEnd::Restart),
@@ -1098,22 +1100,21 @@ fn a_still_scene_costs_only_the_upkeep_the_fans_need() {
     let stats = rig.stats();
 
     assert_eq!(stats.frames_sent, before.frames_sent, "nothing new to send");
-    // Per second: one PWM envelope for the cluster, one clock envelope,
-    // and the confirmed frame again after the PWM, four packets per
-    // envelope; nothing else reaches the TX.
+    // Per second: the clock envelope, four packets. The fans sit at their
+    // duty, so no fan-speed envelope goes out and no restore follows one;
+    // nothing else reaches the TX.
     let packets_per_second = (stats.tx_packets - before.tx_packets) / 10;
-    assert_eq!(packets_per_second, 4 + 4 + TRANSFER_ENVELOPES as u64 * 4);
-    // Per second: the table poll, and an echo poll or three until the
-    // restore's own echo comes back.
+    assert_eq!(packets_per_second, 4);
+    // Per second: the table poll; nothing is out to poll echoes for.
     let polls = rig.radio.rx_polls.len() - polls_before;
-    assert!(
-        (10..=41).contains(&polls),
-        "a few RX polls a second when still: {polls} in 10 s"
+    assert_eq!(
+        polls, 10,
+        "one RX poll a second when still: {polls} in 10 s"
     );
     assert_eq!(
         stats.restores - before.restores,
-        10,
-        "one restore after each PWM upkeep"
+        0,
+        "no fan-speed traffic, so nothing to restore"
     );
 }
 
@@ -1151,4 +1152,36 @@ fn shutdown_sends_the_final_frame_the_window_held() {
         Some(black_tag),
         "black is the last frame the fans take"
     );
+}
+
+#[test]
+fn only_radio_trouble_lifts_the_delivery_report_out_of_debug() {
+    let healthy = DeliveryStats {
+        frames_offered: 287,
+        frames_sent: 287,
+        frames_delivered: 287,
+        frames_coalesced: 3,
+        echo_advances: 19,
+        advance_max: 29,
+        overdue_max: 0,
+        echo_polls: 35,
+        table_replies: 45,
+        tx_packets: 3_484,
+        ..DeliveryStats::default()
+    };
+    assert!(!healthy.shows_trouble(), "steady delivery stays at debug");
+
+    let troubled: [fn(&mut DeliveryStats); 6] = [
+        |stats| stats.timeouts = 1,
+        |stats| stats.resends = 1,
+        |stats| stats.restores = 1,
+        |stats| stats.late_echoes = 1,
+        |stats| stats.drifts = 1,
+        |stats| stats.congestion_events = 1,
+    ];
+    for mark in troubled {
+        let mut stats = healthy;
+        mark(&mut stats);
+        assert!(stats.shows_trouble(), "{stats:?} reports at info");
+    }
 }

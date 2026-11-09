@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
 
 use crate::InstallReleaseArgs;
-use crate::install::{
+use hypercolor_install::{
     InstallLock, InstallPlatformError, InstallStore, InstallTargetPolicy, LinuxInstallHost,
     LinuxInstallLocation, LinuxInstallRequest, LinuxNativeExecutor, LinuxPublicTree,
     LinuxUninstallHost, OwnershipPolicy, UnitRecord, run_linux_install, run_linux_uninstall,

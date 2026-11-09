@@ -16,8 +16,8 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopo
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::common::{LianLiHubVariant, TL_REPORT_ID, record_first_product_info};
@@ -192,7 +192,11 @@ impl Protocol for TlFanProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let counts = self.effective_port_fan_counts(colors.len());
         let mut color_offset = 0_usize;
         let mut encoder = CommandBuffer::new(commands);
@@ -244,6 +248,7 @@ impl Protocol for TlFanProtocol {
         }
 
         encoder.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

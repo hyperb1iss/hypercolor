@@ -19,14 +19,15 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverContext, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
     DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::{
-    metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
+    metadata_value, network_port_from_metadata, push_lookup_key, tracked_fingerprints_by_ip,
+    validate_ip,
 };
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
@@ -130,7 +131,7 @@ impl DriverModule for HueDriverModule {
 impl DeviceBackendFactory for HueDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<HueConfig>()?;
@@ -161,7 +162,7 @@ impl DiscoveryCapability for HueDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<HueConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_bridges = resolve_hue_probe_bridges_from_sources(&config, &tracked_devices);
@@ -171,7 +172,8 @@ impl DiscoveryCapability for HueDriverModule {
             request.timeout,
             request.mdns_enabled,
             config.entertainment_config.clone(),
-        );
+        )
+        .with_tracked(tracked_fingerprints_by_ip(&tracked_devices));
         scanner.scan().await.map_err(DriverError::discovery)
     }
 }

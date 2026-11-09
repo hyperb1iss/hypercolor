@@ -23,7 +23,7 @@ use anyhow::{Context, Result, bail};
 use axum::Router;
 use axum::extract::ws::Message;
 use hypercolor_core::input::{
-    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, ManagedSourceRole,
+    DataSource, DataSourceKind, DataSourceRole, InputData, ManagedSource, ManagedSourceRole,
     SourceRoleBinding,
 };
 use hypercolor_daemon::api;
@@ -52,7 +52,7 @@ struct FixedSensorSource {
     running: bool,
 }
 
-impl InputSource for FixedSensorSource {
+impl ManagedSource for FixedSensorSource {
     fn name(&self) -> &'static str {
         "fixed-sensors"
     }

@@ -1,6 +1,6 @@
 {
     "name": "create-hypercolor",
-    "version": "0.8.1",
+    "version": "0.9.0",
     "description": "Bun create scaffolder for Hypercolor effect workspaces",
     "type": "module",
     "main": "./src/index.ts",
@@ -29,8 +29,8 @@
         "@clack/prompts": "^1.8.1"
     },
     "devDependencies": {
-        "@types/node": "^26.6.4",
-        "bun-types": "^1.4.2",
+        "@types/node": "^26.6.6",
+        "bun-types": "^1.4.4",
         "typescript": "^7.0.2"
     },
     "engines": {

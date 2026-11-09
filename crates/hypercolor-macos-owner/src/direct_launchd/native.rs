@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -13,8 +13,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdExecutableExpectation,
-    MacosDirectLaunchdInspector, MacosDirectLaunchdState, MacosOwnerExecutionError,
-    parse_direct_launchd_service_state, requirement_hash,
+    MacosDirectLaunchdInspector, MacosDirectLaunchdRetainedExecutable, MacosDirectLaunchdState,
+    MacosLaunchdJob, MacosOwnerExecutionError, parse_direct_launchd_service_state,
+    parse_launchd_job, requirement_hash,
 };
 
 const MAX_CODESIGN_OUTPUT_BYTES: usize = 16 * 1024;
@@ -38,6 +39,65 @@ impl NativeMacosDirectLaunchdInspector {
 
     fn target(&self) -> String {
         format!("gui/{}/{MACOS_DIRECT_LAUNCHD_LABEL}", self.uid)
+    }
+
+    /// Inspect the fixed label, telling a loaded job that has no process
+    /// from one that was never loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when launchctl fails or its output is not exact.
+    pub fn inspect_direct_launchd_job(
+        &mut self,
+    ) -> Result<MacosLaunchdJob, MacosOwnerExecutionError> {
+        let target = self.target();
+        let output = run_bounded_command(
+            "/bin/launchctl",
+            &["print", &target],
+            super::MAX_LAUNCHCTL_OUTPUT_BYTES,
+            super::MAX_LAUNCHCTL_OUTPUT_BYTES,
+            COMMAND_TIMEOUT,
+        )?;
+        parse_launchd_job(
+            MACOS_DIRECT_LAUNCHD_LABEL,
+            self.uid,
+            output.status,
+            &output.stdout,
+            &output.stderr,
+        )
+    }
+
+    /// The executable path and cdhash of a running process, or `None` when
+    /// the process is gone or carries no code directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the running code cannot be inspected.
+    pub fn process_image(
+        &mut self,
+        pid: u32,
+    ) -> Result<Option<(PathBuf, String)>, MacosOwnerExecutionError> {
+        let deadline = Instant::now()
+            .checked_add(COMMAND_TIMEOUT)
+            .ok_or_else(|| MacosOwnerExecutionError::new("inspection deadline overflowed"))?;
+        super::mutation::run_deadline_read(deadline, move || {
+            let guest = i32::try_from(pid)
+                .map_err(|_| MacosOwnerExecutionError::new("process ID is out of range"))?;
+            let mut attributes = GuestAttributes::new();
+            attributes.set_pid(guest);
+            let Some(code) = code_for_attributes(&attributes)? else {
+                return Ok(None);
+            };
+            let Some(path) = code
+                .path(CodeSigningFlags::NONE)
+                .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
+                .to_path()
+            else {
+                return Ok(None);
+            };
+            let cdhash = super::retained_code::dynamic_cdhash_for_pid(pid, deadline)?;
+            Ok(cdhash.map(|cdhash| (path, cdhash)))
+        })
     }
 }
 
@@ -147,42 +207,8 @@ impl NativeMacosDirectLaunchdInspector {
         if !requirement_before {
             return Ok(false);
         }
-        let mut opened = hypercolor_platform_fs::open_no_follow(executable.path())
-            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-        let before = opened
-            .metadata()
-            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-        if !executable_metadata_matches(&before, executable) {
-            return Ok(false);
-        }
-        let mut hasher = Sha256::new();
-        let mut remaining = executable.size() + 1;
-        let mut buffer = [0_u8; 8 * 1024];
-        while remaining > 0 {
-            let limit = usize::try_from(remaining.min(buffer.len() as u64))
-                .expect("bounded read limit fits usize");
-            let read = opened
-                .read(&mut buffer[..limit])
-                .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-            remaining -= u64::try_from(read).expect("read length fits u64");
-        }
-        let digest = hasher.finalize();
-        if remaining != 1 || hex_digest(&digest) != executable.sha256() {
-            return Ok(false);
-        }
-        let after = opened
-            .metadata()
-            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-        if !executable_metadata_matches(&after, executable)
-            || before.dev() != after.dev()
-            || before.ino() != after.ino()
-            || before.mode() != after.mode()
-            || before.len() != after.len()
-            || before.nlink() != after.nlink()
+        if let Some(retained) = executable.retained()
+            && !retained_file_matches(executable.path(), retained)?
         {
             return Ok(false);
         }
@@ -198,6 +224,49 @@ impl NativeMacosDirectLaunchdInspector {
             executable.cdhash(),
         ))
     }
+}
+
+/// Whether the file at `path` is still exactly the retained executable.
+fn retained_file_matches(
+    path: &Path,
+    retained: &MacosDirectLaunchdRetainedExecutable,
+) -> Result<bool, MacosOwnerExecutionError> {
+    let mut opened = hypercolor_platform_fs::open_no_follow(path)
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
+    let before = opened
+        .metadata()
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
+    if !executable_metadata_matches(&before, retained) {
+        return Ok(false);
+    }
+    let mut hasher = Sha256::new();
+    let mut remaining = retained.size() + 1;
+    let mut buffer = [0_u8; 8 * 1024];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))
+            .expect("bounded read limit fits usize");
+        let read = opened
+            .read(&mut buffer[..limit])
+            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= u64::try_from(read).expect("read length fits u64");
+    }
+    let digest = hasher.finalize();
+    if remaining != 1 || hex_digest(&digest) != retained.sha256() {
+        return Ok(false);
+    }
+    let after = opened
+        .metadata()
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
+    Ok(executable_metadata_matches(&after, retained)
+        && before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.mode() == after.mode()
+        && before.len() == after.len()
+        && before.nlink() == after.nlink())
 }
 
 fn publication_tuple_matches(
@@ -237,7 +306,13 @@ fn code_for_audit_token(
     let token_data = CFData::from_buffer(audit_token);
     let mut attributes = GuestAttributes::new();
     attributes.set_audit_token(token_data.as_concrete_TypeRef());
-    match SecCode::copy_guest_with_attribues(None, &attributes, CodeSigningFlags::NONE) {
+    code_for_attributes(&attributes)
+}
+
+fn code_for_attributes(
+    attributes: &GuestAttributes,
+) -> Result<Option<SecCode>, MacosOwnerExecutionError> {
+    match SecCode::copy_guest_with_attribues(None, attributes, CodeSigningFlags::NONE) {
         Ok(code) => Ok(Some(code)),
         Err(error) if error.code() == 100_003 => Ok(None),
         Err(error) => Err(MacosOwnerExecutionError::new(error.to_string())),
@@ -315,7 +390,10 @@ fn publication_code_matches(
     if observed != executable.path() {
         return Ok(false);
     }
-    let requirement = executable
+    let Some(retained) = executable.retained() else {
+        return Ok(true);
+    };
+    let requirement = retained
         .designated_requirement()
         .parse::<SecRequirement>()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
@@ -326,7 +404,7 @@ fn publication_code_matches(
 
 fn executable_metadata_matches(
     metadata: &std::fs::Metadata,
-    executable: &MacosDirectLaunchdExecutableExpectation,
+    executable: &MacosDirectLaunchdRetainedExecutable,
 ) -> bool {
     metadata.is_file()
         && metadata.mode() & 0o7777 == executable.mode()
@@ -342,6 +420,30 @@ fn hex_digest(digest: &[u8]) -> String {
         write!(&mut output, "{byte:02x}").expect("writing into a String cannot fail");
     }
     output
+}
+
+/// Open exactly the bundle at `bundle` through LaunchServices. `open` takes
+/// the path as a URL; it never looks a bundle up by its identifier.
+pub(crate) fn open_macos_bundle(bundle: &Path) -> Result<(), MacosOwnerExecutionError> {
+    let path = bundle
+        .to_str()
+        .ok_or_else(|| MacosOwnerExecutionError::new("the app bundle path is not UTF-8"))?;
+    let output = run_bounded_command(
+        "/usr/bin/open",
+        &[path],
+        MAX_CODESIGN_OUTPUT_BYTES,
+        MAX_CODESIGN_OUTPUT_BYTES,
+        COMMAND_TIMEOUT,
+    )?;
+    if output.status == Some(0) {
+        Ok(())
+    } else {
+        Err(MacosOwnerExecutionError::new(format!(
+            "LaunchServices refused to open {path} with status {:?}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
 }
 
 #[derive(Debug)]

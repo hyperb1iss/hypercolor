@@ -311,8 +311,8 @@ Windows, check two things:
   stopped, and names the remedy. Start it with `Start-Service HypercolorSmBus`
   in an elevated PowerShell, or re-run the setup from Settings → Device
   Discovery → Windows SMBus Support → Install support. The broker logs every
-  start and stop to `tools\logs\smbus-broker.log` under the install directory,
-  next to `hardware-support.log` from the last setup run, and the tray's Export
+  start and stop to `%ProgramData%\Hypercolor\logs\smbus-broker.log`, next to
+  `hardware-support.log` from the last setup run, and the tray's Export
   Diagnostics bundle includes both.
 
 ## macOS

@@ -14,16 +14,16 @@ use hypercolor_core::input::screen::implementer::{
     SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
-    ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
-    ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenUpscalePolicy,
+    CaptureBackendId, InputPublicationDemandRevision, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPlanBuilder, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenUpscalePolicy,
 };
 
 #[path = "../support/native_target.rs"]
@@ -127,14 +127,14 @@ fn source_named_with_api(
             cursor_capabilities,
             match resource_api {
                 ScreenResourceApi::Cpu => ScreenBackendResourceIdentity::new(
-                    ScreenCaptureBackend::Synthetic,
+                    CaptureBackendId::Synthetic,
                     ScreenResourceApi::Cpu,
                     7,
                     resource_generation,
                 ),
                 ScreenResourceApi::PlatformGpu(api) => {
                     ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                        ScreenCaptureBackend::Synthetic,
+                        CaptureBackendId::Synthetic,
                         ScreenResourceApi::PlatformGpu(api),
                         gpu_device(),
                         7,

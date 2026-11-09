@@ -82,7 +82,7 @@ pub fn filter_chips(
             let is_active = Memo::new(move |_| current.get() == label);
             view! {
                 <button
-                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
+                    class="relative touch-hit-y px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all pointer-coarse:min-w-[44px]"
                     class=("filter-chip-active", is_active)
                     class=("filter-chip-inactive", move || !is_active.get())
                     style=("--glow-rgb", rgb)

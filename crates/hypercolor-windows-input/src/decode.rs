@@ -11,8 +11,8 @@
 //! cross-checked against the real ones by a Windows-only test, so a
 //! transcription slip fails the build rather than silently mis-decoding.
 
-use crate::shared::RawKeyPrefix;
 use hypercolor_types::host_input::HostPointerButton;
+use hypercolor_types::host_input::HostScanCodePrefix;
 
 /// A keyboard past its rollover limit reports this instead of a key. It is
 /// not a position and must never reach the key table or the `VKey` fallback.
@@ -73,7 +73,10 @@ const RECORD_ALIGN: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyReport {
     /// A real key edge at a physical position.
-    Edge { prefix: RawKeyPrefix, pressed: bool },
+    Edge {
+        prefix: HostScanCodePrefix,
+        pressed: bool,
+    },
     /// Rollover overrun: the keyboard's own view of held state is now
     /// unreliable, so the decoder emits a `StateGap` in place of this record.
     Overrun,
@@ -87,7 +90,7 @@ pub enum CanonicalKeyReport {
     /// A complete physical key edge.
     Edge {
         make_code: u16,
-        prefix: RawKeyPrefix,
+        prefix: HostScanCodePrefix,
         vkey: u16,
         pressed: bool,
     },
@@ -114,7 +117,7 @@ impl KeyCanonicalizer {
             KeyReport::Overrun => CanonicalKeyReport::Overrun,
             KeyReport::Edge { .. } if vkey == VKEY_UNMAPPED => CanonicalKeyReport::Ignored,
             KeyReport::Edge {
-                prefix: RawKeyPrefix::E0,
+                prefix: HostScanCodePrefix::E0,
                 ..
             } if matches!(make_code, 0x2A | 0x36) => CanonicalKeyReport::Ignored,
             KeyReport::Edge { prefix, pressed } => CanonicalKeyReport::Edge {
@@ -139,11 +142,11 @@ pub const fn classify_key(make_code: u16, flags: u16) -> KeyReport {
     // E1 is checked first: the two bits are independent in the header, and an
     // E1 sequence must never be mistaken for a plain extended key.
     let prefix = if flags & key_flags::E1 != 0 {
-        RawKeyPrefix::E1
+        HostScanCodePrefix::E1
     } else if flags & key_flags::E0 != 0 {
-        RawKeyPrefix::E0
+        HostScanCodePrefix::E0
     } else {
-        RawKeyPrefix::None
+        HostScanCodePrefix::None
     };
     KeyReport::Edge {
         prefix,
@@ -343,10 +346,10 @@ pub fn next_record(offset: usize, dw_size: u32, used_len: usize, min_size: usize
 /// the name so an unrecognized `E1` sequence cannot collide with an
 /// unprefixed code of the same value.
 #[must_use]
-pub fn unknown_key_name(make_code: u16, prefix: RawKeyPrefix) -> String {
+pub fn unknown_key_name(make_code: u16, prefix: HostScanCodePrefix) -> String {
     match prefix {
-        RawKeyPrefix::None => format!("Unknown{make_code:04X}"),
-        RawKeyPrefix::E0 => format!("UnknownE0{make_code:04X}"),
-        RawKeyPrefix::E1 => format!("UnknownE1{make_code:04X}"),
+        HostScanCodePrefix::None => format!("Unknown{make_code:04X}"),
+        HostScanCodePrefix::E0 => format!("UnknownE0{make_code:04X}"),
+        HostScanCodePrefix::E1 => format!("UnknownE1{make_code:04X}"),
     }
 }

@@ -37,7 +37,7 @@ pub(crate) fn execute_uninstall(_args: &UninstallReleaseArgs) -> Result<()> {
     bail!("raw release uninstall is supported only for per-user Linux installs")
 }
 
-pub(crate) fn parse_manifest_digest(value: &str) -> Result<crate::install::UnitId, String> {
+pub(crate) fn parse_manifest_digest(value: &str) -> Result<hypercolor_install::UnitId, String> {
     if value.len() != 64
         || !value
             .bytes()
@@ -45,7 +45,7 @@ pub(crate) fn parse_manifest_digest(value: &str) -> Result<crate::install::UnitI
     {
         return Err("manifest digest must be exactly 64 lowercase hexadecimal characters".into());
     }
-    crate::install::UnitId::new(value).map_err(|error| error.to_string())
+    hypercolor_install::UnitId::new(value).map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -54,7 +54,7 @@ fn execute_linux(args: &InstallReleaseArgs) -> Result<()> {
     require_bounded_absolute(&home, "HOME")?;
     let topology = LinuxInstallTopology::new(&args.install_prefix, &args.install_dir, &home)?;
     let (source, candidate_executable) = running_linux_candidate()?;
-    crate::install::validate_release_payload_from_authority(
+    hypercolor_install::validate_release_payload_from_authority(
         &source,
         &candidate_executable,
         &args.expected_manifest_sha256,
@@ -77,7 +77,7 @@ pub(crate) fn parse_probation_seconds(value: &str) -> Result<u64, String> {
     let seconds = value
         .parse::<u64>()
         .map_err(|_| "probation must be a whole number of seconds".to_owned())?;
-    let limit = crate::install::MAX_PROBATION_WINDOW.as_secs();
+    let limit = hypercolor_install::MAX_PROBATION_WINDOW.as_secs();
     if seconds > limit {
         return Err(format!("probation may be at most {limit} seconds"));
     }
@@ -85,20 +85,22 @@ pub(crate) fn parse_probation_seconds(value: &str) -> Result<u64, String> {
 }
 
 fn require_candidate_committed(
-    outcome: crate::install::InstallOutcome,
-    candidate: &crate::install::UnitId,
+    outcome: hypercolor_install::InstallOutcome,
+    candidate: &hypercolor_install::UnitId,
     recovery: bool,
 ) -> Result<()> {
     match outcome {
-        crate::install::InstallOutcome::Committed { active_unit } if &active_unit == candidate => {
+        hypercolor_install::InstallOutcome::Committed { active_unit }
+            if &active_unit == candidate =>
+        {
             Ok(())
         }
-        crate::install::InstallOutcome::Committed { active_unit } => bail!(
+        hypercolor_install::InstallOutcome::Committed { active_unit } => bail!(
             "recovered release unit {}; rerun the installer to install {}",
             active_unit.as_str(),
             candidate.as_str()
         ),
-        crate::install::InstallOutcome::RolledBack {
+        hypercolor_install::InstallOutcome::RolledBack {
             active_unit,
             failure,
             abandoned,
@@ -117,7 +119,7 @@ fn require_candidate_committed(
             }
             let restored = active_unit
                 .as_ref()
-                .map_or("none", crate::install::UnitId::as_str);
+                .map_or("none", hypercolor_install::UnitId::as_str);
             if abandoned {
                 bail!(
                     "release {action} stopped before changing anything; {restored} is still \
@@ -129,9 +131,11 @@ fn require_candidate_committed(
     }
 }
 
-fn transaction_id(unit: &crate::install::UnitId) -> Result<crate::install::InstallTransactionId> {
+fn transaction_id(
+    unit: &hypercolor_install::UnitId,
+) -> Result<hypercolor_install::InstallTransactionId> {
     let value = format!("release-{}", &unit.as_str()[..56]);
-    crate::install::InstallTransactionId::new(value).context("failed to derive transaction ID")
+    hypercolor_install::InstallTransactionId::new(value).context("failed to derive transaction ID")
 }
 
 #[cfg(target_os = "linux")]
@@ -215,7 +219,7 @@ fn require_bounded_absolute(path: &Path, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{require_bounded_absolute, require_candidate_committed};
-    use crate::install::{InstallOutcome, RestoredRelease, UnitId};
+    use hypercolor_install::{InstallOutcome, RestoredRelease, UnitId};
     use std::path::Path;
 
     #[cfg(target_os = "linux")]

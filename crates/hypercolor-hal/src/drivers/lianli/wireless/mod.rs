@@ -22,12 +22,12 @@
 //!
 //! The transport watches both halves: a write that stalls marks that half
 //! wedged in [`health`], resets it through its partner the way L-Connect
-//! does, and ends the session instead of writing on into a dead endpoint. A
-//! TX whose fans stop confirming frames takes the same path, on the
-//! protocol's word. Fans that stay silent past their TX resets are the
-//! fans' stall, not the TX's: their RGB rests while upkeep carries on, and
-//! then the protocol asks the backend to connect the controller afresh
-//! ([`Protocol::session_restart`]), on a growing schedule ([`pacing`]).
+//! does, and ends the session instead of writing on into a dead endpoint.
+//! Fans that stop confirming frames while the TX takes every write are not
+//! a wedge, and the TX is not reset for them: the protocol asks the backend
+//! to connect the controller afresh ([`Protocol::session_restart`]), and
+//! past that resync budget their RGB rests while upkeep carries on before
+//! each fresh connect, on a growing schedule ([`pacing`]).
 
 pub mod crypto;
 pub mod discovery;
@@ -48,8 +48,8 @@ use hypercolor_types::device::{
 use tracing::{debug, info, trace, warn};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 use discovery::{
@@ -115,6 +115,40 @@ const MAX_BOUND_DEVICES: usize = 10;
 /// The flash write is broadcast this many times, this far apart.
 const SAVE_CONFIG_REPEATS: usize = 3;
 const SAVE_CONFIG_GAP: Duration = Duration::from_millis(200);
+/// How far a reported slot duty may sit from the duty a cluster holds
+/// before upkeep sends it again: L-Connect's `NeedSyncPwm` tolerance.
+const DUTY_TOLERANCE: u8 = 5;
+/// A report becomes the duty a cluster holds once the tables still report
+/// it this much later, so one stale or glitched record is never enforced.
+const DUTY_CONFIRM_AFTER: Duration = Duration::from_secs(1);
+
+/// The duty a cluster holds for the session.
+#[derive(Debug, Clone, Copy)]
+struct HeldDuty {
+    mac: Mac,
+    /// The report waiting to be confirmed, and when it was first seen.
+    candidate: [u8; 4],
+    candidate_at: Instant,
+    /// The duty held once the tables kept reporting the candidate for
+    /// [`DUTY_CONFIRM_AFTER`]; nothing is sent before.
+    duty: Option<[u8; 4]>,
+    /// The session began while recovering this cluster from a stall, and
+    /// its held duty has yet to go out once.
+    assert_pending: bool,
+    /// The last report sat outside the tolerance, so the drift is logged
+    /// once per episode rather than on every tick.
+    drifting: bool,
+    /// A candidate was replaced before it settled, logged once: a cluster
+    /// whose report never holds still gets no fan speed at all.
+    unsteady_logged: bool,
+}
+
+/// Whether any slot of `reported` sits more than the tolerance from `held`.
+fn duty_drifted(held: [u8; 4], reported: [u8; 4]) -> bool {
+    held.iter()
+        .zip(reported)
+        .any(|(&held, reported)| held.abs_diff(reported) > DUTY_TOLERANCE)
+}
 
 /// Everything learned from the controller and its table.
 #[derive(Debug, Default)]
@@ -137,14 +171,16 @@ struct WirelessState {
     /// A newly heard bound cluster needs the backend to publish fresh routing.
     topology_restart: bool,
     streaming_started: bool,
-    clock_sent: bool,
+    /// Each driven cluster's duty, by radio MAC, captured on first sight.
+    held_duty: Vec<HeldDuty>,
     /// The last submitted pixels, including black frames, retained across idle upkeep.
     /// None means no lighting frame has arrived in this session.
     latest_colors: Option<Vec<[u8; 3]>>,
     /// Acknowledgement-paced RGB delivery for the driven clusters.
     pacer: DeliveryPacer,
-    /// Pixel bytes the last encoded frame wrote: the clusters it changed.
-    written_frame_bytes: usize,
+    /// The cluster the last RGB transfer went to, where the next batch
+    /// starts so it switches clusters (and pays the air gap) once less.
+    last_rgb_cluster: Option<usize>,
 }
 
 impl WirelessState {
@@ -222,7 +258,83 @@ impl WirelessState {
                 }
             }
         }
+        self.hold_duties(now);
         self.observe_echoes(&fresh, now);
+    }
+
+    /// Track the duty every driven cluster reports until it holds one.
+    /// Values are never invented: a cluster holds what it reported, once
+    /// the tables kept reporting it for [`DUTY_CONFIRM_AFTER`].
+    fn hold_duties(&mut self, now: Instant) {
+        for cluster in &self.table.clusters {
+            let Some(held) = self
+                .held_duty
+                .iter_mut()
+                .find(|held| held.mac == cluster.mac)
+            else {
+                self.held_duty.push(HeldDuty {
+                    mac: cluster.mac,
+                    candidate: cluster.pwm,
+                    candidate_at: now,
+                    duty: None,
+                    assert_pending: pacing::recovering(cluster.mac),
+                    drifting: false,
+                    unsteady_logged: false,
+                });
+                continue;
+            };
+            if held.duty.is_some() {
+                continue;
+            }
+            if duty_drifted(held.candidate, cluster.pwm) {
+                if !held.unsteady_logged {
+                    held.unsteady_logged = true;
+                    debug!(
+                        mac = %format_mac(cluster.mac),
+                        first = ?held.candidate,
+                        now = ?cluster.pwm,
+                        "wireless cluster duty not steady yet; no fan speed until it holds"
+                    );
+                }
+                held.candidate = cluster.pwm;
+                held.candidate_at = now;
+            } else if now.saturating_duration_since(held.candidate_at) >= DUTY_CONFIRM_AFTER {
+                held.duty = Some(held.candidate);
+            }
+        }
+    }
+
+    /// The duty to send `cluster` now, if any. A cluster at its duty gets
+    /// no fan-speed traffic, as in L-Connect: a fan-speed envelope can
+    /// knock a receiver back to its onboard lighting, so one goes out only
+    /// when the cluster's report drifted off the duty it holds, or once in
+    /// a session that began while recovering the cluster from a stall
+    /// (decided at the session's first sight of it, so fans that confirm
+    /// frames again before the duty is confirmed still get it). That one
+    /// send keeps a recovering connect reaching the fans with fan speed,
+    /// as every connect did when the only recovery seen on hardware
+    /// happened. It carries the slot and channel the cluster reports, so it
+    /// repeats its address rather than correcting a latched one.
+    fn duty_to_send(&mut self, cluster: &FanCluster) -> Option<[u8; 4]> {
+        let held = self
+            .held_duty
+            .iter_mut()
+            .find(|held| held.mac == cluster.mac)?;
+        let duty = held.duty?;
+        let drifted = duty_drifted(duty, cluster.pwm);
+        if drifted && !held.drifting {
+            info!(
+                mac = %format_mac(cluster.mac),
+                held = ?duty,
+                reported = ?cluster.pwm,
+                "wireless cluster drifted off its fan duty; sending it again"
+            );
+        }
+        held.drifting = drifted;
+        if std::mem::take(&mut held.assert_pending) {
+            return Some(duty);
+        }
+        drifted.then_some(duty)
     }
 
     /// Hand each driven cluster's echoed tag to the pacer.
@@ -646,6 +758,33 @@ impl WirelessControllerProtocol {
         state.pacer.fit_clusters(&macs);
     }
 
+    /// Each cluster's index and first LED, in the order a batch of RGB
+    /// transfers visits them. Every switch to another cluster waits out the
+    /// transport's air gap, so a batch starts with the cluster the last
+    /// transfer went to and continues around the table from there: two
+    /// clusters go A B, B A, A B, three go A B C, C A B, B C A, and a frame
+    /// pays one switch fewer than walking the table from the top.
+    fn send_order(state: &WirelessState) -> Vec<(usize, usize)> {
+        let mut offset = 0_usize;
+        let mut order: Vec<(usize, usize)> = state
+            .table
+            .clusters
+            .iter()
+            .enumerate()
+            .map(|(index, cluster)| {
+                let start = offset;
+                offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+                (index, start)
+            })
+            .collect();
+        if let Some(last) = state.last_rgb_cluster
+            && last < order.len()
+        {
+            order.rotate_left(last);
+        }
+        order
+    }
+
     /// Send every cluster whatever the pacer allows now: the newest frame
     /// where its window has room, the restore upkeep left owing, and, with
     /// `resends`, a probe after a timeout. Returns the pixel bytes written.
@@ -663,16 +802,17 @@ impl WirelessControllerProtocol {
         buffer: &mut CommandBuffer<'_>,
     ) -> usize {
         let master = Self::master_mac(state);
-        let Some(colors) = state.latest_colors.as_deref() else {
+        if state.latest_colors.is_none() {
             return 0;
-        };
+        }
         state.pacer.tick(now);
         state.pacer.mark_window_limits(now);
-        let mut offset = 0_usize;
         let mut written = 0_usize;
-        for (index, cluster) in state.table.clusters.iter().enumerate() {
-            let start = offset;
-            offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+        for (index, start) in Self::send_order(state) {
+            let Some(colors) = state.latest_colors.as_deref() else {
+                break;
+            };
+            let cluster = &state.table.clusters[index];
             let Some(kind) = state.pacer.decide(index, now) else {
                 continue;
             };
@@ -684,6 +824,7 @@ impl WirelessControllerProtocol {
                 .pacer
                 .note_sent(index, effect_index_for(&raw), kind, now);
             Self::push_transfer(master, cluster, &raw, wire, frame_number, buffer);
+            state.last_rgb_cluster = Some(index);
             written += raw.len();
         }
         written
@@ -694,13 +835,11 @@ impl WirelessControllerProtocol {
     /// but never past the unresolved bound.
     fn flush_held(state: &mut WirelessState, now: Instant, buffer: &mut CommandBuffer<'_>) {
         let master = Self::master_mac(state);
-        let Some(colors) = state.latest_colors.as_deref() else {
-            return;
-        };
-        let mut offset = 0_usize;
-        for (index, cluster) in state.table.clusters.iter().enumerate() {
-            let start = offset;
-            offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+        for (index, start) in Self::send_order(state) {
+            let Some(colors) = state.latest_colors.as_deref() else {
+                return;
+            };
+            let cluster = &state.table.clusters[index];
             if !state.pacer.held(index) || !state.pacer.has_capacity(index) {
                 continue;
             }
@@ -709,13 +848,14 @@ impl WirelessControllerProtocol {
                 .pacer
                 .note_sent(index, effect_index_for(&raw), SendKind::Frame, now);
             Self::push_transfer(master, cluster, &raw, wire, None, buffer);
+            state.last_rgb_cluster = Some(index);
         }
     }
 
-    /// The 1 Hz upkeep: hold every cluster at the PWM it reported, restore
-    /// the confirmed frame if nothing newer is waiting, broadcast the
-    /// clock, and refresh the table. Streaming mode is armed here only when
-    /// no frame has done it yet.
+    /// The 1 Hz upkeep: send a cluster whose duty drifted (or that this
+    /// session is recovering) the duty it holds, restore its frame,
+    /// broadcast the clock, and refresh the table. Streaming mode is armed
+    /// here only when no frame has done it yet.
     ///
     /// The table poll comes after the sends, as every poll does, so its
     /// reply can only confirm a transfer that was already on its way.
@@ -727,7 +867,11 @@ impl WirelessControllerProtocol {
             state.streaming_started = true;
         }
 
-        for (index, cluster) in state.table.clusters.iter().enumerate() {
+        let clusters = state.table.clusters.clone();
+        for (index, cluster) in clusters.iter().enumerate() {
+            let Some(duty) = state.duty_to_send(cluster) else {
+                continue;
+            };
             let slot_index = u8::try_from(index + 1).unwrap_or(u8::MAX);
             let envelope = pwm_envelope(
                 cluster.mac,
@@ -735,18 +879,18 @@ impl WirelessControllerProtocol {
                 cluster.rx_type,
                 cluster.channel,
                 slot_index,
-                cluster.pwm,
+                duty,
             );
             Self::envelope_commands(commands, &envelope, cluster.channel, cluster.rx_type);
+            // A fan-speed envelope can knock a receiver back to its onboard
+            // lighting without changing its echo, so this cluster now owes
+            // a restore. Where the window is open it goes out right after
+            // the fan speed, before clock or pairing traffic can delay it;
+            // where a transfer is still out, it follows once that transfer
+            // resolves, since the transfer may have landed first.
+            state.pacer.owe_restore(index);
         }
 
-        // PWM traffic can knock a receiver back to its onboard lighting
-        // without changing its echo, so every cluster now owes a restore.
-        // Where the window is open it goes out right after the PWM, before
-        // clock or pairing traffic can delay it; where a transfer is still
-        // out, it follows once that transfer resolves, since the transfer
-        // may have landed before the PWM.
-        state.pacer.owe_restores();
         let mut rgb_commands = Vec::new();
         let mut buffer = CommandBuffer::new(&mut rgb_commands);
         Self::pace_rgb(state, now, true, None, &mut buffer);
@@ -754,9 +898,8 @@ impl WirelessControllerProtocol {
         commands.extend(rgb_commands);
 
         let payload = clock_payload(WallClock::now_local());
-        let envelope = clock_sync_envelope(master, &payload, !state.clock_sent);
+        let envelope = clock_sync_envelope(master, &payload);
         Self::envelope_commands(commands, &envelope, channel, RF_BROADCAST_SLOT);
-        state.clock_sent = true;
 
         commands.push(Self::get_dev_command(STEADY_TIMEOUT));
         // The table poll carries every echo a due poll would have.
@@ -782,17 +925,6 @@ impl WirelessControllerProtocol {
                     "wireless clusters did not take the pairing; giving up until reconnect"
                 );
             }
-        }
-    }
-
-    /// The vendor reset for a TX whose fans stopped confirming, written to
-    /// the RX. The transport routes it through its wedge path and ends the
-    /// session; it expects no reply.
-    fn tx_reset_command() -> ProtocolCommand {
-        ProtocolCommand {
-            data: transport::partner_reset_packet(),
-            transfer_type: TransferType::Companion,
-            ..Default::default()
         }
     }
 
@@ -876,7 +1008,11 @@ impl Protocol for WirelessControllerProtocol {
     /// switch. Each cluster whose window is open gets its RGB transfer; the
     /// rest keep this frame as their newest, which the pump sends once the
     /// transfer ahead of it is confirmed.
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let now = (self.clock)();
         let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let state = &mut *guard;
@@ -913,10 +1049,22 @@ impl Protocol for WirelessControllerProtocol {
         }
 
         let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
-        state.written_frame_bytes =
-            Self::pace_rgb(state, now, false, Some(frame_number), &mut buffer);
+        // The clusters this frame changed; the others already show theirs.
+        let written = Self::pace_rgb(state, now, false, Some(frame_number), &mut buffer);
         buffer.finish();
         state.pacer.note_tx_packets(Self::tx_packets(commands));
+        if !commands.is_empty() {
+            return FrameBatch::Write {
+                pixel_bytes: Some(written),
+                completion: None,
+            };
+        }
+        let held = (0..state.table.clusters.len()).any(|cluster| state.pacer.held(cluster));
+        if held {
+            FrameBatch::Held
+        } else {
+            FrameBatch::Unchanged
+        }
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {
@@ -934,8 +1082,8 @@ impl Protocol for WirelessControllerProtocol {
         state.topology_frozen = true;
         Self::fit_pacer(state);
         let mut commands = Vec::new();
-        // After asking for the TX reset or a fresh connect the session is
-        // over, and nothing more is written.
+        // After asking for a fresh connect the session is over, and
+        // nothing more is written.
         if state.pacer.silenced() {
             return commands;
         }
@@ -948,21 +1096,11 @@ impl Protocol for WirelessControllerProtocol {
         Some(PUMP_INTERVAL)
     }
 
-    /// The pixels of the clusters the last frame changed and was written
-    /// to; unchanged clusters already show theirs.
-    fn written_frame_bytes(&self) -> Option<usize> {
-        Some(
-            self.state
-                .read()
-                .unwrap_or_else(PoisonError::into_inner)
-                .written_frame_bytes,
-        )
-    }
-
     /// The pacer's tick. A verdict on fans that stopped confirming comes
-    /// first: the TX reset and nothing else; once a cluster's reset budget
-    /// is spent, a rest of its lighting while the rest carry on; and when
-    /// the rest runs out, nothing, as the session ends for a reconnect. Then
+    /// first: a resync, which ends the session for a fresh connect and
+    /// writes nothing; once a cluster's resync budget is spent, a rest of
+    /// its lighting while the rest carry on; and when the rest runs out,
+    /// nothing, as the session ends for a reconnect. Then
     /// whatever the window allows now, and an echo poll when one is due. A
     /// tick with nothing due leaves `commands` empty.
     fn pump_frame_into(&self, commands: &mut Vec<ProtocolCommand>) {
@@ -975,20 +1113,28 @@ impl Protocol for WirelessControllerProtocol {
         }
         Self::fit_pacer(state);
         match state.pacer.stall_verdict(now) {
-            Some(StallVerdict::Reset {
+            // The session ends; the backend reads the reason and connects
+            // afresh. Nothing is written, and the TX is not reset: it took
+            // every write.
+            Some(StallVerdict::Resync {
                 cluster,
                 unconfirmed_for,
                 resends,
-                resets,
+                resyncs,
             }) => {
+                let record = state.table.clusters.get(cluster);
                 warn!(
                     cluster,
                     unconfirmed_ms = u64::try_from(unconfirmed_for.as_millis()).unwrap_or(u64::MAX),
                     resends,
-                    resets,
-                    "L-Wireless delivery has not recovered after probing the present fans; resetting TX through the RX"
+                    resyncs,
+                    mac = %record.map(|record| format_mac(record.mac)).unwrap_or_default(),
+                    channel = record.map(|record| record.channel),
+                    rx_type = record.map(|record| record.rx_type),
+                    echo = ?record.map(|record| record.effect_index),
+                    pwm = ?record.map(|record| record.pwm),
+                    "L-Wireless delivery has not recovered after probing the present fans; reconnecting to run the connect sequence again"
                 );
-                commands.push(Self::tx_reset_command());
                 return;
             }
             // The session ends; the backend reads the reason and reconnects.
@@ -1026,8 +1172,8 @@ impl Protocol for WirelessControllerProtocol {
     }
 
     /// Republish routing when a bound fan appears outside the frozen set.
-    /// Fans that stopped confirming past their TX resets also request a
-    /// fresh connect after their rest (see [`pacing`]).
+    /// Fans that stopped confirming request a fresh connect, at once and
+    /// then after each rest (see [`pacing`]).
     fn session_restart(&self) -> Option<String> {
         let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
         if state.topology_restart {

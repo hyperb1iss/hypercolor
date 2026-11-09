@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class LiveSection(StrEnum):
+class LiveSection(TolerantStrEnum):
     AUDIO = "audio"
     CAPTURE = "capture"
     INPUT = "input"

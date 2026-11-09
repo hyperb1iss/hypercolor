@@ -22,7 +22,7 @@ use hypercolor_core::engine::{
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::{sample_led, sample_zone};
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryBatch, DiscoveryConnectBehavior};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::control::ControlDeltaBatch;
@@ -158,7 +158,9 @@ impl TestScanner {
 
 fn add_test_source(orchestrator: &mut DiscoveryOrchestrator, source: TestScanner) {
     let name = source.name().to_owned();
-    orchestrator.add_source(name, async move { Ok::<_, anyhow::Error>(source.scan()) });
+    orchestrator.add_source(name, async move {
+        Ok::<_, anyhow::Error>(DiscoveryBatch::complete(source.scan()))
+    });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

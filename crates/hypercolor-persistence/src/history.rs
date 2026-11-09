@@ -278,9 +278,20 @@ pub fn capture_next_writes() {
 ///
 /// The callback runs on the thread that performed the replacement, after it
 /// is visible, with the destination's canonical path. Background retries run
-/// it too. Returns `false` when an observer was already installed.
+/// it too. A write-behind admission
+/// ([`crate::AtomicWriteReservation::admit_write_behind`]) also runs it on
+/// the admitting thread when its payload changes the destination's newest
+/// intent, since its replacement runs later on a thread the admitting task
+/// does not own. Returns `false` when an observer was already installed.
 pub fn set_replacement_observer(observer: fn(&Path)) -> bool {
     REPLACEMENT_OBSERVER.set(observer).is_ok()
+}
+
+/// Tell the replacement observer, if one is installed, that `path` changed.
+pub(crate) fn notify_change(path: &Path) {
+    if let Some(observer) = REPLACEMENT_OBSERVER.get() {
+        observer(path);
+    }
 }
 
 /// List the generations in `directory`, oldest first.

@@ -2,14 +2,14 @@
 members = ["crates/*"]
 exclude = [
     "crates/hypercolor-ui",
+    "vendor/libsqlite3-sys",
     "vendor/servo-script",
     "vendor/tachys",
-    "vendor/utoipa-swagger-ui",
 ]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
 license = "Apache-2.0"
@@ -83,9 +83,9 @@ serde_ignored = "0.1.14"
 # The error type Axum keeps as the source of a JSON or query rejection,
 # which is where the API extractors read the offending field path.
 serde_path_to_error = "0.1"
-# jsonschema 0.58 enables serde_json/float_roundtrip globally.
+# jsonschema (0.58 through 0.60) enables serde_json/float_roundtrip globally.
 # That feature changes f32 REST decoding before domain validation.
-jsonschema = { version = "=0.58.6", default-features = false }
+jsonschema = { version = "=0.60.2", default-features = false }
 toml = "1.1"
 base64 = "0.23"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde", "clock"] }
@@ -96,6 +96,7 @@ anyhow = "1.0"
 
 # Async runtime
 tokio = { version = "1.53", features = ["full"] }
+socket2 = { version = "0.6", features = ["all"] }
 async-trait = "0.1"
 futures-core = "0.3"
 futures-util = "0.3"
@@ -120,7 +121,7 @@ strum = { version = "0.28", features = ["derive"] }
 dirs = "7.0"
 tar = "0.4.46"
 notify = "8.2"
-sysinfo = "0.39.6"
+sysinfo = "0.40.1"
 nvml-wrapper = "0.13.0"
 # Pinned exactly: wmi 0.18.2+ declares open ranges (windows/windows-core
 # ">=0.59, <0.63"), and with tao/wry holding windows-core at 0.61 the resolver
@@ -131,16 +132,16 @@ wmi = "=0.18.4"
 
 # Servo embedder boundary
 # Servo's memory-report API exposes this callback type without reexporting it.
-base = { package = "servo-base", version = "0.6.0" }
-servo = { version = "0.6.0", default-features = false }
+base = { package = "servo-base", version = "0.7.0" }
+servo = { version = "0.7.0", default-features = false }
 # servo-allocator 0.6 made jemalloc opt-in (use-jemalloc). Core's servo
 # feature enables it on non-Windows targets so the daemon keeps jemalloc
 # as its global allocator. The crate Servo links declares the global
 # allocator, so this pin must name Servo's exact version: a different one
 # resolves to a second, unused copy and leaves the daemon on the system
 # malloc. Bump it only together with servo.
-servo-allocator = "=0.6.0"
-surfman = "0.13"
+servo-allocator = "=0.7.0"
+surfman = "0.14"
 
 # Crypto / auth
 aes-gcm = "0.11.1"
@@ -154,39 +155,48 @@ webrtc-util = "0.11.0"
 windows-native-keyring-store = "1.1.0"
 
 # Workspace crates
-hypercolor-color = { path = "crates/hypercolor-color", version = "0.8.1" }
-hypercolor-types = { path = "crates/hypercolor-types", version = "0.8.1" }
-hypercolor-hal = { path = "crates/hypercolor-hal", version = "0.8.1" }
-hypercolor-core = { path = "crates/hypercolor-core", version = "0.8.1" }
-hypercolor-persistence = { path = "crates/hypercolor-persistence", version = "0.8.1" }
-hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs", version = "0.8.1" }
-hypercolor-install = { path = "crates/hypercolor-install", version = "0.8.1" }
-hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention", version = "0.8.1" }
-hypercolor-gpu-frame = { path = "crates/hypercolor-gpu-frame", version = "0.8.1" }
-hypercolor-linux-input = { path = "crates/hypercolor-linux-input", version = "0.8.1" }
-hypercolor-pipewire-interop = { path = "crates/hypercolor-pipewire-interop", version = "0.8.1" }
-hypercolor-linux-session = { path = "crates/hypercolor-linux-session", version = "0.8.1" }
-hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop", version = "0.8.1" }
-hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop", version = "0.8.1" }
-hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture", version = "0.8.1" }
-hypercolor-macos-input = { path = "crates/hypercolor-macos-input", version = "0.8.1" }
-hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner", version = "0.8.1" }
-hypercolor-windows-session = { path = "crates/hypercolor-windows-session", version = "0.8.1" }
-hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture", version = "0.8.1" }
-hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop", version = "0.8.1" }
-hypercolor-windows-telemetry = { path = "crates/hypercolor-windows-telemetry", version = "0.8.1" }
-hypercolor-driver-api = { path = "crates/hypercolor-driver-api", version = "0.8.1" }
-hypercolor-driver-support = { path = "crates/hypercolor-driver-support", version = "0.8.1" }
-hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", version = "0.8.1", default-features = false }
-hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue", version = "0.8.1" }
-hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf", version = "0.8.1" }
-hypercolor-driver-openrgb = { path = "crates/hypercolor-driver-openrgb", version = "0.8.1" }
-hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled", version = "0.8.1" }
-hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee", version = "0.8.1" }
-hypercolor-network = { path = "crates/hypercolor-network", version = "0.8.1" }
-hypercolor-openrgb-sdk = { path = "crates/hypercolor-openrgb-sdk", version = "0.8.1" }
-hypercolor-openrgb-host = { path = "crates/hypercolor-openrgb-host", version = "0.8.1" }
-hypercolor-tui = { path = "crates/hypercolor-tui", version = "0.8.1" }
+hypercolor-color = { path = "crates/hypercolor-color", version = "0.9.0" }
+hypercolor-types = { path = "crates/hypercolor-types", version = "0.9.0" }
+hypercolor-hal = { path = "crates/hypercolor-hal", version = "0.9.0" }
+hypercolor-core = { path = "crates/hypercolor-core", version = "0.9.0" }
+hypercolor-persistence = { path = "crates/hypercolor-persistence", version = "0.9.0" }
+hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs", version = "0.9.0" }
+hypercolor-install = { path = "crates/hypercolor-install", version = "0.9.0" }
+hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention", version = "0.9.0" }
+hypercolor-gpu-frame = { path = "crates/hypercolor-gpu-frame", version = "0.9.0" }
+hypercolor-linux-input = { path = "crates/hypercolor-linux-input", version = "0.9.0" }
+hypercolor-pipewire-interop = { path = "crates/hypercolor-pipewire-interop", version = "0.9.0" }
+hypercolor-linux-session = { path = "crates/hypercolor-linux-session", version = "0.9.0" }
+hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop", version = "0.9.0" }
+hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop", version = "0.9.0" }
+hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture", version = "0.9.0" }
+hypercolor-macos-input = { path = "crates/hypercolor-macos-input", version = "0.9.0" }
+hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner", version = "0.9.0" }
+hypercolor-windows-install-native = { path = "crates/hypercolor-windows-install-native", version = "0.9.0" }
+hypercolor-windows-session = { path = "crates/hypercolor-windows-session", version = "0.9.0" }
+hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture", version = "0.9.0" }
+hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop", version = "0.9.0" }
+hypercolor-windows-telemetry = { path = "crates/hypercolor-windows-telemetry", version = "0.9.0" }
+hypercolor-driver-adalight = { path = "crates/hypercolor-driver-adalight", version = "0.9.0" }
+hypercolor-driver-api = { path = "crates/hypercolor-driver-api", version = "0.9.0" }
+hypercolor-driver-conformance = { path = "crates/hypercolor-driver-conformance" }
+hypercolor-driver-support = { path = "crates/hypercolor-driver-support", version = "0.9.0" }
+hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", version = "0.9.0", default-features = false }
+hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue", version = "0.9.0" }
+hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf", version = "0.9.0" }
+hypercolor-driver-openrgb = { path = "crates/hypercolor-driver-openrgb", version = "0.9.0" }
+hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled", version = "0.9.0" }
+hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee", version = "0.9.0" }
+hypercolor-driver-pixel = { path = "crates/hypercolor-driver-pixel", version = "0.9.0" }
+hypercolor-driver-lifx = { path = "crates/hypercolor-driver-lifx", version = "0.9.0" }
+hypercolor-driver-twinkly = { path = "crates/hypercolor-driver-twinkly", version = "0.9.0" }
+hypercolor-driver-wiz = { path = "crates/hypercolor-driver-wiz", version = "0.9.0" }
+hypercolor-driver-yeelight = { path = "crates/hypercolor-driver-yeelight", version = "0.9.0" }
+hypercolor-network = { path = "crates/hypercolor-network", version = "0.9.0" }
+hypercolor-openrgb-sdk = { path = "crates/hypercolor-openrgb-sdk", version = "0.9.0" }
+hypercolor-pixel-protocols = { path = "crates/hypercolor-pixel-protocols", version = "0.9.0" }
+hypercolor-openrgb-host = { path = "crates/hypercolor-openrgb-host", version = "0.9.0" }
+hypercolor-tui = { path = "crates/hypercolor-tui", version = "0.9.0" }
 
 # Audio + input capture
 realfft = "3.5"
@@ -222,7 +232,7 @@ tower-http = { version = "0.7", features = ["cors", "fs", "trace"] }
 rmcp = { version = "3.5.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 utoipa = { version = "6.0.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
 utoipa-axum = "0.3.0"
-utoipa-swagger-ui = { version = "10.0.1", features = ["axum", "vendored"] }
+utoipa-swagger-ui = { version = "10.0.2", features = ["axum", "vendored"] }
 
 # CLI
 clap = { version = "4.6", features = ["derive", "cargo", "env"] }
@@ -270,20 +280,20 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 stats_alloc = "0.1.10"
 
 # Servo's script crate, vendored with Hypercolor's patches applied on top of
-# the published 0.6.0 source. vendor/servo-script/HYPERCOLOR.md lists each
-# patch and when to drop the vendor. The patch matches servo-script 0.6.0
+# the published 0.7.0 source. vendor/servo-script/HYPERCOLOR.md lists each
+# patch and when to drop the vendor. The patch matches servo-script 0.7.0
 # only: bumping servo leaves it unused behind a single cargo warning, which
 # scripts/check-vendored-patches.sh turns into a CI failure, so re-vendor or
 # drop it in the same change.
 #
-# utoipa-swagger-ui 10.0.1, vendored to carry upstream's unreleased move of
-# its build-time zip dependency to 9.x. vendor/utoipa-swagger-ui/HYPERCOLOR.md
-# describes the patch and says to drop the vendor once a utoipa-swagger-ui
-# release carries it; scripts/check-vendored-patches.sh fails CI as soon as a
-# bump moves the crate off 10.0.1.
+# libsqlite3-sys 0.36.0, vendored to bundle SQLite 3.51.3 in place of 3.51.1.
+# servo-net pins rusqlite ^0.38, which pins this crate, so no dependency bump
+# can reach the SQLite fixes; vendor/libsqlite3-sys/HYPERCOLOR.md lists them
+# and says when to drop the vendor. scripts/check-vendored-patches.sh fails
+# CI as soon as a bump moves the crate off 0.36.0.
 [patch.crates-io]
+libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 servo-script = { path = "vendor/servo-script" }
-utoipa-swagger-ui = { path = "vendor/utoipa-swagger-ui" }
 
 [profile.release]
 opt-level = 3

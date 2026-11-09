@@ -41,7 +41,8 @@ class ReleaseArtifactTests(unittest.TestCase):
         cls.root = Path(cls.temporary.name)
         fixture = cls.root / "source"
         (fixture / "scripts").mkdir(parents=True)
-        shutil.copy2(SOURCE / "scripts/dist.sh", fixture / "scripts/dist.sh")
+        for script in ("dist.sh", "package-deb.sh"):
+            shutil.copy2(SOURCE / "scripts" / script, fixture / "scripts" / script)
         for directory in ("bin", "desktop", "icons", "managed", "modules-load", "systemd"):
             shutil.copytree(SOURCE / "packaging" / directory, fixture / "packaging" / directory)
         shutil.copytree(SOURCE / "udev", fixture / "udev")
@@ -319,6 +320,110 @@ class ReleaseArtifactTests(unittest.TestCase):
         result = self.dist("--target", "macos-arm64", "--durable-stores", str(overlay))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("applies only to Linux releases", result.stdout + result.stderr)
+
+    NOTICES = {
+        "libexample/LICENSE": "Example license.\n",
+        "libexample/PATENTS": "Example patent grant.\n",
+        "libexample/third_party/x86inc/LICENSE": "Nested license.\n",
+    }
+
+    def notices(self):
+        """A downstream notice tree whose private source modes must not ship."""
+        notices = self.directory / "notices"
+        for relative, text in self.NOTICES.items():
+            file = notices / relative
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(text)
+            file.chmod(0o600)
+        for directory in sorted(notices.rglob("*"), reverse=True):
+            if directory.is_dir():
+                directory.chmod(0o700)
+        return notices
+
+    def dist_with_notices(self):
+        result = self.dist("--target", "linux-amd64", "--third-party-notices", str(self.notices()))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return self.root / "source/dist/hypercolor-1.0.0-overlay-linux-amd64"
+
+    def test_a_default_release_ships_no_third_party_tree(self):
+        self.assertFalse((self.payload / "third-party").exists())
+        self.assertFalse(any(
+            member["path"].startswith("third-party") for member in self.manifest()["members"]
+        ))
+
+    def test_a_downstream_build_ships_its_third_party_notices(self):
+        produced = self.dist_with_notices()
+        members = {
+            member["path"]: member
+            for member in json.loads((produced / "manifest.json").read_text())["members"]
+        }
+        for relative, text in self.NOTICES.items():
+            with self.subTest(notice=relative):
+                self.assertEqual((produced / "third-party" / relative).read_text(), text)
+                member = members[f"third-party/{relative}"]
+                self.assertEqual((member["type"], member["mode"]), ("file", 0o644))
+        for relative in (
+            "third-party", "third-party/libexample", "third-party/libexample/third_party",
+            "third-party/libexample/third_party/x86inc",
+        ):
+            with self.subTest(directory=relative):
+                self.assertEqual(
+                    (members[relative]["type"], members[relative]["mode"]), ("directory", 0o755)
+                )
+        self.payload = produced
+        result = self.repack()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if REAL_CLI:
+            validated = self.rust_validate()
+            self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+
+    def test_third_party_notices_are_validated(self):
+        notices = self.notices()
+        empty = self.directory / "empty-notices"
+        (empty / "libexample").mkdir(parents=True)
+        cases = {
+            "empty": ([""], "needs a directory"),
+            "relative": (["notices"], "must be an absolute path"),
+            "missing": ([str(self.directory / "absent")], "is not a directory"),
+            "no files": ([str(empty)], "holds no files"),
+            "twice": ([str(notices), "--third-party-notices", str(notices)], "may be given once"),
+            "empty first": (["", "--third-party-notices", str(notices)], "needs a directory"),
+        }
+        for label, (arguments, message) in cases.items():
+            with self.subTest(case=label):
+                result = self.dist("--target", "linux-amd64", "--third-party-notices", *arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stdout + result.stderr)
+        with self.subTest(case="symlink"):
+            (notices / "libexample/COPYING").symlink_to(notices / "libexample/LICENSE")
+            result = self.dist("--target", "linux-amd64", "--third-party-notices", str(notices))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("neither a file nor a directory", result.stdout + result.stderr)
+
+    @unittest.skipUnless(shutil.which("dpkg-deb"), "dpkg-deb is not installed")
+    def test_the_debian_package_carries_the_third_party_notices(self):
+        produced = self.dist_with_notices()
+        output = self.directory / "deb"
+        packaged = subprocess.run(
+            ["bash", str(self.root / "source/scripts/package-deb.sh"), str(produced), str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(packaged.returncode, 0, packaged.stdout + packaged.stderr)
+        (deb,) = output.glob("hypercolor_*.deb")
+        contents = subprocess.run(
+            ["dpkg-deb", "--contents", str(deb)], capture_output=True, text=True, check=True,
+        ).stdout
+        for relative in self.NOTICES:
+            self.assertIn(f"./usr/share/doc/hypercolor/third-party/{relative}", contents)
+
+    def test_the_desktop_entry_names_its_launcher_by_command(self):
+        # The managed installer links this file into the user's own
+        # applications directory from an immutable unit, so no absolute
+        # launcher path can be right for every prefix the tree lands under.
+        entry = (self.payload / "share/applications/hypercolor.desktop").read_text()
+        executables = [line for line in entry.splitlines() if line.startswith("Exec=")]
+        self.assertEqual(executables, ["Exec=hypercolor-open"])
+        self.assertNotIn("@BIN_DIR@", entry)
 
     def test_both_packaged_user_units_declare_user_service_identity(self):
         declaration = "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service"

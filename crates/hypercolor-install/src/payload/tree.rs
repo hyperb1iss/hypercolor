@@ -184,13 +184,43 @@ pub(super) fn finalize_staging(
             source,
         })?;
     }
-    staging
-        .directory()
-        .set_mode(UNIT_ROOT_MODE)
-        .map_err(|source| ReleasePayloadError::Filesystem {
-            operation: "finalize the staged unit root",
-            source,
-        })
+    Ok(())
+}
+
+/// Give a published unit's root its read-only mode.
+///
+/// A unit's root takes that mode only once it has its digest name: macOS 15
+/// refuses to rename a directory its owner cannot write, even within one
+/// parent. So a crash between the rename and this call leaves a complete unit
+/// with a writable root, and the next publication of that digest finishes it
+/// here before it validates the unit.
+pub(super) fn finish_unit_root(root: &DirectoryAuthority) -> Result<(), ReleasePayloadError> {
+    let finished = root.metadata().and_then(|metadata| {
+        if metadata.mode() == UNIT_ROOT_MODE {
+            Ok(())
+        } else {
+            root.set_mode(UNIT_ROOT_MODE)
+        }
+    });
+    finished.map_err(|source| ReleasePayloadError::Filesystem {
+        operation: "finalize the unit root",
+        source,
+    })
+}
+
+/// [`validate_installed`] for a unit still in staging, whose root is not
+/// final yet.
+pub(super) fn validate_staged(
+    root: &DirectoryAuthority,
+    manifest: &ValidatedManifest,
+) -> Result<(), ReleasePayloadError> {
+    validate_directory(
+        root,
+        "",
+        manifest,
+        TreeMode::Installed,
+        EnumerationMode::Existing,
+    )
 }
 
 pub(super) fn bind_candidate_executable(
@@ -757,7 +787,7 @@ fn read_opened_exact(
     Ok(bytes)
 }
 
-fn hash_file_exact(
+pub(super) fn hash_file_exact(
     file: &File,
     size: u64,
     operation: &'static str,

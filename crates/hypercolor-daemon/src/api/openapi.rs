@@ -28,7 +28,9 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "devices", description = "Tracked device inventory"),
         (name = "controls", description = "Generic control surfaces and typed value mutation"),
         (name = "effects", description = "Effect catalog and runtime control"),
+        (name = "canvas", description = "Stills of the composed effect canvas"),
         (name = "assets", description = "Uploaded media assets"),
+        (name = "media", description = "Now-playing media application access"),
         (name = "displays", description = "Display devices, faces, and simulators"),
         (name = "attachments", description = "Physical attachment templates and bindings"),
         (name = "output", description = "Global output power and brightness"),
@@ -37,6 +39,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "library", description = "Favorites, presets, and playlists"),
         (name = "capture", description = "Protected host input and screen-capture actions"),
         (name = "config", description = "Daemon configuration inspection and mutation"),
+        (name = "backups", description = "Portable lighting configuration backups and restores"),
         (name = "diagnostics", description = "Daemon diagnostics"),
         (name = "websocket", description = "Realtime WebSocket endpoint"),
     ),
@@ -154,14 +157,6 @@ impl OperationDoc {
             summary,
         )
         .component::<T>()
-    }
-
-    pub(crate) fn get_vec<T: utoipa::ToSchema + utoipa::__dev::ComposeSchema>(
-        operation_id: &'static str,
-        tag: &'static str,
-        summary: &'static str,
-    ) -> Self {
-        Self::new::<Vec<T>>(HttpMethod::Get, operation_id, tag, summary).component::<T>()
     }
 
     pub(crate) fn post<T: utoipa::ToSchema>(

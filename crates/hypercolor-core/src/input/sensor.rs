@@ -7,17 +7,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tokio::sync::watch;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
 use sysinfo::{
-    Components, CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, MemoryRefreshKind, RefreshKind, System,
+    Component, Components, CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, MemoryRefreshKind,
+    RefreshKind, System,
 };
 
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::traits::{
-    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, SourceRoleBinding,
+    DataSource, DataSourceKind, DataSourceRole, InputData, ManagedSource, SourceRoleBinding,
 };
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
@@ -82,7 +83,7 @@ impl Default for SensorSource {
     }
 }
 
-impl InputSource for SensorSource {
+impl ManagedSource for SensorSource {
     fn name(&self) -> &'static str {
         "sensors"
     }
@@ -383,24 +384,36 @@ impl Drop for SensorPoller {
 }
 
 struct SystemSampler {
-    system: System,
-    components: Components,
+    /// CPU and memory, absent when the platform refused them at startup.
+    system: Option<System>,
+    /// Temperature sensors, absent when the platform refused them at startup.
+    components: Option<Components>,
     nvidia: Option<NvidiaTelemetry>,
     windows: hypercolor_windows_telemetry::SensorExtras,
 }
 
 impl SystemSampler {
     fn new() -> Self {
-        let mut system = System::new_with_specifics(
+        let system = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap())
-                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
-        );
-        system.refresh_memory();
-        system.refresh_cpu_usage();
+                .with_cpu(CpuRefreshKind::nothing().with_usage()),
+        )
+        .inspect_err(|error| warn!(%error, "CPU and memory readings are unavailable"))
+        .ok()
+        .map(|mut system| {
+            system.refresh_memory();
+            system.refresh_cpu_usage();
+            system
+        });
 
-        let mut components = Components::new_with_refreshed_list();
-        components.refresh(false);
+        let components = Components::new_with_refreshed_list()
+            .inspect_err(|error| warn!(%error, "temperature readings are unavailable"))
+            .ok()
+            .map(|mut components| {
+                components.refresh(false);
+                components
+            });
 
         Self {
             system,
@@ -411,31 +424,34 @@ impl SystemSampler {
     }
 
     fn sample_snapshot(&mut self) -> SystemSnapshot {
-        self.system.refresh_memory();
-        self.system.refresh_cpu_usage();
-        self.components.refresh(false);
+        if let Some(system) = self.system.as_mut() {
+            system.refresh_memory();
+            system.refresh_cpu_usage();
+        }
+        if let Some(components) = self.components.as_mut() {
+            components.refresh(false);
+        }
 
-        let cpu_loads = self
-            .system
-            .cpus()
-            .iter()
-            .map(sysinfo::Cpu::cpu_usage)
-            .collect::<Vec<_>>();
-        let total_memory_mb = bytes_to_megabytes(self.system.total_memory());
-        let used_memory_mb = bytes_to_megabytes(self.system.used_memory());
+        let system = self.system.as_ref();
+        let cpu_loads = system
+            .map(|system| system.cpus().iter().map(sysinfo::Cpu::usage).collect())
+            .unwrap_or_default();
+        let total_memory_mb = bytes_to_megabytes(system.map_or(0, System::total_memory));
+        let used_memory_mb = bytes_to_megabytes(system.map_or(0, System::used_memory));
         let ram_used_percent = if total_memory_mb <= f64::EPSILON {
             0.0
         } else {
             ((used_memory_mb / total_memory_mb) * 100.0) as f32
         };
-        let components = collect_component_readings(&self.components);
-        let cpu_temp_celsius = best_cpu_temperature(&self.components);
+        let sensors: &[Component] = self.components.as_deref().unwrap_or_default();
+        let components = collect_component_readings(sensors);
+        let cpu_temp_celsius = best_cpu_temperature(sensors);
 
         let mut snapshot = SystemSnapshot {
-            cpu_load_percent: self.system.global_cpu_usage(),
+            cpu_load_percent: system.map_or(0.0, System::global_cpu_usage),
             cpu_loads,
             cpu_temp_celsius,
-            gpu_temp_celsius: best_gpu_temperature(&self.components),
+            gpu_temp_celsius: best_gpu_temperature(sensors),
             gpu_load_percent: None,
             gpu_vram_used_mb: None,
             ram_used_percent,
@@ -459,7 +475,7 @@ fn bytes_to_megabytes(bytes: u64) -> f64 {
     bytes as f64 / BYTES_PER_MEGABYTE
 }
 
-fn collect_component_readings(components: &Components) -> Vec<SensorReading> {
+fn collect_component_readings(components: &[Component]) -> Vec<SensorReading> {
     components
         .iter()
         .filter_map(|component| {
@@ -480,7 +496,7 @@ fn collect_component_readings(components: &Components) -> Vec<SensorReading> {
         .collect()
 }
 
-fn best_cpu_temperature(components: &Components) -> Option<f32> {
+fn best_cpu_temperature(components: &[Component]) -> Option<f32> {
     find_temperature_by_priority(
         components,
         &[
@@ -493,14 +509,14 @@ fn best_cpu_temperature(components: &Components) -> Option<f32> {
     )
 }
 
-fn best_gpu_temperature(components: &Components) -> Option<f32> {
+fn best_gpu_temperature(components: &[Component]) -> Option<f32> {
     find_temperature_by_priority(
         components,
         &[&["gpu"], &["amdgpu"], &["radeon"], &["junction"], &["edge"]],
     )
 }
 
-fn find_temperature_by_priority(components: &Components, keyword_sets: &[&[&str]]) -> Option<f32> {
+fn find_temperature_by_priority(components: &[Component], keyword_sets: &[&[&str]]) -> Option<f32> {
     for keywords in keyword_sets {
         if let Some(value) = components.iter().find_map(|component| {
             let label = component.label().to_ascii_lowercase();
@@ -557,7 +573,7 @@ impl NvidiaTelemetry {
 #[cfg(test)]
 mod tests {
     use super::{SensorPoller, SensorSource, publish_sensor_snapshot};
-    use crate::input::{InputData, InputSource, SourceState};
+    use crate::input::{InputData, ManagedSource, SourceState};
     use hypercolor_types::sensor::SystemSnapshot;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;

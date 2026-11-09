@@ -25,6 +25,7 @@ use hypercolor_core::input::InputManager;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_driver_api::InstallationId;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -146,6 +147,12 @@ pub struct AppState {
     /// Configuration manager for config API endpoints.
     pub(crate) config_manager: Option<Arc<ConfigManager>>,
 
+    /// Host readings and source factories this state was composed with.
+    pub(crate) capabilities: crate::startup::HostCapabilities,
+
+    /// Keeps a fixture's user directories claimed for as long as this state.
+    _host_user_dirs: Option<Arc<hypercolor_core::config::paths::IsolatedUserDirs>>,
+
     /// Data directory backing state-owned stores and caches.
     pub data_dir: PathBuf,
 
@@ -255,6 +262,9 @@ struct AppStateLibrary {
     identity: Arc<dyn LibraryIdentityMigration>,
 }
 
+/// Instance id of a state composed by [`AppStateBuilder`].
+const ISOLATED_INSTANCE_ID: &str = "00000000-0000-7000-8000-000000000000";
+
 /// Test-facing composition builder for an isolated application state.
 ///
 /// Every authority is selected before the domain graph is assembled, so
@@ -268,6 +278,7 @@ pub struct AppStateBuilder {
     runtime_state_path: Option<PathBuf>,
     library: Option<AppStateLibrary>,
     input_manager: Option<InputManager>,
+    capabilities: crate::startup::HostCapabilities,
     temporary_directory: Option<tempfile::TempDir>,
 }
 
@@ -282,6 +293,7 @@ impl AppStateBuilder {
             runtime_state_path: None,
             library: None,
             input_manager: None,
+            capabilities: crate::startup::HostCapabilities::ISOLATED,
             temporary_directory: None,
         }
     }
@@ -321,6 +333,17 @@ impl AppStateBuilder {
     #[must_use]
     pub fn with_input_manager(mut self, input_manager: InputManager) -> Self {
         self.input_manager = Some(input_manager);
+        self
+    }
+
+    /// Replace the isolated host this state would otherwise compose with.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn with_capabilities(
+        mut self,
+        capabilities: crate::startup::HostCapabilities,
+    ) -> Self {
+        self.capabilities = capabilities;
         self
     }
 
@@ -384,6 +407,7 @@ impl AppState {
             runtime_state_path,
             library,
             input_manager,
+            capabilities,
         } = builder;
 
         let config = config_manager
@@ -542,13 +566,27 @@ impl AppState {
                 .expect("default app state should open driver inventory"),
         );
         let unclaimed_devices = UnclaimedDeviceStore::new().with_event_bus(Arc::clone(&event_bus));
-        let software_conflicts =
-            SoftwareConflictStore::new().with_event_bus(Arc::clone(&event_bus));
+        let software_conflicts = SoftwareConflictStore::new()
+            .with_event_bus(Arc::clone(&event_bus))
+            .with_inventory(capabilities.running_software);
         let bridge_output_locks = BridgeOutputLocks::default();
+        // Without an injected registry the built-in drivers compose offline,
+        // and the blocksd bridge resolves a socket inside this state's data
+        // directory rather than the session's.
         let driver_registry = driver_registry.unwrap_or_else(|| {
+            let mut offline_config = config.clone();
+            offline_config.discovery.blocks_scan = false;
+            offline_config.discovery.blocks_socket_path = Some(
+                data_dir
+                    .join("run")
+                    .join("blocksd")
+                    .join("blocksd.sock")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
             Arc::new(
-                network::build_builtin_driver_module_registry(
-                    &config,
+                network::build_offline_driver_module_registry(
+                    &offline_config,
                     Arc::clone(&credential_store),
                     usb_protocol_configs.clone(),
                     unclaimed_devices.clone(),
@@ -606,6 +644,7 @@ impl AppState {
                 input_manager: input_manager.clone(),
                 // An isolated AppState never spawns a render thread.
                 render_supervision: crate::render_thread::RenderSupervision::detached(),
+                hardware_broker: capabilities.hardware_broker,
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -652,6 +691,7 @@ impl AppState {
                         driver_inventory,
                         Arc::clone(&driver_registry),
                         config_manager.clone(),
+                        InstallationId::new(ISOLATED_INSTANCE_ID),
                     )
                     .with_device_input(Arc::new(device_input.clone())),
                 ))
@@ -689,6 +729,8 @@ impl AppState {
             render_acceleration: crate::startup::cpu_compositor_acceleration_resolution(),
             device_metrics,
             config_manager,
+            capabilities,
+            _host_user_dirs: None,
             data_dir,
             state_dir,
             extensions: ExtensionRegistry::default(),
@@ -717,7 +759,7 @@ impl AppState {
             playlist_runtime,
             start_time,
             server_identity: ServerIdentity {
-                instance_id: "00000000-0000-7000-8000-000000000000".to_owned(),
+                instance_id: ISOLATED_INSTANCE_ID.to_owned(),
                 instance_name: "hypercolor".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
@@ -794,6 +836,8 @@ impl AppState {
             render_acceleration: daemon.render_acceleration.clone(),
             device_metrics: Arc::clone(&daemon.device_metrics),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
+            capabilities: daemon.capabilities,
+            _host_user_dirs: daemon.host_user_dirs.clone(),
             data_dir,
             state_dir,
             extensions: daemon.extensions.clone(),

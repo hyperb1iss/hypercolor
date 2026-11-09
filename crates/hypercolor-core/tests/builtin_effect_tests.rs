@@ -19,7 +19,7 @@ use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::screen::consumer::{
     CaptureConfig, ColorTuning, PixelExtent, ScreenCaptureInput, SyntheticScreenPublisher,
 };
-use hypercolor_core::input::{InputData, InputSource, InteractionData, ScreenBranchPublication};
+use hypercolor_core::input::{InputData, InteractionData, ManagedSource, ScreenBranchPublication};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};

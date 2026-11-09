@@ -7,7 +7,7 @@ use crate::input::{SourceStatusHandle, SourceStatusReporter};
 /// Platform sources embed one shell and add only native control on top:
 /// the shell owns the adapter, the status reporter and its live session
 /// slot, and the running flag, and it implements the status choreography
-/// that the `InputSource` and `ScreenSource` impls repeat verbatim.
+/// that the `ManagedSource` and `ScreenSource` impls repeat verbatim.
 pub(in crate::input::screen) struct CaptureSourceShell<B: CaptureBackend> {
     pub(in crate::input::screen) adapter: ScreenCaptureAdapter<B>,
     pub(in crate::input::screen) status: SourceStatusReporter,

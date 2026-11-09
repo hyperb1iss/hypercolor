@@ -3,25 +3,31 @@
 //! One durable install journal drives every install, upgrade, rollback and
 //! recovery through [`InstallCoordinator`], on every platform. Platforms
 //! apply and prove each step: `LinuxInstallPlatform` drives a per-user
-//! systemd service, and the `macos` module a launchd agent. The `windows`
-//! module holds the machine-wide store and release units a Windows
-//! platform transacts on. The raw `hypercolor __install-release` command is
-//! one host of this library; others (an update activator, a daemon that
-//! observes its own installation) link it directly.
+//! systemd service, the `macos` module a launchd agent over a standalone
+//! tree, the `macos_bundle` module a signed app bundle, and the `windows`
+//! module a per-machine installation whose app runs in its user's session.
+//! The raw `hypercolor __install-release` command is one host of this
+//! library; others (an update activator, a daemon that observes its own
+//! installation) link it directly.
 
 mod coordinator;
 #[cfg(unix)]
 mod linux;
+mod local_http;
+#[cfg(unix)]
+mod macho_cdhash;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(unix)]
+pub mod macos_bundle;
 mod model;
 #[cfg(unix)]
 mod ownership;
 #[cfg(unix)]
 mod payload;
+mod release_selection;
 #[cfg(unix)]
 mod store;
-#[cfg(windows)]
 pub mod windows;
 #[cfg(windows)]
 use windows::store;
@@ -33,21 +39,22 @@ pub use coordinator::{
 pub use linux::{
     DEFAULT_PROBATION_WINDOW, InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS,
     LINUX_PUBLIC_SERVICE_CONTRACT, LinuxAdoption, LinuxAdoptionError, LinuxDirectoryItem,
-    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
-    LinuxInstallAuthority, LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig,
-    LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation,
-    LinuxInstallLocator, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRecords,
-    LinuxInstallRequest, LinuxInstallRun, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
-    LinuxLegacySnapshot, LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor,
-    LinuxObservationError, LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicEntry,
-    LinuxPublicTree, LinuxRenderedService, LinuxRuntimeSettlement, LinuxServiceIdentity,
-    LinuxServiceInput, LinuxServicePhase, LinuxServiceRenderer, LinuxServiceWatch,
-    LinuxSystemdConnection, LinuxSystemdObservation, LinuxUninstallCheckpoint, LinuxUninstallHost,
-    LinuxUninstallRun, MAX_PROBATION_WINDOW, RetainedLinuxInstallLocation, bind_linux_platform,
+    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxInstallAuthority,
+    LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig, LinuxInstallElection,
+    LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation, LinuxInstallLocator,
+    LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRecords, LinuxInstallRequest,
+    LinuxInstallRun, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLegacySnapshot,
+    LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor, LinuxObservationError,
+    LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree,
+    LinuxRenderedService, LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceInput,
+    LinuxServicePhase, LinuxServiceRenderer, LinuxServiceWatch, LinuxSystemdConnection,
+    LinuxSystemdObservation, LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun,
+    MAX_PROBATION_WINDOW, RetainedLinuxInstallLocation, bind_linux_platform,
     bind_linux_retained_unit, elect_linux_installation, elect_linux_installation_with,
     observe_linux_installation, parse_systemd_show, retain_linux_unit, run_linux_install,
     run_linux_uninstall,
 };
+pub use local_http::LocalHttpResponse;
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,
     InstallModelError, InstallOutcome, InstallRequest, InstallTargetPolicy, InstallTransactionId,
@@ -64,9 +71,11 @@ pub use ownership::{
 #[cfg(unix)]
 pub use payload::{
     MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
-    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError,
-    copy_installed_release_unit, stage_release_payload, stage_release_payload_from_authority,
-    validate_release_payload, validate_release_payload_from_authority,
+    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError, bind_macos_bundle_unit,
+    copy_installed_release_unit, describe_macos_bundle_unit, retain_macos_bundle_unit,
+    stage_macos_bundle_unit, stage_macos_bundle_unit_from_authority, stage_release_payload,
+    stage_release_payload_from_authority, validate_release_payload,
+    validate_release_payload_from_authority, verified_macos_bundle_cli,
 };
 #[cfg(target_os = "macos")]
 pub use payload::{MacosReleaseProvenance, bind_macos_release_provenance};

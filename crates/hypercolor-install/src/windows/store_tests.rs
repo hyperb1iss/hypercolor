@@ -8,7 +8,7 @@ use crate::model::{
     InstallJournalV1, InstallTargetPolicy, InstallTransactionId, PlatformState,
     PlatformTransactionRecord, PlatformTransitionStates, UnitId,
 };
-use crate::windows::WindowsOwnershipPolicy;
+use crate::windows::{WindowsInstallation, WindowsOwnershipPolicy};
 
 const JOURNAL_LIMIT: usize = 64 * 1024;
 
@@ -194,6 +194,68 @@ fn the_journal_round_trips_and_stays_bounded() {
 }
 
 #[test]
+fn an_installation_reads_back_as_it_was_recorded() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let lock = store.acquire_lock().expect("lock");
+    assert_eq!(store.installation(&lock).expect("read"), None);
+
+    let user = WindowsSid::current_user().expect("user").to_string_form();
+    let installation = WindowsInstallation::new(&user).expect("record");
+    store
+        .record_installation(&installation, &lock)
+        .expect("write");
+
+    assert_eq!(
+        store.installation(&lock).expect("read"),
+        Some(installation.clone())
+    );
+    assert_eq!(
+        store
+            .release_records()
+            .expect("records")
+            .installation()
+            .expect("read"),
+        installation
+    );
+}
+
+#[test]
+fn the_bootstrap_directory_comes_and_goes_under_the_lock() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let lock = store.acquire_lock().expect("lock");
+
+    store.bootstrap_directory(&lock).expect("create");
+    store.bootstrap_directory(&lock).expect("open again");
+    assert!(fixture.release.join("update").is_dir());
+
+    store.remove_bootstrap_directory(&lock).expect("remove");
+    store
+        .remove_bootstrap_directory(&lock)
+        .expect("already gone");
+    assert!(!fixture.release.join("update").exists());
+}
+
+#[test]
+fn the_coordinator_directory_appears_once_and_stays() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let lock = store.acquire_lock().expect("lock");
+    let user = WindowsSid::current_user().expect("user").to_string_form();
+
+    store
+        .prepare_coordinator_directory(&lock, &user)
+        .expect("create");
+    fs::write(fixture.state.join("coordinator").join("record"), "kept").expect("a record");
+    store
+        .prepare_coordinator_directory(&lock, &user)
+        .expect("find it again");
+
+    assert!(fixture.state.join("coordinator").join("record").is_file());
+}
+
+#[test]
 fn collection_keeps_referenced_units_and_removes_the_rest() {
     let fixture = Fixture::new();
     let store = fixture.store();
@@ -309,6 +371,35 @@ fn a_reparse_point_on_the_path_is_refused() {
         store.acquire_lock(),
         Err(InstallStoreError::OpenRoot { .. })
     ));
+}
+
+#[test]
+fn a_release_path_through_a_link_is_refused_before_anything_exists() {
+    let fixture = Fixture::new();
+    let target = fixture.release.with_file_name("Elsewhere");
+    fs::create_dir(&target).expect("target");
+    let link = fixture.release.with_file_name("Linked");
+    if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
+        eprintln!("skipping reparse refusal: {error}");
+        return;
+    }
+    let policy = fixture.store().ownership_policy().clone();
+    for root in [link.clone(), link.join("Hypercolor")] {
+        let store = InstallStore::with_roots(&root, &fixture.state, JOURNAL_LIMIT)
+            .expect("store")
+            .with_ownership_policy(policy.clone());
+        store
+            .require_safe_release_path()
+            .expect_err("a link on the path");
+    }
+}
+
+#[test]
+fn a_release_root_that_does_not_exist_yet_is_a_safe_path() {
+    let fixture = Fixture::new();
+    fs::remove_dir(&fixture.release).expect("no release root yet");
+
+    fixture.store().require_safe_release_path().expect("safe");
 }
 
 /// Change an entry's DACL the way an administrator would, with `icacls`.

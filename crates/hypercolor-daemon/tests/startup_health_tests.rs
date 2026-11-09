@@ -11,14 +11,14 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::paths::IsolatedUserDirs;
 use hypercolor_daemon::api::startup::ApiHandoff;
 use hypercolor_daemon::daemon::{
     DaemonExtensionInstaller, DaemonRunOptions, bind_api_listener, run_with_extensions,
     serve_api_handoff_with_shutdown_timeout,
 };
 use hypercolor_daemon::extensions::DaemonLifecycleExtension;
-use hypercolor_daemon::startup::{DaemonState, StartupProgress};
+use hypercolor_daemon::startup::{DaemonState, HostPorts, StartupProgress};
 use hypercolor_types::api::system::{DaemonStartupPhase, HEALTH_STATUS_STARTING, HealthResponse};
 use hypercolor_types::config::RenderAccelerationMode;
 use serde_json::Value;
@@ -282,7 +282,10 @@ impl DaemonExtensionInstaller for GateInstaller {
     }
 }
 
+/// Field order matters: the claim clears its overrides before the directory
+/// it pointed at is removed.
 struct IsolatedDirs {
+    user_dirs: Arc<IsolatedUserDirs>,
     _root: tempfile::TempDir,
     config_file: PathBuf,
 }
@@ -290,9 +293,7 @@ struct IsolatedDirs {
 impl IsolatedDirs {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("temporary root builds");
-        ConfigManager::set_config_dir_override(Some(root.path().join("config")));
-        ConfigManager::set_data_dir_override(Some(root.path().join("data")));
-        ConfigManager::set_state_dir_override(Some(root.path().join("state")));
+        let user_dirs = IsolatedUserDirs::claim(root.path());
         let config_file = root.path().join("hypercolor.toml");
         std::fs::write(
             &config_file,
@@ -303,17 +304,14 @@ impl IsolatedDirs {
         )
         .expect("config writes");
         Self {
+            user_dirs,
             _root: root,
             config_file,
         }
     }
-}
 
-impl Drop for IsolatedDirs {
-    fn drop(&mut self) {
-        ConfigManager::set_config_dir_override(None);
-        ConfigManager::set_data_dir_override(None);
-        ConfigManager::set_state_dir_override(None);
+    fn host(&self) -> HostPorts {
+        HostPorts::isolated(&self.user_dirs)
     }
 }
 
@@ -347,7 +345,12 @@ async fn running_daemon_answers_starting_until_its_router_is_installed() {
 
     // Drive the daemon on this task, as the process host's `block_on`
     // does, while the probe side runs beside it.
-    let daemon = Box::pin(run_with_extensions(options, shutdown_rx, installers));
+    let daemon = Box::pin(run_with_extensions(
+        options,
+        dirs.host(),
+        shutdown_rx,
+        installers,
+    ));
     let probe = async {
         tokio::time::timeout(STARTUP_WAIT, gate.entered.notified())
             .await

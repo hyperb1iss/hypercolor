@@ -10,9 +10,10 @@
 //! up (one USB family among several) are disconnected the same way.
 
 use std::collections::{BTreeSet, HashSet};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_driver_api::{DriverConfigView, DriverHost, OutputBinding};
+use hypercolor_driver_api::{DriverConfigView, DriverContextProvider, OutputBinding};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
@@ -20,6 +21,12 @@ use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, info, warn};
 
 use crate::discovery::{DiscoveryRuntime, execute_lifecycle_actions, sync_registry_state};
+
+/// Longest one retired backend may hold up reconciliation, which every other
+/// driver's config change waits behind. Sessions are revoked immediately and
+/// connects are bounded, so only a wedged transport close gets anywhere near
+/// this.
+const RETIRE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What one reconciliation pass changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -63,7 +70,7 @@ pub fn config_key_touches_drivers(key: &str) -> bool {
 pub async fn reconcile_driver_output_backends(
     runtime: &DiscoveryRuntime,
     registry: &DriverModuleRegistry,
-    host: &dyn DriverHost,
+    host: &dyn DriverContextProvider,
     config: &HypercolorConfig,
     previous: Option<&HypercolorConfig>,
 ) -> Result<DriverBackendReconcileReport> {
@@ -178,14 +185,37 @@ pub async fn reconcile_driver_output_backends(
         }
     }
 
+    // Retire outside the manager lock, because closing sessions does device
+    // I/O, and before registering replacements, because a serial port or
+    // Art-Net source port opens exclusively. Lifecycle only tracks the
+    // devices disconnected above: retirement also ends sessions it never saw,
+    // such as a temporary identify, and fails any connect still in flight.
+    let retired: Vec<_> = {
+        let mut manager = runtime.backend_manager.lock().await;
+        retiring_backends
+            .iter()
+            .filter_map(|backend_id| {
+                manager
+                    .unregister_backend(backend_id)
+                    .map(|backend| (backend_id.clone(), backend))
+            })
+            .collect()
+    };
+    for (backend_id, backend) in retired {
+        match tokio::time::timeout(RETIRE_TIMEOUT, backend.retire()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!(backend_id = %backend_id, error = %error,
+                "retiring an output backend reported a failed cleanup"),
+            // Its sessions are already revoked; only the wait is abandoned.
+            Err(_) => warn!(backend_id = %backend_id,
+                "an output backend is still closing a session; its replacement may find a port busy"),
+        }
+        info!(backend_id = %backend_id, "unregistered output backend for disabled driver");
+        report.unregistered.push(backend_id);
+    }
+
     {
         let mut manager = runtime.backend_manager.lock().await;
-        for backend_id in &retiring_backends {
-            if manager.unregister_backend(backend_id).is_some() {
-                info!(backend_id = %backend_id, "unregistered output backend for disabled driver");
-                report.unregistered.push(backend_id.clone());
-            }
-        }
         for (backend_id, provider_driver_id, backend) in prepared {
             manager.register_backend(backend);
             info!(backend_id = %backend_id, driver_id = %provider_driver_id,

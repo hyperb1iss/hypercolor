@@ -7,12 +7,12 @@ use hypercolor_core::input::screen::implementer::{
     ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenExtentRequest,
-    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
+    CaptureBackendId, InputPublicationDemandRevision, RegisteredScreenBranchDemand,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenExtentRequest, ScreenInputGraphGeneration,
+    ScreenPlanBuilder, ScreenProcessingProfile, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenUpscalePolicy,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -49,7 +49,7 @@ fn source() -> ResolvedScreenSource {
             CapturePixelFormat::Rgba8,
             CaptureColorimetry::SRGB,
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 7,
                 11,

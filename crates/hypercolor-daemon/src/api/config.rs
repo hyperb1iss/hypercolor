@@ -28,6 +28,7 @@ use redaction::{redact_document, redact_key};
 
 pub use hypercolor_types::api::config::{
     ConfigApplyQuery, ConfigDocument, ConfigKeyResponse, ConfigMutationResponse,
+    ConfigSchemaListResponse,
 };
 
 /// Build an internal config failure.
@@ -61,7 +62,9 @@ pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/config/schema` — the key registry clients read to learn
 /// how each key applies, renders, and validates.
 pub async fn get_config_schema() -> Response {
-    envelope::ok(config_registry::schema_entries())
+    envelope::ok(ConfigSchemaListResponse::complete(
+        config_registry::schema_entries(),
+    ))
 }
 
 /// `GET /api/v1/config/keys/{key}` — read one dotted config key.

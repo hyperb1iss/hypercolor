@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::app_state::AppState;
@@ -168,6 +168,9 @@ async fn fixture(kind: SceneKind) -> Fixture {
     }
 }
 
+/// Patch the `speed` control, then let the runtime-session write the patch
+/// leaves behind its answer land, so the counters below see its whole
+/// write set.
 async fn patch_speed(fixture: &Fixture, speed: f64) {
     patch_layer_controls(
         &fixture.state.domains.scene_tree,
@@ -182,6 +185,10 @@ async fn patch_speed(fixture: &Fixture, speed: f64) {
     )
     .await
     .expect("control patch commits");
+    AtomicFileWriter::new(&fixture.state.runtime_state_path)
+        .expect("runtime state writer")
+        .flush(Duration::from_secs(5))
+        .expect("the runtime session write lands");
 }
 
 #[tokio::test]

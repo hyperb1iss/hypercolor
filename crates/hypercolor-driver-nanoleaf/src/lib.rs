@@ -5,10 +5,17 @@
 //! Panel topology is fetched on connect and cached; the `refresh_topology` action
 //! triggers a reconnect to reload the layout on demand.
 
+mod api;
 pub mod backend;
+#[cfg(test)]
+mod bounds_tests;
+mod geometry;
 mod scanner;
 mod streaming;
+#[cfg(test)]
+mod token_log_tests;
 mod topology;
+mod touch;
 mod types;
 
 use std::collections::{BTreeMap, HashMap};
@@ -21,14 +28,16 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverContext, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
     DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
+use hypercolor_driver_support::http::{BoundedHttpClient, ReadBudget, StatusCode};
 use hypercolor_driver_support::network::{
-    metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
+    metadata_value, network_port_from_metadata, push_lookup_key, tracked_fingerprints_by_ip,
+    validate_ip,
 };
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
@@ -46,10 +55,9 @@ use hypercolor_types::pairing::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
     PairDeviceStatus, PairingDescriptor, PairingFlowKind,
 };
-use reqwest::StatusCode;
 use serde::Deserialize;
 
-use self::types::NanoleafPanelLayoutResponse;
+use self::api::AuthenticatedApi;
 
 pub use backend::{NanoleafBackend, NanoleafConfig};
 pub use scanner::{NanoleafKnownDevice, NanoleafScanner};
@@ -58,7 +66,12 @@ pub use streaming::{
     encode_frame_into,
 };
 pub use topology::NanoleafShapeType;
-pub use types::{NanoleafDeviceInfo, NanoleafDiscoveredDevice, NanoleafPanelLayout};
+#[doc(hidden)]
+pub use touch::NanoleafTouchDecoder;
+pub use types::{
+    NanoleafDeviceInfo, NanoleafDiscoveredDevice, NanoleafOrientation, NanoleafPanelLayout,
+    NanoleafPanelLayoutDocument, NanoleafPanelLayoutResponse,
+};
 #[doc(hidden)]
 pub use types::{build_device_info, panel_ids_from_layout};
 
@@ -88,14 +101,25 @@ const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
 const DEVICE_FIELD_STATE: &str = "state";
 const DEVICE_ACTION_REFRESH_TOPOLOGY: &str = "refresh_topology";
 
-static NANOLEAF_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())
-});
+const NANOLEAF_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn nanoleaf_http_client() -> Result<&'static reqwest::Client> {
+/// Largest `GET /api/v1/{token}` reply read. It embeds the panel layout
+/// and every effect name saved on the controller, so it has to cover a
+/// full 500-panel install plus a long effect list.
+const NANOLEAF_DEVICE_INFO_REPLY_BYTES: usize = 1024 * 1024;
+
+/// Largest panel layout read. A controller drives at most 500 panels and a
+/// `positionData` entry is about 60 bytes, so a full install is near 30 KiB.
+const NANOLEAF_LAYOUT_REPLY_BYTES: usize = 256 * 1024;
+
+/// Largest reply read from the endpoints that answer with one small
+/// object: pairing and the external-control request.
+const NANOLEAF_SMALL_REPLY_BYTES: usize = 64 * 1024;
+
+static NANOLEAF_HTTP_CLIENT: LazyLock<Result<BoundedHttpClient, String>> =
+    LazyLock::new(|| BoundedHttpClient::new().map_err(|error| error.to_string()));
+
+fn nanoleaf_http_client() -> Result<&'static BoundedHttpClient> {
     NANOLEAF_HTTP_CLIENT
         .as_ref()
         .map_err(|error| anyhow!("failed to build shared Nanoleaf HTTP client: {error}"))
@@ -128,7 +152,10 @@ pub async fn pair_device_with_status(
     let client = nanoleaf_http_client()?;
     let response = client
         .post(&url)
-        .send()
+        .send(ReadBudget::new(
+            NANOLEAF_SMALL_REPLY_BYTES,
+            NANOLEAF_HTTP_TIMEOUT,
+        ))
         .await
         .with_context(|| format!("Nanoleaf pairing request to {url} failed"))?;
     if matches!(
@@ -180,39 +207,27 @@ async fn fetch_device_info(
     api_port: u16,
     auth_token: &str,
 ) -> Result<NanoleafDeviceInfo> {
-    let url = format!("http://{ip}:{api_port}/api/v1/{auth_token}");
-    let client = nanoleaf_http_client()?;
-    let response = client
-        .get(&url)
-        .send()
+    AuthenticatedApi::new(ip, api_port, auth_token)
+        .get_json(
+            "",
+            ReadBudget::new(NANOLEAF_DEVICE_INFO_REPLY_BYTES, NANOLEAF_HTTP_TIMEOUT),
+            "device-info",
+        )
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("Nanoleaf device-info request to {url} failed"))?;
-
-    response
-        .json()
-        .await
-        .with_context(|| format!("failed to decode Nanoleaf device-info response from {url}"))
 }
 
 async fn fetch_panel_layout(
     ip: IpAddr,
     api_port: u16,
     auth_token: &str,
-) -> Result<NanoleafPanelLayoutResponse> {
-    let url = format!("http://{ip}:{api_port}/api/v1/{auth_token}/panelLayout/layout");
-    let client = nanoleaf_http_client()?;
-    let response = client
-        .get(&url)
-        .send()
+) -> Result<NanoleafPanelLayoutDocument> {
+    AuthenticatedApi::new(ip, api_port, auth_token)
+        .get_json(
+            "/panelLayout",
+            ReadBudget::new(NANOLEAF_LAYOUT_REPLY_BYTES, NANOLEAF_HTTP_TIMEOUT),
+            "panel-layout",
+        )
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("Nanoleaf panel-layout request to {url} failed"))?;
-    let decoded: NanoleafPanelLayoutResponse = response
-        .json()
-        .await
-        .with_context(|| format!("failed to decode Nanoleaf panel-layout response from {url}"))?;
-    Ok(decoded)
 }
 
 #[derive(Clone)]
@@ -263,14 +278,15 @@ impl DriverModule for NanoleafDriverModule {
 impl DeviceBackendFactory for NanoleafDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<NanoleafConfig>()?;
-        Ok(Arc::new(NanoleafBackend::new(
-            config,
-            Arc::clone(&self.credential_store),
-        )))
+        let mut backend = NanoleafBackend::new(config, Arc::clone(&self.credential_store));
+        if let Some(sink) = context.device_input {
+            backend = backend.with_device_input(sink);
+        }
+        Ok(Arc::new(backend))
     }
 }
 
@@ -294,7 +310,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<NanoleafConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_devices = resolve_nanoleaf_probe_devices_from_sources(&config, &tracked_devices);
@@ -303,7 +319,8 @@ impl DiscoveryCapability for NanoleafDriverModule {
             Arc::clone(&self.credential_store),
             request.timeout,
             request.mdns_enabled,
-        );
+        )
+        .with_tracked(tracked_fingerprints_by_ip(&tracked_devices));
         scanner.scan().await.map_err(DriverError::discovery)
     }
 }

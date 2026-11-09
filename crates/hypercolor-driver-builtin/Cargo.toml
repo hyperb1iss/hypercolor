@@ -12,23 +12,36 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["network", "hal"]
+default = ["network", "hal", "serial"]
 hal = ["dep:hypercolor-hal"]
-network = ["wled", "govee", "hue", "nanoleaf", "openrgb"]
+network = ["govee", "hue", "lifx", "nanoleaf", "openrgb", "pixel", "twinkly", "wiz", "wled", "yeelight"]
+serial = ["adalight"]
+adalight = ["dep:hypercolor-driver-adalight"]
 govee = ["dep:hypercolor-driver-govee"]
 hue = ["dep:hypercolor-driver-hue"]
+lifx = ["dep:hypercolor-driver-lifx"]
 nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
 openrgb = ["dep:hypercolor-driver-openrgb"]
+pixel = ["dep:hypercolor-driver-pixel"]
+twinkly = ["dep:hypercolor-driver-twinkly"]
+wiz = ["dep:hypercolor-driver-wiz"]
+yeelight = ["dep:hypercolor-driver-yeelight"]
 wled = ["dep:hypercolor-driver-wled"]
 
 [dependencies]
-hypercolor-core = { path = "../hypercolor-core", version = "0.8.1", default-features = false }
+hypercolor-core = { path = "../hypercolor-core", version = "0.9.0", default-features = false }
+hypercolor-driver-adalight = { workspace = true, optional = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-support = { workspace = true }
 hypercolor-driver-govee = { workspace = true, optional = true }
 hypercolor-driver-hue = { workspace = true, optional = true }
+hypercolor-driver-lifx = { workspace = true, optional = true }
 hypercolor-driver-nanoleaf = { workspace = true, optional = true }
 hypercolor-driver-openrgb = { workspace = true, optional = true }
+hypercolor-driver-pixel = { workspace = true, optional = true }
+hypercolor-driver-twinkly = { workspace = true, optional = true }
+hypercolor-driver-wiz = { workspace = true, optional = true }
+hypercolor-driver-yeelight = { workspace = true, optional = true }
 hypercolor-driver-wled = { workspace = true, optional = true }
 hypercolor-hal = { workspace = true, optional = true }
 hypercolor-network = { workspace = true }
@@ -38,3 +51,4 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }

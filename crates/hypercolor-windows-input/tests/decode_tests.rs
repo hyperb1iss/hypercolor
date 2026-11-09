@@ -5,7 +5,7 @@
 //! Linux CI rather than only by whoever last built on a Windows machine.
 
 use hypercolor_types::host_input::HostPointerButton;
-use hypercolor_windows_input::RawKeyPrefix;
+use hypercolor_types::host_input::HostScanCodePrefix;
 use hypercolor_windows_input::decode::{
     AbsoluteSpace, CanonicalKeyReport, KEYBOARD_OVERRUN_MAKE_CODE, KeyCanonicalizer, KeyReport,
     MotionKind, RecordStep, SCROLL_Q16_16_SCALE, ScreenRect, WHEEL_DELTA, button_edges,
@@ -37,7 +37,7 @@ fn plain_make_code_is_a_positional_press() {
     assert_eq!(
         classify_key(0x1E, 0),
         KeyReport::Edge {
-            prefix: RawKeyPrefix::None,
+            prefix: HostScanCodePrefix::None,
             pressed: true,
         }
     );
@@ -48,7 +48,7 @@ fn break_flag_marks_a_release() {
     assert_eq!(
         classify_key(0x1E, RI_KEY_BREAK),
         KeyReport::Edge {
-            prefix: RawKeyPrefix::None,
+            prefix: HostScanCodePrefix::None,
             pressed: false,
         }
     );
@@ -59,7 +59,7 @@ fn e0_prefix_survives_to_the_name_table() {
     assert_eq!(
         classify_key(0x48, RI_KEY_E0),
         KeyReport::Edge {
-            prefix: RawKeyPrefix::E0,
+            prefix: HostScanCodePrefix::E0,
             pressed: true,
         }
     );
@@ -75,7 +75,7 @@ fn e1_is_not_collapsed_into_e0() {
     assert_eq!(
         e1,
         KeyReport::Edge {
-            prefix: RawKeyPrefix::E1,
+            prefix: HostScanCodePrefix::E1,
             pressed: true,
         }
     );
@@ -86,7 +86,7 @@ fn e1_wins_when_both_prefix_bits_are_set() {
     assert_eq!(
         classify_key(0x1D, RI_KEY_E0 | RI_KEY_E1),
         KeyReport::Edge {
-            prefix: RawKeyPrefix::E1,
+            prefix: HostScanCodePrefix::E1,
             pressed: true,
         }
     );
@@ -133,7 +133,7 @@ fn pause_sequence_emits_one_canonical_edge_per_action() {
         canonicalizer.canonicalize(0x1D, RI_KEY_E1, VK_PAUSE),
         CanonicalKeyReport::Edge {
             make_code: 0x1D,
-            prefix: RawKeyPrefix::E1,
+            prefix: HostScanCodePrefix::E1,
             vkey: VK_PAUSE,
             pressed: true,
         }
@@ -143,7 +143,7 @@ fn pause_sequence_emits_one_canonical_edge_per_action() {
         canonicalizer.canonicalize(0x1D, RI_KEY_E1 | RI_KEY_BREAK, VK_PAUSE),
         CanonicalKeyReport::Edge {
             make_code: 0x1D,
-            prefix: RawKeyPrefix::E1,
+            prefix: HostScanCodePrefix::E1,
             vkey: VK_PAUSE,
             pressed: false,
         }
@@ -191,7 +191,7 @@ fn print_screen_suppresses_only_its_fake_shift_records() {
         reports[1],
         CanonicalKeyReport::Edge {
             make_code: 0x37,
-            prefix: RawKeyPrefix::E0,
+            prefix: HostScanCodePrefix::E0,
             vkey: 0x2C,
             pressed: true,
         }
@@ -200,7 +200,7 @@ fn print_screen_suppresses_only_its_fake_shift_records() {
         reports[2],
         CanonicalKeyReport::Edge {
             make_code: 0x37,
-            prefix: RawKeyPrefix::E0,
+            prefix: HostScanCodePrefix::E0,
             vkey: 0x2C,
             pressed: false,
         }
@@ -223,7 +223,7 @@ fn shifted_numpad_navigation_drops_fake_shift_without_dropping_arrow() {
         reports[1],
         CanonicalKeyReport::Edge {
             make_code: 0x48,
-            prefix: RawKeyPrefix::E0,
+            prefix: HostScanCodePrefix::E0,
             pressed: true,
             ..
         }
@@ -232,7 +232,7 @@ fn shifted_numpad_navigation_drops_fake_shift_without_dropping_arrow() {
         reports[2],
         CanonicalKeyReport::Edge {
             make_code: 0x48,
-            prefix: RawKeyPrefix::E0,
+            prefix: HostScanCodePrefix::E0,
             pressed: false,
             ..
         }
@@ -247,7 +247,7 @@ fn genuine_unprefixed_shift_edges_survive_and_fake_extended_shifts_do_not() {
         canonicalizer.canonicalize(0x2A, 0, 0xA0),
         CanonicalKeyReport::Edge {
             make_code: 0x2A,
-            prefix: RawKeyPrefix::None,
+            prefix: HostScanCodePrefix::None,
             pressed: true,
             ..
         }
@@ -256,7 +256,7 @@ fn genuine_unprefixed_shift_edges_survive_and_fake_extended_shifts_do_not() {
         canonicalizer.canonicalize(0x36, 0, 0xA1),
         CanonicalKeyReport::Edge {
             make_code: 0x36,
-            prefix: RawKeyPrefix::None,
+            prefix: HostScanCodePrefix::None,
             pressed: true,
             ..
         }
@@ -280,7 +280,7 @@ fn e1_prefix_is_self_contained_and_does_not_leak_to_the_next_record() {
         canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x13),
         CanonicalKeyReport::Edge {
             make_code: 0x1D,
-            prefix: RawKeyPrefix::E1,
+            prefix: HostScanCodePrefix::E1,
             vkey: 0x13,
             pressed: true,
         }
@@ -289,7 +289,7 @@ fn e1_prefix_is_self_contained_and_does_not_leak_to_the_next_record() {
         canonicalizer.canonicalize(0x1E, 0, 0x41),
         CanonicalKeyReport::Edge {
             make_code: 0x1E,
-            prefix: RawKeyPrefix::None,
+            prefix: HostScanCodePrefix::None,
             ..
         }
     ));
@@ -309,7 +309,7 @@ fn overrun_does_not_change_the_next_records_prefix() {
     assert!(matches!(
         canonicalizer.canonicalize(0x1E, 0, 0x41),
         CanonicalKeyReport::Edge {
-            prefix: RawKeyPrefix::None,
+            prefix: HostScanCodePrefix::None,
             ..
         }
     ));
@@ -582,19 +582,28 @@ fn unknown_key_names_are_stable_and_prefix_qualified() {
     // Remapping keyboards, quirky firmware, and RDP all emit codes outside
     // canonical set 1. A silently dropped key is worse to debug than an
     // honestly named unknown one.
-    assert_eq!(unknown_key_name(0x7F, RawKeyPrefix::None), "Unknown007F");
-    assert_eq!(unknown_key_name(0x7F, RawKeyPrefix::E0), "UnknownE0007F");
-    assert_eq!(unknown_key_name(0x7F, RawKeyPrefix::E1), "UnknownE1007F");
+    assert_eq!(
+        unknown_key_name(0x7F, HostScanCodePrefix::None),
+        "Unknown007F"
+    );
+    assert_eq!(
+        unknown_key_name(0x7F, HostScanCodePrefix::E0),
+        "UnknownE0007F"
+    );
+    assert_eq!(
+        unknown_key_name(0x7F, HostScanCodePrefix::E1),
+        "UnknownE1007F"
+    );
 }
 
 #[test]
 fn an_unknown_e1_sequence_cannot_collide_with_an_unprefixed_code() {
     assert_ne!(
-        unknown_key_name(0x1D, RawKeyPrefix::E1),
-        unknown_key_name(0x1D, RawKeyPrefix::None)
+        unknown_key_name(0x1D, HostScanCodePrefix::E1),
+        unknown_key_name(0x1D, HostScanCodePrefix::None)
     );
     assert_ne!(
-        unknown_key_name(0x1D, RawKeyPrefix::E1),
-        unknown_key_name(0x1D, RawKeyPrefix::E0)
+        unknown_key_name(0x1D, HostScanCodePrefix::E1),
+        unknown_key_name(0x1D, HostScanCodePrefix::E0)
     );
 }

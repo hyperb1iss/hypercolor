@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::daemon::{self, DaemonExtensionInstaller, DaemonRunOptions};
+use crate::startup::HostPorts;
 use anyhow::{Context, Result, anyhow};
 use hypercolor_windows_session::{ScmSessionEventAdapter, scm_session_monitor};
 use windows_service::define_windows_service;
@@ -22,7 +23,7 @@ const SERVICE_START_WAIT_HINT: Duration = Duration::from_secs(30);
 const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(20);
 
 struct ServiceConfiguration {
-    options: Mutex<Option<DaemonRunOptions>>,
+    daemon: Mutex<Option<(DaemonRunOptions, HostPorts)>>,
     extension_installers: &'static [&'static dyn DaemonExtensionInstaller],
     session_adapter: ScmSessionEventAdapter,
 }
@@ -37,14 +38,14 @@ define_windows_service!(ffi_service_main, service_main);
 ///
 /// Returns an error when the service dispatcher cannot attach to SCM.
 pub fn run(
-    mut options: DaemonRunOptions,
+    options: DaemonRunOptions,
     extension_installers: &'static [&'static dyn DaemonExtensionInstaller],
 ) -> Result<()> {
     let (session_adapter, monitor) = scm_session_monitor();
-    options.session_monitors = Some(vec![Box::new(monitor)]);
+    let host = HostPorts::native().with_session_monitors(vec![Box::new(monitor)]);
     SERVICE_CONFIGURATION
         .set(ServiceConfiguration {
-            options: Mutex::new(Some(options)),
+            daemon: Mutex::new(Some((options, host))),
             extension_installers,
             session_adapter,
         })
@@ -64,8 +65,8 @@ fn run_service() -> Result<()> {
     let configuration = SERVICE_CONFIGURATION
         .get()
         .context("Windows service configuration was not initialized")?;
-    let options = configuration
-        .options
+    let (options, host) = configuration
+        .daemon
         .lock()
         .map_err(|_| anyhow!("Windows service options lock was poisoned"))?
         .take()
@@ -101,6 +102,7 @@ fn run_service() -> Result<()> {
 
     let run_result = runtime.block_on(daemon::run_with_extensions(
         options,
+        host,
         shutdown_rx,
         configuration.extension_installers,
     ));

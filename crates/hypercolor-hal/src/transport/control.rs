@@ -11,8 +11,52 @@ use tracing::{debug, trace};
 use crate::transport::{Transport, TransportError};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
-const DEFAULT_MAX_PACKET_LEN: usize = 90;
 const HID_REPORT_TYPE_FEATURE: u16 = 0x03;
+const HID_REQUEST_GET_REPORT: u8 = 0x01;
+const HID_REQUEST_SET_REPORT: u8 = 0x09;
+
+/// Data-stage length this transport requests on every feature report read.
+#[doc(hidden)]
+pub const FEATURE_REPORT_READ_LEN: usize = 90;
+
+/// Setup fields of one HID class feature-report request, as this transport
+/// hands them to the host controller.
+///
+/// `bmRequestType` is always class, interface recipient, so only the
+/// fields that vary are carried.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureReportSetup {
+    /// `bRequest`: `0x09` for `SET_REPORT`, `0x01` for `GET_REPORT`.
+    pub request: u8,
+    /// `wValue`: the feature report type in the high byte, the report ID in
+    /// the low byte.
+    pub value: u16,
+    /// `wIndex`: the interface number.
+    pub index: u16,
+}
+
+impl FeatureReportSetup {
+    /// The `SET_REPORT` request that carries an outgoing feature report.
+    #[must_use]
+    pub fn set_report(report_id: u8, interface_number: u8) -> Self {
+        Self::new(HID_REQUEST_SET_REPORT, report_id, interface_number)
+    }
+
+    /// The `GET_REPORT` request that reads a feature report back.
+    #[must_use]
+    pub fn get_report(report_id: u8, interface_number: u8) -> Self {
+        Self::new(HID_REQUEST_GET_REPORT, report_id, interface_number)
+    }
+
+    fn new(request: u8, report_id: u8, interface_number: u8) -> Self {
+        Self {
+            request,
+            value: (HID_REPORT_TYPE_FEATURE << 8) | u16::from(report_id),
+            index: u16::from(interface_number),
+        }
+    }
+}
 
 /// USB control transfer transport for HID feature reports.
 pub struct UsbControlTransport {
@@ -59,14 +103,10 @@ impl UsbControlTransport {
             interface,
             interface_number,
             report_id,
-            max_packet_len: DEFAULT_MAX_PACKET_LEN,
+            max_packet_len: FEATURE_REPORT_READ_LEN,
             closed: AtomicBool::new(false),
             op_lock: tokio::sync::Mutex::new(()),
         })
-    }
-
-    fn w_value(&self) -> u16 {
-        (HID_REPORT_TYPE_FEATURE << 8) | u16::from(self.report_id)
     }
 
     fn check_open(&self) -> Result<(), TransportError> {
@@ -95,20 +135,7 @@ impl Transport for UsbControlTransport {
             "usb control feature report send"
         );
 
-        self.interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x09,
-                    value: self.w_value(),
-                    index: u16::from(self.interface_number),
-                    data,
-                },
-                DEFAULT_IO_TIMEOUT,
-            )
-            .await
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+        self.send_locked(data).await
     }
 
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
@@ -134,20 +161,7 @@ impl Transport for UsbControlTransport {
             "usb control feature report send_receive"
         );
 
-        self.interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x09,
-                    value: self.w_value(),
-                    index: u16::from(self.interface_number),
-                    data,
-                },
-                DEFAULT_IO_TIMEOUT,
-            )
-            .await
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))?;
+        self.send_locked(data).await?;
 
         self.receive_locked(timeout).await
     }
@@ -159,7 +173,26 @@ impl Transport for UsbControlTransport {
 }
 
 impl UsbControlTransport {
+    async fn send_locked(&self, data: &[u8]) -> Result<(), TransportError> {
+        let setup = FeatureReportSetup::set_report(self.report_id, self.interface_number);
+        self.interface
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Class,
+                    recipient: Recipient::Interface,
+                    request: setup.request,
+                    value: setup.value,
+                    index: setup.index,
+                    data,
+                },
+                DEFAULT_IO_TIMEOUT,
+            )
+            .await
+            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+    }
+
     async fn receive_locked(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
+        let setup = FeatureReportSetup::get_report(self.report_id, self.interface_number);
         let length = u16::try_from(self.max_packet_len).map_err(|_| TransportError::IoError {
             detail: "configured packet length exceeds u16".to_owned(),
         })?;
@@ -177,9 +210,9 @@ impl UsbControlTransport {
                 ControlIn {
                     control_type: ControlType::Class,
                     recipient: Recipient::Interface,
-                    request: 0x01,
-                    value: self.w_value(),
-                    index: u16::from(self.interface_number),
+                    request: setup.request,
+                    value: setup.value,
+                    index: setup.index,
                     length,
                 },
                 timeout,

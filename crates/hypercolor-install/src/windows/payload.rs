@@ -16,10 +16,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind};
 use sha2::{Digest as _, Sha256};
 
+use super::error::ReleasePayloadError;
+use super::machine_layout::{
+    WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM, WINDOWS_DAEMON_PROGRAM,
+};
 use super::manifest::{
     MANIFEST_NAME, MAX_RELEASE_MANIFEST_BYTES, Member, PermissionClass, ValidatedManifest,
+    fold_case, split_parent,
 };
-use super::store::{InstallLock, InstallStore, InstallStoreError};
+use super::model::{WindowsFileIdentity, WindowsUnitBinding};
+use super::store::{InstallLock, InstallStore};
 use crate::model::{UnitId, UnitRecord};
 
 const STAGE_PREFIX: &str = ".hypercolor-stage-";
@@ -116,6 +122,63 @@ pub fn retain_installed_release_unit(
     let manifest = read_manifest(&directory, expected_unit)?;
     validate_installed(store, &directory, &manifest)?;
     unit_record(store, expected_unit, directory)
+}
+
+/// What a retained unit's manifest and files state about the programs a
+/// transaction proves: the manifest's digests, and the file IDs those
+/// members hold on their volume.
+///
+/// # Errors
+///
+/// Returns an error when the manifest does not hash to the unit's digest
+/// or a program is missing.
+pub(super) fn bind_windows_unit(
+    unit: &UnitRecord,
+) -> Result<WindowsUnitBinding, ReleasePayloadError> {
+    let directory = unit.directory();
+    let manifest = read_manifest(directory, unit.id())?;
+    let identity = |member| member_identity(directory, &manifest, member);
+    Ok(WindowsUnitBinding {
+        unit: unit.id().clone(),
+        version: manifest.version.clone(),
+        app: identity(WINDOWS_APP_PROGRAM)?,
+        daemon: identity(WINDOWS_DAEMON_PROGRAM)?,
+        broker: identity(WINDOWS_BROKER_PROGRAM)?,
+        bootstrap: identity(WINDOWS_BOOTSTRAP_PROGRAM)?,
+    })
+}
+
+fn member_identity(
+    root: &WindowsDirectory,
+    manifest: &ValidatedManifest,
+    member: &str,
+) -> Result<WindowsFileIdentity, ReleasePayloadError> {
+    let Some(Member::File { sha256, .. }) = manifest.members.get(member) else {
+        return Err(ReleasePayloadError::InvalidUnit(format!(
+            "the unit has no program {member}"
+        )));
+    };
+    let (parent, name) = split_parent(member);
+    let mut holder = None;
+    for component in parent.split('/').filter(|part| !part.is_empty()) {
+        let opened = holder
+            .as_ref()
+            .unwrap_or(root)
+            .open_child_directory(OsStr::new(component), WindowsDirectoryAccess::Read)
+            .map_err(filesystem("open a unit directory"))?;
+        holder = Some(opened);
+    }
+    let metadata = holder
+        .as_ref()
+        .unwrap_or(root)
+        .entry_metadata(OsStr::new(name))
+        .map_err(filesystem("inspect a unit program"))?
+        .ok_or_else(|| ReleasePayloadError::InvalidUnit(format!("{member} is missing")))?;
+    Ok(WindowsFileIdentity {
+        volume_serial: metadata.volume_serial(),
+        file_id: format!("{:032x}", metadata.file_id()),
+        sha256: sha256.clone(),
+    })
 }
 
 fn read_manifest(
@@ -336,10 +399,10 @@ fn require_exact_entries(
 ) -> Result<(), ReleasePayloadError> {
     let mut expected: Vec<String> = manifest.children[path]
         .iter()
-        .map(|name| name.to_lowercase())
+        .map(|name| fold_case(name))
         .collect();
     if path.is_empty() {
-        expected.push(MANIFEST_NAME.to_owned());
+        expected.push(fold_case(MANIFEST_NAME));
     }
     expected.sort();
     let mut actual = Vec::new();
@@ -362,7 +425,7 @@ fn require_exact_entries(
                 display(path)
             )));
         }
-        actual.push(text.to_lowercase());
+        actual.push(fold_case(text));
     }
     actual.sort();
     if actual == expected {
@@ -469,49 +532,6 @@ fn unit_error(path: &str, error: &io::Error) -> ReleasePayloadError {
 
 fn filesystem(operation: &'static str) -> impl Fn(io::Error) -> ReleasePayloadError {
     move |source| ReleasePayloadError::Filesystem { operation, source }
-}
-
-/// Release unit validation or staging failure on Windows.
-#[derive(Debug, thiserror::Error)]
-pub enum ReleasePayloadError {
-    /// The manifest exceeded its bounded byte limit.
-    #[error("release manifest exceeds {limit} bytes")]
-    ManifestTooLarge { limit: usize },
-    /// Strict JSON decoding failed.
-    #[error("release manifest is not valid strict JSON: {0}")]
-    DecodeManifest(#[from] serde_json::Error),
-    /// Manifest semantics or inventory are invalid.
-    #[error("invalid release manifest: {0}")]
-    InvalidManifest(String),
-    /// The extracted manifest does not match the verifier-accepted digest.
-    #[error("release manifest digest {actual} does not match verified digest {expected}")]
-    UnexpectedManifestDigest { expected: String, actual: String },
-    /// The extracted source tree does not exactly match the manifest.
-    #[error("invalid release source: {0}")]
-    InvalidSource(String),
-    /// An existing, staged or newly published unit is not exact.
-    #[error("invalid immutable release unit: {0}")]
-    InvalidUnit(String),
-    /// A bounded staging namespace was exhausted.
-    #[error("could not allocate a staging directory after {attempts} attempts")]
-    StageCollisions { attempts: usize },
-    /// A handle-relative filesystem operation failed.
-    #[error("failed to {operation}: {source}")]
-    Filesystem {
-        operation: &'static str,
-        #[source]
-        source: io::Error,
-    },
-    /// Install-store authority could not be retained.
-    #[error(transparent)]
-    Store(#[from] InstallStoreError),
-    /// Failure cleanup could not remove the staging tree.
-    #[error("release staging failed ({original}) and cleanup failed: {cleanup}")]
-    Cleanup {
-        original: String,
-        #[source]
-        cleanup: io::Error,
-    },
 }
 
 #[cfg(test)]

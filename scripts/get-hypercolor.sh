@@ -256,10 +256,11 @@ do_install() {
     cp -R "${src}/share/hypercolor/." "${share_dir}/hypercolor/"
   fi
 
-  # Desktop entry (rewrite BIN_DIR for user prefix)
+  # Desktop entry, pointed at this prefix's launcher. Releases name it by
+  # command (older ones by /usr/bin), and this prefix may not be on PATH.
   if [[ -f "${src}/share/applications/hypercolor.desktop" ]]; then
     mkdir -p "${share_dir}/applications"
-    sed "s|Exec=/usr/bin/|Exec=${bin_dir}/|g" \
+    sed "s|^Exec=.*hypercolor-open|Exec=${bin_dir}/hypercolor-open|" \
       "${src}/share/applications/hypercolor.desktop" \
       > "${share_dir}/applications/hypercolor.desktop"
   fi

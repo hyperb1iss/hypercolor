@@ -54,9 +54,11 @@ pub fn AboutSection() -> impl IntoView {
 #[component]
 fn AboutRow(label: &'static str, #[prop(into)] value: Signal<String>) -> impl IntoView {
     view! {
-        <div class="flex items-center justify-between py-2 setting-row">
-            <span class="text-sm text-fg-tertiary">{label}</span>
-            <span class="text-sm text-fg-primary font-mono">{value}</span>
+        <div class="flex items-center justify-between gap-4 py-2 setting-row">
+            <span class="shrink-0 text-sm text-fg-tertiary">{label}</span>
+            // A long config path wraps rather than pushing the page wider
+            // than a phone.
+            <span class="min-w-0 break-all text-right text-sm text-fg-primary font-mono">{value}</span>
         </div>
     }
 }

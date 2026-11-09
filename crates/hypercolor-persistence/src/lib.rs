@@ -199,10 +199,64 @@ pub enum PersistenceFlushOutcome {
 
 /// A dirty snapshot could not converge before its flush deadline.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("persistence retry for {path} did not converge: {last_error}")]
+#[error("persistence retry for {path} did not converge: {last_error} ({progress})")]
 pub struct PersistenceFlushError {
     path: PathBuf,
     last_error: String,
+    progress: Box<FlushProgress>,
+}
+
+/// Where a destination stood when a flush gave up on it, so a timeout says
+/// whether attempts were failing, stuck in flight, or never started.
+#[derive(Debug, Clone)]
+struct FlushProgress {
+    target: u64,
+    landed: u64,
+    pending: Option<u64>,
+    active: Option<(u64, Duration)>,
+    unstarted: Option<u64>,
+    attempts_since_landing: u64,
+    last_finished: Option<Duration>,
+    waited: Duration,
+}
+
+impl std::fmt::Display for FlushProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "gave up after {}ms waiting for generation {}, landed {}",
+            self.waited.as_millis(),
+            self.target,
+            self.landed
+        )?;
+        if let Some(pending) = self.pending {
+            write!(f, ", pending {pending}")?;
+        }
+        if let Some((generation, running)) = self.active {
+            write!(
+                f,
+                ", attempt at {generation} running {}ms",
+                running.as_millis()
+            )?;
+        }
+        if let Some(unstarted) = self.unstarted {
+            write!(f, ", admitted commit {unstarted} not started")?;
+        }
+        let plural = if self.attempts_since_landing == 1 {
+            ""
+        } else {
+            "s"
+        };
+        write!(
+            f,
+            ", {} attempt{plural} since the last landing",
+            self.attempts_since_landing
+        )?;
+        if let Some(ago) = self.last_finished {
+            write!(f, ", the last {}ms ago", ago.as_millis())?;
+        }
+        Ok(())
+    }
 }
 
 /// Aggregate result of flushing every live persistence destination.
@@ -278,6 +332,12 @@ impl PersistenceFlushReport {
 /// for any rename-based write, and no file API prevents that without an
 /// exclusion protocol the stores do not have. Once that writer has
 /// finished, the next write verifies the file again and repairs it.
+///
+/// A [`WriteBehind`] admission promises its caller nothing about the file
+/// when it returns. The destination durably holds that payload, or a newer
+/// one, once the detached attempt lands; [`Self::flush`] and [`flush_all`]
+/// wait for it. Until then a crash leaves the bytes of the last attempt
+/// that landed, which bounds the loss to the window [`WriteBehind`] states.
 #[derive(Debug, Clone)]
 pub struct AtomicFileWriter {
     destination: Arc<Destination>,
@@ -297,6 +357,50 @@ pub struct AdmittedAtomicWrite {
     generation: u64,
     payload: Arc<[u8]>,
     armed: bool,
+}
+
+/// A complete payload admitted to be written behind the caller that
+/// admitted it.
+///
+/// A store whose caller should not wait for the file admits through
+/// [`AtomicWriteReservation::admit_write_behind`] on the caller's own task,
+/// then runs [`Self::commit`] on a blocking worker nobody waits for.
+///
+/// Generations coalesce these writes. An attempt that has not started
+/// writing when a newer admission arrives stands down without touching the
+/// file, so a burst of admissions writes the attempt already in flight and
+/// then the newest payload, never one write per admission. An attempt that
+/// has started lands even when a newer admission arrives before its
+/// replacement: only one attempt per destination runs at a time, so its
+/// bytes can only be older than what lands after them, and the file keeps
+/// moving forward under a steady stream of admissions instead of waiting
+/// for the stream to pause.
+///
+/// A crash therefore loses at most the admissions made after the attempt in
+/// flight started: the window of that one write plus the newest payload
+/// queued behind it. A shutdown flush ([`flush_all`] or
+/// [`AtomicFileWriter::flush`]) waits for both.
+///
+/// A started attempt renames its file without holding the destination's
+/// state lock, so a new admission never waits on a rename in flight. That
+/// matters on Windows, where the rename is a write-through move.
+///
+/// Dropped without [`Self::commit`], as when its worker never runs, the
+/// payload stays with the retry supervisor like any admitted write.
+#[derive(Debug)]
+pub struct WriteBehind {
+    write: AdmittedAtomicWrite,
+}
+
+/// How late a newer admission can stand an attempt down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StandDown {
+    /// Up to the replacement: only the newest admitted bytes are worth
+    /// landing, so a foreground caller learns its write was superseded.
+    UntilReplacement,
+    /// Only until the attempt starts writing: its bytes land, because only
+    /// newer bytes can follow them. Write-behind attempts use this.
+    UntilStarted,
 }
 
 /// Shutdown authority for one transaction's blocking persistence waits.
@@ -379,11 +483,93 @@ struct Destination {
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     verified_skips: AtomicUsize,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
+    flush_waits: AtomicUsize,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
     verification_reads: AtomicUsize,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     file_syncs: AtomicUsize,
     #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
     synced_staged_mode: AtomicU32,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    write_hold: Arc<WriteHoldGate>,
+}
+
+/// Attempts at one destination held before they touch the file, as a
+/// stalled disk would hold them, until the hold is released or dropped.
+#[cfg(any(test, feature = "persistence-test-hooks"))]
+#[derive(Debug)]
+pub struct WriteHold {
+    gate: Arc<WriteHoldGate>,
+}
+
+#[cfg(any(test, feature = "persistence-test-hooks"))]
+#[derive(Debug, Default)]
+struct WriteHoldGate {
+    state: Mutex<WriteHoldState>,
+    changed: Condvar,
+}
+
+#[cfg(any(test, feature = "persistence-test-hooks"))]
+#[derive(Debug, Default)]
+struct WriteHoldState {
+    held: bool,
+    entered: usize,
+}
+
+#[cfg(any(test, feature = "persistence-test-hooks"))]
+impl WriteHoldGate {
+    fn pause(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.held {
+            return;
+        }
+        state.entered += 1;
+        self.changed.notify_all();
+        while state.held {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+#[cfg(any(test, feature = "persistence-test-hooks"))]
+impl WriteHold {
+    /// Wait until `count` attempts in total have reached this hold, or
+    /// until `timeout` passes. Returns whether they did.
+    #[must_use]
+    pub fn wait_for_held(&self, count: usize, timeout: Duration) -> bool {
+        let state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (state, _) = self
+            .gate
+            .changed
+            .wait_timeout_while(state, timeout, |state| state.entered < count)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.entered >= count
+    }
+
+    /// Let every held attempt continue, and stop holding new ones.
+    pub fn release(self) {}
+}
+
+#[cfg(any(test, feature = "persistence-test-hooks"))]
+impl Drop for WriteHold {
+    fn drop(&mut self) {
+        self.gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .held = false;
+        self.gate.changed.notify_all();
+    }
 }
 
 #[cfg(windows)]
@@ -414,6 +600,18 @@ struct DestinationState {
     /// barrier completes, because the file's durable content is unknown in
     /// that window.
     durable: Option<DurableBytes>,
+    /// The newest generation whose bytes landed durably. An attempt starts
+    /// only as the newest admission and only one runs at a time, so
+    /// generations land in order and this covers every admission at or
+    /// below it.
+    landed_generation: u64,
+    /// When the attempt in `active_generation` started.
+    active_since: Option<Instant>,
+    /// Attempts finished without landing since an attempt last landed
+    /// durably, and when the latest of them finished, for flush timeouts
+    /// to report.
+    attempts_since_landing: u64,
+    last_finished: Option<Instant>,
 }
 
 /// What a destination's file durably held after one of this process's
@@ -656,11 +854,15 @@ impl AtomicFileWriter {
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             verified_skips: AtomicUsize::new(0),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
+            flush_waits: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
             verification_reads: AtomicUsize::new(0),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             file_syncs: AtomicUsize::new(0),
             #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
             synced_staged_mode: AtomicU32::new(0),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
+            write_hold: Arc::default(),
         });
 
         #[cfg(windows)]
@@ -782,7 +984,12 @@ impl AtomicFileWriter {
         })
     }
 
-    /// Wait for this destination's newest dirty snapshot to converge.
+    /// Wait until the snapshot that was newest when the flush began, or a
+    /// newer one, has landed.
+    ///
+    /// Admissions made after the flush began do not hold it up, so a
+    /// steady stream of [`WriteBehind`] admissions cannot starve it; with
+    /// no admissions arriving, it waits for the destination to go quiet.
     ///
     /// # Errors
     ///
@@ -792,16 +999,26 @@ impl AtomicFileWriter {
         timeout: Duration,
     ) -> Result<PersistenceFlushOutcome, PersistenceFlushError> {
         self.kick();
-        let deadline = Instant::now() + timeout;
+        let started = Instant::now();
+        let deadline = started + timeout;
         let mut state = self
             .destination
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while state.pending.is_some() || state.active_generation.is_some() {
+        let target = state.latest_admitted_generation;
+        let unsettled = |state: &DestinationState| {
+            (state.pending.is_some() || state.active_generation.is_some())
+                && state.landed_generation < target
+        };
+        #[cfg(any(test, feature = "persistence-test-hooks"))]
+        if unsettled(&state) {
+            self.destination.flush_waits.fetch_add(1, Ordering::AcqRel);
+        }
+        while unsettled(&state) {
             let now = Instant::now();
             if now >= deadline {
-                return Err(self.destination.flush_error(&state));
+                return Err(self.destination.flush_error(&state, target, started));
             }
             let wait = deadline.saturating_duration_since(now);
             let (next, result) = self
@@ -810,17 +1027,38 @@ impl AtomicFileWriter {
                 .wait_timeout(state, wait)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = next;
-            if result.timed_out() && (state.pending.is_some() || state.active_generation.is_some())
-            {
-                return Err(self.destination.flush_error(&state));
+            if result.timed_out() && unsettled(&state) {
+                return Err(self.destination.flush_error(&state, target, started));
             }
         }
 
+        // Still dirty here means the snapshot this flush waited for landed
+        // and a newer admission, which resets the recorded outcome, followed.
+        let landed_past_newer = state.pending.is_some() || state.active_generation.is_some();
         Ok(match state.last_outcome.take() {
             Some(AtomicWriteOutcome::Written) => PersistenceFlushOutcome::Written,
             Some(AtomicWriteOutcome::Superseded) => PersistenceFlushOutcome::Superseded,
+            None if landed_past_newer => PersistenceFlushOutcome::Written,
             None => PersistenceFlushOutcome::Clean,
         })
+    }
+
+    /// Hold every attempt at this destination before it touches the file,
+    /// as a stalled disk would, until the returned hold is released or
+    /// dropped. Tests use it to prove who waits on a write.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    #[must_use]
+    pub fn hold_writes(&self) -> WriteHold {
+        let gate = Arc::clone(&self.destination.write_hold);
+        {
+            let mut state = gate
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.held = true;
+            state.entered = 0;
+        }
+        WriteHold { gate }
     }
 
     /// Inject replacement failures for deterministic persistence tests.
@@ -855,6 +1093,14 @@ impl AtomicFileWriter {
     #[must_use]
     pub fn verified_skip_count(&self) -> usize {
         self.destination.verified_skips.load(Ordering::Acquire)
+    }
+
+    /// How many flushes found this destination dirty and began waiting,
+    /// counted once each after the flush fixed the snapshot it waits for.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    #[must_use]
+    pub fn flush_wait_count(&self) -> usize {
+        self.destination.flush_waits.load(Ordering::Acquire)
     }
 
     /// How many times this destination's file was opened and read to
@@ -919,17 +1165,45 @@ impl Destination {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if generation > state.latest_admitted_generation {
-            state.latest_admitted_generation = generation;
-            state.pending = Some(PendingRetry {
-                generation,
-                payload,
-            });
-            state.foreground_generation = Some(generation);
-            state.last_outcome = None;
-            state.last_error = None;
-        }
+        Self::record_admission(&mut state, generation, payload);
         self.state_changed.notify_all();
+    }
+
+    /// Admit a write-behind payload and report whether it changes the
+    /// destination's newest intent: the payload still waiting to land, or
+    /// else the bytes this process last made durable. Unknown durable bytes
+    /// count as a change, and so does nothing that an older generation adds.
+    fn admit_write_behind(self: &Arc<Self>, generation: u64, payload: Arc<[u8]>) -> bool {
+        let digest = payload_digest(&payload);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changes = match (&state.pending, &state.durable) {
+            (Some(pending), _) => *pending.payload != *payload,
+            (None, Some(durable)) => durable.digest != digest,
+            (None, None) => true,
+        };
+        let newest = Self::record_admission(&mut state, generation, payload);
+        self.state_changed.notify_all();
+        newest && changes
+    }
+
+    /// Record `payload` as the newest durable intent unless a newer
+    /// generation already holds that place. Returns whether it took it.
+    fn record_admission(state: &mut DestinationState, generation: u64, payload: Arc<[u8]>) -> bool {
+        if generation <= state.latest_admitted_generation {
+            return false;
+        }
+        state.latest_admitted_generation = generation;
+        state.pending = Some(PendingRetry {
+            generation,
+            payload,
+        });
+        state.foreground_generation = Some(generation);
+        state.last_outcome = None;
+        state.last_error = None;
+        true
     }
 
     fn begin_foreground(&self, generation: u64) -> bool {
@@ -947,6 +1221,7 @@ impl Destination {
             }
             if state.active_generation.is_none() {
                 state.active_generation = Some(generation);
+                state.active_since = Some(Instant::now());
                 if state.foreground_generation == Some(generation) {
                     state.foreground_generation = None;
                 }
@@ -959,11 +1234,14 @@ impl Destination {
         }
     }
 
+    /// Record one attempt's result. A `background` attempt, one no caller
+    /// waits on (a retry, or a write-behind), leaves its outcome for the
+    /// next [`AtomicFileWriter::flush`] to report.
     fn finish_attempt(
         self: &Arc<Self>,
         generation: u64,
         result: &AtomicWriteCommitResult,
-        retry_attempt: bool,
+        background: bool,
     ) {
         let retry_needed = {
             let mut state = self
@@ -972,6 +1250,14 @@ impl Destination {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.active_generation == Some(generation) {
                 state.active_generation = None;
+                state.active_since = None;
+            }
+            if matches!(result, AtomicWriteCommitResult::DurableWritten) {
+                state.attempts_since_landing = 0;
+                state.last_finished = None;
+            } else {
+                state.attempts_since_landing += 1;
+                state.last_finished = Some(Instant::now());
             }
             match result {
                 AtomicWriteCommitResult::DurableWritten => {
@@ -979,12 +1265,13 @@ impl Destination {
                     {
                         state.pending = None;
                     }
-                    state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Written);
+                    state.landed_generation = state.landed_generation.max(generation);
+                    state.last_outcome = background.then_some(AtomicWriteOutcome::Written);
                     state.last_error = None;
                     state.lag_error = None;
                 }
                 AtomicWriteCommitResult::Superseded => {
-                    state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Superseded);
+                    state.last_outcome = background.then_some(AtomicWriteOutcome::Superseded);
                 }
                 AtomicWriteCommitResult::FailedBeforeReplacement(error)
                 | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
@@ -1014,10 +1301,16 @@ impl Destination {
             }
             let pending = state.pending.clone()?;
             state.active_generation = Some(pending.generation);
+            state.active_since = Some(Instant::now());
             pending
         };
 
-        let result = try_write_stage_aware(self, pending.generation, &pending.payload);
+        let result = try_write_stage_aware(
+            self,
+            pending.generation,
+            &pending.payload,
+            StandDown::UntilReplacement,
+        );
         self.finish_attempt(pending.generation, &result, true);
         if matches!(
             result,
@@ -1048,13 +1341,36 @@ impl Destination {
         }
     }
 
-    fn flush_error(&self, state: &DestinationState) -> PersistenceFlushError {
+    fn flush_error(
+        &self,
+        state: &DestinationState,
+        target: u64,
+        started: Instant,
+    ) -> PersistenceFlushError {
+        let now = Instant::now();
         PersistenceFlushError {
             path: self.path.clone(),
             last_error: state
                 .last_error
                 .clone()
                 .unwrap_or_else(|| "dirty snapshot did not finish before the deadline".to_owned()),
+            progress: Box::new(FlushProgress {
+                target,
+                landed: state.landed_generation,
+                pending: state.pending.as_ref().map(|pending| pending.generation),
+                active: state.active_generation.map(|generation| {
+                    let running = state
+                        .active_since
+                        .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
+                    (generation, running)
+                }),
+                unstarted: state.foreground_generation,
+                attempts_since_landing: state.attempts_since_landing,
+                last_finished: state
+                    .last_finished
+                    .map(|finished| now.saturating_duration_since(finished)),
+                waited: now.saturating_duration_since(started),
+            }),
         }
     }
 }
@@ -1074,6 +1390,33 @@ impl AtomicWriteReservation {
         }
     }
 
+    /// Admit a complete payload as this destination's newest durable intent,
+    /// to be written behind the caller. See [`WriteBehind`].
+    ///
+    /// The replacement runs later, detached from the caller, so the
+    /// replacement observer (see [`set_replacement_observer`]) also hears of
+    /// the change here, on the admitting thread, when this payload becomes
+    /// the newest intent and differs from the one before it. That keeps a
+    /// change attributed to the caller that made it.
+    #[must_use]
+    pub fn admit_write_behind(self, payload: Vec<u8>) -> WriteBehind {
+        let payload = Arc::<[u8]>::from(payload);
+        let changes = self
+            .destination
+            .admit_write_behind(self.generation, Arc::clone(&payload));
+        if changes {
+            history::notify_change(&self.destination.path);
+        }
+        WriteBehind {
+            write: AdmittedAtomicWrite {
+                destination: self.destination,
+                generation: self.generation,
+                payload,
+                armed: true,
+            },
+        }
+    }
+
     /// Admit this payload and replace the destination unless newer admitted
     /// bytes exist.
     ///
@@ -1082,6 +1425,39 @@ impl AtomicWriteReservation {
     /// Returns the typed stage error from payload preparation or replacement.
     pub fn write(self, payload: &[u8]) -> Result<AtomicWriteOutcome, PersistenceError> {
         self.admit(payload.to_vec()).commit()
+    }
+}
+
+impl WriteBehind {
+    /// Attempt the replacement unless a newer admission stood it down
+    /// first. This blocks on file I/O, and behind any attempt already
+    /// writing this destination, so it belongs on a blocking worker.
+    ///
+    /// [`AtomicWriteOutcome::Superseded`] means a newer admission took this
+    /// payload's place before this attempt started; that admission's own
+    /// write carries the newer state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed preparation or replacement error from this
+    /// attempt. The payload, or a newer one, stays with the retry
+    /// supervisor until it lands.
+    pub fn commit(self) -> Result<AtomicWriteOutcome, PersistenceError> {
+        let mut write = self.write;
+        write.armed = false;
+        if !write.destination.begin_foreground(write.generation) {
+            return Ok(AtomicWriteOutcome::Superseded);
+        }
+        let result = try_write_stage_aware(
+            &write.destination,
+            write.generation,
+            &write.payload,
+            StandDown::UntilStarted,
+        );
+        write
+            .destination
+            .finish_attempt(write.generation, &result, true);
+        result.into_compatibility_result()
     }
 }
 
@@ -1168,7 +1544,12 @@ impl AdmittedAtomicWrite {
         if !self.destination.begin_foreground(self.generation) {
             return AtomicWriteCommitResult::Superseded;
         }
-        let result = try_write_stage_aware(&self.destination, self.generation, &self.payload);
+        let result = try_write_stage_aware(
+            &self.destination,
+            self.generation,
+            &self.payload,
+            StandDown::UntilReplacement,
+        );
         self.destination
             .finish_attempt(self.generation, &result, false);
         result
@@ -1291,6 +1672,7 @@ fn try_write_stage_aware(
     destination: &Arc<Destination>,
     generation: u64,
     payload: &[u8],
+    stand_down: StandDown,
 ) -> AtomicWriteCommitResult {
     let digest = payload_digest(payload);
     let durable = {
@@ -1300,11 +1682,14 @@ fn try_write_stage_aware(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // The newest admitted generation only grows, so a payload that is
         // already behind it would lose the check before replacement too.
+        // Nothing is staged yet, so every attempt stands down here.
         if generation != state.latest_admitted_generation {
             return AtomicWriteCommitResult::Superseded;
         }
         state.durable
     };
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    destination.write_hold.pause();
     // Verification reads and syncs a file, so it runs outside the state
     // lock. Only one attempt per destination runs at a time, so nothing this
     // coordinator owns changes the file meanwhile.
@@ -1384,7 +1769,10 @@ fn try_write_stage_aware(
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if generation != state.latest_admitted_generation {
+    // A staged write-behind payload lands regardless: this attempt is the
+    // only one running here, so whatever was admitted since is newer and
+    // replaces it next.
+    if stand_down == StandDown::UntilReplacement && generation != state.latest_admitted_generation {
         return AtomicWriteCommitResult::Superseded;
     }
 
@@ -1413,6 +1801,17 @@ fn try_write_stage_aware(
     // From here until the durability barrier completes, nothing proves what
     // the file durably holds, so no later attempt may be skipped against it.
     state.durable = None;
+    // A foreground attempt keeps the lock through the rename, so the check
+    // above still holds when its bytes become visible. A write-behind
+    // attempt made no such check, and admissions take this lock on their
+    // caller's thread, so it lets them proceed: on Windows the rename is a
+    // write-through move that lasts as long as a sync.
+    let held = if stand_down == StandDown::UntilReplacement {
+        Some(state)
+    } else {
+        drop(state);
+        None
+    };
     // The rename alone: this function owns the one directory barrier below,
     // and the stamp it records is read after that barrier.
     if let Err(source) =
@@ -1423,7 +1822,7 @@ fn try_write_stage_aware(
             source,
         });
     }
-    drop(state);
+    drop(held);
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     destination.replacements.fetch_add(1, Ordering::AcqRel);
     history::note_replacement(destination, &previous, payload);
@@ -1804,6 +2203,80 @@ mod tests {
         writer
             .flush(Duration::from_secs(5))
             .expect("nothing is left pending");
+    }
+}
+
+#[cfg(test)]
+mod flush_progress_tests {
+    use super::*;
+
+    #[test]
+    fn a_stuck_attempt_reads_as_one_in_flight() {
+        let progress = FlushProgress {
+            target: 7,
+            landed: 5,
+            pending: Some(7),
+            active: Some((7, Duration::from_millis(5_120))),
+            unstarted: None,
+            attempts_since_landing: 1,
+            last_finished: Some(Duration::from_millis(5_200)),
+            waited: Duration::from_millis(5_003),
+        };
+        assert_eq!(
+            progress.to_string(),
+            "gave up after 5003ms waiting for generation 7, landed 5, pending 7, \
+             attempt at 7 running 5120ms, 1 attempt since the last landing, the last 5200ms ago"
+        );
+    }
+
+    #[test]
+    fn an_unstarted_admitted_commit_is_named() {
+        let progress = FlushProgress {
+            target: 3,
+            landed: 2,
+            pending: Some(3),
+            active: None,
+            unstarted: Some(3),
+            attempts_since_landing: 0,
+            last_finished: None,
+            waited: Duration::from_millis(10_240),
+        };
+        assert_eq!(
+            progress.to_string(),
+            "gave up after 10240ms waiting for generation 3, landed 2, pending 3, \
+             admitted commit 3 not started, 0 attempts since the last landing"
+        );
+    }
+
+    #[test]
+    fn a_landing_resets_the_attempt_count() {
+        let directory = tempfile::tempdir().expect("destination directory");
+        let writer = AtomicFileWriter::new(&directory.path().join("state.json"))
+            .expect("destination writer");
+        let attempts = || {
+            let state = writer
+                .destination
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.attempts_since_landing, state.last_finished.is_some())
+        };
+
+        for payload in [b"one", b"two", b"six"] {
+            writer.write(payload).expect("write lands");
+        }
+        assert_eq!(attempts(), (0, false));
+
+        writer.set_injected_replace_failures(usize::MAX);
+        writer.write(b"ten").expect_err("injected failure");
+        let (failed, finished) = attempts();
+        assert!(failed >= 1 && finished, "a failed attempt counts");
+
+        writer.set_injected_replace_failures(0);
+        writer
+            .flush(Duration::from_secs(5))
+            .expect("the retry lands");
+        assert_eq!(attempts(), (0, false));
     }
 }
 

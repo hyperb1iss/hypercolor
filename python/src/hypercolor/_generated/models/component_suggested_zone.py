@@ -8,20 +8,11 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.component_category_type_0 import ComponentCategoryType0
-from ..models.component_category_type_1 import ComponentCategoryType1
-from ..models.component_category_type_2 import ComponentCategoryType2
-from ..models.component_category_type_3 import ComponentCategoryType3
-from ..models.component_category_type_4 import ComponentCategoryType4
-from ..models.component_category_type_5 import ComponentCategoryType5
-from ..models.component_category_type_6 import ComponentCategoryType6
-from ..models.component_category_type_7 import ComponentCategoryType7
-from ..models.component_category_type_8 import ComponentCategoryType8
-from ..models.component_category_type_9 import ComponentCategoryType9
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.component_canvas_size import ComponentCanvasSize
-    from ..models.component_category_type_10 import ComponentCategoryType10
+    from ..models.component_category_type_1 import ComponentCategoryType1
     from ..models.led_topology_type_0 import LedTopologyType0
     from ..models.led_topology_type_1 import LedTopologyType1
     from ..models.led_topology_type_2 import LedTopologyType2
@@ -39,10 +30,8 @@ class ComponentSuggestedZone:
     """Attachment-derived zone suggestion for layout import and preview flows.
 
     Attributes:
-        category (ComponentCategoryType0 | ComponentCategoryType1 | ComponentCategoryType10 | ComponentCategoryType2 |
-            ComponentCategoryType3 | ComponentCategoryType4 | ComponentCategoryType5 | ComponentCategoryType6 |
-            ComponentCategoryType7 | ComponentCategoryType8 | ComponentCategoryType9): Template category used for filtering
-            and UI grouping.
+        category (ComponentCategoryType0 | ComponentCategoryType1): Template category used for filtering and UI
+            grouping.
         default_size (ComponentCanvasSize): Default visual footprint for placing an attachment in the layout editor.
         instance (int): Zero-based attachment instance index within the binding.
         led_count (int): Number of LEDs consumed by this instance.
@@ -60,19 +49,7 @@ class ComponentSuggestedZone:
         led_mapping (list[int] | None | Unset): Optional spatial-order -> physical-order LED remapping.
     """
 
-    category: (
-        ComponentCategoryType0
-        | ComponentCategoryType1
-        | ComponentCategoryType10
-        | ComponentCategoryType2
-        | ComponentCategoryType3
-        | ComponentCategoryType4
-        | ComponentCategoryType5
-        | ComponentCategoryType6
-        | ComponentCategoryType7
-        | ComponentCategoryType8
-        | ComponentCategoryType9
-    )
+    category: ComponentCategoryType0 | ComponentCategoryType1
     default_size: ComponentCanvasSize
     instance: int
     led_count: int
@@ -102,18 +79,7 @@ class ComponentSuggestedZone:
         from ..models.led_topology_type_5 import LedTopologyType5
 
         category: dict[str, Any] | str
-        if (
-            isinstance(self.category, ComponentCategoryType0)
-            or isinstance(self.category, ComponentCategoryType1)
-            or isinstance(self.category, ComponentCategoryType2)
-            or isinstance(self.category, ComponentCategoryType3)
-            or isinstance(self.category, ComponentCategoryType4)
-            or isinstance(self.category, ComponentCategoryType5)
-            or isinstance(self.category, ComponentCategoryType6)
-            or isinstance(self.category, ComponentCategoryType7)
-            or isinstance(self.category, ComponentCategoryType8)
-            or isinstance(self.category, ComponentCategoryType9)
-        ):
+        if isinstance(self.category, ComponentCategoryType0):
             category = self.category.value
         else:
             category = self.category.to_dict()
@@ -180,8 +146,8 @@ class ComponentSuggestedZone:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.component_canvas_size import ComponentCanvasSize
-        from ..models.component_category_type_10 import (
-            ComponentCategoryType10,
+        from ..models.component_category_type_1 import (
+            ComponentCategoryType1,
         )
         from ..models.led_topology_type_0 import LedTopologyType0
         from ..models.led_topology_type_1 import LedTopologyType1
@@ -195,19 +161,7 @@ class ComponentSuggestedZone:
 
         def _parse_category(
             data: object,
-        ) -> (
-            ComponentCategoryType0
-            | ComponentCategoryType1
-            | ComponentCategoryType10
-            | ComponentCategoryType2
-            | ComponentCategoryType3
-            | ComponentCategoryType4
-            | ComponentCategoryType5
-            | ComponentCategoryType6
-            | ComponentCategoryType7
-            | ComponentCategoryType8
-            | ComponentCategoryType9
-        ):
+        ) -> ComponentCategoryType0 | ComponentCategoryType1:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
@@ -218,103 +172,13 @@ class ComponentSuggestedZone:
                 return componentsschemas_component_category_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_1 = ComponentCategoryType1(
-                    data
-                )
-
-                return componentsschemas_component_category_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_2 = ComponentCategoryType2(
-                    data
-                )
-
-                return componentsschemas_component_category_type_2
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_3 = ComponentCategoryType3(
-                    data
-                )
-
-                return componentsschemas_component_category_type_3
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_4 = ComponentCategoryType4(
-                    data
-                )
-
-                return componentsschemas_component_category_type_4
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_5 = ComponentCategoryType5(
-                    data
-                )
-
-                return componentsschemas_component_category_type_5
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_6 = ComponentCategoryType6(
-                    data
-                )
-
-                return componentsschemas_component_category_type_6
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_7 = ComponentCategoryType7(
-                    data
-                )
-
-                return componentsschemas_component_category_type_7
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_8 = ComponentCategoryType8(
-                    data
-                )
-
-                return componentsschemas_component_category_type_8
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_component_category_type_9 = ComponentCategoryType9(
-                    data
-                )
-
-                return componentsschemas_component_category_type_9
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_component_category_type_10 = (
-                ComponentCategoryType10.from_dict(data)
+            componentsschemas_component_category_type_1 = (
+                ComponentCategoryType1.from_dict(data)
             )
 
-            return componentsschemas_component_category_type_10
+            return componentsschemas_component_category_type_1
 
         category = _parse_category(d.pop("category"))
 

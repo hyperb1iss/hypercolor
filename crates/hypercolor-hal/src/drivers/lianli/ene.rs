@@ -13,8 +13,8 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceTopologyHint};
 use zerocopy::{FromZeros, IntoBytes};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::common::{
@@ -634,7 +634,11 @@ impl Protocol for Ene6k77Protocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         match self.variant {
             LianLiHubVariant::Sl | LianLiHubVariant::SlV2 | LianLiHubVariant::SlRedragon => {
                 self.encode_single_ring(colors, commands);
@@ -645,6 +649,7 @@ impl Protocol for Ene6k77Protocol {
             LianLiHubVariant::SlInfinity => self.encode_sl_infinity(colors, commands),
             LianLiHubVariant::TlFan => commands.clear(),
         }
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

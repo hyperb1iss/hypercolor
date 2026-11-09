@@ -328,7 +328,10 @@ pub fn DevicesPage() -> impl IntoView {
             })
     });
 
-    let _close_listener = window_event_listener(ev::keydown, move |ev| {
+    // Leptos 0.8 never removes a window listener on its own; without the
+    // cleanup every visit to this page left one behind, still writing to
+    // the signals of a page that was gone.
+    let close_listener = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Escape" {
             if filter_dropdown_open.get_untracked() {
                 set_filter_dropdown_open.set(false);
@@ -337,6 +340,7 @@ pub fn DevicesPage() -> impl IntoView {
             }
         }
     });
+    on_cleanup(move || close_listener.remove());
 
     view! {
         <div class="flex flex-col h-full">
@@ -361,7 +365,7 @@ pub fn DevicesPage() -> impl IntoView {
                     // is the only chrome accent) — matches the Effects
                     // header's Install button.
                     <button
-                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0 disabled:opacity-60
+                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0 disabled:opacity-60 pointer-coarse:min-h-[44px]
                                text-fg-primary bg-surface-overlay/70 border border-edge-subtle hover:border-accent-muted hover:bg-surface-overlay glow-ring"
                         prop:disabled=move || scanning.get()
                         on:click=move |_| {
@@ -398,7 +402,7 @@ pub fn DevicesPage() -> impl IntoView {
 
                     <div class="relative shrink-0">
                         <button
-                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
+                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200 pointer-coarse:min-h-[44px]"
                             style=move || {
                                 if active_filter_count.get() > 0 {
                                     "background: rgba(225, 53, 255, 0.12); color: rgb(225, 53, 255); border-color: rgba(225, 53, 255, 0.25); box-shadow: 0 0 10px rgba(225, 53, 255, 0.15)"
@@ -481,7 +485,7 @@ pub fn DevicesPage() -> impl IntoView {
             // Grid + resizable sidebar
             <div class="flex-1 overflow-hidden">
                 <div class="flex h-full">
-                    <div class="ambient-scroll flex-1 min-w-0 overflow-y-auto px-6 pb-6 pt-4" style:--ambient-hue=crate::ambient::hue_style()>
+                    <div class="ambient-scroll page-scroll flex-1 min-w-0 overflow-y-auto px-6 pb-6 pt-4" style:--ambient-hue=crate::ambient::hue_style()>
                         <SoftwareConflictBanner state=conflicts />
                         <Suspense fallback=move || view! { <DevicesLoadingSkeleton /> }>
                             {move || {
@@ -549,7 +553,8 @@ pub fn DevicesPage() -> impl IntoView {
                             >
                                 <button
                                     class="absolute top-3 right-3 z-10 flex h-9 w-9 items-center justify-center
-                                           rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 glow-ring"
+                                           rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 glow-ring
+                                           max-md:top-2 max-md:right-2 max-md:h-11 max-md:w-11"
                                     aria-label="Close device details"
                                     on:click=move |_| set_selected_device.set(None)
                                 >

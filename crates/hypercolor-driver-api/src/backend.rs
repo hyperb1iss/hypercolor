@@ -1,9 +1,11 @@
 //! Native device backend boundary shared by core and built-in drivers.
 
 use std::collections::HashMap;
+use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::delivery::{DeviceDeliveryId, Frame, Receipt, Submission};
 use crate::discovery::DiscoveredDevice;
 use hypercolor_types::device::{
     DeviceError, DeviceId, DeviceInfo, ErrorRecoverability, OwnedDisplayFramePayload,
@@ -126,32 +128,6 @@ impl Default for DeviceLifecyclePolicy {
     }
 }
 
-/// Result of accepting a color frame into a device output lane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceWriteOutcome {
-    /// The frame was sent to the transport or handed to an async transport worker.
-    Sent,
-    /// The lane intentionally skipped an identical frame.
-    SuppressedDuplicate,
-    /// The lane intentionally skipped a frame inside its cadence window.
-    SuppressedCadence,
-    /// The transport delivered the frame and the device declined it.
-    ///
-    /// The device keeps showing what it showed before. A decline is neither
-    /// a delivery nor a transport failure: the session stays healthy and a
-    /// later frame may be accepted.
-    Declined,
-}
-
-/// Queue-qualified identity for one device-frame delivery attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct DeviceDeliveryId {
-    /// Generation of the output queue that issued this attempt.
-    pub queue_generation: u64,
-    /// Monotonic sequence within the queue.
-    pub sequence: u64,
-}
-
 /// Terminal state reported for one device-frame delivery attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceDeliveryStatus {
@@ -201,35 +177,6 @@ pub trait DeviceDeliveryObserver: Send + Sync {
 }
 
 impl DeviceDeliveryAck {
-    /// Build an acknowledgement from a legacy synchronous lane result.
-    #[must_use]
-    pub fn from_write_result(
-        id: DeviceDeliveryId,
-        payload_bytes: usize,
-        transport_latency: Duration,
-        result: Result<DeviceWriteOutcome, DeviceError>,
-    ) -> Self {
-        match result {
-            Ok(DeviceWriteOutcome::Sent) => Self {
-                id,
-                status: DeviceDeliveryStatus::Completed,
-                transport_started: true,
-                completed_payload_bytes: u64::try_from(payload_bytes).unwrap_or(u64::MAX),
-                transport_latency,
-                error: None,
-                transient: false,
-            },
-            Ok(DeviceWriteOutcome::SuppressedDuplicate) => {
-                Self::suppressed(id, DeviceDeliveryStatus::SuppressedDuplicate)
-            }
-            Ok(DeviceWriteOutcome::SuppressedCadence) => {
-                Self::suppressed(id, DeviceDeliveryStatus::SuppressedCadence)
-            }
-            Ok(DeviceWriteOutcome::Declined) => Self::declined(id, transport_latency),
-            Err(error) => Self::failed(id, true, transport_latency, error),
-        }
-    }
-
     /// Build an acknowledgement for a transport attempt rejected before I/O.
     #[must_use]
     pub fn rejected(id: DeviceDeliveryId, error: DeviceError) -> Self {
@@ -306,97 +253,107 @@ impl DeviceDeliveryAck {
             ..Self::failed(id, transport_started, transport_latency, error)
         }
     }
-
-    fn suppressed(id: DeviceDeliveryId, status: DeviceDeliveryStatus) -> Self {
-        Self {
-            id,
-            status,
-            transport_started: false,
-            completed_payload_bytes: 0,
-            transport_latency: Duration::ZERO,
-            error: None,
-            transient: false,
-        }
-    }
 }
 
-impl DeviceWriteOutcome {
-    /// Whether this outcome represents bytes accepted for transport output.
-    #[must_use]
-    pub const fn is_sent(self) -> bool {
-        matches!(self, Self::Sent)
-    }
-}
-
-/// Preferred output cadence for a connected device.
+/// How the host should feed one connected device.
+///
+/// The host owns latest-value delivery, pacing, and replay. A policy states
+/// what the device needs from them; it never says how to schedule, and
+/// protocol rules such as message budgets stay in the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputCadence {
+pub struct OutputPolicy {
     min_interval: Option<Duration>,
-    max_frame_silence: Option<Duration>,
-    target_fps: u32,
+    replay_after: Option<Duration>,
+    copies_before_idle: NonZeroU8,
 }
 
-impl OutputCadence {
-    /// Build cadence from an integer FPS cap. `0` means unpaced.
+impl OutputPolicy {
+    /// One copy of each frame, unpaced, never replayed.
     #[must_use]
-    pub fn from_fps(target_fps: u32) -> Self {
-        if target_fps == 0 {
-            return Self {
-                min_interval: None,
-                max_frame_silence: None,
-                target_fps,
-            };
-        }
-
+    pub const fn unpaced() -> Self {
         Self {
-            min_interval: Some(Duration::from_secs_f64(1.0 / f64::from(target_fps))),
-            max_frame_silence: None,
-            target_fps,
+            min_interval: None,
+            replay_after: None,
+            copies_before_idle: NonZeroU8::MIN,
         }
     }
 
-    /// Build cadence from a concrete minimum interval.
+    /// Pace frames to an integer rate. `0` means unpaced.
     #[must_use]
-    pub const fn from_min_interval(min_interval: Duration, target_fps: u32) -> Self {
+    pub fn from_fps(fps: u32) -> Self {
+        if fps == 0 {
+            return Self::unpaced();
+        }
+        Self::from_min_interval(Duration::from_secs_f64(1.0 / f64::from(fps)))
+    }
+
+    /// Pace frames to a concrete minimum interval.
+    #[must_use]
+    pub const fn from_min_interval(min_interval: Duration) -> Self {
         Self {
             min_interval: Some(min_interval),
-            max_frame_silence: None,
-            target_fps,
+            ..Self::unpaced()
         }
     }
 
-    /// Require the output worker to resend its cached payload after this much
-    /// transport silence. A zero duration disables cached-payload replay.
+    /// Resend the latest frame after this much transport silence.
+    ///
+    /// A zero duration disables replay. A replay can never come sooner than
+    /// the minimum interval allows, so a shorter value counts as that
+    /// interval.
     #[must_use]
-    pub const fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
-        self.max_frame_silence = if max_frame_silence.is_zero() {
-            None
-        } else {
-            Some(max_frame_silence)
-        };
+    pub fn with_replay_after(mut self, replay_after: Duration) -> Self {
+        self.replay_after = (!replay_after.is_zero())
+            .then(|| replay_after.max(self.min_interval.unwrap_or(Duration::ZERO)));
         self
     }
 
-    /// Minimum interval between output attempts, or `None` for unpaced output.
+    /// Send each frame this many times before going quiet about it.
+    ///
+    /// The host normally drops a frame identical to the one it just
+    /// delivered. A protocol that requires redundant copies (E1.31 section
+    /// 6.6.2 asks for three) opts in here; repeats go out as the render loop
+    /// delivers frames, so pacing is unchanged.
+    #[must_use]
+    pub const fn with_copies_before_idle(mut self, copies: NonZeroU8) -> Self {
+        self.copies_before_idle = copies;
+        self
+    }
+
+    /// Minimum interval between frames, or `None` for unpaced output.
     #[must_use]
     pub const fn min_interval(self) -> Option<Duration> {
         self.min_interval
     }
 
-    /// Maximum time between completed transport writes before the cached
-    /// payload must be resent.
+    /// Transport silence after which the latest frame must be resent.
     #[must_use]
-    pub const fn max_frame_silence(self) -> Option<Duration> {
-        self.max_frame_silence
+    pub const fn replay_after(self) -> Option<Duration> {
+        self.replay_after
     }
 
-    /// Legacy integer target FPS for displays that cannot represent sub-Hz rates.
+    /// Copies of each frame owed before the host may go quiet about it.
     #[must_use]
-    pub const fn target_fps(self) -> u32 {
-        self.target_fps
+    pub const fn copies_before_idle(self) -> NonZeroU8 {
+        self.copies_before_idle
     }
 
-    /// Concrete cadence interval in milliseconds for telemetry.
+    /// The minimum interval as a whole frame rate, for surfaces that show
+    /// one, rounded down so it never claims more than the interval allows.
+    /// `0` means unpaced or slower than one frame a second.
+    #[must_use]
+    pub fn display_fps(self) -> u32 {
+        // The epsilon absorbs the nanosecond rounding in `from_fps`.
+        const INTERVAL_ROUNDING: f64 = 1e-3;
+        self.min_interval
+            .filter(|interval| *interval <= Duration::from_secs(1))
+            .map_or(0, |interval| {
+                let fps = 1.0 / interval.as_secs_f64().max(f64::EPSILON);
+                (fps + INTERVAL_ROUNDING).floor() as u32
+            })
+    }
+
+    /// Minimum interval in milliseconds, for telemetry.
     #[must_use]
     pub fn interval_ms(self) -> Option<u64> {
         self.min_interval.map(|interval| {
@@ -405,17 +362,17 @@ impl OutputCadence {
         })
     }
 
-    /// Maximum transport silence in milliseconds for telemetry.
+    /// Replay window in milliseconds, for telemetry.
     #[must_use]
-    pub fn max_frame_silence_ms(self) -> Option<u64> {
-        self.max_frame_silence.map(|interval| {
+    pub fn replay_after_ms(self) -> Option<u64> {
+        self.replay_after.map(|interval| {
             let millis = interval.as_millis();
             u64::try_from(millis).unwrap_or(u64::MAX)
         })
     }
 }
 
-impl Default for OutputCadence {
+impl Default for OutputPolicy {
     fn default() -> Self {
         Self::from_fps(60)
     }
@@ -429,62 +386,34 @@ pub trait DeviceFrameSink: Send + Sync {
     /// This must be a nonblocking check of cached state, without transport I/O.
     /// Queues use it to stop suppressing identical payloads after an idle actor
     /// exits, so the next delivery can report the failure to device lifecycle.
-    /// Sinks without independent actor liveness may keep the default.
-    fn is_closed(&self) -> bool {
-        false
-    }
+    fn is_closed(&self) -> bool;
 
-    /// Push shared LED color data to this device's output lane.
+    /// Offer one frame to this lane.
+    ///
+    /// The frame's attempt settles exactly once, wherever it goes from here,
+    /// and its observer hears about it. Returning [`Submission::Settled`]
+    /// hands the receipt back too; a lane that passed the attempt to a worker
+    /// returns [`Submission::Pending`].
+    async fn submit(&self, frame: Frame) -> Submission;
+
+    /// Write one frame outside the host queue and wait for how it ended.
     ///
     /// # Errors
     ///
-    /// Returns an error if the device output lane is no longer available or
-    /// the driver has observed an asynchronous transport failure.
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError>;
-
-    /// Push shared LED color data and report whether the lane actually sent it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device output lane is no longer available or
-    /// the driver has observed an asynchronous transport failure.
-    async fn write_colors_shared_outcome(
+    /// Returns the attempt's error when it failed. A skipped frame is not a
+    /// failure.
+    async fn write_direct(
         &self,
+        device_id: DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write_colors_shared(colors)
+    ) -> Result<(), DeviceError> {
+        let mut frame = Frame::direct(device_id, colors);
+        let receipt = frame.wait_for_receipt();
+        let _ = self.submit(frame).await;
+        receipt
+            .received()
             .await
-            .map(|()| DeviceWriteOutcome::Sent)
-    }
-
-    /// Deliver a queue-qualified payload and acknowledge its terminal state.
-    ///
-    /// Drivers with their own output actor override this method so the future
-    /// resolves after that actor completes or fails the matching transport I/O.
-    async fn deliver_colors_shared(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = std::time::Instant::now();
-        let result = self.write_colors_shared_outcome(colors).await;
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
-    }
-
-    /// Deliver a queue-qualified payload with live transport-start observation.
-    ///
-    /// Actor-backed drivers override this method and notify `observer` at the
-    /// precise point their transport I/O begins. The default preserves legacy
-    /// terminal acknowledgement behavior for synchronous sinks.
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        observer.transport_started(id);
-        self.deliver_colors_shared(id, colors).await
+            .map_or(Ok(()), Receipt::into_result)
     }
 }
 
@@ -588,12 +517,38 @@ pub trait DeviceBackend: Send + Sync {
     /// or the transport-level connection fails.
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError>;
 
-    /// Cleanly disconnect from a device.
+    /// End a device's session.
+    ///
+    /// When this returns `Ok`, new operations are revoked, admitted I/O has
+    /// settled or been cancelled, bounded protocol cleanup has finished,
+    /// owned tasks are joined, and the session's transport is released. A
+    /// [`DeviceFrameSink`] retained from the session reports closed, rejects
+    /// every frame, and transmits nothing, however long it is held. A later
+    /// [`Self::connect`] opens a new session, and sinks from the old one stay
+    /// closed. Transport shared across a backend stays open for its other
+    /// sessions.
+    ///
+    /// Hosts should use `hypercolor_driver_support::SessionTable`, which
+    /// keeps this contract for them.
     ///
     /// # Errors
     ///
-    /// Returns an error if the disconnect operation fails.
+    /// Returns the cleanup failure when protocol cleanup failed or timed
+    /// out, and the session is over either way. A backend with no session
+    /// for `id` may report [`DeviceError::Disconnected`].
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError>;
+
+    /// End every session on this backend and refuse all later connects.
+    ///
+    /// The host calls this on a backend it has unregistered, whether or not
+    /// it knows of any session on it. That covers sessions it never tracked,
+    /// such as a temporary identify, and a connect still in flight, which
+    /// must fail instead of publishing a session.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first cleanup failure. Every session is over either way.
+    async fn retire(&self) -> Result<(), DeviceError>;
 
     /// Push LED color data to a connected device.
     ///
@@ -602,52 +557,18 @@ pub trait DeviceBackend: Send + Sync {
     /// Returns an error if the device is disconnected or the write fails.
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError>;
 
-    /// Push shared LED color data to a connected device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device is disconnected or the write fails.
-    async fn write_colors_shared(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<(), DeviceError> {
-        self.write_colors(id, colors.as_slice()).await
-    }
-
-    /// Push shared LED color data and report whether the backend actually sent it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device is disconnected or the write fails.
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write_colors_shared(id, colors)
-            .await
-            .map(|()| DeviceWriteOutcome::Sent)
-    }
-
-    /// Deliver a queue-qualified payload with live transport-start observation.
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        observer.transport_started(delivery_id);
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = std::time::Instant::now();
-        let result = self.write_colors_shared_outcome(device_id, colors).await;
-        DeviceDeliveryAck::from_write_result(
-            delivery_id,
-            payload_bytes,
-            started_at.elapsed(),
-            result,
-        )
+    /// Offer one frame to a connected device, through its frame sink when it
+    /// has one.
+    async fn submit_frame(&self, device_id: &DeviceId, frame: Frame) -> Submission {
+        if let Some(sink) = self.frame_sink(device_id) {
+            return sink.submit(frame).await;
+        }
+        let (colors, attempt) = frame.into_parts();
+        let transmission = attempt.start();
+        match self.write_colors(device_id, &colors).await {
+            Ok(()) => transmission.written().into(),
+            Err(error) => transmission.failed(error).into(),
+        }
     }
 
     /// Deliver a queue-qualified display payload with terminal observation.
@@ -743,16 +664,11 @@ pub trait DeviceBackend: Send + Sync {
         })
     }
 
-    /// Preferred output frame rate for a connected device.
+    /// How the host should feed a connected device, or `None` for the
+    /// default policy.
     #[must_use]
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         let _ = id;
         None
-    }
-
-    /// Preferred output cadence for a connected device.
-    #[must_use]
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.target_fps(id).map(OutputCadence::from_fps)
     }
 }

@@ -1,6 +1,7 @@
 //! Tests for the `BackendManager` — device routing and frame dispatch.
 
 use std::io;
+use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,8 +10,8 @@ use std::time::{Duration, Instant};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, Frame, OutputPolicy, PeerDisposition, SkipReason,
+    Submission,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -53,6 +54,7 @@ struct SlowRecordingBackend {
     write_count: Arc<AtomicUsize>,
     target_fps: Option<u32>,
     max_frame_silence: Option<Duration>,
+    min_identical_sends: Option<u8>,
     write_times: Option<Arc<Mutex<Vec<Instant>>>>,
 }
 
@@ -114,6 +116,10 @@ impl DeviceBackend for SharedSlowBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
@@ -127,8 +133,9 @@ impl DeviceBackend for SharedSlowBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.contains(id).then_some(self.target_fps)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.contains(id)
+            .then(|| OutputPolicy::from_fps(self.target_fps))
     }
 }
 
@@ -146,6 +153,7 @@ impl SlowRecordingBackend {
             write_count,
             target_fps: None,
             max_frame_silence: None,
+            min_identical_sends: None,
             write_times: None,
         }
     }
@@ -155,8 +163,13 @@ impl SlowRecordingBackend {
         self
     }
 
-    fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
+    fn with_replay_after(mut self, max_frame_silence: Duration) -> Self {
         self.max_frame_silence = Some(max_frame_silence);
+        self
+    }
+
+    fn with_min_identical_sends(mut self, sends: u8) -> Self {
+        self.min_identical_sends = Some(sends);
         self
     }
 
@@ -191,6 +204,10 @@ impl DeviceBackend for SlowRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -205,21 +222,19 @@ impl DeviceBackend for SlowRecordingBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        if *id == self.expected_device_id {
-            self.target_fps
-        } else {
-            None
-        }
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.target_fps(id).map(|target_fps| {
-            let cadence = OutputCadence::from_fps(target_fps);
-            self.max_frame_silence.map_or(cadence, |max_frame_silence| {
-                cadence.with_max_frame_silence(max_frame_silence)
-            })
-        })
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        let target_fps = (*id == self.expected_device_id)
+            .then_some(self.target_fps)
+            .flatten()?;
+        let policy = OutputPolicy::from_fps(target_fps);
+        let policy = self.max_frame_silence.map_or(policy, |replay_after| {
+            policy.with_replay_after(replay_after)
+        });
+        Some(
+            self.min_identical_sends
+                .and_then(NonZeroU8::new)
+                .map_or(policy, |copies| policy.with_copies_before_idle(copies)),
+        )
     }
 }
 
@@ -283,6 +298,10 @@ impl DeviceBackend for FailingDisconnectBackend {
         bail!("simulated disconnect failure")
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -327,17 +346,20 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("borrowed color path should not be used for shared payload backend")
     }
 
-    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
+    async fn submit_frame(&self, id: &DeviceId, frame: Frame) -> Submission {
+        assert_eq!(*id, self.expected_device_id, "unexpected device id");
+        let (colors, attempt) = frame.into_parts();
+        let transmission = attempt.start();
         self.writes.lock().await.push(colors);
-        Ok(())
+        transmission.written().into()
     }
 }
 
@@ -352,7 +374,16 @@ struct FastFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for FastFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    fn is_closed(&self) -> bool {
+        false
+    }
+
+    async fn submit(&self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let transmission = attempt.start();
+        if let Some(block_release) = &self.block_release {
+            block_release.notified().await;
+        }
         if self
             .panic_next
             .as_ref()
@@ -364,29 +395,7 @@ impl DeviceFrameSink for FastFrameSink {
             recorded_writes.lock().await.push(colors.as_ref().clone());
         }
         self.writes.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let Some(block_release) = &self.block_release else {
-            return self.deliver_colors_shared(id, colors).await;
-        };
-        observer.transport_started(id);
-        let transport_started_at = Instant::now();
-        block_release.notified().await;
-        let payload_bytes = colors.len().saturating_mul(3);
-        let result = self.write_colors_shared(colors).await;
-        DeviceDeliveryAck::from_write_result(
-            id,
-            payload_bytes,
-            transport_started_at.elapsed(),
-            result.map(|()| DeviceWriteOutcome::Sent),
-        )
+        transmission.written().into()
     }
 }
 
@@ -396,26 +405,14 @@ struct SuppressingFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for SuppressingFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        self.write_colors_shared_outcome(colors).await.map(|_| ())
+    fn is_closed(&self) -> bool {
+        false
     }
 
-    async fn write_colors_shared_outcome(
-        &self,
-        _colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    async fn submit(&self, frame: Frame) -> Submission {
         self.attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(DeviceWriteOutcome::SuppressedCadence)
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        _observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let result = self.write_colors_shared_outcome(colors).await;
-        DeviceDeliveryAck::from_write_result(id, 0, Duration::ZERO, result)
+        let (_, attempt) = frame.into_parts();
+        attempt.skip(SkipReason::Unchanged).into()
     }
 }
 
@@ -519,6 +516,10 @@ impl DeviceBackend for FastFrameSinkBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("backend-wide write path should not be used when a frame sink is available")
     }
@@ -541,8 +542,8 @@ impl DeviceBackend for FastFrameSinkBackend {
         }) as Arc<dyn DeviceFrameSink>)
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        (*id == self.expected_device_id).then_some(self.target_fps)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        (*id == self.expected_device_id).then(|| OutputPolicy::from_fps(self.target_fps))
     }
 }
 
@@ -596,6 +597,10 @@ impl DeviceBackend for DirectControlRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -646,7 +651,7 @@ impl FailOnceRecordingBackend {
         }
     }
 
-    fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
+    fn with_replay_after(mut self, max_frame_silence: Duration) -> Self {
         self.max_frame_silence = Some(max_frame_silence);
         self
     }
@@ -677,6 +682,10 @@ impl DeviceBackend for FailOnceRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -691,11 +700,11 @@ impl DeviceBackend for FailOnceRecordingBackend {
         Ok(())
     }
 
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         (*id == self.expected_device_id).then(|| {
-            let cadence = OutputCadence::from_fps(60);
+            let cadence = OutputPolicy::from_fps(60);
             self.max_frame_silence.map_or(cadence, |max_frame_silence| {
-                cadence.with_max_frame_silence(max_frame_silence)
+                cadence.with_replay_after(max_frame_silence)
             })
         })
     }
@@ -795,6 +804,10 @@ impl DeviceBackend for MetadataRefreshingBackend {
         }
 
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -944,6 +957,10 @@ impl DeviceBackend for ConnectRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -955,9 +972,9 @@ impl DeviceBackend for ConnectRecordingBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         (*id == self.expected_device_id && self.connected.load(Ordering::Acquire))
-            .then_some(self.target_fps)
+            .then(|| OutputPolicy::from_fps(self.target_fps))
     }
 }
 
@@ -1009,6 +1026,10 @@ impl DeviceBackend for TimeoutConnectBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -1055,6 +1076,10 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -1096,6 +1121,10 @@ impl DeviceBackend for DisplayRecordingBackend {
         }
 
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -1155,6 +1184,10 @@ impl DeviceBackend for RecoveringDisplayBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -1202,6 +1235,10 @@ impl DeviceBackend for OrderedDisplayBackend {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -1574,7 +1611,7 @@ fn mapped_device_targets_list_each_binding_with_its_backend() {
 }
 
 #[test]
-fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
+fn unmap_device_clears_cached_display_fps_when_last_mapping_is_removed() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
     let write_count = Arc::new(AtomicUsize::new(0));
@@ -1594,9 +1631,9 @@ fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
         .block_on(manager.connect_device("slow", device_id, "slow:cache-cleanup"))
         .expect("connect should succeed");
 
-    assert_eq!(manager.cached_target_fps("slow", device_id), Some(33));
+    assert_eq!(manager.cached_display_fps("slow", device_id), Some(33));
     assert!(manager.unmap_device("slow:cache-cleanup"));
-    assert_eq!(manager.cached_target_fps("slow", device_id), None);
+    assert_eq!(manager.cached_display_fps("slow", device_id), None);
 }
 
 #[tokio::test]
@@ -1786,7 +1823,7 @@ async fn connect_device_caches_backend_target_fps_for_output_queue() {
     manager.write_frame(&zone_colors, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
-    assert_eq!(manager.cached_target_fps("slow", device_id), Some(37));
+    assert_eq!(manager.cached_display_fps("slow", device_id), Some(37));
 
     let snapshot = manager.debug_snapshot();
     let queue = snapshot
@@ -1864,15 +1901,15 @@ async fn backend_io_connects_once_and_caches_target_fps() {
     let io = manager
         .backend_io("connect_recording")
         .expect("backend io handle should exist");
-    let output_cadence = io.connect(device_id).await.expect("connect should succeed");
+    let output_policy = io.connect(device_id).await.expect("connect should succeed");
 
-    manager.set_cached_output_cadence("connect_recording", device_id, output_cadence);
+    manager.set_cached_output_policy("connect_recording", device_id, output_policy);
     manager.map_device("connect_recording:device", "connect_recording", device_id);
 
-    assert_eq!(output_cadence.target_fps(), 48);
+    assert_eq!(output_policy.display_fps(), 48);
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(
-        manager.cached_target_fps("connect_recording", device_id),
+        manager.cached_display_fps("connect_recording", device_id),
         Some(48)
     );
 }
@@ -1933,13 +1970,13 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     };
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    let output_cadence = io
+    let output_policy = io
         .connect_with_timeout(device_id, Duration::from_millis(20))
         .await
         .expect("timeout should start after the backend lock is acquired");
 
     write_task.await.expect("write task should not panic");
-    assert_eq!(output_cadence.target_fps(), 60);
+    assert_eq!(output_policy.display_fps(), 60);
     assert_eq!(write_count.load(Ordering::Relaxed), 1);
 }
 
@@ -4792,6 +4829,67 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
 }
 
 #[tokio::test]
+async fn output_queue_sends_identical_payloads_up_to_backend_minimum() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(0)
+    .with_min_identical_sends(3);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:repeat")
+        .await
+        .expect("connect should succeed");
+    assert_eq!(
+        manager
+            .cached_output_policy("slow", device_id)
+            .map(|policy| policy.copies_before_idle().get()),
+        Some(3)
+    );
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:repeat", 4)]);
+    let steady = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+    for _ in 0..5 {
+        manager.write_frame(&steady, &layout);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        write_count.load(Ordering::Relaxed),
+        3,
+        "an unchanged frame goes out three times, then suppression applies"
+    );
+
+    let changed = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 80, 70]; 4],
+    }];
+    for _ in 0..5 {
+        manager.write_frame(&changed, &layout);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        write_count.load(Ordering::Relaxed),
+        6,
+        "a changed frame restarts the identical-send count"
+    );
+    let expected_changed = vec![expected_led_color([90, 80, 70]); 4];
+    let writes = writes.lock().await.clone();
+    assert!(writes[3..].iter().all(|write| write == &expected_changed));
+}
+
+#[tokio::test]
 async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
@@ -4805,7 +4903,7 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
         Arc::clone(&write_count),
     )
     .with_target_fps(60)
-    .with_max_frame_silence(max_frame_silence);
+    .with_replay_after(max_frame_silence);
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(backend));
@@ -4835,9 +4933,9 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
     assert!(writes.iter().all(|write| write == &expected));
 
     let cadence = manager
-        .cached_output_cadence("slow", device_id)
+        .cached_output_policy("slow", device_id)
         .expect("connected cadence should be cached");
-    assert_eq!(cadence.max_frame_silence(), Some(max_frame_silence));
+    assert_eq!(cadence.replay_after(), Some(max_frame_silence));
 
     let stats = manager.device_output_statistics();
     assert_eq!(stats.len(), 1);
@@ -4860,7 +4958,7 @@ async fn cached_payload_reassertion_uses_normal_failure_and_ack_telemetry() {
 
     let backend =
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts))
-            .with_max_frame_silence(Duration::from_millis(40));
+            .with_replay_after(Duration::from_millis(40));
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(backend));
@@ -4992,6 +5090,68 @@ async fn reuse_routed_frame_outputs_keeps_identical_successful_payload_quiet() {
 }
 
 #[tokio::test]
+async fn reuse_routed_frame_outputs_sends_owed_identical_copies() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(0)
+    .with_min_identical_sends(3);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:reuse_repeat")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:reuse_repeat", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+    manager.write_frame(&frame, &layout);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(write_count.load(Ordering::Relaxed), 1);
+
+    // The render loop takes the routed-reuse path for an unchanged frame,
+    // so the owed copies must go out from there, one per reuse tick.
+    let mut written = Vec::new();
+    for _ in 0..5 {
+        assert!(manager.can_reuse_routed_frame_outputs(&layout));
+        written.push(manager.reuse_routed_frame_outputs(&layout).devices_written);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(written, vec![1, 1, 0, 0, 0]);
+    assert_eq!(
+        write_count.load(Ordering::Relaxed),
+        3,
+        "three identical deliveries in total, then suppression"
+    );
+    let expected = vec![expected_led_color([12, 34, 56]); 4];
+    assert!(writes.lock().await.iter().all(|write| write == &expected));
+
+    // A changed frame restarts the obligation on the same path.
+    let changed = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[1, 2, 3]; 4],
+    }];
+    manager.write_frame(&changed, &layout);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    for _ in 0..4 {
+        manager.reuse_routed_frame_outputs(&layout);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(write_count.load(Ordering::Relaxed), 6);
+}
+
+#[tokio::test]
 async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_error() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
@@ -5035,7 +5195,7 @@ async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_err
 }
 
 #[tokio::test]
-async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
+async fn write_frame_uses_interval_pacing_for_cached_display_fps() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
     let write_count = Arc::new(AtomicUsize::new(0));
@@ -5445,7 +5605,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(backend));
-    manager.set_cached_target_fps("slow", device_id, 30);
+    manager.set_cached_output_policy("slow", device_id, OutputPolicy::from_fps(30));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
@@ -5492,6 +5652,10 @@ enum ScriptedDelivery {
     Decline,
     TransientFailure,
     Failure,
+    Defer(Duration),
+    Supersede,
+    /// Hand the frame to a worker that writes it after this long.
+    PendingFor(Duration),
 }
 
 struct ScriptedFrameSink {
@@ -5501,17 +5665,12 @@ struct ScriptedFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for ScriptedFrameSink {
-    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        bail!("scripted sink only answers queue-qualified deliveries")
+    fn is_closed(&self) -> bool {
+        false
     }
 
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        observer.transport_started(id);
+    async fn submit(&self, frame: Frame) -> Submission {
+        let (_, attempt) = frame.into_parts();
         let next = self
             .script
             .lock()
@@ -5519,18 +5678,28 @@ impl DeviceFrameSink for ScriptedFrameSink {
             .pop_front()
             .unwrap_or(ScriptedDelivery::Complete);
         let error = DeviceError::write("scripted", "hid write reported a short count");
-        let ack = match next {
-            ScriptedDelivery::Complete => {
-                DeviceDeliveryAck::completed(id, colors.len().saturating_mul(3), Duration::ZERO)
-            }
-            ScriptedDelivery::Decline => DeviceDeliveryAck::declined(id, Duration::ZERO),
-            ScriptedDelivery::TransientFailure => {
-                DeviceDeliveryAck::failed_transient(id, true, Duration::ZERO, error)
-            }
-            ScriptedDelivery::Failure => DeviceDeliveryAck::failed(id, true, Duration::ZERO, error),
+        if let ScriptedDelivery::PendingFor(hold) = next {
+            let transmission = attempt.start();
+            tokio::spawn(async move {
+                tokio::time::sleep(hold).await;
+                transmission.written();
+            });
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            return Submission::Pending;
+        }
+        let receipt = match next {
+            ScriptedDelivery::PendingFor(_) => unreachable!("handled above"),
+            ScriptedDelivery::Defer(wait) => attempt.skip(SkipReason::Deferred {
+                retry_at: Instant::now() + wait,
+            }),
+            ScriptedDelivery::Supersede => attempt.skip(SkipReason::Superseded),
+            ScriptedDelivery::Complete => attempt.start().written(),
+            ScriptedDelivery::Decline => attempt.start().answered(PeerDisposition::Declined),
+            ScriptedDelivery::TransientFailure => attempt.start().failed_transient(error),
+            ScriptedDelivery::Failure => attempt.start().failed(error),
         };
         self.attempts.fetch_add(1, Ordering::SeqCst);
-        ack
+        receipt.into()
     }
 }
 
@@ -5538,6 +5707,7 @@ struct ScriptedFrameSinkBackend {
     expected_device_id: DeviceId,
     script: Arc<StdMutex<std::collections::VecDeque<ScriptedDelivery>>>,
     attempts: Arc<AtomicUsize>,
+    policy: Option<OutputPolicy>,
 }
 
 #[async_trait::async_trait]
@@ -5568,6 +5738,10 @@ impl DeviceBackend for ScriptedFrameSinkBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("backend-wide write path should not be used when a frame sink is available")
     }
@@ -5580,10 +5754,21 @@ impl DeviceBackend for ScriptedFrameSinkBackend {
             }) as Arc<dyn DeviceFrameSink>
         })
     }
+
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        self.policy
+    }
 }
 
 async fn scripted_sink_manager(
     script: impl IntoIterator<Item = ScriptedDelivery>,
+) -> (BackendManager, Arc<AtomicUsize>, SpatialLayout) {
+    scripted_sink_manager_with_policy(script, None).await
+}
+
+async fn scripted_sink_manager_with_policy(
+    script: impl IntoIterator<Item = ScriptedDelivery>,
+    policy: Option<OutputPolicy>,
 ) -> (BackendManager, Arc<AtomicUsize>, SpatialLayout) {
     let device_id = DeviceId::new();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -5592,6 +5777,7 @@ async fn scripted_sink_manager(
         expected_device_id: device_id,
         script: Arc::new(StdMutex::new(script.into_iter().collect())),
         attempts: Arc::clone(&attempts),
+        policy,
     }));
     manager
         .connect_device("scripted_sink", device_id, "scripted_sink:strip")
@@ -5689,6 +5875,90 @@ async fn async_failures_keep_fatal_lane_failures_non_transient() {
         "the newest failure carries its own producer classification"
     );
     assert_eq!(failures[0].consecutive_failures, 2);
+}
+
+// ── Frames that were not written ────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_deferred_frame_comes_back_when_its_lane_said_it_would() {
+    let wait = Duration::from_millis(30);
+    let (mut manager, attempts, layout) =
+        scripted_sink_manager([ScriptedDelivery::Defer(wait), ScriptedDelivery::Complete]).await;
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[10, 20, 30]; 2],
+    }];
+
+    manager.write_frame(&frame, &layout);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while attempts.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the deferred frame should be offered again with no new frame and no replay window");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].frames_suppressed, 1);
+    assert_eq!(stats[0].frames_sent, 1);
+    assert_eq!(stats[0].transport_started, 1, "only the write touched it");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "written once, then quiet"
+    );
+}
+
+#[tokio::test]
+async fn idle_replay_resumes_after_a_pending_frame_outlives_its_window() {
+    let replay_after = Duration::from_millis(20);
+    let (mut manager, attempts, layout) = scripted_sink_manager_with_policy(
+        [ScriptedDelivery::PendingFor(Duration::from_millis(80))],
+        Some(OutputPolicy::from_fps(60).with_replay_after(replay_after)),
+    )
+    .await;
+
+    manager.write_frame(
+        &[ZoneColors {
+            zone_id: "zone_0".into(),
+            colors: vec![[10, 20, 30]; 2],
+        }],
+        &layout,
+    );
+
+    // The replay deadline expires while the frame is still out, which has
+    // to leave replay armed for when it settles.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while attempts.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("idle replay should resume once the pending frame settles");
+}
+
+#[tokio::test]
+async fn a_superseded_frame_counts_as_dropped_and_still_goes_out_again() {
+    let (mut manager, attempts, layout) =
+        scripted_sink_manager([ScriptedDelivery::Supersede, ScriptedDelivery::Complete]).await;
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].frames_dropped, 1);
+    assert_eq!(stats[0].coalesced_backend_overrun, 1);
+    assert_eq!(stats[0].frames_sent, 0);
+    assert_eq!(stats[0].errors_total, 0);
+    assert_eq!(stats[0].transport_failed, 0);
+    assert!(manager.async_write_failures().is_empty());
+
+    // Whatever replaced it was not a newer queued frame, so the same colors
+    // have still not reached the device and must not dedupe away.
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].frames_sent, 1);
+    assert_eq!(stats[0].frames_suppressed, 0);
 }
 
 // ── Device declines ─────────────────────────────────────────────────────────

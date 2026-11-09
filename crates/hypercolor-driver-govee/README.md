@@ -15,7 +15,7 @@ A per-SKU capability database maps model numbers to LED counts, topology, and pr
 ## Position in the Workspace
 
 - Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
-  `hypercolor-types`, `anyhow`, `async-trait`, `base64`, `reqwest`, `serde`,
+  `hypercolor-types`, `anyhow`, `async-trait`, `base64`, `serde`,
   `serde_json`, `tokio`, `tracing`
 - Consumed by: `hypercolor-driver-builtin` (via the `govee` feature)
 - LAN discovery uses UDP broadcast; does not use mDNS

@@ -118,6 +118,7 @@ jobs:
       sdk: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.sdk }}
       ui: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.ui }}
       compat: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.compat }}
+      windows_installer: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.windows_installer }}
       docs: ${{ steps.filter.outputs.docs }}
       nix: ${{ steps.filter.outputs.nix }}
       workflow: ${{ steps.filter.outputs.workflow }}
@@ -139,15 +140,21 @@ jobs:
               - 'scripts/cargo-cache-cargo-shim.sh'
               - 'scripts/cargo-target-gc.sh'
               - 'scripts/check-macos-gpu-only.sh'
+              - 'scripts/check-platform-cfg-budget.sh'
+              - 'scripts/check-test-hermeticity.sh'
               - 'scripts/check-vendored-patches.sh'
+              - 'scripts/lib/rust_source.py'
               - 'scripts/tests/cargo-cache-build-tests.sh'
               - 'scripts/tests/cargo-cache-mode-tests.ps1'
               - 'scripts/tests/cargo-target-gc-tests.sh'
+              - 'scripts/tests/platform-cfg-budget-tests.sh'
+              - 'scripts/tests/test-hermeticity-tests.sh'
               - 'scripts/dist.sh'
               - 'scripts/verify-release-artifact.sh'
               - 'scripts/get-hypercolor.sh'
               - 'scripts/install-release.sh'
               - 'scripts/tests/release-artifact-tests.sh'
+              - 'scripts/tests/hypercolor-open.test.mjs'
               - 'scripts/tests/docker-smoke.mjs'
               - 'scripts/tests/docker-workflow.test.mjs'
               - 'scripts/homebrew-formula.mjs'
@@ -172,8 +179,8 @@ jobs:
               # skips a pull request that only edits the shared table.
               - 'sdk/shared/color-vectors.json'
               # Patched sources the daemon builds through [patch.crates-io].
+              - 'vendor/libsqlite3-sys/**'
               - 'vendor/servo-script/**'
-              - 'vendor/utoipa-swagger-ui/**'
             python:
               - 'python/**'
               - 'protocol/**'
@@ -187,6 +194,12 @@ jobs:
               - 'python/pyproject.toml'
               - 'python/uv.lock'
               - 'protocol/**'
+              # The REST reference is generated from the same OpenAPI export.
+              - 'scripts/gen-rest-reference.ts'
+              - 'scripts/tests/gen-rest-reference.test.ts'
+              - 'docs/content/api/rest.md'
+              - 'docs/content/api/rest-schemas.md'
+              - 'docs/content/api/rest.notes.md'
               - '.github/workflows/ci.yml'
             sdk:
               - 'sdk/**'
@@ -211,6 +224,35 @@ jobs:
               - 'data/compat/**'
               - 'docs/content/hardware/compatibility.md'
               - 'scripts/gen-compat.ts'
+              - 'scripts/gen-compat.test.ts'
+            windows_installer:
+              - 'crates/hypercolor-app/installer*'
+              - 'crates/hypercolor-app/src/autostart.rs'
+              - 'crates/hypercolor-app/src/windows_update.rs'
+              - 'crates/hypercolor-app/tauri*.json'
+              - 'crates/hypercolor-cli/Cargo.toml'
+              - 'crates/hypercolor-cli/src/lib.rs'
+              - 'crates/hypercolor-cli/src/windows_install.rs'
+              - 'crates/hypercolor-install/Cargo.toml'
+              - 'crates/hypercolor-install/src/bin/**'
+              - 'crates/hypercolor-install/src/windows.rs'
+              - 'crates/hypercolor-install/src/windows/**'
+              - 'crates/hypercolor-windows-install-native/**'
+              - 'crates/hypercolor-windows-launcher/**'
+              - 'crates/hypercolor-windows-pawnio/src/windows/log_directory.rs'
+              - 'crates/hypercolor-windows-pawnio/src/windows/broker.rs'
+              - 'scripts/build-windows-installer.ps1'
+              - 'scripts/check-windows-dll-closure.ps1'
+              - 'scripts/fetch-pawnio-assets.ps1'
+              - 'scripts/install-bundled-pawnio.ps1'
+              - 'scripts/install-windows-hardware-support.ps1'
+              - 'scripts/install-windows-smbus-service.ps1'
+              - 'scripts/produce-windows-unit.ps1'
+              - 'scripts/stage-app-bundle-assets.ps1'
+              - 'scripts/test-windows-installer-upgrade.ps1'
+              - 'justfile'
+              - '.github/actions/rust-build-cache/**'
+              - '.github/workflows/ci.yml'
             docs:
               - 'docs/**'
               - '.agents/**/*.md'
@@ -220,6 +262,7 @@ jobs:
               - 'data/compat/**'
               - 'scripts/check-retired-api-docs.sh'
               - 'scripts/gen-compat.ts'
+              - 'scripts/gen-rest-reference.ts'
             workflow:
               - 'packaging/docker/**'
               - 'scripts/tests/docker-smoke.mjs'
@@ -228,6 +271,9 @@ jobs:
               - '.github/actions/**'
               - 'scripts/homebrew-formula.mjs'
               - 'scripts/with-macos-signing.sh'
+              - 'scripts/sign-windows-artifacts.ps1'
+              - 'scripts/tests/windows-signing-tests.ps1'
+              - 'scripts/tests/windows-signing.test.mjs'
               - 'scripts/resolve-release-version.sh'
               - 'scripts/tests/homebrew-formula.test.mjs'
               - 'scripts/tests/macos-ci-coverage.test.mjs'
@@ -263,7 +309,11 @@ jobs:
         run: node --test scripts/tests/homebrew-formula.test.mjs
 
       - name: Test release orchestration
-        run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/resolve-release-version.test.mjs scripts/tests/macos-release.test.mjs scripts/tests/release-cache-warm.test.mjs
+        run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/resolve-release-version.test.mjs scripts/tests/macos-release.test.mjs scripts/tests/release-cache-warm.test.mjs scripts/tests/windows-signing.test.mjs
+
+      - name: Test Windows signing policy
+        shell: pwsh
+        run: ./scripts/tests/windows-signing-tests.ps1
 
       - name: Test Docker release contracts
         run: node --test scripts/tests/docker-workflow.test.mjs
@@ -338,6 +388,16 @@ jobs:
       - name: Check macOS GPU-only architecture
         run: ./scripts/check-macos-gpu-only.sh
 
+      - name: Hold the platform cfg(target_os) budget
+        run: |
+          ./scripts/tests/platform-cfg-budget-tests.sh
+          ./scripts/check-platform-cfg-budget.sh
+
+      - name: Keep test mDNS on loopback
+        run: |
+          ./scripts/tests/test-hermeticity-tests.sh
+          ./scripts/check-test-hermeticity.sh
+
       - name: Refuse new raw HTML sinks
         run: ./scripts/check-ui-html-sinks.sh
 
@@ -351,6 +411,9 @@ jobs:
 
       - name: Test release artifact contracts
         run: ./scripts/tests/release-artifact-tests.sh
+
+      - name: Test the opener's owner check
+        run: node --test scripts/tests/hypercolor-open.test.mjs
 
       - name: Clippy shared crates
         run: >-
@@ -512,7 +575,14 @@ jobs:
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-macos-owner \
-            --test coordinator_tests
+            --test coordinator_tests \
+            --test launchd_job_tests \
+            --test process_lifetime_tests \
+            --test app_control_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked --no-tests=fail \
+            -p hypercolor-macos-owner --lib \
+            -E 'test(/bootstrap/)'
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-macos-session \
@@ -538,6 +608,34 @@ jobs:
           cargo nextest run --locked
           -p hypercolor-daemon --no-default-features --features wgpu --lib
           -E 'test(/api::system::tests::(input_source_status|macos_)/)'
+
+      # The app bundle platform's swaps, clones and full syncs run for real
+      # on the runner's APFS temporary directory.
+      - name: Run macOS app bundle install fixtures
+        if: matrix.lane == 'capabilities'
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked -p hypercolor-install --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked --no-tests=fail \
+            -p hypercolor-install --lib \
+            -E 'test(/^(macos_bundle|macho_cdhash)::/)'
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked --no-tests=fail \
+            -p hypercolor --test macos_launcher_role_tests
+
+      # Only the official release builds the adoption code, so this is where
+      # it compiles; no other lane sets the feature.
+      - name: Clippy the managed-update app
+        if: matrix.lane == 'capabilities'
+        run: |
+          mkdir -p crates/hypercolor-ui/dist
+          printf '<!doctype html><title>Hypercolor test fixture</title>' \
+            > crates/hypercolor-ui/dist/index.html
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked -p hypercolor-app --features managed-update --all-targets \
+            -- -D warnings
 
       - name: Build deployment and Sequoia availability fixtures
         if: matrix.lane == 'workspace'
@@ -768,6 +866,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The rendering smoke tests draw through Mesa's software EGL, so the
+      # lane names those packages instead of trusting the runner image.
       - name: Install system dependencies
         run: |
           sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
@@ -780,7 +880,8 @@ jobs:
             -o Acquire::Retries="$APT_RETRIES" \
             -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
-            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }} \
+            libegl-mesa0 libgl1-mesa-dri
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -835,6 +936,19 @@ jobs:
           ./scripts/cargo-cache-build.sh
           cargo test --locked -p hypercolor-core --features servo
           --test html_loader_tests
+
+      # Real Servo frames through Mesa's software EGL, asserted pixel by
+      # pixel. Pull requests render the fast set; main and tags add the
+      # sweep over every generated effect.
+      - name: Run Servo rendering smoke tests
+        timeout-minutes: 10
+        env:
+          HYPERCOLOR_REQUIRE_GENERATED_EFFECTS: "1"
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --locked -p hypercolor-core --features servo
+          --test servo_integration_tests
+          ${{ needs.changes.outputs.full == 'true' && '-- --include-ignored' || '' }}
 
       - name: Run core Servo doc tests
         if: needs.changes.outputs.full == 'true'
@@ -1036,6 +1150,188 @@ jobs:
         with:
           phase: save
 
+  # Installs the real recovery bootstrap and launcher under Program Files,
+  # registers the real HypercolorUpdate service and kills it, so the service
+  # manager's own failure actions run. It needs an administrator on a
+  # disposable machine, and it keeps this lane apart from rust-windows so
+  # nothing else on the runner can meet that service or those paths.
+  rust-windows-update-service:
+    name: Rust Windows Update Service
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows-update-service
+      HYPERCOLOR_PROVE_UPDATE_SERVICE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
+          shared-key: rust-windows-update-service
+          workspaces: . -> .cache/hypercolor/target/rust-windows-update-service
+          archive-key: dependencies
+          cache-on-failure: "true"
+
+      - name: Install nextest
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-nextest
+
+      - name: Prove the service manager recovers the update service
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked
+          -p hypercolor-windows-launcher --run-ignored only --no-tests=fail
+          --no-capture
+
+      # The install platform's service and firewall steps, against the real
+      # ones and the real broker.
+      - name: Build the SMBus broker for the install platform proofs
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo build --locked -p hypercolor-windows-pawnio
+          --bin hypercolor-smbus-service
+
+      - name: Run install platform proofs against the real service manager and firewall
+        env:
+          HYPERCOLOR_TEST_BROKER_EXE: ${{ env.CARGO_TARGET_DIR }}/debug/hypercolor-smbus-service.exe
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked
+          -p hypercolor-install -p hypercolor-windows-install-native
+          --run-ignored only --no-tests=fail --test-threads=1
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
+  # Builds a real installer and runs it on a real machine: from the last flat
+  # release through a kill mid-adoption, with and without the update service.
+  # A release build carries Servo and takes hours, and nothing here renders,
+  # so this builds the dev profile without it. The release lane runs the same
+  # upgrade proof against the real thing.
+  windows-installer:
+    name: Windows Installer
+    needs: changes
+    if: needs.changes.outputs.windows_installer == 'true'
+    runs-on: windows-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
+    timeout-minutes: 150
+    env:
+      # Absolute, because the Tauri steps run from crates/hypercolor-app.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      # The Tauri steps run cargo directly, outside the cache wrappers.
+      RUSTC_WRAPPER: sccache
+      # The release this proof adopts: the last one with a flat layout.
+      FLAT_RELEASE: v0.9.0
+      # Above the flat release, which an in-place upgrade needs.
+      PROOF_VERSION: 0.9.1-proof.1
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
+          shared-key: windows-installer
+          workspaces: . -> target
+          archive-key: dependencies
+          cache-on-failure: "true"
+
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-binstall
+
+      - name: Install Tauri CLI
+        # The exact version installer.nsi forks; see build-native-app.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo binstall -y --targets x86_64-pc-windows-msvc "tauri-cli@=2.12.1" || cargo install tauri-cli --version "=2.12.1" --locked
+
+      - name: Stage fixture web assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path crates/hypercolor-ui/dist, effects/hypercolor | Out-Null
+          Set-Content -LiteralPath crates/hypercolor-ui/dist/index.html -Value '<!doctype html><title>Hypercolor installer proof</title>'
+          Set-Content -LiteralPath effects/hypercolor/proof.html -Value '<!doctype html><title>Proof</title>'
+          $configPath = "crates/hypercolor-app/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.version = $env:PROOF_VERSION
+          $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
+
+      - name: Build the open source installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/build-windows-installer.ps1 -Profile dev -SkipUi -SkipEffects -NoServo
+          $proof = Join-Path $env:RUNNER_TEMP "installer-proof"
+          New-Item -ItemType Directory -Force -Path $proof | Out-Null
+          Copy-Item -Path "target/debug/bundle/nsis/*_x64-setup.exe" -Destination (Join-Path $proof "open-source-setup.exe")
+
+      - name: Build the managed installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/build-windows-installer.ps1 -Profile dev -SkipUi -SkipEffects -NoServo -ManagedUpdate
+          Copy-Item -Path "target/debug/bundle/nsis/*_x64-setup.exe" -Destination (Join-Path $env:RUNNER_TEMP "installer-proof/managed-setup.exe")
+
+      - name: Prove installs, upgrades, kills and uninstalls
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $proof = Join-Path $env:RUNNER_TEMP "installer-proof"
+          gh release download $env:FLAT_RELEASE --repo $env:GITHUB_REPOSITORY --pattern "*_x64-setup.exe" --dir (Join-Path $proof "flat") --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release download $env:FLAT_RELEASE failed with exit code $LASTEXITCODE" }
+          $flat = (Get-ChildItem (Join-Path $proof "flat") -Filter "*_x64-setup.exe" | Select-Object -First 1).FullName
+          $openSource = Join-Path $proof "open-source-setup.exe"
+          $managed = Join-Path $proof "managed-setup.exe"
+          $harness = "./scripts/test-windows-installer-upgrade.ps1"
+          & $harness -Mode Fresh -CandidateInstaller $openSource
+          & $harness -Mode Fresh -CandidateInstaller $managed -Managed
+          foreach ($mode in "Silent", "Interactive", "Killed") {
+            & $harness -Mode $mode -PreviousInstaller $flat -CandidateInstaller $managed -Managed
+          }
+          & $harness -Mode Silent -PreviousInstaller $flat -CandidateInstaller $openSource
+          & $harness -Mode Replace -PreviousInstaller $managed -CandidateInstaller $openSource
+          & $harness -Mode Replace -PreviousInstaller $openSource -CandidateInstaller $managed -Managed
+
+      # After the proof and on its failure too, so one round reports both.
+      - name: Verify installer DLL closure
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./scripts/check-windows-dll-closure.ps1 -Installer (Join-Path $env:RUNNER_TEMP "installer-proof/managed-setup.exe")
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
   # SparkleFlinger's GPU tests skip themselves when no compatible adapter
   # exists, and no other lane has one, so none of them ran in CI. Hosted
   # Windows runners have no GPU either, but DX12 still compiles every
@@ -1150,6 +1446,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Test the compatibility generator
+        run: bun test scripts/gen-compat.test.ts
       - name: Verify compatibility matrix is current
         run: bun scripts/gen-compat.ts --check
 
@@ -1197,7 +1495,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: python/uv.lock
@@ -1263,7 +1561,7 @@ jobs:
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: python/uv.lock
@@ -1291,6 +1589,19 @@ jobs:
 
       - name: Verify generated client is current
         run: uv run python scripts/generate_openapi_client.py --check
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Test the REST reference generator
+        working-directory: .
+        run: bun test scripts/tests/gen-rest-reference.test.ts
+
+      # Reuses the exporter the Python check just built.
+      - name: Verify generated REST reference is current
+        working-directory: .
+        run: bun scripts/gen-rest-reference.ts --check
 
       - name: Verify WebSocket protocol manifest is current
         working-directory: .
@@ -1321,7 +1632,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - uses: actions/setup-python@v7
         with:
@@ -1797,6 +2108,10 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' && contains(fromJSON('["full","warm"]'), inputs.release_artifacts))
     runs-on: ubuntu-24.04
+    outputs:
+      # Decided once, here, so build-native-app and sign-windows always
+      # agree on which of them uploads the Windows installer.
+      windows_signing: ${{ steps.windows-signing.outputs.enabled }}
     steps:
       # Signing runs for any tag ref, so warm dispatched from a tag would
       # notarize. Every signing and release build job needs this one.
@@ -1819,6 +2134,22 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: bash scripts/with-macos-signing.sh true
+
+      # Off, with a notice, until ARTIFACT_SIGNING_ACCOUNT is set; then a
+      # half-configured setup fails here, before any build starts.
+      - name: Resolve Windows signing
+        id: windows-signing
+        shell: pwsh
+        env:
+          RELEASE_ARTIFACTS: ${{ inputs.release_artifacts }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          WINDOWS_SIGNING_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
+        run: ./scripts/sign-windows-artifacts.ps1 resolve
 
   build-native-app:
     name: Native App (${{ matrix.target }})
@@ -1993,6 +2324,8 @@ jobs:
           if ($env:RUNNER_OS -eq "Windows") {
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-helper --bin hypercolor-windows-helper
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-launcher --bins
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-install --bin hypercolor-windows-unit
           }
 
       - name: Stage downloaded web assets
@@ -2045,7 +2378,13 @@ jobs:
           $nsisDirs = @("../../target/release/bundle/nsis", "target/release/bundle/nsis")
           if ($env:CARGO_TARGET_DIR) { $nsisDirs += Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis" }
           $nsisDirs | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item -Recurse -Force $_ }
-          cargo tauri build @buildArgs @configArgs
+          # The installer carries a unit of the finished programs, so the app
+          # is built first and bundled once the unit exists.
+          cargo tauri build --no-bundle @buildArgs @configArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ../../scripts/produce-windows-unit.ps1
+          cargo tauri bundle @buildArgs @configArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify installer DLL closure
         if: runner.os == 'Windows'
@@ -2104,7 +2443,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "gh release download $($older.Tag) failed with exit code $LASTEXITCODE" }
           $previous = Get-ChildItem $previousDir -Filter "*_x64-setup.exe" | Select-Object -First 1
           if (-not $previous) { throw "$($older.Tag) has no *_x64-setup.exe asset" }
-          foreach ($mode in "Interactive", "Silent") {
+          foreach ($mode in "Interactive", "Silent", "Killed") {
             ./scripts/test-windows-installer-upgrade.ps1 -PreviousInstaller $previous.FullName -CandidateInstaller $candidate.FullName -Mode $mode
           }
 
@@ -2152,8 +2491,48 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 7 }}
 
+      # A signing run hands the tested installer's exact inputs to
+      # sign-windows, which rebundles them with Authenticode signing and
+      # uploads the release installer in place of the step after this one.
+      - name: Package unsigned Windows payload
+        if: runner.os == 'Windows' && needs.release-credentials.outputs.windows_signing == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $payload = Join-Path $env:RUNNER_TEMP "unsigned-windows"
+          if (Test-Path -LiteralPath $payload) { Remove-Item -LiteralPath $payload -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path (Join-Path $payload "installer") | Out-Null
+          Set-Content -NoNewline -LiteralPath (Join-Path $payload "version") -Value $env:VERSION
+          # Signing changes these bytes, so the signing job produces the unit
+          # again, with the same producer, from what it signed.
+          $programs = Join-Path $payload "programs"
+          New-Item -ItemType Directory -Force -Path $programs | Out-Null
+          foreach ($program in "hypercolor-app", "hypercolor-daemon", "hypercolor", "hypercolor-smbus-service", "hypercolor-update-bootstrap", "hypercolor-windows-helper", "hypercolor-windows-unit") {
+            Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR "release/$program.exe") -Destination $programs
+          }
+          Copy-Item -LiteralPath "target/bundle-stage" -Destination (Join-Path $payload "bundle-stage") -Recurse
+          Remove-Item -LiteralPath (Join-Path $payload "bundle-stage/windows-unit") -Recurse -Force
+          $roots = @("target/release/bundle/nsis", "crates/hypercolor-app/target/release/bundle/nsis")
+          if ($env:CARGO_TARGET_DIR) { $roots += Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis" }
+          $installers = @($roots | Where-Object { Test-Path $_ } |
+            ForEach-Object { Get-ChildItem $_ -Filter "*_x64-setup.exe" } | Sort-Object FullName -Unique)
+          if ($installers.Count -ne 1) { throw "expected one NSIS installer, found $($installers.Count) under: $($roots -join ', ')" }
+          Copy-Item -LiteralPath $installers[0].FullName -Destination (Join-Path $payload "installer")
+
+      - name: Upload unsigned Windows payload
+        if: runner.os == 'Windows' && needs.release-credentials.outputs.windows_signing == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: ${{ runner.temp }}/unsigned-windows/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 7 }}
+
       - name: Upload native release bundle
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.release-credentials.outputs.windows_signing != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
@@ -2318,6 +2697,179 @@ jobs:
           name: hypercolor-app-${{ steps.payload.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
           path: target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg*
           if-no-files-found: error
+          overwrite: true
+
+  # ── Sign Windows Release Artifacts ────────────────────────────
+  # Rebundles build-native-app's unsigned Windows payload with Authenticode
+  # signing on a fresh runner that compiles nothing. Only this job may mint
+  # an OIDC token: npm and PyPI trust any ci.yml job that can, and the
+  # Artifact Signing credential signs whatever such a job submits, so the
+  # build and its hundreds of build scripts never get one. Tauri signs every
+  # inner binary before makensis packs it, makensis signs the uninstaller
+  # through installer.nsi's !uninstfinalize hook, and Tauri signs the
+  # installer last. With signing off, this stays on Linux and only reports;
+  # build-native-app has then uploaded the unsigned installer itself.
+  sign-windows:
+    name: Sign Windows (windows-x64)
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.release_artifacts == 'full')
+    needs: [build-native-app, release-credentials]
+    runs-on: ${{ needs.release-credentials.outputs.windows_signing == 'true' && 'windows-latest' || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      # The federated credential trusts this environment alone, and its
+      # deployment rules admit only main and v* tags.
+      name: ${{ needs.release-credentials.outputs.windows_signing == 'true' && 'windows-signing' || '' }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - name: Report an unsigned Windows build
+        if: needs.release-credentials.outputs.windows_signing != 'true'
+        run: echo "Windows signing is off for this run (release-credentials says why); build-native-app uploaded the unsigned installer."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        with:
+          persist-credentials: false
+
+      # tauri bundle reads cargo metadata and the host triple.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Tauri CLI
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        # Tauri's own release binary, pinned by version and SHA-256 (the
+        # digest GitHub records for the asset), with no installer action:
+        # this job compiles nothing and runs no unpinned code while it can
+        # mint an OIDC token. The version matches build-native-app's pin.
+        shell: pwsh
+        env:
+          TAURI_CLI_VERSION: "2.12.1"
+          TAURI_CLI_SHA256: d3919ebe0bf7013dd98293862784dd37b8f76db2d650e13a3ec11c5dd799c519
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          $dir = Join-Path $env:RUNNER_TEMP "tauri-cli"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir "cargo-tauri.zip"
+          $url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v$env:TAURI_CLI_VERSION/cargo-tauri-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash
+          if ($actual -ne $env:TAURI_CLI_SHA256) { throw "SHA256 mismatch for ${url}: expected $env:TAURI_CLI_SHA256, got $actual" }
+          Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+          $dir >> $env:GITHUB_PATH
+          & (Join-Path $dir "cargo-tauri.exe") --version
+
+      - name: Download unsigned Windows payload
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-windows-x64
+          path: ${{ runner.temp }}/unsigned-windows
+
+      - name: Restore unsigned Windows payload
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        id: payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $payload = Join-Path $env:RUNNER_TEMP "unsigned-windows"
+          $version = (Get-Content -Raw -LiteralPath (Join-Path $payload "version")).Trim()
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw "unsigned payload carries an invalid version: $version"
+          }
+          $configPath = "crates/hypercolor-app/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.version = $version
+          $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
+          # Put every input where build-native-app's build left it.
+          $release = Join-Path $env:CARGO_TARGET_DIR "release"
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          Copy-Item -Path (Join-Path $payload "programs/*") -Destination $release
+          Copy-Item -LiteralPath (Join-Path $payload "bundle-stage") -Destination "target/bundle-stage" -Recurse
+          $unsigned = @(Get-ChildItem (Join-Path $payload "installer") -Filter "*_x64-setup.exe")
+          if ($unsigned.Count -ne 1) { throw "the payload must carry one unsigned installer, found $($unsigned.Count)" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "unsigned-installer=$($unsigned[0].FullName)" >> $env:GITHUB_OUTPUT
+
+      # The GitHub OIDC token behind this login expires in about five
+      # minutes, so setup runs next and caches the code signing token.
+      - name: Sign in to Azure
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare Artifact Signing
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        shell: pwsh
+        env:
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          WINDOWS_SIGNING_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
+        run: ./scripts/sign-windows-artifacts.ps1 setup
+
+      # A unit holds its programs' exact bytes, so they are signed before the
+      # unit that carries them is produced.
+      - name: Sign Windows programs
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/sign-windows-artifacts.ps1 sign-payload
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/produce-windows-unit.ps1
+
+      - name: Bundle and sign Windows installer
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        working-directory: crates/hypercolor-app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $nsis = Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis"
+          if (Test-Path $nsis) { Remove-Item -Recurse -Force $nsis }
+          # The app in the unit is what ships, and the unit is already sealed,
+          # so the bundler has no reason to touch the binary it sees.
+          cargo tauri bundle --ci --bundles nsis --no-binary-patching `
+            --config tauri.bundle.conf.json `
+            --config tauri.windows.bundle.conf.json `
+            --config $env:HYPERCOLOR_TAURI_SIGN_CONFIG
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify Windows signatures
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        shell: pwsh
+        env:
+          UNSIGNED_INSTALLER: ${{ steps.payload.outputs.unsigned-installer }}
+        run: |
+          $installers = @(Get-ChildItem (Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis") -Filter "*_x64-setup.exe")
+          if ($installers.Count -ne 1) { throw "expected one signed NSIS installer, found $($installers.Count)" }
+          ./scripts/sign-windows-artifacts.ps1 verify -Installer $installers[0].FullName -UnsignedInstaller $env:UNSIGNED_INSTALLER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/check-windows-dll-closure.ps1 -Installer $installers[0].FullName
+
+      - name: Upload native release bundle
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hypercolor-app-${{ steps.payload.outputs.version }}-windows-x64-nsis
+          path: target/release/bundle/nsis/*_x64-setup.exe
+          if-no-files-found: error
+          # A rerun after a partial upload replaces rather than conflicts.
           overwrite: true
 
   # ── Build Release Tarballs ────────────────────────────────────
@@ -2725,11 +3277,13 @@ jobs:
   # with GITHUB_TOKEN (which never fires `on: push`) and then dispatches
   # this workflow on the tag ref.
   # Compilation runs alongside validation; only publication waits for both.
+  # sign-windows always finishes in minutes, and on a signing run it owns
+  # the Windows installer, so the release waits for it.
   create-release:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-windows-gpu, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [build-release, build-native-app, sign-windows, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-windows-update-service, windows-installer, rust-windows-gpu, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -2810,7 +3364,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4.4.1
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.6.0
+        uses: docker/login-action@v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

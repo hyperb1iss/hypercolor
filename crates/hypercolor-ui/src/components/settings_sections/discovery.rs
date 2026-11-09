@@ -327,6 +327,9 @@ fn DiscoveryDriverRow(
                             </span>
                         })}
                     </div>
+                    {setting.hint.map(|hint| view! {
+                        <div class="text-xs text-fg-tertiary/60 mt-0.5">{hint}</div>
+                    })}
                 </div>
                 <button
                     role="switch"

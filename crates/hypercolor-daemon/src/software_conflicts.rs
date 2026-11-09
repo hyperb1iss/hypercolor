@@ -31,7 +31,7 @@ pub(crate) const DIAGNOSE_SCAN_BUDGET: Duration = Duration::from_secs(5);
 /// Take one host inventory, record it, and log what changed.
 pub(crate) async fn scan_now(store: &SoftwareConflictStore) {
     let ticket = store.begin_scan();
-    let inventory = match tokio::task::spawn_blocking(crate::session::host_inventory).await {
+    let inventory = match tokio::task::spawn_blocking(store.inventory()).await {
         Ok(inventory) => inventory,
         Err(error) => {
             warn!(%error, "software inventory scan did not finish");

@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::CStr;
@@ -114,7 +116,7 @@ pub(crate) struct HTMLScriptElement {
     marked_as_render_blocking: Cell<bool>,
 
     /// <https://html.spec.whatwg.org/multipage/#concept-script-result>
-    result: DomRefCell<Option<ScriptResult>>,
+    result: DomRefCell<Option<Box<ScriptResult>>>,
 }
 
 impl HTMLScriptElement {
@@ -242,19 +244,19 @@ fn finish_fetching_a_script(
     match script_kind {
         ExternalScriptKind::Asap => {
             let document = elem.preparation_time_document.get().unwrap();
-            document.asap_script_loaded(cx, elem, load)
+            document.asap_script_loaded(cx, elem, *load)
         },
         ExternalScriptKind::AsapInOrder => {
             let document = elem.preparation_time_document.get().unwrap();
-            document.asap_in_order_script_loaded(cx, elem, load)
+            document.asap_in_order_script_loaded(cx, elem, *load)
         },
         ExternalScriptKind::Deferred => {
             let document = elem.parser_document.as_rooted();
-            document.deferred_script_loaded(cx, elem, load);
+            document.deferred_script_loaded(cx, elem, *load);
         },
         ExternalScriptKind::ParsingBlocking => {
             let document = elem.parser_document.as_rooted();
-            document.pending_parsing_blocking_script_loaded(elem, load, cx);
+            document.pending_parsing_blocking_script_loaded(elem, *load, cx);
         },
     }
 
@@ -367,7 +369,7 @@ impl FetchResponseListener for ClassicContext {
                     error, self.url
                 );
                 // Step 6, response is an error.
-                *elem.result.borrow_mut() = Some(Err(()));
+                *elem.result.borrow_mut() = Some(Box::new(Err(())));
                 finish_fetching_a_script(&elem, self.kind, cx);
                 return;
             },
@@ -444,7 +446,7 @@ impl FetchResponseListener for ClassicContext {
                 .is_null());
             }
         } else {*/
-        *elem.result.borrow_mut() = Some(Ok(Script::Classic(script)));
+        *elem.result.borrow_mut() = Some(Box::new(Ok(Script::Classic(script))));
         finish_fetching_a_script(&elem, self.kind, cx);
         // }
     }
@@ -461,7 +463,7 @@ impl FetchResponseListener for ClassicContext {
     }
 
     fn process_content_length(&mut self, _request_id: RequestId, size: usize) {
-        self.data.reserve(size - self.data.len());
+        self.data.reserve(size.saturating_sub(self.data.len()));
     }
 }
 
@@ -572,7 +574,7 @@ impl HTMLScriptElement {
     fn has_render_blocking_attribute(&self) -> bool {
         self.blocking
             .get()
-            .is_some_and(|list| list.Contains("render".into()))
+            .is_some_and(|list| list.Contains(DOMString::from_static("render")))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#potentially-render-blocking>
@@ -705,15 +707,15 @@ impl HTMLScriptElement {
             let for_attribute = element.get_attribute_string_value(&local_name!("for"));
             let event_attribute = element.get_attribute_string_value(&local_name!("event"));
             if let (Some(for_attribute), Some(event_attribute)) = (for_attribute, event_attribute) {
-                let for_value = for_attribute.to_ascii_lowercase();
-                let for_value = for_value.trim_matches(HTML_SPACE_CHARACTERS);
-                if for_value != "window" {
+                let for_value = for_attribute.trim_matches(HTML_SPACE_CHARACTERS);
+                if !for_value.eq_ignore_ascii_case("window") {
                     return;
                 }
 
-                let event_value = event_attribute.to_ascii_lowercase();
-                let event_value = event_value.trim_matches(HTML_SPACE_CHARACTERS);
-                if event_value != "onload" && event_value != "onload()" {
+                let event_value = event_attribute.trim_matches(HTML_SPACE_CHARACTERS);
+                if !event_value.eq_ignore_ascii_case("onload") &&
+                    !event_value.eq_ignore_ascii_case("onload()")
+                {
                     return;
                 }
             }
@@ -858,7 +860,7 @@ impl HTMLScriptElement {
                         script_fetch_options,
                         move |cx, module_tree| {
                             let load = module_tree.map(Script::Module).ok_or(());
-                            *script.result.borrow_mut() = Some(load);
+                            *script.result.borrow_mut() = Some(Box::new(load));
 
                             finish_fetching_a_script(&script, kind, cx);
                         },
@@ -929,7 +931,7 @@ impl HTMLScriptElement {
                         introduction_type,
                         move |_, module_tree| {
                             let load = module_tree.map(Script::Module).ok_or(());
-                            *script.result.borrow_mut() = Some(load);
+                            *script.result.borrow_mut() = Some(Box::new(load));
 
                             let trusted = Trusted::new(&*script);
 
@@ -1161,7 +1163,7 @@ impl VirtualMethods for HTMLScriptElement {
             .unwrap()
             .attribute_mutated(cx, attr, mutation);
         if *attr.local_name() == local_name!("src") {
-            if let AttributeMutation::Set(..) = mutation &&
+            if let AttributeMutation::Set(_) = mutation &&
                 !self.parser_inserted.get() &&
                 self.upcast::<Node>().is_connected()
             {

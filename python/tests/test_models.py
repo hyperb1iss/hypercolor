@@ -9,8 +9,12 @@ from hypercolor._generated.api.devices import update_attachments
 from hypercolor._generated.models import (
     ComponentBinding,
     DiagnoseDeviceOutputItem,
+    DriverTransportAvailabilityType1,
+    DriverTransportDescriptor,
+    DriverTransportKindType0,
     EdgeBehaviorFadeToBlack,
     EdgeBehaviorType0,
+    EffectCategory,
     EffectDetailResponse,
     SpatialLayout,
     UpdateAttachmentsRequest,
@@ -381,3 +385,52 @@ def test_public_models_export_the_types_control_definition_is_typed_with() -> No
     assert {"ControlType", "ControlValue", "ControlValueKind", "UNSET", "Unset"} <= set(
         models.__all__
     )
+
+
+def test_vocabulary_enums_keep_values_a_newer_daemon_adds() -> None:
+    known = EffectCategory("audio")
+    newer = EffectCategory("holographic")
+
+    assert known is EffectCategory.AUDIO
+    assert isinstance(newer, EffectCategory)
+    assert newer == "holographic"
+    assert str(newer) == "holographic"
+    assert newer not in list(EffectCategory)
+    with pytest.raises(ValueError, match="is not a valid EffectCategory"):
+        EffectCategory(7)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("wire_kind", "expected_type", "expected_value"),
+    [
+        ("usb", "DriverTransportKindType0", "usb"),
+        ("quantum_link", "DriverTransportKindType0", "quantum_link"),
+        ({"custom": "fieldbus"}, "DriverTransportKindType1", None),
+    ],
+)
+def test_collapsed_enum_unions_route_each_value_to_one_branch(
+    wire_kind: object,
+    expected_type: str,
+    expected_value: str | None,
+) -> None:
+    descriptor = DriverTransportDescriptor.from_dict(
+        {"availability": {"status": "available"}, "kind": wire_kind}
+    )
+
+    assert type(descriptor.kind).__name__ == expected_type
+    if expected_value is not None:
+        assert isinstance(descriptor.kind, DriverTransportKindType0)
+        assert descriptor.kind == expected_value
+    assert descriptor.to_dict()["kind"] == wire_kind
+
+
+def test_union_tags_stay_strict_so_variants_stay_distinct() -> None:
+    descriptor = DriverTransportDescriptor.from_dict(
+        {
+            "availability": {"status": "unsupported_platform", "platform": "macOS"},
+            "kind": "usb",
+        }
+    )
+
+    assert isinstance(descriptor.availability, DriverTransportAvailabilityType1)
+    assert descriptor.availability.platform == "macOS"

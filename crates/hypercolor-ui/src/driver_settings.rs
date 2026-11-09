@@ -15,7 +15,13 @@ pub struct DiscoveryDriverSetting {
     pub enabled: bool,
     pub transport_labels: Vec<String>,
     pub supports_pairing: bool,
+    /// One muted line under the label, used to note a driver labeled
+    /// experimental (Spec 89). Deliberately not a badge.
+    pub hint: Option<&'static str>,
 }
+
+/// The hint a driver row carries when its module is labeled experimental.
+pub const EXPERIMENTAL_DRIVER_HINT: &str = "Untested on real hardware";
 
 pub fn discovery_driver_settings(drivers: &[DriverSummary]) -> Vec<DiscoveryDriverSetting> {
     drivers
@@ -36,6 +42,10 @@ fn discovery_driver_setting(driver: &DriverSummary) -> DiscoveryDriverSetting {
         enabled: driver.enabled,
         transport_labels: transport_labels(&descriptor.transports),
         supports_pairing: descriptor.capabilities.pairing,
+        hint: descriptor
+            .stability
+            .is_experimental()
+            .then_some(EXPERIMENTAL_DRIVER_HINT),
     }
 }
 

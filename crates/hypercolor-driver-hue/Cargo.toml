@@ -22,10 +22,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-reqwest = { workspace = true }
 webrtc-dtls = { workspace = true }
 webrtc-util = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
 [dev-dependencies]
+hypercolor-driver-conformance = { workspace = true }
 tempfile = { workspace = true }

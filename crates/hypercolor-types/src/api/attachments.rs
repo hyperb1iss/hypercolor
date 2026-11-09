@@ -76,10 +76,9 @@ pub struct TemplateSummary {
 /// `led_positions` is expanded from the topology at request time, so it
 /// is present here but never in the listing.
 ///
-/// The item routes that also return this body today (`GET` and `PUT` on
-/// `/attachments/templates/{id}`) are deleted in wave 78.5, which leaves
-/// creation as the only caller. The type is chartered on creation for
-/// that reason, and the collection listing keeps its own summary shape.
+/// Creation is the only route that returns this body, so the type is
+/// chartered on creation, and the collection listing keeps its own
+/// summary shape.
 // Unlike its sibling responses this one cannot carry the `Eq` float
 // fence: `physical_size_mm` is a genuine `(f32, f32)`. That is safe
 // here because the shape was already a struct on the daemon side before

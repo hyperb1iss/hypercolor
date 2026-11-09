@@ -6,8 +6,10 @@ use criterion::{
     measurement::WallTime,
 };
 use hypercolor_hal::drivers::nollie::{NollieModel, NollieProtocol, ProtocolVersion};
+use hypercolor_hal::drivers::nzxt::{Gen2Profile, NzxtGen2Protocol, NzxtKrakenEliteV2Protocol};
 use hypercolor_hal::drivers::qmk::{ProtocolRevision, QmkKeyboardConfig, QmkProtocol};
 use hypercolor_hal::drivers::razer::{KrakenModel, KrakenProtocol};
+use hypercolor_hal::drivers::wooting::{WootingInterface, WootingModel, WootingProtocol};
 use hypercolor_hal::protocol::Protocol;
 
 fn benchmark_config() -> Criterion {
@@ -28,6 +30,23 @@ fn gradient_frame(led_count: usize) -> Vec<[u8; 3]> {
             [red, green, blue]
         })
         .collect()
+}
+
+/// Gen2 controller with three channels of three F120 RGB Duo fans each
+/// (60 LEDs per channel), resolved through a synthetic topology reply.
+fn nzxt_gen2_three_channels() -> NzxtGen2Protocol {
+    let protocol = NzxtGen2Protocol::new("NZXT Bench Controller", Gen2Profile::controller());
+    let mut report = vec![0_u8; 64];
+    report[..2].copy_from_slice(&[0x21, 0x03]);
+    report[14] = 3;
+    for channel in 0..3 {
+        let start = 15 + channel * 6;
+        report[start..start + 3].copy_from_slice(&[0x15, 0x15, 0x15]);
+    }
+    protocol
+        .parse_response(&report)
+        .expect("synthetic NZXT topology reply parses");
+    protocol
 }
 
 fn bench_protocol_case<P>(
@@ -62,6 +81,10 @@ fn bench_protocol_encoding(c: &mut Criterion) {
         protocol_version: ProtocolVersion::V2,
     });
     let kraken_ultimate = KrakenProtocol::new(KrakenModel::Ultimate);
+    let nzxt_gen2 = nzxt_gen2_three_channels();
+    let nzxt_elite_v2 = NzxtKrakenEliteV2Protocol::new("NZXT Bench Kraken Elite V2");
+    let wooting_80he = WootingProtocol::new(WootingModel::EightyHe, WootingInterface::V3);
+    let wooting_two_v1 = WootingProtocol::new(WootingModel::Two, WootingInterface::V1);
 
     bench_protocol_case(&mut group, "qmk_revd_87", 87, &qmk_revd_87);
     bench_protocol_case(&mut group, "qmk_revd_104", 104, &qmk_revd_104);
@@ -69,6 +92,10 @@ fn bench_protocol_encoding(c: &mut Criterion) {
     bench_protocol_case(&mut group, "nollie16v3_4096", 4_096, &nollie16v3);
     bench_protocol_case(&mut group, "nollie32_5120", 5_120, &nollie32);
     bench_protocol_case(&mut group, "razer_kraken_ultimate_1", 1, &kraken_ultimate);
+    bench_protocol_case(&mut group, "nzxt_gen2_180", 180, &nzxt_gen2);
+    bench_protocol_case(&mut group, "nzxt_kraken_elite_v2_24", 24, &nzxt_elite_v2);
+    bench_protocol_case(&mut group, "wooting_80he_v3_102", 102, &wooting_80he);
+    bench_protocol_case(&mut group, "wooting_two_v1_126", 126, &wooting_two_v1);
 
     group.finish();
 }

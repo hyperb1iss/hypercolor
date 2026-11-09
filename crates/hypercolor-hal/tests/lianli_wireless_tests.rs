@@ -1,6 +1,7 @@
 //! L-Wireless controller wire format, against spec 80 section 6 and the
 //! bytes captured from a V1 controller (`SLV3TX_V1.6`) on 2026-09-04.
 
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,13 +13,15 @@ use hypercolor_hal::drivers::lianli::wireless::discovery::{
     WirelessFanModel, parse_device_table, parse_master_reply, parse_table_records,
 };
 use hypercolor_hal::drivers::lianli::wireless::frame::{
-    CLOCK_PAYLOAD_LEN, RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT, RGB_CHUNK_LEN,
-    RGB_DATA_OFFSET, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfSubCommand, TX_RESET,
+    CLOCK_FIXED_LEN, CLOCK_PAYLOAD_LEN, CLOCK_UNSET, RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT,
+    RGB_CHUNK_LEN, RGB_DATA_OFFSET, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfSubCommand, TX_RESET,
     USB_CMD_GET_MAC, USB_CMD_SEND_RF, USB_PACKET_LEN, WallClock, clock_payload,
     clock_sync_envelope, pwm_envelope, reverse_fan_order, rgb_transfer,
 };
 use hypercolor_hal::drivers::lianli::wireless::tinyuz;
-use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseTolerance, TransferType};
+use hypercolor_hal::protocol::{
+    FrameBatch, Protocol, ProtocolCommand, ResponseTolerance, TransferType,
+};
 use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::DeviceTopologyHint;
 
@@ -249,7 +252,7 @@ fn an_envelope_ships_as_four_usb_packets_with_the_rf_header() {
 }
 
 #[test]
-fn the_first_clock_sync_of_a_session_carries_the_unset_sentinel() {
+fn every_clock_sync_carries_the_date_inside_the_unset_sentinel() {
     let clock = WallClock {
         year: 2026,
         month: 9,
@@ -262,18 +265,28 @@ fn the_first_clock_sync_of_a_session_carries_the_unset_sentinel() {
     assert_eq!(payload.len(), CLOCK_PAYLOAD_LEN);
     assert_eq!(&payload[32..39], &[0x07, 0xEA, 9, 4, 20, 15, 30]);
     assert!(
-        payload[..32].iter().all(|&b| b == 0),
-        "sensor fields stay zero"
+        payload[..32]
+            .iter()
+            .chain(&payload[39..CLOCK_FIXED_LEN])
+            .all(|&b| b == CLOCK_UNSET),
+        "the fixed region around the date carries the sentinel"
+    );
+    assert!(
+        payload[CLOCK_FIXED_LEN..].iter().all(|&b| b == 0),
+        "no fan LCD themes are configured over the radio"
     );
 
-    let first = clock_sync_envelope(MASTER_MAC, &payload, true);
-    assert_eq!(first.0[1], RfSubCommand::ClockSync as u8);
-    assert_eq!(&first.0[2..8], &[0; 6], "clock sync is broadcast");
-    assert!(first.0[14..64].iter().all(|&b| b == 0x14));
-    assert_eq!(&first.0[64..234], &payload[50..]);
-
-    let steady = clock_sync_envelope(MASTER_MAC, &payload, false);
-    assert_eq!(&steady.0[14..234], &payload[..]);
+    let envelope = clock_sync_envelope(MASTER_MAC, &payload);
+    assert_eq!(envelope.0[1], RfSubCommand::ClockSync as u8);
+    assert_eq!(&envelope.0[2..8], &[0; 6], "clock sync is broadcast");
+    assert_eq!(&envelope.0[8..14], &MASTER_MAC);
+    assert_eq!(&envelope.0[14..234], &payload[..]);
+    assert_eq!(
+        &envelope.0[14..16],
+        &[CLOCK_UNSET; 2],
+        "the bytes a targeted frame reads as slot and channel are never zero"
+    );
+    assert_eq!(&envelope.0[46..53], &[0x07, 0xEA, 9, 4, 20, 15, 30]);
 }
 
 #[test]
@@ -439,7 +452,18 @@ fn discovered_protocol() -> Clocked {
         record([0x22; 6], 0x00, 2, 27),
     ]);
     protocol.parse_response(&reply).expect("table parses");
+    // A second second's table confirms the duty each cluster reported, so
+    // the clusters hold it from here on.
+    protocol.advance(Duration::from_secs(1));
+    protocol.parse_response(&reply).expect("table parses");
     protocol
+}
+
+/// A second on, every routed cluster still reports the duty it first
+/// did, so it holds that duty.
+fn hold_duty(protocol: &Clocked) {
+    protocol.advance(Duration::from_secs(1));
+    report_duty(protocol, HELD_DUTY);
 }
 
 #[test]
@@ -645,18 +669,44 @@ fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
     );
     assert_eq!(
         commands.len(),
-        2 * 4 + 2 * 3 * 4 + 4 + 1,
-        "PWM, RGB, clock, poll"
+        4 + 1,
+        "fans at their duty with the frame confirmed: clock and poll only"
     );
-    protocol.echo(&commands);
+    assert_eq!(commands[0].data[5], RfSubCommand::ClockSync as u8);
+    report_duty(&protocol, HELD_DUTY);
     let again = protocol.upkeep();
     assert_eq!(again.len(), commands.len());
 }
 
-/// All PWM envelopes precede recovery; unrelated upkeep must wait until the
-/// full RGB transfer (including every data packet and repeated header) is
-/// sent, and the table poll comes last so its reply can confirm it.
+/// The duty `record` reports, which every cluster in these tests holds.
+const HELD_DUTY: [u8; 4] = [128, 64, 32, 0];
+/// A report more than L-Connect's tolerance of five off the held duty.
+const DRIFTED_DUTY: [u8; 4] = [140, 64, 32, 0];
+
+/// Every routed cluster reports `duty`, echoing the tag it already shows.
+fn report_duty(protocol: &Clocked, duty: [u8; 4]) {
+    let records: Vec<_> = protocol
+        .clusters()
+        .iter()
+        .map(|cluster| {
+            let mut record = record(cluster.mac, 0x00, 3, 28);
+            record[20..24].copy_from_slice(&cluster.effect_index);
+            record[36..40].copy_from_slice(&duty);
+            record
+        })
+        .collect();
+    protocol
+        .parse_response(&table_with(&records))
+        .expect("table parses");
+}
+
+/// Every cluster drifts off its duty, so upkeep sends each the duty it
+/// holds. All PWM envelopes precede recovery; unrelated upkeep must wait
+/// until the full RGB transfer (including every data packet and repeated
+/// header) is sent, and the table poll comes last so its reply can confirm
+/// it.
 fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]) {
+    report_duty(protocol, DRIFTED_DUTY);
     let commands = protocol.upkeep();
     let pwm_end = protocol.clusters().len() * 4;
     let rgb_end = pwm_end + expected.len();
@@ -667,20 +717,50 @@ fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]
     );
     for pwm in commands[..pwm_end].as_chunks::<4>().0 {
         assert_eq!(pwm[0].data[5], RfSubCommand::Pwm as u8);
+        assert_eq!(&pwm[0].data[21..25], &HELD_DUTY, "the held duty goes out");
     }
-    for (actual, expected) in commands[pwm_end..rgb_end].iter().zip(expected) {
-        assert_eq!(
-            without_tag(&actual.data),
-            without_tag(&expected.data),
-            "restore the complete latest frame, under a tag of its own"
-        );
-        assert_eq!(actual.post_delay, expected.post_delay);
-        assert_eq!(actual.transfer_type, expected.transfer_type);
-        assert_eq!(actual.expects_response, expected.expects_response);
-    }
+    assert_eq!(
+        transfers_by_target(&commands[pwm_end..rgb_end]),
+        transfers_by_target(expected),
+        "restore the complete latest frame, under a tag of its own"
+    );
     assert_eq!(commands[rgb_end].data[5], RfSubCommand::ClockSync as u8);
     assert_eq!(commands[rgb_end + 4].transfer_type, TransferType::Companion);
     protocol.echo(&commands);
+}
+
+/// One packet of an RGB transfer as a comparison sees it: tag blanked,
+/// with the pacing and plan it went out with.
+type SentPacket = (Vec<u8>, Duration, TransferType, bool);
+
+/// The RGB transfers in `commands`, keyed by the cluster each went to, so
+/// two batches compare whichever cluster each visited first.
+fn transfers_by_target(commands: &[ProtocolCommand]) -> BTreeMap<[u8; 6], Vec<SentPacket>> {
+    let mut transfers: BTreeMap<[u8; 6], Vec<SentPacket>> = BTreeMap::new();
+    let mut current = None;
+    for command in commands {
+        let data = &command.data;
+        if data.len() != USB_PACKET_LEN || data[0] != USB_CMD_SEND_RF {
+            current = None;
+            continue;
+        }
+        if data[1] == 0 {
+            current = (data[4] == RF_SELECT && data[5] == RfSubCommand::SetRgb as u8).then(|| {
+                let mut target = [0_u8; 6];
+                target.copy_from_slice(&data[6..12]);
+                target
+            });
+        }
+        if let Some(target) = current {
+            transfers.entry(target).or_default().push((
+                without_tag(data),
+                command.post_delay,
+                command.transfer_type,
+                command.expects_response,
+            ));
+        }
+    }
+    transfers
 }
 
 /// A packet with its RGB tag blanked: every send carries a tag of its own,
@@ -698,6 +778,19 @@ fn without_tag(data: &[u8]) -> Vec<u8> {
 }
 
 /// Send a frame and have the fans confirm it.
+fn encode_batch(protocol: &Clocked, colors: &[[u8; 3]]) -> (Vec<ProtocolCommand>, FrameBatch) {
+    let mut commands = Vec::new();
+    let batch = protocol.encode_frame_into(colors, &mut commands);
+    (commands, batch)
+}
+
+fn pixel_bytes(batch: FrameBatch) -> Option<usize> {
+    match batch {
+        FrameBatch::Write { pixel_bytes, .. } => pixel_bytes,
+        other => panic!("expected a written frame, got {other:?}"),
+    }
+}
+
 fn confirmed_frame(protocol: &Clocked, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
     let commands = protocol.encode_frame(colors);
     protocol.echo(&commands);
@@ -719,14 +812,15 @@ fn upkeep_restores_the_latest_frame_before_clock_and_retains_it_while_idle() {
     assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
 }
 
-/// The restore upkeep owes goes through the window: with room it follows
-/// the PWM at once, with a full window it waits for an echo to free room.
-/// (Both upkeeps run at one instant, so no timeout intervenes.)
+/// The restore a drifted duty's PWM owes goes through the window: with room
+/// it follows the PWM at once, with a full window it waits for an echo to
+/// free room. (Both upkeeps run at one instant, so no timeout intervenes.)
 #[test]
 fn upkeep_restores_only_where_the_window_has_room() {
     let protocol = discovered_protocol();
     let first = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
     assert_eq!(header_tags(&first).len(), 2);
+    report_duty(&protocol, DRIFTED_DUTY);
     let with_room = protocol.keepalive_commands();
     assert_eq!(
         header_tags(&with_room).len(),
@@ -760,20 +854,23 @@ fn a_frame_goes_to_each_cluster_with_room() {
     let first = protocol.encode_frame(&[[1, 1, 1]; 5 * 26]);
     let second = protocol.encode_frame(&[[2, 2, 2]; 5 * 26]);
     assert_eq!(header_tags(&first).len() + header_tags(&second).len(), 4);
-    assert!(
-        protocol.encode_frame(&[[3, 3, 3]; 5 * 26]).is_empty(),
-        "both windows of two are full"
-    );
+    let (held, batch) = encode_batch(&protocol, &[[3, 3, 3]; 5 * 26]);
+    assert!(held.is_empty(), "both windows of two are full");
+    assert_eq!(batch, FrameBatch::Held, "the pump sends it when it can");
 
     // Only the first cluster confirms.
     let tags = header_tags(&second);
+    let (_, first_cluster_tag) = tags
+        .iter()
+        .find(|(target, _)| *target == [0x11; 6])
+        .expect("the second frame went to the first cluster");
     let mut confirmed = record([0x11; 6], 0x00, 3, 28);
-    confirmed[20..24].copy_from_slice(&tags[0].1);
+    confirmed[20..24].copy_from_slice(first_cluster_tag);
     protocol
         .parse_response(&table_with(&[confirmed, record([0x22; 6], 0x00, 2, 27)]))
         .expect("table parses");
 
-    let fourth = protocol.encode_frame(&[[4, 4, 4]; 5 * 26]);
+    let (fourth, batch) = encode_batch(&protocol, &[[4, 4, 4]; 5 * 26]);
     assert_eq!(
         header_tags(&fourth)
             .iter()
@@ -783,9 +880,9 @@ fn a_frame_goes_to_each_cluster_with_room() {
         "the cluster with room gets the frame; the full one waits"
     );
     assert_eq!(
-        protocol.written_frame_bytes(),
+        pixel_bytes(batch),
         Some(3 * 26 * 3),
-        "the frame's acknowledgement counts only what was written"
+        "the frame's receipt counts only what was written"
     );
 }
 
@@ -795,9 +892,10 @@ fn a_frame_goes_to_each_cluster_with_room() {
 #[test]
 fn a_frame_reports_only_the_pixels_it_wrote() {
     let protocol = discovered_protocol();
-    let first = confirmed_frame(&protocol, &[[1, 1, 1]; 5 * 26]);
+    let (first, batch) = encode_batch(&protocol, &[[1, 1, 1]; 5 * 26]);
+    protocol.echo(&first);
     assert_eq!(
-        protocol.written_frame_bytes(),
+        pixel_bytes(batch),
         Some(5 * 26 * 3),
         "the first frame wrote every pixel"
     );
@@ -809,7 +907,7 @@ fn a_frame_reports_only_the_pixels_it_wrote() {
     for color in &mut colors[..3 * 26] {
         *color = [9, 9, 9];
     }
-    let second = protocol.encode_frame(&colors);
+    let (second, batch) = encode_batch(&protocol, &colors);
     assert_eq!(
         header_tags(&second)
             .iter()
@@ -818,7 +916,7 @@ fn a_frame_reports_only_the_pixels_it_wrote() {
         vec![[0x11; 6]],
         "only the changed cluster is written"
     );
-    assert_eq!(protocol.written_frame_bytes(), Some(3 * 26 * 3));
+    assert_eq!(pixel_bytes(batch), Some(3 * 26 * 3));
 }
 
 /// The render path returns to the frame the fans last confirmed while
@@ -839,18 +937,38 @@ fn shutdown_sends_the_final_frame_even_when_the_fans_showed_it_before() {
     assert!(held.is_empty(), "black waits behind the colored transfers");
 
     let shutdown = protocol.shutdown_sequence();
-    let flushed: Vec<Vec<u8>> = shutdown
-        .iter()
-        .map(|command| without_tag(&command.data))
-        .collect();
-    let black_again: Vec<Vec<u8>> = first
-        .iter()
-        .skip(3)
-        .map(|command| without_tag(&command.data))
-        .collect();
+    assert_eq!(shutdown.len(), first.len() - 3, "nothing but the transfers");
     assert_eq!(
-        flushed, black_again,
+        transfers_by_target(&shutdown),
+        transfers_by_target(&first[3..]),
         "black goes out again behind the colored transfer"
+    );
+}
+
+/// Every switch to another cluster waits out the air gap, so a batch
+/// starts with the cluster the last transfer went to: two clusters go
+/// A B, then B A, then A B, one switch a frame instead of two.
+#[test]
+fn consecutive_frames_start_where_the_last_transfer_went() {
+    let protocol = discovered_protocol();
+    let order = |commands: &[ProtocolCommand]| {
+        header_tags(commands)
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect::<Vec<_>>()
+    };
+    let (a, b) = ([0x11; 6], [0x22; 6]);
+    assert_eq!(
+        order(&confirmed_frame(&protocol, &[[1, 1, 1]; 5 * 26])),
+        [a, b]
+    );
+    assert_eq!(
+        order(&confirmed_frame(&protocol, &[[2, 2, 2]; 5 * 26])),
+        [b, a]
+    );
+    assert_eq!(
+        order(&confirmed_frame(&protocol, &[[3, 3, 3]; 5 * 26])),
+        [a, b]
     );
 }
 
@@ -863,15 +981,10 @@ fn upkeep_restores_pause_black_and_empty_frames_without_resurrecting_old_colors(
 
     let _ = confirmed_frame(&protocol, &[[0, 255, 0]; 5 * 26]);
     let empty = confirmed_frame(&protocol, &[]);
+    assert_eq!(empty.len(), black.len(), "nothing but the transfers");
     assert_eq!(
-        empty
-            .iter()
-            .map(|command| without_tag(&command.data))
-            .collect::<Vec<_>>(),
-        black
-            .iter()
-            .map(|command| without_tag(&command.data))
-            .collect::<Vec<_>>(),
+        transfers_by_target(&empty),
+        transfers_by_target(&black),
         "an empty frame pads all known fans with black"
     );
     assert_upkeep_restores_frame(&protocol, &empty);
@@ -890,6 +1003,7 @@ fn upkeep_preserves_right_attached_cluster_order_and_normalizes_input_lengths() 
         ]))
         .expect("one right-attached cluster and one normal cluster");
     let _ = protocol.keepalive_commands();
+    hold_duty(&protocol);
     let colors: Vec<_> = (0_u8..100).map(|index| [index, 0, 0]).collect();
     let exact = confirmed_frame(&protocol, &colors[..78]);
     let excess = protocol.encode_frame(&colors);
@@ -916,13 +1030,13 @@ fn a_new_session_discards_cached_colors_before_rediscovery() {
     let commands = protocol.keepalive_commands();
     assert_eq!(
         commands.len(),
-        2 + 4 + 4 + 1,
-        "no cached RGB in a new session"
+        2 + 4 + 1,
+        "no cached RGB in a new session, and the fans sit at their duty"
     );
     assert_eq!(&commands[0].data[..4], &[USB_CMD_GET_MAC, 8, 0, 0]);
-    assert_eq!(commands[2].data[5], RfSubCommand::Pwm as u8);
-    assert_eq!(commands[6].data[5], RfSubCommand::ClockSync as u8);
-    assert_eq!(commands[10].transfer_type, TransferType::Companion);
+    assert_eq!(commands[2].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(commands[6].transfer_type, TransferType::Companion);
+    hold_duty(&protocol);
 
     let fresh = protocol.encode_frame(&[[1, 2, 3]; 26]);
     let mut record = record([0x33; 6], 0, 1, 27);
@@ -946,46 +1060,150 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
 
     let commands = protocol.keepalive_commands();
     // The streaming preamble (channel selection plus one prep packet per
-    // cluster) because no frame has armed it yet, then two PWM envelopes
-    // and one clock envelope at four packets each, then the table poll.
+    // cluster) because no frame has armed it yet, then the clock envelope
+    // at four packets, then the table poll. Both clusters report the duty
+    // they hold, so neither gets fan-speed traffic.
     let preamble = 1 + 2;
-    assert_eq!(commands.len(), preamble + 3 * 4 + 1);
+    assert_eq!(commands.len(), preamble + 4 + 1);
     assert_eq!(
         &commands[0].data[..4],
         &[USB_CMD_GET_MAC, 8, 0, 0],
         "the first tick arms streaming when no frame has"
     );
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data[5] != RfSubCommand::Pwm as u8),
+        "fans at their duty are left alone"
+    );
 
-    let pwm = &commands[preamble].data;
+    let clock = &commands[preamble].data;
+    assert_eq!(&clock[..4], &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]);
+    assert_eq!(clock[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(&clock[18..20], &[CLOCK_UNSET; 2], "no address to latch");
+    let year = u16::from_be_bytes([clock[50], clock[51]]);
+    assert!(year >= 2026, "the first tick carries the real date: {year}");
+
+    let poll = &commands[preamble + 4];
+    assert_eq!(poll.transfer_type, TransferType::Companion);
+    assert_eq!(poll.response.capacity, Some(GET_DEV_REPLY_CAPACITY));
+
+    report_duty(&protocol, DRIFTED_DUTY);
+    let drifted = protocol.upkeep();
+    assert_eq!(
+        drifted.len(),
+        2 * 4 + 4 + 1,
+        "PWM for each cluster that drifted"
+    );
+    let pwm = &drifted[0].data;
     assert_eq!(pwm[5], RfSubCommand::Pwm as u8);
     assert_eq!(&pwm[6..12], &[0x11; 6]);
     assert_eq!(
         &pwm[18..25],
         &[3, 8, 1, 128, 64, 32, 0],
-        "observed duty, never invented"
+        "the duty the cluster held, never the drift and never invented"
     );
-    let second_pwm = &commands[preamble + 4].data;
-    assert_eq!(second_pwm[20], 2, "slot index counts clusters from one");
-
-    let clock = &commands[preamble + 8].data;
-    assert_eq!(&clock[..4], &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]);
-    assert_eq!(clock[5], RfSubCommand::ClockSync as u8);
-    assert!(
-        clock[18..64].iter().all(|&b| b == 0x14),
-        "first tick sends the sentinel"
+    assert_eq!(
+        drifted[4].data[20], 2,
+        "slot index counts clusters from one"
     );
-
-    let poll = &commands[preamble + 12];
-    assert_eq!(poll.transfer_type, TransferType::Companion);
-    assert_eq!(poll.response.capacity, Some(GET_DEV_REPLY_CAPACITY));
 
     let mut pumped = vec![ProtocolCommand::default()];
     protocol.pump_frame_into(&mut pumped);
     assert!(pumped.is_empty(), "a pump with nothing due sends nothing");
+    report_duty(&protocol, HELD_DUTY);
     let later = protocol.upkeep();
-    assert!(
-        later[8].data[18..64].iter().any(|&b| b != 0x14),
-        "later ticks send the blob"
+    assert_eq!(later.len(), 4 + 1, "back at their duty: no fan speed again");
+    assert_eq!(later[0].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(
+        &later[0].data[18..46],
+        &clock[18..46],
+        "later ticks send the same sentinel layout"
+    );
+}
+
+#[test]
+fn a_duty_within_the_tolerance_is_left_alone() {
+    let protocol = discovered_protocol();
+    let _ = protocol.keepalive_commands();
+    for duty in [[133, 64, 32, 0], [123, 69, 27, 5]] {
+        report_duty(&protocol, duty);
+        let commands = protocol.upkeep();
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.data[5] != RfSubCommand::Pwm as u8),
+            "{duty:?} sits within five of the held duty on every slot"
+        );
+    }
+    report_duty(&protocol, [128, 64, 32, 6]);
+    let commands = protocol.upkeep();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.data[1] == 0 && command.data[5] == RfSubCommand::Pwm as u8)
+            .count(),
+        2,
+        "six off on one slot is a drift"
+    );
+}
+
+#[test]
+fn a_first_report_is_held_only_once_the_tables_keep_reporting_it() {
+    let protocol = Clocked::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("MAC reply parses");
+    let mut glitched = record([0x11; 6], 0x00, 3, 28);
+    glitched[36..40].fill(0);
+    protocol
+        .parse_response(&table_with(&[glitched]))
+        .expect("table parses");
+    let _ = protocol.keepalive_commands();
+    for _ in 0..3 {
+        report_duty(&protocol, HELD_DUTY);
+        let commands = protocol.upkeep();
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.data[5] != RfSubCommand::Pwm as u8),
+            "a zero that did not last is never enforced"
+        );
+    }
+    report_duty(&protocol, DRIFTED_DUTY);
+    let commands = protocol.upkeep();
+    let pwm: Vec<_> = commands
+        .iter()
+        .filter(|command| command.data[1] == 0 && command.data[5] == RfSubCommand::Pwm as u8)
+        .collect();
+    assert_eq!(pwm.len(), 1, "the duty that lasted is the one held");
+    assert_eq!(&pwm[0].data[21..25], &HELD_DUTY);
+}
+
+#[test]
+fn only_the_cluster_that_got_fan_speed_owes_a_restore() {
+    let protocol = discovered_protocol();
+    let _ = confirmed_frame(&protocol, &[[9, 9, 9]; 5 * 26]);
+    let clusters = protocol.clusters();
+    let mut first = record(clusters[0].mac, 0x00, 3, 28);
+    first[20..24].copy_from_slice(&clusters[0].effect_index);
+    first[36..40].copy_from_slice(&DRIFTED_DUTY);
+    let mut second = record(clusters[1].mac, 0x00, 2, 27);
+    second[20..24].copy_from_slice(&clusters[1].effect_index);
+    protocol
+        .parse_response(&table_with(&[first, second]))
+        .expect("table parses");
+    let commands = protocol.upkeep();
+    assert_eq!(commands[0].data[5], RfSubCommand::Pwm as u8);
+    assert_eq!(&commands[0].data[6..12], &[0x11; 6]);
+    let restored: Vec<_> = header_tags(&commands)
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect();
+    assert_eq!(
+        restored,
+        vec![[0x11; 6]],
+        "the steady cluster is not resent"
     );
 }
 

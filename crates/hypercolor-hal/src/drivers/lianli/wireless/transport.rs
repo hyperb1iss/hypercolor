@@ -1,13 +1,18 @@
 //! The controller's transport: the TX bulk device paired with its RX
 //! sibling behind the same internal hub, watched for a half that stops
-//! taking commands.
+//! taking commands, with the vendor's air gap kept between RF frames.
 
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tracing::{debug, info, warn};
+use tokio::time::Instant;
+use tracing::{debug, info, trace, warn};
 
-use super::frame::{DONGLE_RESET, USB_CMD_RESET_PARTNER, USB_PACKET_LEN};
+use super::frame::{
+    DONGLE_RESET, Mac, RF_SELECT, RF_SLICES_PER_ENVELOPE, RfSubCommand, USB_CMD_GET_MAC,
+    USB_CMD_SEND_RF, USB_PACKET_LEN, USB_RF_HEADER_LEN,
+};
 use super::health::{self, DongleHalf, WedgeCause};
 use crate::protocol::TransferType;
 use crate::registry::{UsbTransportFuture, UsbTransportOpenRequest};
@@ -61,6 +66,97 @@ pub fn open_wireless_controller(request: UsbTransportOpenRequest) -> UsbTranspor
 
 /// Name both the pair and its watcher report.
 const TRANSPORT_NAME: &str = "lianli-wireless";
+
+/// The vendor's air gap after an RGB frame, before a frame to another
+/// receiver or of another kind.
+pub const AIR_GAP_AFTER_RGB: Duration = Duration::from_millis(10);
+/// The air gap after any other frame, before a frame to another receiver
+/// or of another kind.
+pub const AIR_GAP_BETWEEN_FRAMES: Duration = Duration::from_millis(5);
+
+/// How long an RF frame to `target` carrying `sub` must still wait, when
+/// the TX took the last slice of `previous` (its target and sub-command)
+/// `since` ago.
+///
+/// A receiver that hears a frame too soon after another receiver's frame
+/// can latch the earlier frame's trailing bytes as its address and duty, so
+/// a frame to a new target or of a new kind waits out the gap; frames of
+/// one kind to one target (a transfer's header repeats and data) follow
+/// each other freely. The gaps are lian-li-linux's (`RfPacer`), which
+/// match L-Connect's spacing: 5 ms between devices in its fan-speed loop,
+/// 10 ms after an effect upload. Out-of-range values latched this way
+/// still park a fan off the receiver (lian-li-linux PR 237), so no kind of
+/// frame is exempt; the protocol orders each batch of RGB transfers to
+/// switch clusters as rarely as it can instead.
+#[must_use]
+pub fn air_gap(previous: Option<(Mac, u8)>, since: Duration, target: Mac, sub: u8) -> Duration {
+    let Some((last_target, last_sub)) = previous else {
+        return Duration::ZERO;
+    };
+    if last_target == target && last_sub == sub {
+        return Duration::ZERO;
+    }
+    let gap = if last_sub == RfSubCommand::SetRgb as u8 {
+        AIR_GAP_AFTER_RGB
+    } else {
+        AIR_GAP_BETWEEN_FRAMES
+    };
+    gap.saturating_sub(since)
+}
+
+/// The TX answers every command with a status packet, and nothing reads
+/// them while frames stream. L-Connect reads the TX once a second, after
+/// its master query: `WinUsb.RfRead` flushes WinUSB's pipe buffer, then
+/// `ReadAll` reads until a read waits 10 ms, at most three packets. The
+/// transport drains this often, after the last slice of a frame that is
+/// not RGB, which in steady state is the 1 Hz clock broadcast, and before
+/// every master query, whose reply must not be a stale status.
+pub const TX_STATUS_DRAIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Status packets one drain reads at most: more than the vendor's three,
+/// short of turning a deep queue into a long stall of the command lane.
+pub const TX_STATUS_DRAIN_LIMIT: usize = 16;
+/// Status packets the flush before a master query reads at most: until the
+/// TX goes quiet in practice, since a connect can spare the time and its
+/// reply must be the query's own. The bound only guards a TX that never
+/// stops answering, and matches LibUsbDotNet's `ReadFlush`.
+pub const TX_STATUS_FLUSH_LIMIT: usize = 128;
+/// A drain ends at the first read that waits this long.
+pub const TX_STATUS_DRAIN_GAP: Duration = Duration::from_millis(10);
+
+/// Where a TX packet sits in an RF frame.
+#[derive(Debug, Clone, Copy)]
+enum RfSlice {
+    /// The first slice, which names the frame's target and sub-command.
+    First { target: Mac, sub: u8 },
+    /// A later slice of the frame in progress; `last` for its fourth.
+    Later { last: bool },
+}
+
+/// Where `packet` sits in an RF frame, if it is a slice of one.
+fn rf_slice(packet: &[u8]) -> Option<RfSlice> {
+    let envelope = packet.get(USB_RF_HEADER_LEN..)?;
+    if packet[0] != USB_CMD_SEND_RF {
+        return None;
+    }
+    match usize::from(packet[1]) {
+        0 if envelope.first() == Some(&RF_SELECT) => Some(RfSlice::First {
+            target: envelope.get(2..8)?.try_into().ok()?,
+            sub: *envelope.get(1)?,
+        }),
+        index if (1..RF_SLICES_PER_ENVELOPE).contains(&index) => Some(RfSlice::Later {
+            last: index + 1 == RF_SLICES_PER_ENVELOPE,
+        }),
+        _ => None,
+    }
+}
+
+/// The RF frame the TX took last.
+#[derive(Debug, Clone, Copy)]
+struct AirFrame {
+    target: Mac,
+    sub: u8,
+    last_slice_at: Instant,
+}
 /// Health key for a TX the scanner handed over without a USB path.
 const UNKNOWN_CONTROLLER: &str = "<unknown>";
 
@@ -83,14 +179,17 @@ const UNKNOWN_CONTROLLER: &str = "<unknown>";
 /// The RX's table poll stays one exchange and is never counted, because its
 /// timeout cannot tell a refused write from a slow reply.
 ///
-/// The protocol has the other verdict: a TX that takes every write while its
-/// fans stop confirming frames. It asks for the reset by writing the partner
-/// reset itself, and this watcher routes that write through the same path
-/// (record, reset, end the session), since a reset half has to be set up
-/// again from scratch either way.
+/// A TX that takes every write while its fans stop confirming frames is not
+/// a wedge, and nothing here resets it: the protocol ends that session for
+/// a fresh connect instead, as L-Connect resets a dongle only for failed
+/// writes.
 pub struct WirelessControllerTransport {
     pair: Box<dyn Transport>,
     controller: String,
+    /// The RF frame the TX took last, for the air gap.
+    on_air: Mutex<Option<AirFrame>>,
+    /// When the TX's status packets were last drained.
+    drained_at: Mutex<Option<Instant>>,
 }
 
 impl WirelessControllerTransport {
@@ -101,6 +200,120 @@ impl WirelessControllerTransport {
         Self {
             pair,
             controller: controller.into(),
+            on_air: Mutex::new(None),
+            drained_at: Mutex::new(None),
+        }
+    }
+
+    /// Where a write sits in an RF frame, if it is a TX write of one.
+    fn tx_rf_slice(data: &[u8], transfer_type: TransferType) -> Option<RfSlice> {
+        (DongleHalf::for_transfer(transfer_type) == DongleHalf::Tx)
+            .then(|| rf_slice(data))
+            .flatten()
+    }
+
+    /// Before a TX write: if it starts an RF frame, wait out whatever is
+    /// left of the air gap after the frame before it.
+    async fn keep_air_gap(&self, slice: Option<RfSlice>) {
+        let Some(RfSlice::First { target, sub }) = slice else {
+            return;
+        };
+        let wait = {
+            let on_air = self.on_air.lock().unwrap_or_else(PoisonError::into_inner);
+            on_air.map_or(Duration::ZERO, |frame| {
+                air_gap(
+                    Some((frame.target, frame.sub)),
+                    frame.last_slice_at.elapsed(),
+                    target,
+                    sub,
+                )
+            })
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// After a TX write the TX took: note the RF frame it belongs to, and
+    /// say whether the write finished a frame that is not RGB.
+    fn note_on_air(&self, slice: Option<RfSlice>) -> bool {
+        let Some(slice) = slice else {
+            return false;
+        };
+        let mut on_air = self.on_air.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        match slice {
+            RfSlice::First { target, sub } => {
+                *on_air = Some(AirFrame {
+                    target,
+                    sub,
+                    last_slice_at: now,
+                });
+                false
+            }
+            RfSlice::Later { last } => on_air.as_mut().is_some_and(|frame| {
+                frame.last_slice_at = now;
+                last && frame.sub != RfSubCommand::SetRgb as u8
+            }),
+        }
+    }
+
+    /// Once a drain interval has passed, read and discard the status
+    /// packets the TX has queued. Only after a frame that is not RGB: never
+    /// inside an RGB transfer, and never after a command whose reply a
+    /// caller is about to read.
+    async fn drain_tx_status(&self, frame_done: bool) {
+        if !frame_done {
+            return;
+        }
+        {
+            let mut drained_at = self
+                .drained_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let now = Instant::now();
+            if drained_at.is_some_and(|at| now.duration_since(at) < TX_STATUS_DRAIN_INTERVAL) {
+                return;
+            }
+            *drained_at = Some(now);
+        }
+        self.flush_tx_status(TX_STATUS_DRAIN_LIMIT).await;
+    }
+
+    /// Before a TX write of a master query: read and discard whatever the
+    /// TX has queued, so the reply read after it is the query's own and
+    /// never a status left from an earlier session's stream.
+    async fn flush_before_query(&self, data: &[u8], transfer_type: TransferType) {
+        if DongleHalf::for_transfer(transfer_type) == DongleHalf::Tx
+            && data.first() == Some(&USB_CMD_GET_MAC)
+        {
+            self.flush_tx_status(TX_STATUS_FLUSH_LIMIT).await;
+        }
+    }
+
+    /// Read and discard the TX's queued status packets, up to `limit`,
+    /// stopping at the first read that waits [`TX_STATUS_DRAIN_GAP`]. A read
+    /// that times out is an empty queue, never a wedge; reads do not count.
+    async fn flush_tx_status(&self, limit: usize) {
+        let mut drained = 0_usize;
+        while drained < limit {
+            match self
+                .pair
+                .receive_logical(TX_STATUS_DRAIN_GAP, TransferType::Primary, None)
+                .await
+            {
+                Ok(_) => drained += 1,
+                Err(_) => break,
+            }
+        }
+        if drained == limit {
+            debug!(
+                controller = %self.controller,
+                drained,
+                "L-Wireless TX status queue still full after a drain"
+            );
+        } else {
+            trace!(controller = %self.controller, drained, "L-Wireless TX status drained");
         }
     }
 
@@ -127,28 +340,15 @@ impl WirelessControllerTransport {
         if let Some(wedge) = health::record_alive(&self.controller, half) {
             let wedged_for_ms =
                 u64::try_from(wedge.since.elapsed().as_millis()).unwrap_or(u64::MAX);
-            match wedge.cause {
-                WedgeCause::RefusedWrite => info!(
-                    controller = %self.controller,
-                    half = half.name(),
-                    wedged_for_ms,
-                    stalls = wedge.stalls,
-                    resets_sent = wedge.resets_sent,
-                    "L-Wireless {} recovered: it is taking commands again",
-                    half.name()
-                ),
-                // Taking writes was never the problem; the delivery report
-                // is what shows whether its fans confirm frames again.
-                WedgeCause::Undelivered => info!(
-                    controller = %self.controller,
-                    half = half.name(),
-                    wedged_for_ms,
-                    stalls = wedge.stalls,
-                    resets_sent = wedge.resets_sent,
-                    "L-Wireless {} is taking commands again after its reset",
-                    half.name()
-                ),
-            }
+            info!(
+                controller = %self.controller,
+                half = half.name(),
+                wedged_for_ms,
+                stalls = wedge.stalls,
+                resets_sent = wedge.resets_sent,
+                "L-Wireless {} recovered: it is taking commands again",
+                half.name()
+            );
         }
     }
 
@@ -184,29 +384,6 @@ impl WirelessControllerTransport {
         TransportError::Disconnected {
             detail: format!(
                 "L-Wireless {} wedged: it refused a write for {timeout_ms} ms; {reset}. \
-                 If it does not come back, replug or power-cycle the controller",
-                half.name()
-            ),
-        }
-    }
-
-    /// The protocol's verdict: `half` takes writes but what it sends is no
-    /// longer confirmed. Recorded and reset like a refused write.
-    async fn undelivered(&self, half: DongleHalf) -> TransportError {
-        let wedge = health::record_stall(&self.controller, half, WedgeCause::Undelivered);
-        warn!(
-            controller = %self.controller,
-            half = half.name(),
-            stalls = wedge.stalls,
-            resets_sent = wedge.resets_sent,
-            "L-Wireless {} delivery remains unconfirmed after recovery probes; resetting it through the {}",
-            half.name(),
-            half.partner().name()
-        );
-        let reset = self.reset_through_partner(half).await;
-        TransportError::Disconnected {
-            detail: format!(
-                "L-Wireless {} delivery remains unconfirmed after recovery probes; {reset}. \
                  If it does not come back, replug or power-cycle the controller",
                 half.name()
             ),
@@ -259,6 +436,7 @@ impl WirelessControllerTransport {
     ) -> Result<Vec<u8>, TransportError> {
         match DongleHalf::for_transfer(transfer_type) {
             DongleHalf::Tx => {
+                self.flush_before_query(data, transfer_type).await;
                 let sent = self.pair.send_with_type(data, transfer_type).await;
                 self.watch_write(DongleHalf::Tx, sent).await?;
                 self.pair
@@ -275,12 +453,6 @@ impl WirelessControllerTransport {
             }
         }
     }
-}
-
-/// Whether `data` is the vendor's partner reset, which no protocol command
-/// shares a first byte with.
-fn is_partner_reset(data: &[u8]) -> bool {
-    data.first() == Some(&USB_CMD_RESET_PARTNER)
 }
 
 /// The vendor's partner reset, padded to a controller packet.
@@ -310,13 +482,15 @@ impl Transport for WirelessControllerTransport {
         data: &[u8],
         transfer_type: TransferType,
     ) -> Result<(), TransportError> {
-        if is_partner_reset(data) {
-            let half = DongleHalf::for_transfer(transfer_type).partner();
-            return Err(self.undelivered(half).await);
-        }
+        self.flush_before_query(data, transfer_type).await;
+        let slice = Self::tx_rf_slice(data, transfer_type);
+        self.keep_air_gap(slice).await;
         let result = self.pair.send_with_type(data, transfer_type).await;
         self.watch_write(DongleHalf::for_transfer(transfer_type), result)
-            .await
+            .await?;
+        let frame_done = self.note_on_air(slice);
+        self.drain_tx_status(frame_done).await;
+        Ok(())
     }
 
     async fn send_owned_with_type(
@@ -324,13 +498,15 @@ impl Transport for WirelessControllerTransport {
         data: Vec<u8>,
         transfer_type: TransferType,
     ) -> Result<(), TransportError> {
-        if is_partner_reset(&data) {
-            let half = DongleHalf::for_transfer(transfer_type).partner();
-            return Err(self.undelivered(half).await);
-        }
+        self.flush_before_query(&data, transfer_type).await;
+        let slice = Self::tx_rf_slice(&data, transfer_type);
+        self.keep_air_gap(slice).await;
         let result = self.pair.send_owned_with_type(data, transfer_type).await;
         self.watch_write(DongleHalf::for_transfer(transfer_type), result)
-            .await
+            .await?;
+        let frame_done = self.note_on_air(slice);
+        self.drain_tx_status(frame_done).await;
+        Ok(())
     }
 
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {

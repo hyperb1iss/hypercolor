@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::paths::IsolatedUserDirs;
 #[cfg(feature = "servo-gpu-import")]
 use crate::effect::servo::set_servo_gpu_import_mode;
 use crate::effect::servo::worker::{
@@ -198,6 +199,30 @@ fn wait_for_load_completion(renderer: &mut ServoRenderer) {
         thread::sleep(Duration::from_millis(10));
     }
     panic!("Servo load task should complete");
+}
+
+/// An HTML effect on disk with the user directories claimed. Loading a page
+/// writes a runtime copy to the cache, so a test that loads one needs both.
+///
+/// Field order matters: the claim clears its overrides before the directory
+/// it pointed at is removed.
+struct PageFixture {
+    _dirs: Arc<IsolatedUserDirs>,
+    _root: tempfile::TempDir,
+    source_path: PathBuf,
+}
+
+fn page_fixture() -> PageFixture {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let dirs = IsolatedUserDirs::claim(root.path());
+    let source_path = root.path().join("effect.html");
+    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+        .expect("write source html");
+    PageFixture {
+        _dirs: dirs,
+        _root: root,
+        source_path,
+    }
 }
 
 fn html_metadata(path: PathBuf) -> EffectMetadata {
@@ -424,10 +449,8 @@ fn display_faces_submit_gpu_preferred_renders_when_import_is_on() {
         spawn_render_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("face.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = display_html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -570,10 +593,8 @@ fn init_with_canvas_size_returns_before_servo_session_create_completes() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -615,10 +636,8 @@ fn render_into_uses_placeholder_while_servo_load_is_pending() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -669,10 +688,8 @@ fn init_with_canvas_size_reuses_previous_canvas_while_new_effect_loads() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -717,10 +734,8 @@ fn renderer_warms_from_load_start_until_the_new_page_renders_its_first_frame() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let mut renderer = ServoRenderer::new();
     assert!(
@@ -764,6 +779,105 @@ fn renderer_warms_from_load_start_until_the_new_page_renders_its_first_frame() {
 
     shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
     assert!(stopped.load(Ordering::SeqCst));
+}
+
+#[test]
+fn presented_frames_count_only_frames_the_current_page_completed() {
+    let _lock = SHARED_WORKER_STATE_TEST_LOCK
+        .lock()
+        .expect("shared worker test lock");
+    reset_shared_servo_worker_state();
+
+    let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
+    install_running_shared_worker(worker);
+
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
+
+    let mut renderer = ServoRenderer::new();
+    renderer.initialized = true;
+    renderer.last_canvas = Some(solid_canvas(640, 480, 12, 34, 56));
+    renderer
+        .init_with_canvas_size(&html_metadata(source_path), 640, 480)
+        .expect("renderer should queue initialization");
+    load_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("create-session command should be queued asynchronously");
+
+    let input = frame_input_with(1.0 / 30.0, 1, &SILENCE, &DEFAULT_INTERACTION, 640, 480);
+    let mut target = Canvas::new(640, 480);
+    renderer
+        .render_into(&input, &mut target)
+        .expect("render should reuse the previous page's canvas");
+    assert_eq!(target.get_pixel(0, 0), Rgba::new(12, 34, 56, 255));
+    assert_eq!(
+        renderer.presented_frames(),
+        0,
+        "the previous page's retained canvas is not a presented frame"
+    );
+
+    release_tx.send(()).expect("release create-session");
+    wait_for_load_completion(&mut renderer);
+    assert_eq!(renderer.presented_frames(), 0);
+
+    renderer.accept_completed_canvas(solid_canvas(640, 480, 1, 2, 3), false);
+    renderer.accept_completed_canvas(solid_canvas(640, 480, 4, 5, 6), false);
+    assert_eq!(renderer.presented_frames(), 2);
+
+    renderer.destroy();
+    assert_eq!(renderer.presented_frames(), 0);
+    unload_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("destroy should unload test worker");
+
+    shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
+    assert!(stopped.load(Ordering::SeqCst));
+}
+
+/// A session lost before its first frame ends warming without counting a
+/// load failure, and the renderer falls back to placeholders. Only the
+/// presented-frame count tells that state apart from a rendered page.
+#[test]
+fn a_session_lost_before_its_first_frame_presents_nothing() {
+    let _lock = SHARED_WORKER_STATE_TEST_LOCK
+        .lock()
+        .expect("shared worker test lock");
+    reset_shared_servo_worker_state();
+
+    let (worker, load_rx, release_tx, _unload_rx, _stopped) = spawn_blocking_load_test_worker();
+    install_running_shared_worker(worker);
+
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
+
+    let mut renderer = ServoRenderer::new();
+    renderer
+        .init_with_canvas_size(&html_metadata(source_path), 640, 480)
+        .expect("renderer should queue initialization");
+    load_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("create-session command should be queued asynchronously");
+    release_tx.send(()).expect("release create-session");
+    wait_for_load_completion(&mut renderer);
+    assert!(renderer.is_warming());
+
+    renderer.handle_poll_error(anyhow::anyhow!("Servo worker disconnected mid-render"));
+
+    assert!(
+        renderer.session.is_none(),
+        "a fatal poll error drops the session"
+    );
+    assert!(!renderer.is_warming(), "a lost session no longer warms");
+    assert_eq!(renderer.presented_frames(), 0);
+    let input = frame_input_with(1.0 / 30.0, 7, &SILENCE, &DEFAULT_INTERACTION, 640, 480);
+    let mut target = Canvas::new(640, 480);
+    renderer
+        .render_into(&input, &mut target)
+        .expect("a lost session still renders placeholders");
+    assert_eq!(target.get_pixel(0, 0), Rgba::new(7, 0, 39, 255));
+
+    renderer.destroy();
+    reset_shared_servo_worker_state();
 }
 
 #[test]
@@ -825,10 +939,8 @@ fn init_with_canvas_size_loads_servo_page_at_target_resolution() {
     let (worker, load_rx, unload_rx, stopped) = spawn_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();

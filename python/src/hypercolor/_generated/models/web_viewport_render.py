@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class WebViewportRender(StrEnum):
+class WebViewportRender(TolerantStrEnum):
     LIVE = "live"
     SNAPSHOT = "snapshot"
 

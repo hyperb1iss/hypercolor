@@ -13,8 +13,9 @@ mod scene;
 mod service;
 mod validation;
 pub use backup::{
-    PortableAudioPreferences, PortableBackupV1, PortableCapturePreferences, PortablePreferences,
-    PortableShutdownPreferences,
+    OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION, PORTABLE_BACKUP_SCHEMA_VERSION,
+    PortableAudioPreferences, PortableBackupDecodeError, PortableBackupV1,
+    PortableCapturePreferences, PortablePreferences, PortableShutdownPreferences,
 };
 pub use projection::{SetupBindings, UnmappedSetupReference};
 pub use scene::{

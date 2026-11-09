@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use reqwest::Method;
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, Method, ReadBudget};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -24,20 +24,33 @@ pub const DEFAULT_HUE_STREAM_PORT: u16 = 2_100;
 const HUE_DISCOVERY_URL: &str = "https://discovery.meethue.com";
 const HUE_APPLICATION_KEY_HEADER: &str = "hue-application-key";
 
-static HUE_HTTPS_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .danger_accept_invalid_certs(true)
+const HUE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Largest `GET /clip/v2/resource/light` reply read. A Bridge Pro tops out
+/// at 186 lights and a light resource runs to a few KiB, so a real
+/// inventory stays under 1 MiB; this leaves room for firmware growth and
+/// bridge emulators that host more lights.
+const HUE_LIGHTS_REPLY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Largest entertainment configuration list read. Each configuration names
+/// at most a few dozen channels, roughly 10 KiB, and a bridge keeps a
+/// handful of them, so this holds a hundred.
+const HUE_ENTERTAINMENT_REPLY_BYTES: usize = 1024 * 1024;
+
+/// Largest reply read from the endpoints that answer with one small
+/// object: public config, pairing, streaming actions, and N-UPnP, whose
+/// entries of about 80 bytes make this roughly 800 bridges.
+const HUE_SMALL_REPLY_BYTES: usize = 64 * 1024;
+
+static HUE_HTTPS_CLIENT: LazyLock<Result<BoundedHttpClient, String>> = LazyLock::new(|| {
+    BoundedHttpClient::builder()
+        .accept_invalid_certs()
         .build()
         .map_err(|error| error.to_string())
 });
 
-static HUE_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())
-});
+static HUE_HTTP_CLIENT: LazyLock<Result<BoundedHttpClient, String>> =
+    LazyLock::new(|| BoundedHttpClient::new().map_err(|error| error.to_string()));
 
 /// Public N-UPnP bridge entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +108,13 @@ impl HueBridgeClient {
     /// missing the required identity fields.
     pub async fn bridge_identity(&self) -> Result<HueBridgeIdentity> {
         let json = self
-            .request_value(Method::GET, "/api/config", false, None)
+            .request_value(
+                Method::GET,
+                "/api/config",
+                false,
+                None,
+                HUE_SMALL_REPLY_BYTES,
+            )
             .await?;
 
         Ok(HueBridgeIdentity {
@@ -120,7 +139,13 @@ impl HueBridgeClient {
             "generateclientkey": true,
         });
         let json = self
-            .request_value(Method::POST, "/api", false, Some(request_body))
+            .request_value(
+                Method::POST,
+                "/api",
+                false,
+                Some(request_body),
+                HUE_SMALL_REPLY_BYTES,
+            )
             .await?;
 
         let Some(entries) = json.as_array() else {
@@ -175,7 +200,13 @@ impl HueBridgeClient {
     /// be parsed into light metadata.
     pub async fn lights(&self) -> Result<Vec<HueLight>> {
         let json = self
-            .request_value(Method::GET, "/clip/v2/resource/light", true, None)
+            .request_value(
+                Method::GET,
+                "/clip/v2/resource/light",
+                true,
+                None,
+                HUE_LIGHTS_REPLY_BYTES,
+            )
             .await?;
         let Some(items) = json.get("data").and_then(Value::as_array) else {
             bail!("Hue lights response did not include a data array");
@@ -196,6 +227,7 @@ impl HueBridgeClient {
                 "/clip/v2/resource/entertainment_configuration",
                 true,
                 None,
+                HUE_ENTERTAINMENT_REPLY_BYTES,
             )
             .await?;
         let Some(items) = json.get("data").and_then(Value::as_array) else {
@@ -255,9 +287,9 @@ impl HueBridgeClient {
         let client = hue_http_client()?;
         let entries: Vec<HueNupnpEntry> = client
             .get(url)
-            .send()
+            .send(ReadBudget::new(HUE_SMALL_REPLY_BYTES, HUE_REQUEST_TIMEOUT))
             .await
-            .and_then(reqwest::Response::error_for_status)
+            .and_then(BoundedResponse::error_for_status)
             .with_context(|| format!("Hue N-UPnP request to {url} failed"))?
             .json()
             .await
@@ -284,7 +316,7 @@ impl HueBridgeClient {
         body: Option<Value>,
     ) -> Result<()> {
         let _ = self
-            .request_response(method, path, authenticated, body)
+            .request_response(method, path, authenticated, body, HUE_SMALL_REPLY_BYTES)
             .await?
             .bytes()
             .await
@@ -298,8 +330,9 @@ impl HueBridgeClient {
         path: &str,
         authenticated: bool,
         body: Option<Value>,
+        max_reply_bytes: usize,
     ) -> Result<Value> {
-        self.request_response(method, path, authenticated, body)
+        self.request_response(method, path, authenticated, body, max_reply_bytes)
             .await?
             .json()
             .await
@@ -312,10 +345,11 @@ impl HueBridgeClient {
         path: &str,
         authenticated: bool,
         body: Option<Value>,
-    ) -> Result<reqwest::Response> {
+        max_reply_bytes: usize,
+    ) -> Result<BoundedResponse> {
         let secure_client = hue_https_client()?;
         let fallback_client = hue_http_client()?;
-        let schemes: [(&str, &reqwest::Client); 2] = if self.ip.is_loopback() {
+        let schemes: [(&str, &BoundedHttpClient); 2] = if self.ip.is_loopback() {
             [("http", fallback_client), ("https", secure_client)]
         } else {
             [("https", secure_client), ("http", fallback_client)]
@@ -337,7 +371,10 @@ impl HueBridgeClient {
                 request = request.json(body);
             }
 
-            match request.send().await {
+            // Each scheme gets its own budget: a bridge that ignores HTTPS
+            // must not spend the HTTP fallback's time.
+            let budget = ReadBudget::new(max_reply_bytes, HUE_REQUEST_TIMEOUT);
+            match request.send(budget).await {
                 Ok(response) => {
                     return response
                         .error_for_status()
@@ -351,13 +388,13 @@ impl HueBridgeClient {
     }
 }
 
-fn hue_https_client() -> Result<&'static reqwest::Client> {
+fn hue_https_client() -> Result<&'static BoundedHttpClient> {
     HUE_HTTPS_CLIENT
         .as_ref()
         .map_err(|error| anyhow!("failed to build Hue HTTPS client: {error}"))
 }
 
-fn hue_http_client() -> Result<&'static reqwest::Client> {
+fn hue_http_client() -> Result<&'static BoundedHttpClient> {
     HUE_HTTP_CLIENT
         .as_ref()
         .map_err(|error| anyhow!("failed to build Hue HTTP client: {error}"))

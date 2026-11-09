@@ -11,7 +11,6 @@ use super::{
 };
 use crate::model::UnitId;
 use crate::windows::WindowsOwnershipPolicy;
-use crate::windows::manifest::ValidatedManifest;
 use crate::windows::store::InstallStore;
 
 const FILES: [(&str, &str, &[u8]); 7] = [
@@ -25,8 +24,6 @@ const FILES: [(&str, &str, &[u8]); 7] = [
 ];
 /// A change made to an extracted source before it is staged.
 type SourceMutation = (&'static str, fn(&Path));
-/// A change made to a manifest that must make it invalid.
-type ManifestEdit = (&'static str, Box<dyn Fn(&mut Value)>);
 
 const DIRECTORIES: [&str; 5] = ["effects", "effects/bundled", "tools", "tools/pawnio", "ui"];
 
@@ -98,6 +95,7 @@ fn manifest() -> Value {
         "rust_target": "x86_64-pc-windows-msvc",
         "programs": ["hypercolor-app.exe", "hypercolor-daemon.exe", "hypercolor.exe"],
         "members": members,
+        "vendor_signed": [{"path": "vcruntime140.dll", "vendor": "microsoft"}],
     })
 }
 
@@ -226,111 +224,6 @@ fn a_reparse_point_in_the_source_is_refused() {
         stage_release_payload(&fixture.store, &lock, &open(&source), &unit),
         Err(ReleasePayloadError::InvalidSource(_))
     ));
-}
-
-#[test]
-fn manifests_that_a_windows_unit_cannot_honour_are_refused() {
-    let valid = manifest();
-    ValidatedManifest::parse(serde_json::to_vec(&valid).expect("bytes")).expect("valid");
-
-    let edits: Vec<ManifestEdit> = vec![
-        (
-            "linux platform",
-            Box::new(|value| value["platform"] = json!("linux-x86_64")),
-        ),
-        (
-            "gnu target",
-            Box::new(|value| value["rust_target"] = json!("x86_64-pc-windows-gnu")),
-        ),
-        (
-            "missing program",
-            Box::new(|value| value["programs"] = json!(["hypercolor-app.exe"])),
-        ),
-        (
-            "unix mode",
-            Box::new(|value| value["members"][0]["mode"] = json!(493)),
-        ),
-        (
-            "classless file",
-            Box::new(|value| {
-                let members = value["members"].as_array_mut().expect("members");
-                let file = members
-                    .iter_mut()
-                    .find(|member| member["type"] == "file")
-                    .expect("file");
-                file.as_object_mut().expect("object").remove("class");
-            }),
-        ),
-        (
-            "classed directory",
-            Box::new(|value| value["members"][0]["class"] = json!("data")),
-        ),
-        (
-            "data program",
-            Box::new(|value| {
-                let members = value["members"].as_array_mut().expect("members");
-                let app = members
-                    .iter_mut()
-                    .find(|member| member["path"] == "hypercolor-app.exe")
-                    .expect("app");
-                app["class"] = json!("data");
-            }),
-        ),
-        (
-            "case collision",
-            Box::new(|value| {
-                value["members"]
-                    .as_array_mut()
-                    .expect("members")
-                    .push(json!({"path": "UI", "type": "directory"}));
-            }),
-        ),
-        (
-            "missing parent",
-            Box::new(|value| {
-                value["members"].as_array_mut().expect("members").push(
-                    json!({"path": "nowhere/file", "type": "file", "class": "data", "size": 0,
-                    "sha256": hex::encode(Sha256::digest(b""))}),
-                );
-            }),
-        ),
-        (
-            "no ui",
-            Box::new(|value| {
-                let members = value["members"].as_array_mut().expect("members");
-                members
-                    .retain(|member| member["path"] != "ui" && member["path"] != "ui/index.html");
-            }),
-        ),
-    ];
-    for name in [
-        "CON",
-        "a:b",
-        "trailing.",
-        "trailing ",
-        "back\\slash",
-        "manifest.json",
-        "",
-        "a//b",
-    ] {
-        let mut value = manifest();
-        value["members"]
-            .as_array_mut()
-            .expect("members")
-            .push(json!({"path": name, "type": "directory"}));
-        assert!(
-            ValidatedManifest::parse(serde_json::to_vec(&value).expect("bytes")).is_err(),
-            "{name:?} must be refused"
-        );
-    }
-    for (name, edit) in edits {
-        let mut value = manifest();
-        edit(&mut value);
-        assert!(
-            ValidatedManifest::parse(serde_json::to_vec(&value).expect("bytes")).is_err(),
-            "{name} must be refused"
-        );
-    }
 }
 
 fn icacls(path: &Path, arguments: &[&str]) {

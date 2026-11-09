@@ -10,7 +10,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::displays::{
     DeleteDisplayFaceResponse, DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery,
-    DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
+    DisplayListResponse, DisplaySummary, SetDisplayFaceRequest,
+    UpdateDisplayFaceCompositionRequest,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
@@ -76,7 +77,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
 
     disambiguate_display_names(&state, &mut displays).await;
     displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-    envelope::ok(displays)
+    envelope::ok(DisplayListResponse::complete(displays))
 }
 
 /// A stack of identical panels ships identical names, so a name shared by

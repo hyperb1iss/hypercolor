@@ -22,7 +22,6 @@ pub(super) const MAX_SYSTEMD_SHOW_BYTES: usize = 16 * 1024;
 pub(super) const MAX_LAUNCHER_BYTES: usize = 10 * 1024;
 /// Bound for `/proc/<pid>/cmdline`.
 pub(super) const MAX_COMMAND_LINE_BYTES: u64 = 64 * 1024;
-pub(super) const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 pub(super) const MAX_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const DAEMON_RELATIVE_PATH: &str = "bin/hypercolor-daemon";
 pub(super) const LAUNCHER_MODE: u32 = 0o644;
@@ -223,12 +222,6 @@ pub struct LinuxProcessExecutable {
     /// The process's argument vector from `/proc/<pid>/cmdline`, which
     /// names the UI and effects directories the daemon serves.
     pub arguments: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinuxHttpResponse {
-    pub status: u16,
-    pub body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

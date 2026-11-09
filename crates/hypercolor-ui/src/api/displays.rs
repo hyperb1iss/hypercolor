@@ -9,15 +9,16 @@ use std::collections::{BTreeMap, HashMap};
 use super::{ApiResult, client};
 
 pub use hypercolor_types::api::displays::{
-    DisplayFaceResponse, DisplayFaceScope, DisplaySummary, SetDisplayFaceRequest,
-    UpdateDisplayFaceCompositionRequest,
+    DisplayFaceResponse, DisplayFaceScope, DisplayListResponse, DisplaySummary,
+    SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::control::ControlValue;
 
 /// `GET /api/v1/displays` — list display-capable devices.
 pub async fn fetch_displays() -> ApiResult<Vec<DisplaySummary>> {
-    client::fetch_json::<Vec<DisplaySummary>>("/api/v1/displays").await
+    let response = client::fetch_json::<DisplayListResponse>("/api/v1/displays").await?;
+    Ok(response.items)
 }
 
 /// `GET /api/v1/displays/{id}/face` — fetch the current face assignment.

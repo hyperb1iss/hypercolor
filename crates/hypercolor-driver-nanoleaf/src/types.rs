@@ -25,8 +25,23 @@ pub struct NanoleafDeviceInfo {
     pub firmware_version: String,
 }
 
-/// Panel layout returned by `GET /api/v1/{token}/panelLayout/layout`.
-#[derive(Debug, Clone, Deserialize)]
+/// Panel layout and user-selected canvas orientation from `/panelLayout`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NanoleafPanelLayoutDocument {
+    pub layout: NanoleafPanelLayoutResponse,
+    #[serde(default)]
+    pub global_orientation: NanoleafOrientation,
+}
+
+/// Counterclockwise canvas rotation selected in the Nanoleaf app.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct NanoleafOrientation {
+    pub value: f32,
+}
+
+/// Layout subtree of the `GET /api/v1/{token}/panelLayout` response.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NanoleafPanelLayoutResponse {
     #[serde(default)]
@@ -57,7 +72,7 @@ impl NanoleafPanelLayout {
     /// Whether this layout entry should become an addressable zone.
     #[must_use]
     pub fn has_leds(&self) -> bool {
-        self.shape_kind().is_some_and(NanoleafShapeType::has_leds)
+        self.shape_kind().is_none_or(NanoleafShapeType::has_leds)
     }
 
     /// Hypercolor topology hint for this panel, defaulting to `Point`.
@@ -90,8 +105,7 @@ impl NanoleafDiscoveredDevice {
     /// Convert into the generic discovery representation.
     #[must_use]
     pub fn into_discovered(self) -> DiscoveredDevice {
-        let fingerprint =
-            DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", &self.device_key);
+        let fingerprint = fingerprint_for_key(&self.device_key);
 
         DiscoveredDevice {
             fingerprint,
@@ -103,6 +117,12 @@ impl NanoleafDiscoveredDevice {
     }
 }
 
+/// Fingerprint for a device key.
+#[must_use]
+pub fn fingerprint_for_key(device_key: &str) -> DeviceFingerprint {
+    DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", device_key)
+}
+
 /// Build `DeviceInfo` from Nanoleaf metadata and panel layout.
 #[must_use]
 pub fn build_device_info(
@@ -111,8 +131,9 @@ pub fn build_device_info(
     model: Option<&str>,
     firmware: Option<&str>,
     panels: &[NanoleafPanelLayout],
+    global_orientation: f32,
 ) -> DeviceInfo {
-    let fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", device_key);
+    let fingerprint = fingerprint_for_key(device_key);
     let device_id = fingerprint.stable_device_id();
 
     let segments: Vec<SegmentInfo> = panels
@@ -123,7 +144,7 @@ pub fn build_device_info(
             led_count: 1,
             topology: panel.topology_hint(),
             color_format: DeviceColorFormat::Rgb,
-            layout_hint: None,
+            layout_hint: super::geometry::panel_layout_hint(panel, global_orientation),
         })
         .collect();
     let panel_count = u32::try_from(segments.len()).unwrap_or(u32::MAX);

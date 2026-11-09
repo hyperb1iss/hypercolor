@@ -7,7 +7,11 @@ Annotated patterns from existing Hypercolor drivers. Read the SKILL.md first —
 From Lian Li ENE (`drivers/lianli/ene.rs`). The top-level `encode_frame_into` is a pure dispatch on variant; the phase structure lives in the per-topology encoders:
 
 ```rust
-fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+fn encode_frame_into(
+    &self,
+    colors: &[[u8; 3]],
+    commands: &mut Vec<ProtocolCommand>,
+) -> FrameBatch {
     match self.variant {
         LianLiHubVariant::Sl | LianLiHubVariant::SlV2 | LianLiHubVariant::SlRedragon => {
             self.encode_single_ring(colors, commands);
@@ -18,8 +22,11 @@ fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolComma
         LianLiHubVariant::SlInfinity => self.encode_sl_infinity(colors, commands),
         LianLiHubVariant::TlFan => commands.clear(),
     }
+    FrameBatch::from_commands(commands)
 }
 ```
+
+The return value says what came of the frame. `FrameBatch::from_commands` is right for a stateless protocol: all of it, or nothing to write. A protocol that writes only what changed returns `Write` with the bytes it covered, and a token when it wants to hear how the write went. One holding a frame behind unconfirmed output returns `Held` and sends the newest itself. Never let an empty command list mean more than one of those.
 
 The single-ring encoder is the readable one. It is **four** phases, not three: three per group, plus one frame-wide commit at the end.
 

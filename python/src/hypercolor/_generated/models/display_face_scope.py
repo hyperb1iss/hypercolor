@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DisplayFaceScope(StrEnum):
+class DisplayFaceScope(TolerantStrEnum):
     DEFAULT = "default"
     SCENE = "scene"
 

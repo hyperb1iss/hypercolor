@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class EdgeBehaviorType0(StrEnum):
+class EdgeBehaviorType0(TolerantStrEnum):
     CLAMP = "clamp"
     MIRROR = "mirror"
     WRAP = "wrap"

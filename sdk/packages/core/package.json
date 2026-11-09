@@ -1,6 +1,6 @@
 {
     "name": "hypercolor",
-    "version": "0.8.1",
+    "version": "0.9.0",
     "description": "TypeScript SDK for creating Hypercolor RGB lighting effects",
     "type": "module",
     "main": "./src/index.ts",
@@ -27,9 +27,9 @@
         "typecheck": "tsc --noEmit"
     },
     "devDependencies": {
-        "@types/node": "^26.6.4",
-        "bun-types": "^1.4.2",
-        "tsup": "^8.5.1",
+        "@types/node": "^26.6.6",
+        "bun-types": "^1.4.4",
+        "tsup": "^9.0.0",
         "typescript": "^7.0.2"
     },
     "engines": {

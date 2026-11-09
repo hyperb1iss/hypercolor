@@ -1,0 +1,15 @@
+[package]
+name = "hypercolor-pixel-protocols"
+description = "Wire encoders for the open pixel streaming protocols: DDP, E1.31 (sACN), and Art-Net"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+uuid = { workspace = true }

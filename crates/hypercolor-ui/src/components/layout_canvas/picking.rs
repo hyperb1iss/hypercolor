@@ -6,7 +6,7 @@
 //! stack beneath it. Small devices under long strips stay reachable
 //! without anyone managing z-order.
 
-use hypercolor_types::spatial::Output;
+use hypercolor_types::spatial::{NormalizedPosition, Output};
 
 use crate::layout_geometry::DrawnBox;
 
@@ -21,6 +21,8 @@ pub struct HitBox {
     pub rotation: f32,
     /// Ring-shaped boxes answer only inside their circle.
     pub circular: bool,
+    /// Explicit panel boundary in normalized local coordinates.
+    pub polygon: Option<Vec<NormalizedPosition>>,
     /// Paint order; higher paints on top. Breaks ties between boxes of
     /// equal area.
     pub order: usize,
@@ -38,6 +40,7 @@ impl HitBox {
             half: drawn.half,
             rotation: drawn.rotation,
             circular: drawn.circular,
+            polygon: super::polygons::vertices(output.shape.as_ref()).map(<[_]>::to_vec),
             order,
         }
     }
@@ -50,7 +53,18 @@ impl HitBox {
         // Undo the box's on-screen rotation to test in its own frame.
         let local_x = dx * cos + dy * sin;
         let local_y = -dx * sin + dy * cos;
-        if self.circular {
+        if let Some(vertices) = &self.polygon {
+            if self.half.0 <= 0.0 || self.half.1 <= 0.0 {
+                return false;
+            }
+            super::polygons::contains(
+                vertices,
+                NormalizedPosition::new(
+                    local_x / (2.0 * self.half.0) + 0.5,
+                    local_y / (2.0 * self.half.1) + 0.5,
+                ),
+            )
+        } else if self.circular {
             local_x.hypot(local_y) <= self.half.0
         } else {
             local_x.abs() <= self.half.0 && local_y.abs() <= self.half.1

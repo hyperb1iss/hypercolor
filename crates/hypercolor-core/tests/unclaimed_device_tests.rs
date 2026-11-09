@@ -19,6 +19,7 @@ fn observation(vendor_id: u16, product_id: u16, bus_path: &str) -> UsbObservatio
         device_class: 0,
         interface_classes: vec![3, 3, 255],
         descriptor_driver_id: None,
+        descriptor_experimental: false,
         hid_usage_pages: Vec::new(),
     }
 }
@@ -96,6 +97,42 @@ fn a_disabled_driver_makes_its_devices_claimable() {
         store.enabled_driver_ids(),
         Some(BTreeSet::from(["lian_li".to_owned(), "razer".to_owned()]))
     );
+}
+
+#[test]
+fn experimental_descriptors_claim_like_stable_ones_and_keep_their_label() {
+    let mut untested = claimed_by(observation(0x1E71, 0x2011, "1-1.6"), "nzxt");
+    untested.descriptor_experimental = true;
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([untested]);
+
+    store.set_enabled_driver_ids(Some(BTreeSet::from(["nzxt".to_owned()])));
+    assert!(
+        store.is_empty(),
+        "an enabled experimental driver claims its device like any other"
+    );
+
+    store.set_enabled_driver_ids(Some(BTreeSet::new()));
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].claimable_by.as_deref(), Some("nzxt"));
+    assert!(snapshot[0].experimental, "the label rides along");
+}
+
+#[test]
+fn the_experimental_label_needs_a_claiming_descriptor() {
+    let mut orphan = observation(0x1234, 0x0001, "1-1.2");
+    orphan.descriptor_experimental = true;
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([
+        orphan,
+        claimed_by(observation(0x1532, 0x0226, "1-1.3"), "razer"),
+    ]);
+    store.set_enabled_driver_ids(Some(BTreeSet::new()));
+
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.len(), 2);
+    assert!(snapshot.iter().all(|device| !device.experimental));
 }
 
 #[test]

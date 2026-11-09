@@ -2,12 +2,16 @@
 
 > Native driver specification for Corsair keyboards, mice, mousepads, headset stands, and wireless dongles. Covers Bragi, NXP/CUE, and legacy peripheral protocols with clean HAL integration, topology tables, transport safety rules, and a phased implementation plan.
 
-**Status:** Implemented (Bragi wired RGB); NXP/CUE and legacy encoders tested but
-not registered until transport safety is hardware-verified
+**Status:** Implemented. Bragi wired RGB and the NXP/CUE keyboards, mice, mousepad,
+and headset stand are registered on input-safe transports; none has been run on
+hardware yet. Legacy peripherals and the K66 are held, and Bragi receivers have
+routing primitives but no descriptor (section 2.6).
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::corsair::peripheral`
 **Author:** Nova
 **Date:** 2026-05-03
+**Revised:** 2026-11-05 (NXP/CUE registration, input-safety contract, udev scoping,
+receiver routing gaps)
 
 ---
 
@@ -23,6 +27,7 @@ not registered until transport safety is hardware-verified
 8. [Timing and Transport Safety](#8-timing-and-transport-safety)
 9. [HAL Integration and Testing](#9-hal-integration-and-testing)
 10. [Recommendation](#10-recommendation)
+- [References](#references)
 
 ---
 
@@ -226,6 +231,38 @@ Legacy devices should be a late-phase compatibility target.
 | `0x1B08` | K95 Legacy | keyboard | hardware mode only | Mode and brightness commands |
 | `0x1B06` | M95 | mouse | backlight on/off | Legacy mouse RGB path |
 
+### 2.6 Registration Decisions
+
+A Corsair peripheral registers only when its lighting is reachable through a
+transport that cannot detach the kernel input driver (section 8.7). That is the
+only gate: a registered device that nobody has run on hardware is still
+registered, and carries the experimental label once the HAL stability field
+exists.
+
+| PID | Model | Decision | Transport | Reason |
+| --- | ----- | -------- | --------- | ------ |
+| Bragi wired set (section 9.5) | 35 keyboards, mice, mousepads | Registered | HIDAPI, interface 1, page `0xFF42`, output report with the magic byte first | Vendor-only lighting interface |
+| `0x1B3D` | K55 | Registered | HIDAPI, interface 1, page `0xFFC2`, usage `0x0004`, output report ID 0 | Command collection is vendor-only on interface 1 |
+| `0x1B17` | K65 RGB | Registered | same as K55 | same |
+| `0x1B37` | K65 Lux RGB | Registered | same as K55 | same |
+| `0x1B13` | K70 RGB | Registered | same as K55 | same; layout confirmed on fw 3.08 |
+| `0x1B33` | K70 Lux RGB | Registered | same as K55 | same |
+| `0x1B49` | K70 MK.2 | Registered | same as K55 | same; layout confirmed on fw 3.24 |
+| `0x1B11` | K95 RGB | Registered | same as K55 | same; fw 2.05 has no hidraw path (section 5.1) |
+| `0x1B2D` | K95 Platinum | Registered | same as K55 | same; layout confirmed on fw 3.21; 144 key slots plus a 19-LED light bar zone (section 7.4) |
+| `0x1B20` | Strafe RGB | Registered | same as K55 | same; fw 2.05 has no hidraw path (section 5.1) |
+| `0x1B12` | M65 | Registered | same as K55 | same; fw 2.04 has no hidraw path (section 5.1) |
+| `0x1B1E` | Scimitar | Registered | same as K55 | same |
+| `0x1B3B` | Polaris | Registered | HIDAPI, interface 0, page `0xFFC2`, usage `0x0001`, output report ID 0 | Command collection on interface 0; interface 1 is a keyboard collection and is never opened |
+| `0x0A34` | ST100 | Registered | HIDAPI, interface 0, page `0xFFC2`, output report ID 0 | Single vendor-only interface |
+| `0x1B41` | K66 | Held | none | No backlight; nothing to drive |
+| `0x1B07` | K65 Legacy | Held | would need USB vendor control | Section 6.3 |
+| `0x1B09` | K70 Legacy | Held | would need USB vendor control | Section 6.3 |
+| `0x1B02` | K90 Legacy | Held | would need USB vendor control | Section 6.3 |
+| `0x1B08` | K95 Legacy | Held | would need USB vendor control | Section 6.3 |
+| `0x1B06` | M95 | Held | would need USB vendor control | Section 6.3 |
+| `0x1B62`, `0x1B66`, `0x1B65`, `0x1B81`, `0x1B7F`, `0x1BA6` | Bragi receivers | Held | none | Child routing is underspecified (section 4.20.1) |
+
 ---
 
 ## 3. Protocol Family Dispatch
@@ -305,15 +342,17 @@ Recommended quirk flags:
 
 ### 3.4 Registration Status
 
-Use conservative support labels in `data/drivers/vendors/corsair.toml`:
+Support labels in `data/drivers/vendors/corsair.toml`:
 
 | Status | Meaning |
 | ------ | ------- |
-| `supported` | Packet encoder implemented and tested |
-| `researched` | PID and protocol family known, but not enabled |
-| `experimental` | Enabled behind explicit config flag or hardware-probe allowlist |
+| `supported` | Registered: packet encoder implemented and tested, transport input-safe (section 8.7) |
+| `researched` | PID and protocol family known, but not registered; the entry's notes say why |
 
-For first implementation, only mark Bragi wired devices with known LED counts and packet sizes as `supported`.
+Experimental is a label, not a status. A registered device nobody has run on
+hardware is enabled by default like any other; its protocol carries the
+experimental stability label and its database entry records
+`verification = "unverified"` once those fields exist. No config flag gates it.
 
 ---
 
@@ -701,6 +740,34 @@ Child disconnect sequence:
 
 Initial implementation may skip child registration and treat dongles as `researched`. Do not expose a dongle as an RGB device.
 
+#### 4.20.1 Gaps That Block Receiver Registration
+
+The sequence above names the steps but leaves out facts an implementation needs
+before a receiver can be registered without guessing. Until a capture or a
+hardware session answers them, every receiver stays `researched`.
+
+| Gap | Why it blocks |
+| --- | ------------- |
+| Reply to a query routed to an empty slot | Hypercolor computes a device's whole init sequence before any reply arrives, so child queries cannot wait on the bitfield. Querying all seven slots needs to know whether an empty slot answers with an error byte, answers nothing (a timeout fails the connect), or answers garbage. |
+| Reply framing for routed requests | Section 4.7 calls offsets 0 and 1 a device-specific echo and does not echo the property ID, so a reply cannot be matched to the routed query that caused it. |
+| Presence changes | Wireless children sleep and wake. The spec says to re-query the bitfield but not when, whether the receiver announces changes unprompted, or what a write to a sleeping child returns. A write error there would cycle the receiver through disconnect and reconnect. |
+| Receiver-side session | Whether the receiver itself must enter `MODE_SOFTWARE` and receive the keepalive, or only the child. |
+| Child packet size | Whether a child whose wired descriptor uses 128- or 1024-byte reports is limited to the receiver's 64-byte report when routed. |
+| Child identity | Section 2.3 lists receiver children (K57 `0x1B6E`, Dark Core RGB Pro `0x1B80`) with no wired descriptor to match, and "register child as a logical device" has no HAL contract: one USB device maps to one Hypercolor device today, with no parent relation or stable child fingerprint. |
+
+#### 4.20.2 Implemented Primitives
+
+What the section does specify is implemented and tested, with no descriptor
+using it yet:
+
+- `BragiProperty::{VendorId, ProductId, SubdeviceBitfield}` (`0x11`, `0x12`, `0x36`).
+- `BragiChildSlot`: slots 1 through 7, `magic()` returns `0x08 | slot`, and
+  `present_in(bitfield)` yields the slots named by bits 1 through 7, ignoring
+  bit 0 and every bit above 7.
+- `BragiDeviceConfig::routed_to(slot)`: every packet the protocol emits (init,
+  frame, brightness, keepalive, shutdown) carries the routed magic byte, and
+  nothing else in the packet changes.
+
 ### 4.21 Pairing and Battery
 
 Battery:
@@ -727,39 +794,65 @@ NXP/CUE is the older 64-byte Corsair peripheral protocol. It covers many RGB key
 
 ### 5.1 Transport
 
-NXP devices use two transfer paths depending on firmware and device quirks:
+Hypercolor drives NXP lighting through the vendor command collection with
+HIDAPI, which is hidraw on Linux. Section 8.7 makes that the only allowed path.
 
-| Condition | Write Path | Read Path |
-| --------- | ---------- | --------- |
-| Firmware `>= 0x0120` or descriptor has V2/V3 override | HID interrupt/output report | Input/interrupt response |
-| Older firmware | HID control transfer | HID control transfer |
+Observed interface layouts:
 
-Control write:
+| Layout | Seen on | Interface 0 | Interface 1 | Interface 2 |
+| ------ | ------- | ----------- | ----------- | ----------- |
+| Two-interface | K70 RGB fw 3.08, K70 MK.2 fw 3.24, K95 Platinum fw 3.21 | Boot keyboard plus NKRO, consumer, pointer, and an input-only vendor collection (page `0xFFC2`, usage `0x0003`, report ID 14) | Command collection only (page `0xFFC2`, usage `0x0004`): 64-byte input, output, and feature reports with no report ID; interrupt IN `0x82` and OUT `0x02` | none |
+| Three-interface | K95 RGB fw 2.05, Strafe RGB fw 2.05, M65 fw 2.04 | Boot keyboard or mouse | Interrupt IN `0x82` only, carrying keyboard input | Command interface with interrupt OUT `0x03` only |
+
+Desk accessories:
+
+| Device | Interface 0 | Interface 1 |
+| ------ | ----------- | ----------- |
+| Polaris (`0x1B3B`) | Command collection (page `0xFFC2`, usage `0x0001`) | Keyboard collection (page `0x0001`, usage `0x0006`) |
+| ST100 (`0x0A34`) | Single vendor-only interface, interrupt IN `0x81` and OUT `0x01`, 64 bytes | none |
+
+The usage page alone does not identify the command collection: on the
+two-interface layout it also appears, input-only, on the composite input
+interface. Descriptors therefore pin the interface and, where the page is
+shared, the usage.
+
+On the three-interface layout, `usbhid` refuses interface 2 because it has no
+interrupt IN endpoint, so the kernel creates no hidraw node for it and no
+host-managed HID path reaches the command interface. Hypercolor does not drive
+that firmware: the transport finds no `0xFFC2`/`0x0004` collection on
+interface 1 and the connect fails closed, before any packet is written.
+
+Write path. Each command is one output report: report number 0 followed by the
+64-byte packet. The kernel sends an output report on the interface's interrupt
+OUT endpoint when it has one, and otherwise as a HID `SET_REPORT` control
+request:
 
 | Field | Value |
 | ----- | ----- |
 | `bRequestType` | `0x21` |
 | `bRequest` | `0x09` |
-| `wValue` | `0x0200` |
-| `wIndex` | interface/endpoint index |
+| `wValue` | `0x0200` (output report, ID 0) |
+| `wIndex` | interface number |
 | `wLength` | `64` |
 
-Control read:
+Those are the two write paths older tooling chose between by firmware version,
+so Hypercolor needs no firmware predicate and no negotiated transport mode.
+
+Read path. Hypercolor reads nothing. Current firmware answers on the interrupt
+IN endpoint; older firmware answers through a feature-report read:
 
 | Field | Value |
 | ----- | ----- |
 | `bRequestType` | `0xA1` |
 | `bRequest` | `0x01` |
-| `wValue` | `0x0300` |
-| `wIndex` | interface/endpoint index |
+| `wValue` | `0x0300` (feature report, ID 0) |
+| `wIndex` | interface number |
 | `wLength` | `64` |
 
-Hypercolor should model this as either:
-
-- Two descriptor variants with firmware predicates, or
-- One protocol with a negotiated `NxpTransportMode`.
-
-Use firmware predicates where possible so the registry remains explicit.
+Waiting for an input report on that firmware would stall every command, and
+lighting needs no reply, so every NXP command is write-only. While the hidraw
+node is open the kernel keeps polling the IN endpoint, so unread replies cannot
+back up the device.
 
 ### 5.2 Packet Geometry
 
@@ -823,19 +916,16 @@ Every NXP command is 64 bytes:
 
 ### 5.7 NXP Init Sequence
 
-Recommended init:
+As built, init sends one write-only packet: `SET FIELD_LIGHTING MODE_SOFTWARE`
+(`07 05 02 00`, zero-padded to 64 bytes).
 
-1. Read firmware identification.
-2. Determine transport mode:
-   - Modern interrupt path if firmware `>= 0x0120`
-   - Modern interrupt path if descriptor has `nxp_v2_override` or `nxp_v3_override`
-   - Control-transfer path otherwise
-3. Set lighting mode to hardware during passive initialization.
-4. Read poll rate if supported.
-5. Read hardware layout for keyboard variants if available.
-6. Configure input mode only if the future input remapping backend needs it.
-
-For RGB-only Hypercolor support, avoid enabling vendor input events unless required for the lighting endpoint. The daemon must not disrupt normal keyboard or mouse input.
+- It does not read `FIELD_IDENT`. The kernel picks the write path (section
+  5.1), and older firmware has no input-report reply to wait for.
+- It does not touch `FIELD_SPECIAL` (`0x04`) or `FIELD_KEYINPUT` (`0x40`). Those
+  route the top-row keys and the key matrix to the vendor collection, which is
+  input handling, not lighting. The daemon must not disrupt normal keyboard or
+  mouse input.
+- Devices with no lighting (`NoLights`) send nothing.
 
 ### 5.8 NXP Activation Sequence
 
@@ -1062,6 +1152,17 @@ M95 legacy mouse backlight command:
 
 This is binary lighting, not full RGB. Register as `researched` until Hypercolor supports point-source on/off-only capabilities cleanly.
 
+### 6.3 Why Legacy Devices Stay Researched
+
+Every legacy command is a USB vendor control request (`bRequestType 0x40`) to the
+device. hidraw carries only HID class requests (output, input, and feature
+reports), so no host-managed HID path reaches these commands. Sending them
+takes the whole USB device node through `UsbVendor`, and write access to that
+node is enough for any holder to detach `usbhid` from the keyboard or mouse.
+That fails the input-safety rule in section 8.7, and the protocol has no direct
+RGB to gain in exchange (hardware modes and brightness only). The K65, K70,
+K90, and K95 Legacy and the M95 stay `researched`.
+
 ---
 
 ## 7. Color Encoding and Topology
@@ -1151,6 +1252,35 @@ Descriptor topology should define actual ordering per model. Do not assume all m
 | Zoned keyboards | K55 | 3 RGB zones |
 | No-light keyboards | K66 | No RGB frame output |
 
+NXP per-key keyboards address 144 hardware LED slots: the packed frame's 216
+bytes (`0xD8`) are three planes of 72 bytes at two LEDs per byte. Hypercolor
+exposes the slots in hardware index order as one `Custom` zone, and per-key
+positions come from the spatial layout. A full-range plane declares 168 bytes
+(60 + 60 + 48), so slots 144 through 167 exist only on full-range keyboards.
+Packed 512-color keyboards keep exactly 144 slots. The K55 exposes its three
+zones as a 1x3 matrix.
+
+The K95 Platinum's 19-LED top light bar occupies plane slots `0x90` through
+`0xA2` (144 through 162), but not in bar order. From the leftmost LED to the
+rightmost, the slots are:
+
+| Bar LED (left to right) | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+| ----------------------- | - | - | - | - | - | - | - | - | - | -- |
+| Plane slot | `0x90` | `0x91` | `0x92` | `0x9E` | `0xA0` | `0x93` | `0x94` | `0x95` | `0x96` | `0x97` |
+
+| Bar LED (left to right) | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
+| ----------------------- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| Plane slot | `0x98` | `0x99` | `0x9A` | `0x9B` | `0x9F` | `0xA2` | `0xA1` | `0x9C` | `0x9D` |
+
+Slots 163 through 167 carry nothing on any known keyboard and stay zero.
+Hypercolor exposes the K95 Platinum as 163 LEDs in two zones: the 144 key
+slots in hardware order (`Custom`), then the bar as a 1x19 matrix in
+left-to-right order. The encoder writes bar LED `n` into its plane slot
+from the table above, in all three component planes. A light bar is only
+allowed on a full-range or monochrome keyboard, with slots past the key
+slots and inside the 168-byte plane; `NxpDeviceConfig::with_light_bar`
+refuses anything else at compile time.
+
 ### 7.5 NXP Mouse Zone Counts
 
 | Family | Software Zones | Hardware Save Zones | Notes |
@@ -1161,6 +1291,12 @@ Descriptor topology should define actual ordering per model. Do not assume all m
 | Glaive | 3 | device-specific | Only front/back/side in software path |
 | Glaive Pro | 3 + DPI | device-specific | DPI RGB in DPI packet |
 | Dark Core NXP | hardware animation | hardware animation | Defer direct RGB |
+
+The M65 and Scimitar descriptors drive all six software zone IDs (1 through 6);
+which IDs each model actually lights is unverified. The Polaris and the ST100
+use the 15-slot mousepad packet. The ST100 has nine physical zones (one logo
+zone and eight base zones, per Corsair's manual); their order within the 15
+slots is not in this spec, so Hypercolor drives all 15.
 
 ### 7.6 Frame Normalization
 
@@ -1257,6 +1393,10 @@ Some NXP paths historically used direct interrupt endpoints. On Linux, direct en
 
 Mousepads, stands, and some controller-like devices are safer candidates for direct `UsbHid` than keyboards/mice.
 
+As built, every Corsair peripheral uses option 1. None uses direct `UsbHid`,
+including the mousepads and the stand: the Polaris shares its USB device with a
+keyboard collection, so it is an input device too.
+
 ### 8.6 Error Policy
 
 | Error | Policy |
@@ -1267,6 +1407,76 @@ Mousepads, stands, and some controller-like devices are safer candidates for dir
 | Frame length mismatch | Normalize and warn |
 | Unknown child PID | Keep parent connected, ignore child |
 | Unknown keyboard layout byte | Use `Custom` topology, log once |
+
+---
+
+### 8.7 Input-Safe Registration Rule
+
+A Corsair peripheral descriptor is registered only when all of these hold:
+
+1. Its transport is host-managed HID: `UsbHidApi` or `UsbHidRaw`. Both keep
+   `usbhid` attached, and neither claims a USB interface.
+2. The transport pins the interface that carries the lighting collection and
+   filters on a vendor-defined usage page (`0xFF00` and up), plus the usage
+   wherever that page also appears on an input interface.
+3. The PID has exactly one descriptor, with no firmware predicate, so there is
+   no alternate descriptor to fall back to. The USB backend opens a
+   descriptor's transport as declared and never substitutes another.
+
+`crates/hypercolor-hal/tests/corsair_peripheral_input_safety_tests.rs` enforces
+the rule. It classifies every `TransportType` variant with an exhaustive match,
+so a new variant fails to compile until someone decides whether it can detach
+a kernel driver. It checks every registered Corsair descriptor that is either
+in the peripheral module or typed keyboard, mouse, mousepad, or headset in the
+vendor database. That catches a peripheral registered outside the module too.
+
+A vendor usage page alone does not make a filter safe, so the test also holds
+two independent tables. The first lists the known non-lighting collections
+per family, as `(interface, usage page, usage)`:
+
+| Family | Known input or non-lighting collections |
+| ------ | ---------------------------------------- |
+| NXP keyboards and mice | `(0, 0x0001, 0x0006)`, `(0, 0x0001, 0x0002)`, `(0, 0x0001, 0x0001)`, `(0, 0x000C, 0x0001)`, `(0, 0xFFC0, 0x0002)`, `(0, 0xFFC1, 0x0002)`, `(0, 0xFFC2, 0x0003)` |
+| Polaris | `(1, 0x0001, 0x0006)` |
+| Bragi | `(0, 0x0001, 0x0006)`, `(0, 0x000C, 0x0001)`, `(2, 0xFF42, 0x0002)`, `(3, 0x0001, 0x0002)` |
+| ST100 | none |
+
+The second lists the expected lighting filter for every registered peripheral
+PID. A descriptor fails when its filter could select one of its family's known
+collections, or when it differs from the table. A newly registered peripheral
+also fails until someone adds it to both tables. Negative fixtures pin the
+cases a page-only filter gets wrong, such as `(0, 0xFFC2, 0x0003)` on NXP
+devices and an unpinned `0xFF42` filter on Bragi devices.
+
+### 8.8 Linux Device Permissions
+
+`udev/99-hypercolor.rules` grants Corsair access per product, never
+vendor-wide. Keyboards and mice expose their boot-keyboard, NKRO, and pointer
+collections as hidraw nodes, and granting those to the fallback group would hand
+every member a keystroke feed.
+
+Peripheral rules are two-step. The first rule tags a product's hidraw nodes
+with `ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}`. The second grants only the node
+whose USB interface matches the tag. Two steps are needed because `idProduct`
+lives on the USB device and `bInterfaceNumber` on the USB interface, and udev
+requires every `ATTRS` key in one rule to match the same parent.
+
+| Tag | Grant | Products |
+| --- | ----- | -------- |
+| `01` | interface 1 | Bragi keyboards, mice, and mousepads |
+| `01-io` | interface 1 with `bNumEndpoints == 02` | NXP keyboards and mice. The endpoint check admits the two-interface command interface and keeps the three-interface layout's IN-only keyboard interface root-only. |
+| `00` | interface 0 | Polaris, ST100 |
+
+Peripherals get no `usb_device` grant: Hypercolor never opens their USB device
+node, and write access to it is enough to detach `usbhid`. Fan, LCD, and
+Lighting Node controllers have no input collections and claim their HID
+interface directly, so they get per-product hidraw and `usb_device` rules.
+`crates/hypercolor-hal/tests/udev_rules_tests.rs` pins all of this.
+
+One exposure remains by design. The granted lighting node is writable by the
+fallback group, and a writer could send `FIELD_KEYINPUT` to move key reports
+onto that node. Closing that needs the grant to be uaccess-only, which only
+works from a rules file that sorts before `73-seat-late.rules`.
 
 ---
 
@@ -1361,7 +1571,9 @@ Initial supported subset should be Bragi wired devices with known packet sizes a
 | `0x1B93` | Katar Pro | Simple two-zone Bragi mouse |
 | `0x1B9B` | MM700 | Simple Bragi mousepad |
 
-Keep wireless dongles and NXP devices `researched` until transport safety is verified.
+As built, all 35 Bragi wired descriptors and the 13 NXP/CUE descriptors in
+section 2.6 are registered. Receivers, the K66, and legacy devices stay
+`researched` for the reasons in section 2.6.
 
 ### 9.6 Tests
 
@@ -1402,7 +1614,30 @@ Required database tests:
 - Bragi jumbo devices use max report length 1024.
 - Scimitar Elite Bragi uses max report length 128.
 - Dongles have zero LED count and no direct RGB capability.
-- NXP/legacy researched devices are present in `data/drivers/vendors/corsair.toml` but not registered as supported until protocol code lands.
+- Every registered peripheral is `supported` in `data/drivers/vendors/corsair.toml`, nothing `researched` is registered, and the K66 and legacy devices stay unregistered.
+- NXP descriptors pin interface, usage page, usage, report ID 0, and a 65-byte HIDAPI buffer, and report 144 slots (keyboards), 6 zones (mice), or 15 slots (accessories). The K95 Platinum reports 163 LEDs in a 144-slot keyboard zone and a 19-LED light bar zone; packed keyboards stay at 144.
+
+Required input-safety tests (`corsair_peripheral_input_safety_tests.rs`):
+
+- Every Corsair peripheral transport is host-managed HID on a vendor usage page and cannot select any known input collection of its family.
+- Every registered peripheral PID matches an independent table of expected `(interface, usage page, usage)` filters, and the table lists exactly the registered peripherals.
+- Known input collections are refused under exact, page-only, and interface-free filters.
+- Every peripheral pins its lighting interface; NXP keyboards and mice pin usage `0x0004`.
+- Each peripheral PID has exactly one descriptor and no firmware predicate.
+- The classifier rejects every interface-claiming transport.
+
+Required udev tests (`udev_rules_tests.rs`):
+
+- No Corsair rule is vendor-wide.
+- Each peripheral's tag grants the interface its transport opens, NXP keyboard and mouse grants require two endpoints, and no peripheral gets a whole-product hidraw grant or a `usb_device` grant.
+
+Additional NXP encoder tests:
+
+- Init sends only the lighting-mode packet and never touches `FIELD_SPECIAL` or `FIELD_KEYINPUT`.
+- Every init, frame, and shutdown command is write-only and 64 bytes.
+- Reused command buffers encode the same bytes as fresh ones.
+- Nonzero K95 Platinum bar colors land in their plane slots (section 7.4) in every component, keys stay black, and slots 163 through 167 stay zero.
+- A light bar on a packed keyboard, or a bar slot outside the plane, is refused.
 
 ### 9.7 Hardware Smoke Tests
 
@@ -1456,7 +1691,9 @@ Do not enable wireless child enumeration in Wave 1.
 
 ### Wave 2: NXP/CUE RGB
 
-Implement NXP after Bragi transport safety is proven.
+Shipped 2026-11-05 on the hidraw command collection (section 5.1), without
+waiting for a hardware run, because the input-safety rule in section 8.7 holds
+by construction.
 
 Scope:
 
@@ -1470,6 +1707,9 @@ Start with non-wireless devices and non-input-sensitive devices where possible.
 
 ### Wave 3: Wireless, Legacy, and Controls
 
+Receiver routing primitives exist (section 4.20.2); registration waits on the
+gaps in section 4.20.1. Legacy devices stay held (section 6.3).
+
 Add advanced features last:
 
 - Bragi dongle child enumeration
@@ -1480,3 +1720,23 @@ Add advanced features last:
 - Legacy brightness/on-off support
 
 The clear choice is **Bragi first, wired only, descriptor-driven**. It gives Hypercolor meaningful modern peripheral coverage while keeping the implementation small enough to verify thoroughly. NXP then becomes a second protocol module, not a pile of special cases mixed into the first one.
+
+---
+
+## References
+
+Facts only; no code was copied from any GPL source.
+
+- Linux kernel, `Documentation/hid/hidraw.rst`: hidraw `write()` takes the report number as the first byte, 0 for devices without numbered reports. https://www.kernel.org/doc/html/latest/hid/hidraw.html
+- Linux kernel, `drivers/hid/hidraw.c` (`hidraw_send_report`): output reports fall back to a `SET_REPORT` request when the transport has no interrupt OUT path. https://github.com/torvalds/linux/blob/master/drivers/hid/hidraw.c
+- Linux kernel, `drivers/hid/usbhid/hid-core.c`: `usbhid` refuses an interface with no interrupt IN endpoint. https://github.com/torvalds/linux/blob/master/drivers/hid/usbhid/hid-core.c
+- systemd, `udev(7)`: parent-matching keys in one rule must all match the same parent device. https://www.freedesktop.org/software/systemd/man/latest/udev.html
+- OpenRGB detector table (GPL-2.0; read for interface and usage-page facts only): NXP keyboards and mice on interface 1, page `0xFFC2`; Polaris and ST100 on page `0xFFC2`. https://gitlab.com/CalcProgrammer1/OpenRGB/-/blob/master/Controllers/CorsairPeripheralController/CorsairPeripheralControllerDetect.cpp
+- OpenRGB work item 4944, HIDAPI enumeration of a K70 RGB (`1B13`): interface 0 carries keyboard, consumer, `0xFFC0`, and `0xFFC2`/`0x0003` collections; interface 1 carries only `0xFFC2`/`0x0004`. https://gitlab.com/CalcProgrammer1/OpenRGB/-/work_items/4944
+- OpenRGB issue 4016, HIDAPI enumeration: Polaris interface 0 `0xFFC2`/`0x0001`, interface 1 keyboard `0x0001`/`0x0006`; K100 (`1BC5`) Bragi `0xFF42` split over interfaces 1 (`0x0001`) and 2 (`0x0002`). https://gitlab.com/CalcProgrammer1/OpenRGB/-/issues/4016
+- linux-hardware.org `lsusb -v` probes: K70 RGB fw 3.08 (https://linux-hardware.org/?probe=ead58254b2&log=lsusb), K95 Platinum fw 3.21 (https://linux-hardware.org/?probe=d6735c5f18&log=lsusb), K95 RGB fw 2.05 (https://linux-hardware.org/?probe=45c2efaa3e&log=lsusb), M65 fw 2.04 (https://linux-hardware.org/?probe=17bcc983ca&log=lsusb), ST100 (https://linux-hardware.org/?probe=59ffe32cfa&log=lsusb), M55 RGB Pro (https://linux-hardware.org/index.php?probe=8ea3fec27b&log=lsusb), K70 RGB Pro (https://linux-hardware.org/?probe=28f1074e0a&log=lsusb).
+- ckb-next daemon keymap (GPL-2.0; read for hardware index facts only): the K95 Platinum top bar LEDs `topbar1` through `topbar19` and their key indices `0x90` through `0xA2`. https://github.com/ckb-next/ckb-next/blob/master/src/daemon/keymap.c
+- ckb-next GUI keymap (GPL-2.0; read for layout facts only): the K95 Platinum bar LEDs `topbar1` through `topbar19` sit left to right at evenly spaced x positions. https://github.com/ckb-next/ckb-next/blob/master/src/gui/keymap.cpp
+- ckb-next issue 659, Strafe RGB fw 2.05 `dmesg`: interface 1 binds as a keyboard input device. https://github.com/ckb-next/ckb-next/issues/659
+- K70 MK.2 fw 3.24 `dmesg` report: the vendor interface binds as hidraw with no input device. https://gist.github.com/KenEucker/f13eb2edbbd5c5ab02b66e0e6ddeb8c8
+- Corsair ST100 RGB user manual: nine RGB zones, one logo and eight base. https://manuals.online/corsair/rack-and-stand/st100-rgb/user-manual/1rmy1

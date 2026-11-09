@@ -1139,15 +1139,18 @@ impl DaemonState {
         let scan_interval =
             std::time::Duration::from_secs(config.discovery.scan_interval_secs.max(1));
         let driver_registry = Arc::clone(&self.driver_registry);
+        let start_usb_hotplug = self.capabilities.usb_hotplug;
 
         self.discovery_task = Some(tokio::spawn(async move {
             let hotplug_monitor = UsbHotplugMonitor::new(256)
                 .with_unclaimed_store(worker.discovery.unclaimed_devices.clone());
             let mut hotplug_rx = hotplug_monitor.subscribe();
-            let mut hotplug_task = match hotplug_monitor.start() {
+            let mut hotplug_task = match start_usb_hotplug(&hotplug_monitor) {
                 Ok(task) => {
-                    info!("USB hotplug watcher started");
-                    Some(task)
+                    if task.is_some() {
+                        info!("USB hotplug watcher started");
+                    }
+                    task
                 }
                 Err(error) => {
                     warn!(
