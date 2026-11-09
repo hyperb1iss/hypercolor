@@ -15,13 +15,12 @@ pub struct DiscoveryDriverSetting {
     pub enabled: bool,
     pub transport_labels: Vec<String>,
     pub supports_pairing: bool,
-    /// One muted line under the label, used to note a driver labeled
-    /// experimental (Spec 89). Deliberately not a badge.
+    /// Optional muted maturity label below the driver name.
     pub hint: Option<&'static str>,
 }
 
 /// The hint a driver row carries when its module is labeled experimental.
-pub const EXPERIMENTAL_DRIVER_HINT: &str = "Untested on real hardware";
+pub const EXPERIMENTAL_DRIVER_HINT: &str = "Beta";
 
 pub fn discovery_driver_settings(drivers: &[DriverSummary]) -> Vec<DiscoveryDriverSetting> {
     drivers

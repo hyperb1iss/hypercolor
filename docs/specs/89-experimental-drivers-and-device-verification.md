@@ -153,7 +153,7 @@ An experimental variant of an existing protocol takes its own protocol id.
 | Unclaimed USB inventory | `UnclaimedDevice.experimental`: true when the descriptor that could claim the device is experimental (omitted when false) |
 | `hypercolor drivers list` | A Tier column: `stable`, `experimental`, or `stable +N experimental` |
 | `hypercolor devices list` | `(experimental)` after the driver id |
-| Web UI | Deliberately quiet. A driver settings row for an experimental module carries one muted line, "Untested on real hardware". No badge, chip, or accent anywhere |
+| Web UI | A driver settings row for an experimental module carries one muted "Beta" label. Hardware verification details stay in engineering metadata and documentation. No badge, chip, or warning accent |
 
 All of these come from the shared contracts in `hypercolor-types`; no
 client mirrors the types by hand.
