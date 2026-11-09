@@ -84,6 +84,12 @@ impl NanoleafTouchDecoder {
         for record in records {
             let panel = u16::from_be_bytes([record[0], record[1]]);
             let kind = (record[2] >> 4) & 7;
+            if kind == 4 {
+                let from = u16::from_be_bytes([record[3], record[4]]);
+                if from != panel {
+                    self.release(from, &mut edges);
+                }
+            }
             let Some(surface) = self.panels.get(&panel).cloned() else {
                 continue;
             };
@@ -91,12 +97,6 @@ impl NanoleafTouchDecoder {
                 pressure: f32::from(record[2] & 0x0f) / 15.0,
                 ..surface.position
             };
-            if kind == 4 {
-                let from = u16::from_be_bytes([record[3], record[4]]);
-                if from != panel {
-                    self.release(from, &mut edges);
-                }
-            }
             match kind {
                 1 | 2 | 4 => {
                     if self.held.insert(panel) {
@@ -157,7 +157,15 @@ pub(crate) async fn run(
                     response.status()
                 );
             }
-            _ => {
+            response => {
+                match response {
+                    Ok(response) => {
+                        tracing::debug!(%device_id, status = %response.status(), "Retrying Nanoleaf touch subscription");
+                    }
+                    Err(error) => {
+                        tracing::debug!(%device_id, %error, "Retrying Nanoleaf touch subscription");
+                    }
+                }
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -167,8 +175,16 @@ pub(crate) async fn run(
         loop {
             tokio::select! {
                 chunk = response.receive() => {
-                    if !matches!(chunk, Ok(true)) {
-                        break;
+                    match chunk {
+                        Ok(true) => {},
+                        Ok(false) => {
+                            tracing::debug!(%device_id, "Nanoleaf touch stream ended; reconnecting");
+                            break;
+                        },
+                        Err(error) => {
+                            tracing::debug!(%device_id, %error, "Nanoleaf touch stream failed; reconnecting");
+                            break;
+                        },
                     }
                 }
                 received = socket.recv_from(&mut packet) => {
@@ -179,6 +195,7 @@ pub(crate) async fn run(
                     if let Ok(edges) = decoder.decode(&packet[..length])
                         && !publisher.publish(&edges)
                     {
+                        tracing::debug!(%device_id, "Nanoleaf touch input lease replaced");
                         return Ok(());
                     }
                 }

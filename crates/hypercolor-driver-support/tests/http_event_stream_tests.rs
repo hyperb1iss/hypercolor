@@ -31,7 +31,7 @@ async fn stream_with_body(
         let _ = closed.await;
     });
     let stream = BoundedHttpClient::new()?
-        .get(format!("http://{address}/events"))
+        .get(format!("http://{address}/secret-token/events"))
         .subscribe(max_bytes, TIMEOUT)
         .await?;
     Ok((stream, close, server))
@@ -139,7 +139,7 @@ async fn subscription_transport_errors_hide_the_request_url() -> TestResult {
 }
 
 #[tokio::test]
-async fn cancelled_receive_keeps_partial_event_size_and_deadline() -> TestResult {
+async fn cancelled_receive_keeps_partial_event_size() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (next, next_chunk) = oneshot::channel();
@@ -251,5 +251,74 @@ async fn split_terminal_crlf_counts_lf_without_starting_an_idle_deadline() -> Te
         close.send(()).expect("close SSE peer");
         server.await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn subscription_debug_shows_status_and_limits_without_the_request_url() -> TestResult {
+    let (stream, close, server) = stream_with_body(b"", 32).await?;
+    let rendered = format!("{stream:?} {:#?}", Some(&stream));
+    assert!(!rendered.contains("secret-token"));
+    assert!(!rendered.contains("/events"));
+    assert!(!rendered.contains("http://"));
+    assert!(rendered.contains("status: 200"));
+    assert!(rendered.contains("max_event_bytes: 32"));
+    assert!(rendered.contains("timeout: 200ms"));
+    close.send(()).expect("close SSE peer");
+    server.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn completed_standalone_comments_return_to_idle_without_a_blank_line() -> TestResult {
+    for body in [
+        &b": heartbeat\n"[..],
+        &b": heartbeat\r\n"[..],
+        &b": heartbeat\r"[..],
+    ] {
+        let (mut stream, close, server) = stream_with_body(body, body.len()).await?;
+        assert!(stream.receive().await?);
+        assert!(
+            tokio::time::timeout(TIMEOUT * 2, stream.receive())
+                .await
+                .is_err()
+        );
+        close.send(()).expect("close SSE peer");
+        assert!(!stream.receive().await?);
+        server.await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn comments_inside_pending_events_do_not_clear_the_event_deadline() -> TestResult {
+    let (mut stream, close, server) = stream_with_body(b"data: pending\n: heartbeat\n", 64).await?;
+    assert!(stream.receive().await?);
+    assert!(matches!(
+        stream.receive().await,
+        Err(HttpError::DeadlineExceeded)
+    ));
+    close.send(()).expect("close SSE peer");
+    server.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn standalone_comments_keep_the_size_and_partial_line_deadline_limits() -> TestResult {
+    let (mut oversized, close, server) = stream_with_body(b": heartbeat\r\n", 12).await?;
+    assert!(matches!(
+        oversized.receive().await,
+        Err(HttpError::BodyTooLarge { limit: 12 })
+    ));
+    close.send(()).expect("close SSE peer");
+    server.await?;
+    let (mut partial, close, server) = stream_with_body(b": partial", 32).await?;
+    assert!(partial.receive().await?);
+    assert!(matches!(
+        partial.receive().await,
+        Err(HttpError::DeadlineExceeded)
+    ));
+    close.send(()).expect("close SSE peer");
+    server.await?;
     Ok(())
 }

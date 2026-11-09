@@ -78,6 +78,20 @@ fn hold_recovers_missing_down_and_swipe_transfers_to_destination_panel() -> Test
 }
 
 #[test]
+fn swipe_to_unknown_or_unsupported_panel_releases_the_source() -> TestResult {
+    for destination in [43, 600] {
+        let mut decoder = decoder();
+        decoder.decode(&packet(41, 1, 15, u16::MAX))?;
+        assert!(matches!(
+            decoder.decode(&packet(destination, 4, 8, 41))?.as_slice(),
+            [DeviceInputEdge::TouchEnded { contact: 41, .. }]
+        ));
+        assert!(decoder.decode(&packet(41, 3, 0, u16::MAX))?.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
 fn simultaneous_contacts_and_duplicate_down_do_not_restart_holds() -> TestResult {
     let mut decoder = decoder();
     let mut multiple = packet(41, 1, 15, u16::MAX);

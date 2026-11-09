@@ -1,16 +1,19 @@
 //! HTTP for driver clients, bounded by construction.
 //!
-//! Every exchange runs on a [`ReadBudget`]: a byte cap and an absolute
-//! deadline fixed before the request goes out. [`BoundedRequest::send`]
-//! will not run without one, and [`BoundedResponse`] only reads its body
-//! through it, counting bytes as chunks arrive whatever `Content-Length`
-//! claims. A slow drip cannot extend the deadline, and an oversized reply
-//! is refused before it is buffered.
+//! Finite exchanges use a [`ReadBudget`]: a byte cap and an absolute
+//! deadline covering headers and body. [`BoundedResponse`] counts bytes as
+//! chunks arrive whatever `Content-Length` claims. A slow drip cannot extend
+//! the deadline, and an oversized reply is refused before it is buffered.
+//!
+//! Long-lived SSE subscriptions instead bound header receipt and each event
+//! or standalone comment through [`BoundedRequest::subscribe`]. Completed
+//! comments leave a quiet connection open without an idle deadline.
 //!
 //! Drivers use this module instead of depending on `reqwest`, which keeps
 //! the unbounded readers out of reach. Authentication, status handling,
 //! parsing, and each endpoint's limit stay in the vendor client.
 
+use std::fmt;
 use std::time::Duration;
 
 use reqwest::IntoUrl;
@@ -41,8 +44,9 @@ pub enum HttpError {
     Json(#[source] serde_json::Error),
 }
 
-/// What one exchange may spend: a cap on the body and an absolute deadline
-/// covering connect, headers, and every chunk of the body.
+/// What one finite exchange may spend: a cap on the body and an absolute
+/// deadline covering connect, headers, and every chunk of the body.
+/// SSE subscriptions use per-event limits through [`BoundedRequest::subscribe`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadBudget {
     max_bytes: usize,
@@ -60,7 +64,7 @@ impl ReadBudget {
     }
 }
 
-/// An HTTP client whose every exchange runs on a [`ReadBudget`].
+/// An HTTP client with bounded finite responses and SSE subscriptions.
 #[derive(Debug, Clone)]
 pub struct BoundedHttpClient {
     inner: reqwest::Client,
@@ -108,7 +112,8 @@ impl BoundedHttpClient {
 }
 
 /// Transport policy for a [`BoundedHttpClient`]. Time and size limits are
-/// not here: they belong to each exchange's [`ReadBudget`].
+/// not here: finite exchanges use [`ReadBudget`], while subscriptions set
+/// their event limits through [`BoundedRequest::subscribe`].
 #[derive(Debug)]
 pub struct BoundedHttpClientBuilder {
     inner: reqwest::ClientBuilder,
@@ -153,7 +158,7 @@ impl BoundedHttpClientBuilder {
     }
 }
 
-/// A request that cannot go out without a [`ReadBudget`].
+/// A request that requires a finite response budget or SSE event limits.
 #[derive(Debug)]
 pub struct BoundedRequest {
     inner: reqwest::RequestBuilder,
@@ -185,8 +190,11 @@ impl BoundedRequest {
     ///
     /// `timeout` bounds receipt of the headers and completion of each event
     /// once its first byte arrives. `max_event_bytes` bounds one event,
-    /// including comments and framing. The body is drained without collecting
-    /// payloads; use this when the subscription itself owns another transport.
+    /// including comments and framing. Standalone comment lines have the same
+    /// limits but return to idle when their line ends. Comments inside a
+    /// pending event do not reset that event's limits. The body is drained
+    /// without collecting payloads; use this when the subscription itself
+    /// owns another transport.
     ///
     /// # Errors
     ///
@@ -207,7 +215,8 @@ impl BoundedRequest {
             timeout,
             deadline: None,
             event_bytes: 0,
-            line_empty: true,
+            line: EventLine::Empty,
+            event_has_fields: false,
             previous_cr: false,
         })
     }
@@ -306,15 +315,33 @@ impl BoundedResponse {
 /// The response stays open until its owner drops it or the peer closes it.
 /// A healthy peer can remain silent indefinitely; TCP keepalive still detects
 /// dead connections through the client's transport policy.
-#[derive(Debug)]
 pub struct EventStream {
     inner: reqwest::Response,
     max_event_bytes: usize,
     timeout: Duration,
     deadline: Option<Instant>,
     event_bytes: usize,
-    line_empty: bool,
+    line: EventLine,
+    event_has_fields: bool,
     previous_cr: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventLine {
+    Empty,
+    Comment,
+    Field,
+}
+
+impl fmt::Debug for EventStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EventStream")
+            .field("status", &self.status())
+            .field("max_event_bytes", &self.max_event_bytes)
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl EventStream {
@@ -364,12 +391,20 @@ impl EventStream {
                 continue;
             }
             if matches!(byte, b'\r' | b'\n') {
-                if self.line_empty {
+                if self.line == EventLine::Empty
+                    || (self.line == EventLine::Comment && !self.event_has_fields)
+                {
                     self.deadline = None;
+                    self.event_has_fields = false;
                 }
-                self.line_empty = true;
-            } else {
-                self.line_empty = false;
+                self.line = EventLine::Empty;
+            } else if self.line == EventLine::Empty {
+                self.line = if byte == b':' {
+                    EventLine::Comment
+                } else {
+                    self.event_has_fields = true;
+                    EventLine::Field
+                };
             }
         }
         Ok(true)

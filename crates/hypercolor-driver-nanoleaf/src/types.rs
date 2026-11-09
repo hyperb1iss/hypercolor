@@ -40,7 +40,7 @@ pub struct NanoleafOrientation {
     pub value: f32,
 }
 
-/// Panel layout returned by `GET /api/v1/{token}/panelLayout/layout`.
+/// Layout subtree of the `GET /api/v1/{token}/panelLayout` response.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NanoleafPanelLayoutResponse {
