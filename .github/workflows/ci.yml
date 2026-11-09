@@ -582,7 +582,7 @@ jobs:
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked --no-tests=fail \
             -p hypercolor-macos-owner --lib \
-            -E 'test(/bootstrap/)'
+            -E 'test(/bootstrap|bootout|launchctl_mutation_arguments/)'
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-macos-session \

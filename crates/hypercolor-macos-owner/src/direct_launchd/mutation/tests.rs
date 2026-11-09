@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    DeadlineDirectLaunchdInspector, LaunchctlAction, LaunchctlCommandBoundary,
+    DeadlineDirectLaunchdInspector, ExitWatch, LaunchctlAction, LaunchctlCommandBoundary,
     MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdBootstrapSource,
     MacosDirectLaunchdMutationOutcome, MutationController, SubmittedCommand,
 };
@@ -28,10 +28,51 @@ struct SharedInspector {
     state: MacosDirectLaunchdState,
     live_matches: bool,
     publication_matches: bool,
+    exit: FakeExit,
+    trace: Vec<Trace>,
+}
+
+/// What the job's process does once something waits on its exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FakeExit {
+    /// It exits, and launchd's view of the job stays as it stands.
+    Exits,
+    /// It exits, and launchd drops the label: what launchd does when the
+    /// process of a booted-out job ends.
+    ExitsAndLaunchdDropsTheJob,
+    /// It outlives every deadline.
+    Never,
+}
+
+/// The order the engine armed watches and submitted commands in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Trace {
+    Watch(u32),
+    Command(LaunchctlAction),
+    ExitWaited,
 }
 
 #[derive(Debug, Clone)]
 struct FakeInspector(Rc<RefCell<SharedInspector>>);
+
+#[derive(Debug)]
+struct FakeExitWatch(Rc<RefCell<SharedInspector>>);
+
+impl ExitWatch for FakeExitWatch {
+    fn exited_by(&mut self, deadline: Instant) -> Result<bool, MacosOwnerExecutionError> {
+        require_time(deadline)?;
+        let mut shared = self.0.borrow_mut();
+        shared.trace.push(Trace::ExitWaited);
+        Ok(match shared.exit {
+            FakeExit::Exits => true,
+            FakeExit::ExitsAndLaunchdDropsTheJob => {
+                shared.state = MacosDirectLaunchdState::NotLoaded;
+                true
+            }
+            FakeExit::Never => false,
+        })
+    }
+}
 
 impl MacosDirectLaunchdInspector for FakeInspector {
     fn inspect_direct_launchd(
@@ -57,6 +98,13 @@ impl MacosDirectLaunchdInspector for FakeInspector {
 }
 
 impl DeadlineDirectLaunchdInspector for FakeInspector {
+    type ExitWatch = FakeExitWatch;
+
+    fn watch_exit(&mut self, pid: u32) -> Result<FakeExitWatch, MacosOwnerExecutionError> {
+        self.0.borrow_mut().trace.push(Trace::Watch(pid));
+        Ok(FakeExitWatch(Rc::clone(&self.0)))
+    }
+
     fn inspect_direct_launchd_until(
         &mut self,
         deadline: Instant,
@@ -167,6 +215,10 @@ impl LaunchctlCommandBoundary for FakeCommands {
     ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
         self.actions.push(action.clone());
         self.deadlines.push(deadline);
+        self.shared
+            .borrow_mut()
+            .trace
+            .push(Trace::Command(action.clone()));
         let step = self.steps.pop_front().expect("command step should exist");
         assert_eq!(&step.action, action);
         if let Some(state) = step.state {
@@ -290,6 +342,8 @@ fn fixture(
         state,
         live_matches: true,
         publication_matches: true,
+        exit: FakeExit::Exits,
+        trace: Vec::new(),
     }));
     let inspector = FakeInspector(Rc::clone(&shared));
     let commands = FakeCommands::new(store.clone(), shared);
@@ -559,6 +613,176 @@ fn unconditional_bootout_needs_no_owner_record_and_a_terminal_proof() {
             .expect("submitted"),
         MacosDirectLaunchdMutationOutcome::SubmittedUnknown,
         "a job that stays loaded is reported, never assumed gone"
+    );
+}
+
+/// launchctl answers a bootout once launchd has signalled the job, on macOS
+/// 15 and 26 alike, and launchd keeps the job loaded (`state = SIGTERMed`,
+/// same pid) until its process exits or is killed at the exit timeout.
+#[test]
+fn unconditional_bootout_waits_for_the_signalled_job_to_exit() {
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    inspector.0.borrow_mut().exit = FakeExit::ExitsAndLaunchdDropsTheJob;
+    commands.push(LaunchctlAction::Bootout, completed(0, b""));
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+
+    assert_eq!(
+        controller
+            .bootout_unconditional(fixture_deadline())
+            .expect("the job leaves when its process exits"),
+        MacosDirectLaunchdMutationOutcome::Complete(())
+    );
+    assert_eq!(
+        inspector.0.borrow().trace,
+        vec![
+            Trace::Watch(42),
+            Trace::Command(LaunchctlAction::Bootout),
+            Trace::ExitWaited
+        ],
+        "the exit watch is armed before the bootout can end the process"
+    );
+}
+
+#[test]
+fn exact_bootout_waits_for_the_signalled_job_to_exit() {
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    let current = store
+        .publish_owner(
+            MacosDaemonOwner::DirectLaunchd,
+            identity("current", DAEMON_PATH, REQUIREMENT, 42),
+        )
+        .expect("current should publish");
+    let proof = super::super::corroborate_direct_launchd_owner(&current, &mut inspector)
+        .expect("current should corroborate");
+    inspector.0.borrow_mut().exit = FakeExit::ExitsAndLaunchdDropsTheJob;
+    commands.push(LaunchctlAction::Bootout, completed(0, b""));
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+
+    assert_eq!(
+        controller
+            .bootout_exact(&proof, fixture_deadline())
+            .expect("the owner leaves when its process exits"),
+        MacosDirectLaunchdMutationOutcome::Complete(())
+    );
+    assert_eq!(
+        inspector.0.borrow().trace,
+        vec![
+            Trace::Watch(42),
+            Trace::Command(LaunchctlAction::Bootout),
+            Trace::ExitWaited
+        ]
+    );
+}
+
+/// macOS 15's launchctl has no `--wait` and answers status 64 with a usage
+/// text, leaving the job running. A refusal is launchctl's error, never an
+/// unconfirmed stop and never a wait on a process nobody signalled.
+#[test]
+fn refused_bootout_is_an_error_in_launchctls_words() {
+    const REFUSAL: &[u8] = b"Unrecognized target specifier.\nUsage: launchctl bootout \
+        <domain-target> [service-path1, service-path2, ...] | <service-target>\n";
+    let refused = || SubmittedCommand::Completed {
+        status: Some(64),
+        stdout: Vec::new(),
+        stderr: REFUSAL.to_vec(),
+    };
+
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    commands.push(LaunchctlAction::Bootout, refused());
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+    let error = controller
+        .bootout_unconditional(fixture_deadline())
+        .expect_err("a refused bootout is an error");
+    assert!(
+        error.to_string().contains("status 64")
+            && error.to_string().contains("Unrecognized target specifier"),
+        "{error}"
+    );
+    assert!(!inspector.0.borrow().trace.contains(&Trace::ExitWaited));
+
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    let current = store
+        .publish_owner(
+            MacosDaemonOwner::DirectLaunchd,
+            identity("current", DAEMON_PATH, REQUIREMENT, 42),
+        )
+        .expect("current should publish");
+    let proof = super::super::corroborate_direct_launchd_owner(&current, &mut inspector)
+        .expect("current should corroborate");
+    commands.push(LaunchctlAction::Bootout, refused());
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+    let error = controller
+        .bootout_exact(&proof, fixture_deadline())
+        .expect_err("a refused bootout is an error");
+    assert!(error.to_string().contains("status 64"), "{error}");
+    assert!(!inspector.0.borrow().trace.contains(&Trace::ExitWaited));
+}
+
+/// `Boot-out failed: 3: No such process`: the job left between the first
+/// read and the request, which is the state that was asked for.
+#[test]
+fn refused_bootout_of_a_job_that_already_left_completes() {
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    commands.push_effect(
+        LaunchctlAction::Bootout,
+        SubmittedCommand::Completed {
+            status: Some(3),
+            stdout: Vec::new(),
+            stderr: b"Boot-out failed: 3: No such process\n".to_vec(),
+        },
+        Some(MacosDirectLaunchdState::NotLoaded),
+        false,
+    );
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+    assert_eq!(
+        controller
+            .bootout_unconditional(fixture_deadline())
+            .expect("an absent job is unloaded"),
+        MacosDirectLaunchdMutationOutcome::Complete(())
+    );
+}
+
+#[test]
+fn a_job_that_outlives_the_deadline_is_submitted_unknown() {
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    inspector.0.borrow_mut().exit = FakeExit::Never;
+    commands.push(LaunchctlAction::Bootout, completed(0, b""));
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+    assert_eq!(
+        controller
+            .bootout_unconditional(fixture_deadline())
+            .expect("submitted"),
+        MacosDirectLaunchdMutationOutcome::SubmittedUnknown
     );
 }
 

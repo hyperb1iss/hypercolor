@@ -335,8 +335,21 @@ trait LaunchctlCommandBoundary {
     ) -> Result<bool, MacosOwnerExecutionError>;
 }
 
+/// A watch on one process's exit, armed before anything can end it.
+#[cfg(any(test, target_os = "macos"))]
+trait ExitWatch {
+    /// Whether the watched process exited by `deadline`.
+    fn exited_by(&mut self, deadline: Instant) -> Result<bool, MacosOwnerExecutionError>;
+}
+
 #[cfg(any(test, target_os = "macos"))]
 trait DeadlineDirectLaunchdInspector {
+    type ExitWatch: ExitWatch;
+
+    /// Arm a watch on the exit of process `pid`. A process already gone has
+    /// exited.
+    fn watch_exit(&mut self, pid: u32) -> Result<Self::ExitWatch, MacosOwnerExecutionError>;
+
     fn inspect_direct_launchd_until(
         &mut self,
         deadline: Instant,
@@ -493,9 +506,12 @@ where
                     deadline,
                 };
                 super::corroborate_direct_launchd_owner(expected.record(), &mut inspector)?;
-                let _outcome = self.commands.run(&LaunchctlAction::Bootout, deadline)?;
+                let exit = self
+                    .inspector
+                    .watch_exit(expected.record().active_identity.pid)?;
+                let gone = self.bootout_until_gone(Some(exit), deadline)?;
                 submitted = true;
-                if self.exact_not_loaded(deadline) {
+                if gone {
                     Ok(())
                 } else {
                     Err(MacosOwnerExecutionError::new(
@@ -524,12 +540,52 @@ where
         if self.exact_not_loaded(deadline) {
             return Ok(MacosDirectLaunchdMutationOutcome::Complete(()));
         }
-        let _outcome = self.commands.run(&LaunchctlAction::Bootout, deadline)?;
-        Ok(if self.exact_not_loaded(deadline) {
-            MacosDirectLaunchdMutationOutcome::Complete(())
-        } else {
-            MacosDirectLaunchdMutationOutcome::SubmittedUnknown
-        })
+        // A loaded job without a process leaves with the bootout itself.
+        let exit = match self.inspector.inspect_direct_launchd_until(deadline) {
+            Ok(MacosDirectLaunchdState::Loaded { pid }) => Some(self.inspector.watch_exit(pid)?),
+            Ok(MacosDirectLaunchdState::NotLoaded) | Err(_) => None,
+        };
+        match self.bootout_until_gone(exit, deadline) {
+            Ok(true) => Ok(MacosDirectLaunchdMutationOutcome::Complete(())),
+            Ok(false) => Ok(MacosDirectLaunchdMutationOutcome::SubmittedUnknown),
+            Err(_) if self.exact_not_loaded(deadline) => {
+                Ok(MacosDirectLaunchdMutationOutcome::Complete(()))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Submit one bootout of the fixed label and report whether the job was
+    /// proven gone by `deadline`.
+    ///
+    /// launchctl answers once launchd has signalled the job, which runs on
+    /// until it exits or launchd kills it at its exit timeout, and launchd
+    /// drops the label when the process ends. So the proof waits on `exit`,
+    /// armed on the job's process before submission, and only then asks
+    /// launchd. A job with no process to watch is asked at once.
+    ///
+    /// A nonzero exit status means launchd refused the request and nothing
+    /// was submitted: that is an error carrying launchctl's own words, so a
+    /// refusal is never reported as an unconfirmed stop.
+    fn bootout_until_gone(
+        &mut self,
+        exit: Option<I::ExitWatch>,
+        deadline: Instant,
+    ) -> Result<bool, MacosOwnerExecutionError> {
+        if let SubmittedCommand::Completed {
+            status: Some(status),
+            stderr,
+            ..
+        } = self.commands.run(&LaunchctlAction::Bootout, deadline)?
+            && status != 0
+        {
+            return Err(MacosOwnerExecutionError::new(format!(
+                "launchctl bootout failed with status {status}: {}",
+                String::from_utf8_lossy(&stderr).trim()
+            )));
+        }
+        let exited = exit.map_or(Ok(true), |mut exit| exit.exited_by(deadline));
+        Ok(exited.unwrap_or(false) && self.exact_not_loaded(deadline))
     }
 
     fn exact_not_loaded(&mut self, deadline: Instant) -> bool {

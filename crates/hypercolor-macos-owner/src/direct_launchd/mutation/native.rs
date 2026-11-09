@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    DeadlineDirectLaunchdInspector, LaunchctlAction, LaunchctlCommandBoundary,
+    DeadlineDirectLaunchdInspector, ExitWatch, LaunchctlAction, LaunchctlCommandBoundary,
     MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdBootstrapSource,
     MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator, MutationController,
     SubmittedCommand,
@@ -19,7 +19,7 @@ use crate::{
     MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdExecutableExpectation,
     MacosDirectLaunchdInspector, MacosDirectLaunchdOwnerProof,
     MacosDirectLaunchdPublicationExpectation, MacosDirectLaunchdState, MacosOwnerExecutionError,
-    MacosOwnerIdentity, MacosOwnerStore, NativeMacosDirectLaunchdInspector,
+    MacosOwnerIdentity, MacosOwnerStore, NativeMacosDirectLaunchdInspector, ProcessExitWatch,
 };
 
 const COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
@@ -79,7 +79,19 @@ impl NativeMacosDirectLaunchdMutator {
 #[derive(Debug, Clone, Copy)]
 struct DeadlineNativeMacosDirectLaunchdInspector;
 
+impl ExitWatch for ProcessExitWatch {
+    fn exited_by(&mut self, deadline: Instant) -> Result<bool, MacosOwnerExecutionError> {
+        self.wait_until(deadline)
+    }
+}
+
 impl DeadlineDirectLaunchdInspector for DeadlineNativeMacosDirectLaunchdInspector {
+    type ExitWatch = ProcessExitWatch;
+
+    fn watch_exit(&mut self, pid: u32) -> Result<ProcessExitWatch, MacosOwnerExecutionError> {
+        ProcessExitWatch::arm(pid)
+    }
+
     fn inspect_direct_launchd_until(
         &mut self,
         deadline: Instant,
@@ -266,7 +278,9 @@ impl NativeLaunchctlBoundary {
             LaunchctlAction::Disable => vec!["disable".into(), target.into()],
             LaunchctlAction::Bootstrap => vec!["bootstrap".into(), domain.into()],
             LaunchctlAction::Kickstart => vec!["kickstart".into(), "-p".into(), target.into()],
-            LaunchctlAction::Bootout => vec!["bootout".into(), "--wait".into(), target.into()],
+            // macOS 15 rejects `--wait` as an unrecognized target, so the
+            // mutator waits on the job's process exit instead.
+            LaunchctlAction::Bootout => vec!["bootout".into(), target.into()],
         }
     }
 
@@ -612,7 +626,7 @@ mod tests {
         );
         assert_eq!(
             boundary.arguments(&LaunchctlAction::Bootout),
-            ["bootout", "--wait", target]
+            ["bootout", target]
         );
         assert_eq!(
             boundary.arguments(&LaunchctlAction::Bootstrap),
