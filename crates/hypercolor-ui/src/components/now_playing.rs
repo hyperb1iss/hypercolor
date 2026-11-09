@@ -12,7 +12,7 @@
 
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
-use leptos_use::use_throttle_fn_with_arg;
+use leptos_use_fn_debounce_throttle::use_throttle_fn_with_arg;
 
 use crate::api;
 use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};

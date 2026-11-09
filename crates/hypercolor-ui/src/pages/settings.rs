@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_query_map;
-use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
+use leptos_use_intersection_observer::{
+    UseIntersectionObserverOptions, use_intersection_observer_with_options,
+};
 use wasm_bindgen::JsCast;
 
 use crate::api;

@@ -14,8 +14,9 @@ use leptos::html::Canvas;
 use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
 use leptos_icons::Icon;
-use leptos_use::{
-    UseEventListenerOptions, use_document, use_event_listener, use_event_listener_with_options,
+use leptos_use_document::use_document;
+use leptos_use_event_listener::{
+    UseEventListenerOptions, use_event_listener, use_event_listener_with_options,
 };
 
 use crate::api;

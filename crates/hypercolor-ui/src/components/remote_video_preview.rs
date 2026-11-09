@@ -13,9 +13,9 @@ use hypercolor_leptos_ext::canvas::create_canvas;
 use js_sys::{Function, Reflect};
 use leptos::html;
 use leptos::prelude::*;
-use leptos_use::{
-    UseElementSizeReturn, use_device_pixel_ratio, use_element_size, use_element_visibility,
-};
+use leptos_use_device_pixel_ratio::use_device_pixel_ratio;
+use leptos_use_element_size::{UseElementSizeReturn, use_element_size};
+use leptos_use_element_visibility::use_element_visibility;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 

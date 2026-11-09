@@ -6,7 +6,7 @@ use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::sleep;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_use::use_throttle_fn_with_arg;
+use leptos_use_fn_debounce_throttle::use_throttle_fn_with_arg;
 
 use crate::api::{self, DeviceAuthState};
 use crate::app::DevicesContext;

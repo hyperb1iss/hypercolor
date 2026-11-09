@@ -36,7 +36,7 @@ pub fn is_phone_layout() -> Signal<bool> {
 
 #[cfg(target_arch = "wasm32")]
 fn phone_layout_signal() -> Signal<bool> {
-    use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
+    use leptos_use_event_listener::{UseEventListenerOptions, use_event_listener_with_options};
 
     let Some(query) =
         web_sys::window().and_then(|window| window.match_media(PHONE_MEDIA_QUERY).ok().flatten())

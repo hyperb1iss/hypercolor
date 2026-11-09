@@ -32,7 +32,7 @@ use hypercolor_types::control::ControlValue;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_use::{UseElementSizeOptions, use_element_size_with_options};
+use leptos_use_element_size::{UseElementSizeOptions, use_element_size_with_options};
 
 use crate::app::{EffectsContext, WsContext};
 use crate::color;

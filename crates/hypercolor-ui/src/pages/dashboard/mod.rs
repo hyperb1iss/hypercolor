@@ -19,7 +19,7 @@ use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
+use leptos_use_event_listener::{UseEventListenerOptions, use_event_listener_with_options};
 
 use crate::app::WsContext;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};

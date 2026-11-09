@@ -107,7 +107,7 @@ pub fn ScreenCompositionSection(
         });
     });
 
-    let commit_opacity = leptos_use::use_debounce_fn(
+    let commit_opacity = leptos_use_fn_debounce_throttle::use_debounce_fn(
         move || {
             if !blend_mode.get_untracked().blends_with_base() {
                 return;

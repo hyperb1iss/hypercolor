@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use hypercolor_types::effect::ControlDefinition;
 use leptos::prelude::*;
-use leptos_use::use_debounce_fn;
+use leptos_use_fn_debounce_throttle::use_debounce_fn;
 
 use crate::api::{ApiError, ApiResult, MutationOutcome};
 use crate::async_helpers::spawn_mutation;

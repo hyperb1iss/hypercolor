@@ -77,7 +77,7 @@ pub fn EffectsPage() -> impl IntoView {
     let scenes_ctx = expect_context::<ScenesContext>();
 
     let preview_ref = NodeRef::<leptos::html::Div>::new();
-    let preview_size = leptos_use::use_element_size(preview_ref);
+    let preview_size = leptos_use_element_size::use_element_size(preview_ref);
     Effect::new(move |_| {
         ws.set_preview_cap.set(EFFECTS_PREVIEW_FPS_CAP);
         ws.set_preview_width_cap

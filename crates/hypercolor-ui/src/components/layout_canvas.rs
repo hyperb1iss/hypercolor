@@ -29,7 +29,7 @@ use crate::components::canvas_preview::CanvasPreview;
 use crate::components::device_card::{DeviceClass, classify_device};
 use crate::compound_selection::{self, CompoundDepth};
 use crate::render_canvas;
-use leptos_use::{UseElementSizeReturn, use_element_size};
+use leptos_use_element_size::{UseElementSizeReturn, use_element_size};
 
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
