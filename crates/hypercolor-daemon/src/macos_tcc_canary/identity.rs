@@ -185,7 +185,8 @@ pub(super) fn inspect_launcher(
     let pid = std::process::id();
     let mut system = System::new_with_specifics(
         RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-    );
+    )
+    .context("process table is unavailable for launcher inspection")?;
     system.refresh_processes(ProcessesToUpdate::All, true);
     let current = system
         .process(Pid::from_u32(pid))

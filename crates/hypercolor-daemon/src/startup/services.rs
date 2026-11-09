@@ -1193,7 +1193,8 @@ pub(crate) fn screen_capacity_plan_for_backend(
 fn available_host_memory_bytes() -> Result<u64> {
     let mut system = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
-    );
+    )
+    .context("operating system did not report host memory")?;
     system.refresh_memory();
     let available = system.available_memory();
     if available == 0 {

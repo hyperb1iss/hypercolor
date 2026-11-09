@@ -33,7 +33,7 @@ pub fn attested_windows_launchers(service_dispatch: bool) -> Vec<ServiceIdentity
 
 fn current_parent_pid() -> Option<u32> {
     let current = Pid::from_u32(std::process::id());
-    let mut system = System::new_with_specifics(RefreshKind::nothing());
+    let mut system = System::new_with_specifics(RefreshKind::nothing()).ok()?;
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[current]),
         true,

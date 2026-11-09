@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use hypercolor_types::net::NetStats;
 use sysinfo::Networks;
 
@@ -58,20 +58,22 @@ impl NetSource {
 
         let busiest = networks
             .iter()
+            .map(|(name, data)| (name.to_string_lossy(), data))
             .filter(|(name, _)| !is_loopback(name))
             .max_by_key(|(name, data)| {
                 // Sticky tiebreak: keep reporting the previous interface
                 // through idle periods instead of flapping alphabetically.
-                let sticky = u64::from(self.last_iface.as_deref() == Some(name.as_str()));
+                let sticky = u64::from(self.last_iface.as_deref() == Some(name.as_ref()));
                 (data.received() + data.transmitted(), sticky)
             });
         let (iface, data) = busiest?;
+        let iface = iface.into_owned();
 
         self.last_iface = Some(iface.clone());
         Some(NetStats {
             rx_bps: bytes_per_second(data.received(), elapsed_secs),
             tx_bps: bytes_per_second(data.transmitted(), elapsed_secs),
-            iface: iface.clone(),
+            iface,
         })
     }
 }
@@ -89,8 +91,10 @@ impl ManagedSource for NetSource {
 
     fn start(&mut self) -> Result<()> {
         if self.networks.is_none() {
+            let networks = Networks::new_with_refreshed_list()
+                .context("network statistics are unavailable on this host")?;
             self.status.begin_session()?;
-            self.networks = Some(Networks::new_with_refreshed_list());
+            self.networks = Some(networks);
             self.last_refresh = Some(Instant::now());
         }
         Ok(())
