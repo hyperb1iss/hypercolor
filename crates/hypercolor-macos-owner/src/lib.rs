@@ -88,7 +88,7 @@ pub use model::{
 #[cfg(target_os = "macos")]
 pub use process_identity::{request_macos_child_termination, request_macos_pid_termination};
 #[cfg(target_os = "macos")]
-pub use process_lifetime::{wait_for_process_exit, wait_for_process_exit_within};
+pub use process_lifetime::{ProcessExitWatch, wait_for_process_exit, wait_for_process_exit_within};
 pub use publication::wait_for_owner_publication;
 pub use store::MacosOwnerStore;
 

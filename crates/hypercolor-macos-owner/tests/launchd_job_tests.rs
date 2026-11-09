@@ -8,7 +8,8 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use hypercolor_macos_owner::{
-    MacosLaunchdJob, parse_launchd_autostart_state, parse_launchd_job, wait_for_process_exit_within,
+    MacosLaunchdJob, ProcessExitWatch, parse_launchd_autostart_state, parse_launchd_job,
+    wait_for_process_exit_within,
 };
 
 struct FixtureAgent {
@@ -18,16 +19,21 @@ struct FixtureAgent {
 }
 
 impl FixtureAgent {
-    fn new() -> Self {
+    /// An agent named for `role`, running `program`.
+    fn new(role: &str, program: &[&str]) -> Self {
         let uid = String::from_utf8(run("/usr/bin/id", &["-u"]).stdout)
             .expect("id prints UTF-8")
             .trim()
             .parse()
             .expect("numeric uid");
         let label = format!(
-            "tech.hyperbliss.hypercolor.launchd-fixture.{}",
+            "tech.hyperbliss.hypercolor.launchd-fixture.{role}.{}",
             std::process::id()
         );
+        let program = program
+            .iter()
+            .flat_map(|argument| ["<string>", argument, "</string>"])
+            .collect::<String>();
         let plist = tempfile::Builder::new()
             .suffix(".plist")
             .tempfile()
@@ -39,7 +45,7 @@ impl FixtureAgent {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>{label}</string>
-<key>ProgramArguments</key><array><string>/bin/sleep</string><string>120</string></array>
+<key>ProgramArguments</key><array>{program}</array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>ThrottleInterval</key><integer>30</integer>
@@ -130,7 +136,7 @@ fn running_pid(job: MacosLaunchdJob) -> u32 {
 
 #[test]
 fn launchd_gates_loading_on_the_disabled_state_and_never_a_loaded_job() {
-    let agent = FixtureAgent::new();
+    let agent = FixtureAgent::new("gate", &["/bin/sleep", "120"]);
     assert!(Path::new(&agent.plist).is_file());
     assert_eq!(agent.job(), MacosLaunchdJob::NotLoaded);
     assert!(agent.autostart_enabled(), "a label starts enabled");
@@ -167,7 +173,8 @@ fn launchd_gates_loading_on_the_disabled_state_and_never_a_loaded_job() {
         "a crashed job stays loaded, waiting out its throttle"
     );
 
-    let bootout = agent.launchctl(&["bootout", "--wait", &target]);
+    // A job with no process leaves with the bootout itself.
+    let bootout = agent.launchctl(&["bootout", &target]);
     assert!(bootout.status.success(), "{bootout:?}");
     assert_eq!(agent.job(), MacosLaunchdJob::NotLoaded);
 
@@ -184,6 +191,52 @@ fn launchd_gates_loading_on_the_disabled_state_and_never_a_loaded_job() {
     let bootstrap = agent.bootstrap();
     assert!(bootstrap.status.success(), "{bootstrap:?}");
     agent.wait_for_job(|job| matches!(job, MacosLaunchdJob::Running { .. }));
+}
+
+/// launchctl answers a bootout once launchd has signalled the job, so a
+/// process that takes a moment to leave keeps its job loaded past the
+/// answer, and launchd drops the job when that process exits.
+#[test]
+fn bootout_answers_before_the_job_leaves_and_launchd_drops_it_at_exit() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let ready = scratch.path().join("trapped");
+    let script = format!(
+        "trap 'sleep 1; exit 0' TERM; : > '{}'; while :; do sleep 1; done",
+        ready.display()
+    );
+    let agent = FixtureAgent::new("lingers", &["/bin/sh", "-c", &script]);
+    let bootstrap = agent.bootstrap();
+    assert!(bootstrap.status.success(), "{bootstrap:?}");
+    let pid = running_pid(agent.wait_for_job(|job| matches!(job, MacosLaunchdJob::Running { .. })));
+    let trapped = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() {
+        assert!(
+            Instant::now() < trapped,
+            "the agent never installed its trap"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut exit = ProcessExitWatch::arm(pid).expect("arm the exit watch");
+
+    let target = agent.target();
+    let bootout = agent.launchctl(&["bootout", &target]);
+    assert!(bootout.status.success(), "{bootout:?}");
+    assert_eq!(
+        agent.job(),
+        MacosLaunchdJob::Running { pid },
+        "the job outlives launchctl's answer"
+    );
+
+    assert!(
+        exit.wait_until(Instant::now() + Duration::from_secs(10))
+            .expect("watch"),
+        "the process leaves inside launchd's exit timeout"
+    );
+    assert_eq!(
+        agent.job(),
+        MacosLaunchdJob::NotLoaded,
+        "launchd drops the job with its process"
+    );
 }
 
 /// A process this test binary starts from inside a fixture bundle sits here.
