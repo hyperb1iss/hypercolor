@@ -558,8 +558,7 @@ pub fn StudioDeviceCard(
                                 menu_physical_id,
                                 menu_kebab_id,
                                 scopes,
-                                menu_zone_id,
-                                hardware_device,
+                                hardware_device.map(|device| (menu_zone_id, device)),
                             )}
                         </div>
                     }
@@ -850,13 +849,11 @@ fn card_ops_menu(
     physical_id: String,
     kebab_id: String,
     scopes: StoredValue<Vec<(String, MovePayload)>>,
-    zone_id: String,
-    hardware_device: Option<DeviceSummary>,
+    hardware_layout: Option<(String, DeviceSummary)>,
 ) -> impl IntoView {
     let (identifying, set_identifying) = signal(false);
     let identify_id = StoredValue::new(physical_id);
     let kebab_id = StoredValue::new(kebab_id);
-    let hardware_zone_id = StoredValue::new(zone_id);
 
     let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
                text-[11px] transition-colors";
@@ -905,7 +902,9 @@ fn card_ops_menu(
                 <span class="flex-1">"Move to"</span>
                 <Icon icon=LuChevronRight width="11px" height="11px" />
             </button>
-            {hardware_device.map(|device| view! {
+            {hardware_layout.map(|(zone_id, device)| {
+                let hardware_zone_id = StoredValue::new(zone_id);
+                view! {
                 <button
                     type="button"
                     class=format!("{row} text-fg-secondary hover:bg-surface-hover/40 disabled:opacity-40")
@@ -925,6 +924,7 @@ fn card_ops_menu(
                     <Icon icon=LuGrid2x2 width="12px" height="12px" />
                     <span>"Hardware layout"</span>
                 </button>
+                }
             })}
             <button
                 type="button"

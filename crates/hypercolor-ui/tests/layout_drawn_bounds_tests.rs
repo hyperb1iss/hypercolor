@@ -237,6 +237,63 @@ fn group_bounds_wrap_the_boxes_as_drawn() {
     );
 }
 
+#[test]
+fn rotating_near_an_edge_translates_the_whole_assembly_without_squashing() {
+    let mut rig = layout(
+        WIDE_CANVAS,
+        vec![
+            output("a", (0.3, 0.9), (0.1, 64.0 / 480.0), 0.0),
+            output("b", (0.5, 0.9), (0.1, 64.0 / 480.0), 0.0),
+            output("c", (0.7, 0.9), (0.1, 64.0 / 480.0), 0.0),
+            output("other", (0.1, 0.1), (0.1, 0.1), 0.0),
+        ],
+    );
+    let untouched = rig.zones[3].clone();
+    let ids = ["a", "b", "c"].map(str::to_owned).into_iter().collect();
+
+    assert!(layout_geometry::rotate_compound(&mut rig, &ids, FRAC_PI_2));
+
+    for (zone, expected_y) in rig.zones[..3].iter().zip([192.0, 320.0, 448.0]) {
+        assert!(approx(zone.position.x, 0.5));
+        assert!(approx(zone.position.y, expected_y / 480.0), "{zone:?}");
+        let extent = layout_geometry::drawn_extent(zone, 640.0 / 480.0);
+        assert!(approx(extent.x, 64.0 / 640.0));
+        assert!(approx(extent.y, 64.0 / 480.0));
+    }
+    assert_eq!(rig.zones[3], untouched);
+    let bounds = layout_geometry::compound_bounding_box(&rig, &ids).expect("group bounds");
+    assert!(approx(bounds.center.y + bounds.size.y * 0.5, 1.0));
+}
+
+#[test]
+fn rotating_an_oversized_assembly_fits_panels_and_spacing_by_one_factor() {
+    let mut rig = layout(
+        WIDE_CANVAS,
+        vec![
+            output("a", (0.1, 0.5), (0.1, 64.0 / 480.0), 0.0),
+            output("b", (0.5, 0.5), (0.1, 64.0 / 480.0), 0.0),
+            output("c", (0.9, 0.5), (0.1, 64.0 / 480.0), 0.0),
+        ],
+    );
+    let ids = ["a", "b", "c"].map(str::to_owned).into_iter().collect();
+
+    assert!(layout_geometry::rotate_compound(&mut rig, &ids, FRAC_PI_2));
+
+    // The 576-pixel row becomes too tall for 480 pixels, so the entire
+    // assembly shrinks by 5/6, including both panel size and center spacing.
+    let fit = 480.0 / 576.0;
+    for (zone, offset) in rig.zones.iter().zip([-256.0, 0.0, 256.0]) {
+        assert!(approx(zone.position.x, 0.5));
+        assert!(approx(zone.position.y, (240.0 + offset * fit) / 480.0));
+        let extent = layout_geometry::drawn_extent(zone, 640.0 / 480.0);
+        assert!(approx(extent.x, 64.0 * fit / 640.0));
+        assert!(approx(extent.y, 64.0 * fit / 480.0));
+    }
+    let bounds = layout_geometry::compound_bounding_box(&rig, &ids).expect("group bounds");
+    assert!(approx(bounds.size.y, 1.0));
+    assert!(approx(bounds.center.y, 0.5));
+}
+
 /// Where a box's corner draws, in normalized canvas units. `signs` picks
 /// the corner in the box's own frame: (1, -1) is its north-east corner.
 fn drawn_corner(

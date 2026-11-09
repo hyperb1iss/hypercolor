@@ -162,14 +162,15 @@ pub fn translate_compound(
 
 /// Rotate all zones in `zone_ids` by `delta_radians` around their group centroid.
 ///
-/// Each zone's position orbits the centroid and its individual rotation is offset
-/// by the same delta — so fans on a ring stay oriented correctly.
+/// Positions orbit in canvas pixel proportions, matching each panel's rotation.
+/// Containment moves the entire assembly, uniformly shrinking it only when its
+/// rotated bounds exceed the canvas.
 pub fn rotate_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     delta_radians: f32,
 ) -> bool {
-    if delta_radians.abs() < GRID_EPSILON {
+    if !delta_radians.is_finite() || delta_radians.abs() < GRID_EPSILON {
         return false;
     }
     let Some(centroid) = compound_centroid(layout, zone_ids) else {
@@ -182,27 +183,40 @@ pub fn rotate_compound(
         if !zone_ids.contains(&zone.id) {
             continue;
         }
-        // Rotate the zone itself first, so the edge clamp below measures
-        // the box as it will draw.
         let new_rotation = normalize_rotation(zone.rotation + delta_radians);
         if (new_rotation - zone.rotation).abs() > GRID_EPSILON {
             zone.rotation = new_rotation;
             changed = true;
         }
-        // Orbit position around centroid
-        let dx = zone.position.x - centroid.x;
+        let dx = (zone.position.x - centroid.x) * aspect;
         let dy = zone.position.y - centroid.y;
         let rx = dx.mul_add(cos_d, -(dy * sin_d));
         let ry = dx.mul_add(sin_d, dy * cos_d);
-        let desired = NormalizedPosition::new(
-            (centroid.x + rx).clamp(0.0, 1.0),
-            (centroid.y + ry).clamp(0.0, 1.0),
-        );
-        let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
-        if zone.position != clamped {
-            zone.position = clamped;
+        let desired = NormalizedPosition::new(centroid.x + rx / aspect, centroid.y + ry);
+        if zone.position != desired {
+            zone.position = desired;
             changed = true;
         }
+    }
+
+    let Some(bounds) = compound_bounding_box(layout, zone_ids) else {
+        return changed;
+    };
+    let fit = 1.0_f32.min(1.0 / bounds.size.x).min(1.0 / bounds.size.y);
+    let size = NormalizedPosition::new(bounds.size.x * fit, bounds.size.y * fit);
+    let center = clamp_zone_center(bounds.center, size);
+    for zone in &mut layout.zones {
+        if !zone_ids.contains(&zone.id) {
+            continue;
+        }
+        let position = NormalizedPosition::new(
+            center.x + (zone.position.x - bounds.center.x) * fit,
+            center.y + (zone.position.y - bounds.center.y) * fit,
+        );
+        changed |= zone.position != position || fit < 1.0;
+        zone.position = position;
+        zone.size.x *= fit;
+        zone.size.y *= fit;
     }
     changed
 }

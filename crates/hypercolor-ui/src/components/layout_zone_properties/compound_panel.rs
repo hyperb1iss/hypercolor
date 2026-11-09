@@ -5,11 +5,12 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::components::layout_builder::LayoutWriteHandle;
+use crate::components::layout_builder::gesture::merge_gesture;
 use crate::compound_selection::CompoundDepth;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::pages::studio::move_menu::OutputMoveButton;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use super::{compound_op_button, zone_pixel_input};
 
@@ -41,6 +42,7 @@ pub(super) fn CompoundZoneProperties(
 
     let rot_offset = compound_rot_offset.get_untracked();
     let scale_factor = compound_scale_factor.get_untracked();
+    let rotation_gesture = StoredValue::new(None::<(SpatialLayout, f32, Vec<Output>)>);
 
     let depth_label = {
         let depth = compound_depth.get_untracked();
@@ -207,21 +209,46 @@ pub(super) fn CompoundZoneProperties(
                         on:input=move |ev| {
                             let event = Input::from_event(ev);
                             if let Some(new_deg) = event.value::<f32>() {
-                                let old_deg = compound_rot_offset.get_untracked();
-                                let delta_rad = (new_deg - old_deg).to_radians();
-                                set_compound_rot_offset.set(new_deg);
-                                set_layout.update(|l| {
-                                    if let Some(layout) = l {
-                                        layout_geometry::rotate_compound(
-                                            layout,
-                                            &ids_rot_slider,
-                                            delta_rad,
-                                        );
+                                rotation_gesture.update_value(|gesture| {
+                                    if gesture.is_none()
+                                        && let Some(baseline) = layout.get_untracked()
+                                    {
+                                        let previous = baseline.zones.clone();
+                                        *gesture = Some((
+                                            baseline,
+                                            compound_rot_offset.get_untracked(),
+                                            previous,
+                                        ));
                                     }
+                                    let Some((baseline, initial_deg, previous)) = gesture.as_mut() else {
+                                        return;
+                                    };
+                                    let mut rotated = baseline.clone();
+                                    layout_geometry::rotate_compound(
+                                        &mut rotated,
+                                        &ids_rot_slider,
+                                        (new_deg - *initial_deg).to_radians(),
+                                    );
+                                    set_layout.update(|current| {
+                                        if let Some(current) = current {
+                                            current.zones = merge_gesture(
+                                                &current.zones,
+                                                previous,
+                                                &rotated.zones,
+                                            );
+                                        }
+                                    });
+                                    // Comparing with the previous preview also restores fields
+                                    // when the slider returns to its starting angle.
+                                    *previous = rotated.zones;
                                 });
+                                set_compound_rot_offset.set(new_deg);
                                 set_is_dirty.set(true);
                             }
                         }
+                        on:change=move |_| rotation_gesture.set_value(None)
+                        on:blur=move |_| rotation_gesture.set_value(None)
+                        on:pointercancel=move |_| rotation_gesture.set_value(None)
                     />
                     <div class="flex items-center gap-0.5 shrink-0">
                         <input

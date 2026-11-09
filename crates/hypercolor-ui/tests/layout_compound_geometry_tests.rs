@@ -203,18 +203,56 @@ fn rotate_compound_90_degrees_orbits_and_rotates_zones() {
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
 
-    // Zone A was at (-0.1, 0) offset from centroid.
-    // After 90 CCW rotation: (0, -0.1) offset -> position (0.5, 0.4)
+    // Each center is 32 pixels from the centroid on this 320 by 200 canvas.
+    // A quarter turn preserves those 32 pixels as 0.16 of the height.
     assert!((a.position.x - 0.5).abs() < 0.01);
-    assert!((a.position.y - 0.4).abs() < 0.01);
+    assert!((a.position.y - 0.34).abs() < 0.01);
 
-    // Zone B was at (0.1, 0) offset -> after 90: (0, 0.1) -> position (0.5, 0.6)
     assert!((b.position.x - 0.5).abs() < 0.01);
-    assert!((b.position.y - 0.6).abs() < 0.01);
+    assert!((b.position.y - 0.66).abs() < 0.01);
 
     // Both zones' individual rotation should include the 90-degree offset
     assert!((a.rotation - delta).abs() < 0.01);
     assert!((b.rotation - delta).abs() < 0.01);
+}
+
+#[test]
+fn quarter_turns_preserve_panel_distances_and_sizes_in_pixels() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.4, 0.4, 0.1, 0.16),
+        plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.16),
+        plain_zone("c", "dev", 0.5, 0.56, 0.1, 0.16),
+        plain_zone("other", "other", 0.8, 0.8, 0.1, 0.1),
+    ]);
+    let initial = layout.clone();
+    let ids = ["a", "b", "c"].map(str::to_owned).into_iter().collect();
+    let distance = |a: &Output, b: &Output| {
+        ((a.position.x - b.position.x) * 320.0).hypot((a.position.y - b.position.y) * 200.0)
+    };
+
+    for _ in 0..4 {
+        assert!(layout_geometry::rotate_compound(
+            &mut layout,
+            &ids,
+            std::f32::consts::FRAC_PI_2,
+        ));
+        for (a, b) in [(0, 1), (1, 2), (0, 2)] {
+            let actual = distance(&layout.zones[a], &layout.zones[b]);
+            let expected = distance(&initial.zones[a], &initial.zones[b]);
+            assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+        }
+        for zone in &layout.zones[..3] {
+            let extent = layout_geometry::drawn_extent(zone, 320.0 / 200.0);
+            assert!((extent.x * 320.0 - 32.0).abs() < 0.001);
+            assert!((extent.y * 200.0 - 32.0).abs() < 0.001);
+        }
+        assert_eq!(layout.zones[3], initial.zones[3]);
+    }
+    for (actual, expected) in layout.zones.iter().zip(&initial.zones) {
+        assert!((actual.position.x - expected.position.x).abs() < 0.0001);
+        assert!((actual.position.y - expected.position.y).abs() < 0.0001);
+        assert!((actual.rotation - expected.rotation).abs() < 0.0001);
+    }
 }
 
 #[test]
