@@ -31,7 +31,7 @@ Hypercolor runs two complementary discovery paths simultaneously:
    (default `16021`), regardless of mDNS availability.
 
 During a scan, Hypercolor fetches device info and the panel layout from each reachable
-candidate (`GET /api/v1/<token>` and `GET /api/v1/<token>/panelLayout/layout`). If stored
+candidate (`GET /api/v1/<token>` and `GET /api/v1/<token>/panelLayout`). If stored
 credentials are found the device is set to auto-connect; otherwise it appears as unpaired
 and awaits the pairing flow below.
 
@@ -84,8 +84,10 @@ button again and retry immediately.
 |---|---|---|
 | Open API (REST) | HTTP | 16021 |
 | External Control (streaming) | UDP | 60222 |
+| Touch input | UDP | Ephemeral port on the Hypercolor host |
 
-Both ports are set by the Nanoleaf firmware and cannot be changed from Hypercolor.
+The controller's API and output ports are set by its firmware. Hypercolor tells the
+controller which local UDP port to use for touch input.
 
 ## Streaming
 
@@ -119,16 +121,30 @@ color changes; higher values trigger hardware-side crossfades between frames.
 On first connect and after a topology refresh, Hypercolor fetches the full panel layout
 and builds a zone for every addressable panel:
 
-- **Shape type** determines how a panel is categorized. Light strips
-  (`LightLines`, `LightLinesSingleZone`, `FourDLightstrip`) get `Strip` topology; all
-  other shapes (triangles, squares, hexagons, skylights) get `Point` topology.
-- **Position data** (`x`, `y`, orientation `o`) is stored alongside the panel entry.
-  Hypercolor uses it for spatial canvas mapping when a layout is configured.
+- **Physical geometry** preserves the arrangement of Shapes hexagons, triangles,
+  mini triangles, original Light Panels, Canvas squares, Elements hexagons, and
+  Skylight squares. Studio draws their polygons at the relative sizes and positions
+  reported by the controller, including panel rotation and the global orientation
+  chosen in the Nanoleaf app.
+- **Color sampling** uses each panel's actual centroid. A triangle's sampling point
+  stays at its centroid even though its bounding box has a different center.
+- **Other shapes** retain generic point or strip presentation. Unknown shape IDs
+  remain addressable; Hypercolor does not invent polygons for them.
 - Non-addressable panels (`Rhythm`, `ShapesController`, `LinesConnector`, `ControllerCap`,
   `PowerConnector`) are filtered out and do not become zones.
 
 Each addressable panel becomes one zone named `Panel <id>` with a single LED, addressable
 individually by effects.
+
+When you assign a device in Studio, its panels arrive together in their physical
+arrangement. Fit and group moves preserve their proportions. Reconnecting does not
+reset your canvas placement. For an existing arrangement, use the device's
+**Hardware layout** action in Studio to restore its detected panel positions and
+proportions. The action supports undo and redo.
+
+Custom scene zones retain their stored panel outlines and sampling topology. If a
+zone was saved before physical panel support, remove the device from that zone and
+assign it again to load the detected outlines, then use **Hardware layout**.
 
 Supported shape types:
 
@@ -149,6 +165,26 @@ Supported shape types:
 | Skylight Panel | 30 | Point |
 | Skylight Control Primary | 31 | Point |
 | Skylight Control Passive | 32 | Point |
+
+The topology column describes each panel's output channel. Panels with physical
+geometry also carry a polygon and a centroid sample for Studio and the spatial engine.
+
+## Touch input
+
+Hypercolor subscribes to the controller's touch stream for Canvas and Shapes panels.
+Touches enter the same device-input pipeline used by other touch controllers, so
+effects such as Touch Ripple can react at the touched panel's position. The stream
+reports panel identity and touch strength; it does not report a precise finger
+position within a panel.
+
+The driver keeps an HTTP event subscription open and receives binary touch packets
+over UDP. Disconnecting or losing the subscription cancels held contacts. If the
+controller rejects touch streaming, lighting output remains available.
+
+Nanoleaf's [Open API reference](https://nanoleaf.atlassian.net/wiki/spaces/nlapid/pages/2789310530)
+documents the touch protocol for Canvas. Shapes firmware behavior needs verification
+on the controller in use. Recognized app gestures such as double tap and directional
+swipes are not exposed as configurable Hypercolor actions.
 
 ## Driver controls
 

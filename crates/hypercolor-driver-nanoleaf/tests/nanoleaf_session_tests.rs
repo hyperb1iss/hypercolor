@@ -82,8 +82,8 @@ async fn answer(mut stream: TcpStream) {
         }
     }
     let request = String::from_utf8_lossy(&buffer[..read]);
-    let body = if request.starts_with("GET /api/v1/test-token/panelLayout/layout") {
-        r#"{"positionData":[{"panelId":41,"x":0,"y":0,"o":0,"shapeType":7},{"panelId":42,"x":10,"y":10,"o":90,"shapeType":17}]}"#
+    let body = if request.starts_with("GET /api/v1/test-token/panelLayout") {
+        r#"{"globalOrientation":{"value":0},"layout":{"positionData":[{"panelId":41,"x":0,"y":0,"o":0,"shapeType":7},{"panelId":42,"x":10,"y":10,"o":90,"shapeType":17}]}}"#
     } else if request.starts_with("GET /api/v1/test-token") {
         r#"{"name":"Shapes","model":"Shapes","serialNo":"SERIAL42","firmwareVersion":"12.0.0"}"#
     } else {
@@ -121,7 +121,7 @@ async fn nanoleaf_sessions_keep_the_contract() -> TestResult {
         device_key: "shapes".to_owned(),
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         api_port,
-        info: build_device_info("shapes", "Shapes", Some("Shapes"), None, &[]),
+        info: build_device_info("shapes", "Shapes", Some("Shapes"), None, &[], 0.0),
         panel_ids: Vec::new(),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         metadata: HashMap::from([

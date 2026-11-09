@@ -19,6 +19,7 @@ fn zone_summary(
         led_count,
         topology: "custom".to_owned(),
         topology_hint: Some(topology_hint),
+        layout_hint: None,
     }
 }
 

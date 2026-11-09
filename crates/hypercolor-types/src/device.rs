@@ -19,6 +19,8 @@ use uuid::Uuid;
 use crate::scene::DisplayRotation;
 use crate::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 
+mod placement;
+
 // ── DeviceId ──────────────────────────────────────────────────────────────
 
 crate::identity::uuid_id!(
@@ -248,7 +250,13 @@ pub struct SegmentInfo {
 
 /// Device-declared spatial hint used when auto-generating or repairing layouts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SegmentLayoutHint {
+    /// Physical placement in a common device-local plane shared by sibling
+    /// segments. Consumers fit the assembly uniformly into canvas space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<SegmentPlacement>,
+
     /// Rich topology to use instead of deriving one from [`DeviceTopologyHint`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<LedTopology>,
@@ -264,6 +272,20 @@ pub struct SegmentLayoutHint {
     /// Place this segment at the same center as sibling segments.
     #[serde(default)]
     pub co_located: bool,
+}
+
+/// A segment's bounding box in the device's physical coordinate system.
+///
+/// Coordinates use one isotropic unit across every sibling, with x pointing
+/// right and y pointing down. The position is the box center, not necessarily
+/// the lighting centroid; custom topology carries the actual sample position.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SegmentPlacement {
+    pub position: NormalizedPosition,
+    pub size: NormalizedPosition,
+    /// Rotation in radians about the bounding-box center, matching [`crate::spatial::Output`].
+    pub rotation: f32,
 }
 
 impl SegmentLayoutHint {

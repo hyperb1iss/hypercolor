@@ -7,9 +7,15 @@ Aurora). It discovers controllers via mDNS (`_nanoleafapi._tcp`) and known IP pr
 pairs using the Nanoleaf Open API token flow (hold power button to enter pairing mode,
 then call `/api/v1/new`), and streams per-panel color data over Nanoleaf's UDP External
 Control protocol. On connect the driver fetches the panel topology layout from
-`/panelLayout/layout` and caches it so the engine can map LED positions to physical
-panel coordinates. A `refresh_topology` control action reconnects the device to reload
+`/panelLayout`, including global orientation, and caches it so the engine can map
+LED positions to physical panel coordinates and Studio can show panel outlines.
+A `refresh_topology` control action reconnects the device to reload
 the layout on demand.
+
+Canvas and supported Shapes firmware also provide panel touch contacts and strength
+through an SSE subscription with UDP delivery. The driver publishes those contacts
+to Hypercolor's device input system for the lifetime of the connected session.
+Original Light Panels do not support touch.
 
 ## Position in the Workspace
 

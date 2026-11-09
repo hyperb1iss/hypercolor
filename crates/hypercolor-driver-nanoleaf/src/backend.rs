@@ -11,13 +11,15 @@ use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, Frame, OutputPolicy, Submission,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceInputSink, DiscoveredDevice, Frame,
+    OutputPolicy, Submission,
 };
 use hypercolor_driver_support::{CredentialStore, DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use super::scanner::load_auth_token;
 use super::streaming::{DEFAULT_NANOLEAF_STREAM_PORT, NanoleafStreamSession};
+use super::touch::{self, NanoleafTouchDecoder};
 use super::types::{NanoleafDiscoveredDevice, build_device_info, panel_ids_from_layout};
 use super::{fetch_device_info, fetch_panel_layout};
 
@@ -53,6 +55,7 @@ pub struct NanoleafBackend {
     config: NanoleafConfig,
     credential_store: Arc<CredentialStore>,
     stream_port: u16,
+    input_sink: Option<Arc<dyn DeviceInputSink>>,
     discovered: Arc<StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>>,
     sessions: SessionTable<NanoleafSession>,
 }
@@ -119,6 +122,7 @@ impl NanoleafBackend {
             config,
             credential_store,
             stream_port: DEFAULT_NANOLEAF_STREAM_PORT,
+            input_sink: None,
             discovered: Arc::new(StdRwLock::new(HashMap::new())),
             sessions: SessionTable::new(),
         }
@@ -136,11 +140,19 @@ impl NanoleafBackend {
         self
     }
 
+    /// Connect panel touch input to the host interaction pipeline.
+    #[must_use]
+    pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
+        self.input_sink = Some(sink);
+        self
+    }
+
     fn opener(&self) -> NanoleafOpener {
         NanoleafOpener {
             config: self.config.clone(),
             credential_store: Arc::clone(&self.credential_store),
             stream_port: self.stream_port,
+            input_sink: self.input_sink.clone(),
             discovered: Arc::clone(&self.discovered),
         }
     }
@@ -152,6 +164,7 @@ struct NanoleafOpener {
     config: NanoleafConfig,
     credential_store: Arc<CredentialStore>,
     stream_port: u16,
+    input_sink: Option<Arc<dyn DeviceInputSink>>,
     discovered: Arc<StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>>,
 }
 
@@ -193,7 +206,7 @@ impl NanoleafOpener {
                 )
             })
             .map_err(|error| DeviceError::connection(id, error))?;
-        let panel_ids = panel_ids_from_layout(layout.position_data.as_slice());
+        let panel_ids = panel_ids_from_layout(layout.layout.position_data.as_slice());
         if panel_ids.is_empty() {
             return Err(DeviceError::connection(
                 id,
@@ -225,7 +238,8 @@ impl NanoleafOpener {
             &device_info.name,
             Some(device_info.model.as_str()),
             Some(device_info.firmware_version.as_str()),
-            layout.position_data.as_slice(),
+            layout.layout.position_data.as_slice(),
+            layout.global_orientation.value,
         );
 
         self.discovered
@@ -252,7 +266,8 @@ impl NanoleafOpener {
             panels = info.total_led_count(),
             "Connected to Nanoleaf device"
         );
-        Ok(Session::new(
+        let label = info.name.clone();
+        let mut session = Session::new(
             *id,
             info,
             NanoleafSession {
@@ -264,7 +279,32 @@ impl NanoleafOpener {
                 scaled_colors: Vec::new(),
                 last_size_mismatch_warn_at: None,
             },
-        ))
+        );
+        let decoder = NanoleafTouchDecoder::new(
+            &layout.layout.position_data,
+            layout.global_orientation.value,
+        );
+        if let Some(sink) = self.input_sink.clone()
+            && !decoder.is_empty()
+        {
+            let id = *id;
+            session.spawn(async move {
+                if let Err(error) = touch::run(
+                    discovered.ip,
+                    discovered.api_port,
+                    &auth_token,
+                    id,
+                    &label,
+                    decoder,
+                    sink,
+                )
+                .await
+                {
+                    warn!(device_id = %id, %error, "Nanoleaf touch input stopped");
+                }
+            });
+        }
+        Ok(session)
     }
 }
 

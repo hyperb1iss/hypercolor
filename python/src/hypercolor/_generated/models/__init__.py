@@ -589,6 +589,8 @@ from .scene_patch_request import ScenePatchRequest
 from .scene_summary import SceneSummary
 from .scene_summary_list_response import SceneSummaryListResponse
 from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
+from .segment_layout_hint import SegmentLayoutHint
+from .segment_placement import SegmentPlacement
 from .segment_summary import SegmentSummary
 from .segment_topology_summary_type_0 import SegmentTopologySummaryType0
 from .segment_topology_summary_type_0_type import SegmentTopologySummaryType0Type
@@ -1193,6 +1195,8 @@ __all__ = (
     "SceneSummary",
     "SceneSummaryListResponse",
     "ScreenCaptureCapacityStatus",
+    "SegmentLayoutHint",
+    "SegmentPlacement",
     "SegmentSummary",
     "SegmentTopologySummaryType0",
     "SegmentTopologySummaryType0Type",

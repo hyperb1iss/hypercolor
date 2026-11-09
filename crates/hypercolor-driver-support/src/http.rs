@@ -1,16 +1,19 @@
 //! HTTP for driver clients, bounded by construction.
 //!
-//! Every exchange runs on a [`ReadBudget`]: a byte cap and an absolute
-//! deadline fixed before the request goes out. [`BoundedRequest::send`]
-//! will not run without one, and [`BoundedResponse`] only reads its body
-//! through it, counting bytes as chunks arrive whatever `Content-Length`
-//! claims. A slow drip cannot extend the deadline, and an oversized reply
-//! is refused before it is buffered.
+//! Finite exchanges use a [`ReadBudget`]: a byte cap and an absolute
+//! deadline covering headers and body. [`BoundedResponse`] counts bytes as
+//! chunks arrive whatever `Content-Length` claims. A slow drip cannot extend
+//! the deadline, and an oversized reply is refused before it is buffered.
+//!
+//! Long-lived SSE subscriptions instead bound header receipt and each event
+//! or standalone comment through [`BoundedRequest::subscribe`]. Completed
+//! comments leave a quiet connection open without an idle deadline.
 //!
 //! Drivers use this module instead of depending on `reqwest`, which keeps
 //! the unbounded readers out of reach. Authentication, status handling,
 //! parsing, and each endpoint's limit stay in the vendor client.
 
+use std::fmt;
 use std::time::Duration;
 
 use reqwest::IntoUrl;
@@ -41,8 +44,9 @@ pub enum HttpError {
     Json(#[source] serde_json::Error),
 }
 
-/// What one exchange may spend: a cap on the body and an absolute deadline
-/// covering connect, headers, and every chunk of the body.
+/// What one finite exchange may spend: a cap on the body and an absolute
+/// deadline covering connect, headers, and every chunk of the body.
+/// SSE subscriptions use per-event limits through [`BoundedRequest::subscribe`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadBudget {
     max_bytes: usize,
@@ -60,7 +64,7 @@ impl ReadBudget {
     }
 }
 
-/// An HTTP client whose every exchange runs on a [`ReadBudget`].
+/// An HTTP client with bounded finite responses and SSE subscriptions.
 #[derive(Debug, Clone)]
 pub struct BoundedHttpClient {
     inner: reqwest::Client,
@@ -108,7 +112,8 @@ impl BoundedHttpClient {
 }
 
 /// Transport policy for a [`BoundedHttpClient`]. Time and size limits are
-/// not here: they belong to each exchange's [`ReadBudget`].
+/// not here: finite exchanges use [`ReadBudget`], while subscriptions set
+/// their event limits through [`BoundedRequest::subscribe`].
 #[derive(Debug)]
 pub struct BoundedHttpClientBuilder {
     inner: reqwest::ClientBuilder,
@@ -153,7 +158,7 @@ impl BoundedHttpClientBuilder {
     }
 }
 
-/// A request that cannot go out without a [`ReadBudget`].
+/// A request that requires a finite response budget or SSE event limits.
 #[derive(Debug)]
 pub struct BoundedRequest {
     inner: reqwest::RequestBuilder,
@@ -179,6 +184,41 @@ impl BoundedRequest {
     pub fn json<T: Serialize + ?Sized>(mut self, body: &T) -> Self {
         self.inner = self.inner.json(body);
         self
+    }
+
+    /// Subscribe to server-sent events without expiring a quiet connection.
+    ///
+    /// `timeout` bounds receipt of the headers and completion of each event
+    /// once its first byte arrives. `max_event_bytes` bounds one event,
+    /// including comments and framing. Standalone comment lines have the same
+    /// limits but return to idle when their line ends. Comments inside a
+    /// pending event do not reset that event's limits. The body is drained
+    /// without collecting payloads; use this when the subscription itself
+    /// owns another transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::DeadlineExceeded`] for late headers, or
+    /// [`HttpError::Transport`] without the request URL.
+    pub async fn subscribe(
+        self,
+        max_event_bytes: usize,
+        timeout: Duration,
+    ) -> Result<EventStream, HttpError> {
+        let inner = until_deadline(Instant::now() + timeout, self.inner.send())
+            .await
+            .ok_or(HttpError::DeadlineExceeded)?
+            .map_err(transport_error)?;
+        Ok(EventStream {
+            inner,
+            max_event_bytes,
+            timeout,
+            deadline: None,
+            event_bytes: 0,
+            line: EventLine::Empty,
+            event_has_fields: false,
+            previous_cr: false,
+        })
     }
 
     /// Send the request. The budget's clock is already running and keeps
@@ -267,6 +307,107 @@ impl BoundedResponse {
     pub async fn json<T: DeserializeOwned>(self) -> Result<T, HttpError> {
         let body = self.bytes().await?;
         serde_json::from_slice(&body).map_err(HttpError::Json)
+    }
+}
+
+/// An SSE response with bounded event framing and no idle deadline.
+///
+/// The response stays open until its owner drops it or the peer closes it.
+/// A healthy peer can remain silent indefinitely; TCP keepalive still detects
+/// dead connections through the client's transport policy.
+pub struct EventStream {
+    inner: reqwest::Response,
+    max_event_bytes: usize,
+    timeout: Duration,
+    deadline: Option<Instant>,
+    event_bytes: usize,
+    line: EventLine,
+    event_has_fields: bool,
+    previous_cr: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventLine {
+    Empty,
+    Comment,
+    Field,
+}
+
+impl fmt::Debug for EventStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EventStream")
+            .field("status", &self.status())
+            .field("max_event_bytes", &self.max_event_bytes)
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EventStream {
+    /// The subscription response status, before reading its body.
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        self.inner.status()
+    }
+
+    /// Drain the next chunk while validating event size and completion time.
+    /// Returns `false` when the stream closes. Cancellation preserves framing
+    /// state, so callers can select this against another transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::BodyTooLarge`] for an oversized event,
+    /// [`HttpError::DeadlineExceeded`] for a partial event that stops making
+    /// progress within its original deadline, or [`HttpError::Transport`].
+    pub async fn receive(&mut self) -> Result<bool, HttpError> {
+        let chunk = if let Some(deadline) = self.deadline {
+            until_deadline(deadline, self.inner.chunk())
+                .await
+                .ok_or(HttpError::DeadlineExceeded)?
+        } else {
+            self.inner.chunk().await
+        }
+        .map_err(transport_error)?;
+        let Some(chunk) = chunk else {
+            return Ok(false);
+        };
+        for byte in chunk {
+            // CR completes a line immediately; a following LF belongs to the
+            // same event's byte budget, even after its terminating blank line.
+            let continues_cr = byte == b'\n' && self.previous_cr;
+            if self.deadline.is_none() && !continues_cr {
+                self.event_bytes = 0;
+                self.deadline = Some(Instant::now() + self.timeout);
+            }
+            self.previous_cr = byte == b'\r';
+            self.event_bytes = self.event_bytes.saturating_add(1);
+            if self.event_bytes > self.max_event_bytes {
+                return Err(HttpError::BodyTooLarge {
+                    limit: self.max_event_bytes,
+                });
+            }
+            if continues_cr {
+                continue;
+            }
+            if matches!(byte, b'\r' | b'\n') {
+                if self.line == EventLine::Empty
+                    || (self.line == EventLine::Comment && !self.event_has_fields)
+                {
+                    self.deadline = None;
+                    self.event_has_fields = false;
+                }
+                self.line = EventLine::Empty;
+            } else if self.line == EventLine::Empty {
+                self.line = if byte == b':' {
+                    EventLine::Comment
+                } else {
+                    self.event_has_fields = true;
+                    EventLine::Field
+                };
+            }
+        }
+        Ok(true)
     }
 }
 

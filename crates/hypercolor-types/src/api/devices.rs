@@ -136,6 +136,9 @@ pub struct SegmentSummary {
     pub topology: String,
     #[serde(default)]
     pub topology_hint: Option<SegmentTopologySummary>,
+    /// Device-declared physical geometry for faithful initial placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_hint: Option<crate::device::SegmentLayoutHint>,
 }
 
 /// Structured topology hint for a device segment.

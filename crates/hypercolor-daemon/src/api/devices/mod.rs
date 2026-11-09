@@ -921,6 +921,7 @@ pub(super) async fn summarize_device_for_response(
                 led_count: z.led_count,
                 topology: format!("{:?}", z.topology).to_lowercase(),
                 topology_hint: Some(summarize_segment_topology(&z.topology)),
+                layout_hint: z.layout_hint.clone(),
             })
             .collect(),
         attachments: None,

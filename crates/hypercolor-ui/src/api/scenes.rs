@@ -89,7 +89,7 @@ pub fn zone_outputs(zone: &ZoneResource) -> Vec<Output> {
                     led_mapping: None,
                     sampling_mode: None,
                     edge_behavior: None,
-                    shape: None,
+                    shape: placement.shape.clone(),
                     shape_preset: None,
                     attachment: None,
                     brightness: None,

@@ -32,8 +32,10 @@ and wire values remain in `hypercolor-driver-api`.
 - `control_surface` builds canonical control documents and revisions.
 - `framing` reads bounded lines on absolute deadlines and writes whole frames
   through a writer that gives up its stream when one fails.
-- `http` runs every exchange on a `ReadBudget`, an absolute deadline plus a
-  byte cap enforced as body chunks arrive.
+- `http` bounds finite replies with a `ReadBudget`, an absolute deadline and
+  byte cap enforced as body chunks arrive. SSE subscriptions bound header
+  receipt and each event or standalone comment, while allowing quiet streams
+  to stay connected.
 - `network` validates endpoints and extracts typed discovery metadata.
 - `pairing` coordinates post-pair activation and post-unpair disconnects.
 - `SessionTable`, `Session`, and `SessionSink` are revocable device sessions:

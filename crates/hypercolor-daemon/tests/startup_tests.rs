@@ -2843,6 +2843,15 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
         .get_mut(&Uuid::nil())
         .expect("default scene")
         .description = Some("Recovered before startup authoring".into());
+    // Only named scenes reach scenes.json, so the failure needs changed bytes there.
+    let mut named_scene = desired
+        .scenes
+        .get(&Uuid::nil())
+        .expect("default scene")
+        .clone();
+    named_scene.name = "Recovered named scene".into();
+    named_scene.kind = hypercolor_types::scene::SceneKind::Named;
+    desired.scenes.insert(Uuid::now_v7(), named_scene);
     let operation_id = Uuid::now_v7();
     let writer = hypercolor_daemon::persistence::AtomicFileWriter::new(&guard.scenes_path())
         .expect("scene writer");

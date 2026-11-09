@@ -274,6 +274,10 @@ pub struct MemberPlacement {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orientation: Option<Orientation>,
     pub topology: LedTopology,
+    /// Physical outline supplied by the device. Layout edits preserve it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(read_only))]
+    pub shape: Option<crate::spatial::ZoneShape>,
 }
 
 fn default_placement_scale() -> f32 {

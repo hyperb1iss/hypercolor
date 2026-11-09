@@ -56,12 +56,12 @@ fn panels(count: u16) -> Vec<serde_json::Value> {
 
 #[tokio::test]
 async fn a_full_install_layout_fits() {
-    let body = serde_json::json!({ "numPanels": 500, "positionData": panels(500) });
+    let body = serde_json::json!({ "globalOrientation": {"value": 60}, "layout": { "numPanels": 500, "positionData": panels(500) } });
     let port = serve(body.to_string().into_bytes(), false).await;
     let layout = fetch_panel_layout(LOOPBACK, port, "token")
         .await
         .expect("full install layout");
-    assert_eq!(layout.position_data.len(), 500);
+    assert_eq!(layout.layout.position_data.len(), 500);
 }
 
 #[tokio::test]
