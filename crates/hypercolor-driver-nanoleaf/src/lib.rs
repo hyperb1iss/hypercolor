@@ -709,6 +709,7 @@ impl PairingCapability for NanoleafDriverModule {
                 DESCRIPTOR.id,
             )
             .await;
+            request_paired_device_discovery(host).await;
             let message = if activated {
                 "Nanoleaf credentials are already configured and the device was activated."
             } else {
@@ -745,6 +746,7 @@ impl PairingCapability for NanoleafDriverModule {
                     DESCRIPTOR.id,
                 )
                 .await;
+                request_paired_device_discovery(host).await;
                 let message = if activated {
                     "Nanoleaf device paired and activated."
                 } else {
@@ -782,6 +784,15 @@ impl PairingCapability for NanoleafDriverModule {
             auth_state: DeviceAuthState::Required,
             disconnected,
         })
+    }
+}
+
+async fn request_paired_device_discovery(host: &dyn DriverHost) {
+    if let Err(error) = host.runtime().request_discovery(DESCRIPTOR.id).await {
+        tracing::warn!(
+            %error,
+            "Nanoleaf credentials are configured, but scheduling discovery failed"
+        );
     }
 }
 

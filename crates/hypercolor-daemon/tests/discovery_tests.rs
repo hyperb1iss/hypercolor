@@ -1,5 +1,8 @@
 //! Integration tests for daemon discovery scan scoping.
 
+#[path = "support/discovery_metadata.rs"]
+mod discovery_metadata;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;

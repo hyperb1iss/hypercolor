@@ -673,6 +673,17 @@ async fn scan_target(
         Ok(batch)
     });
 
+    // The orchestrator hydrates registry metadata before reporting progress.
+    let tracked_before_scan = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => return None,
+        tracked = runtime.device_registry.list() => tracked,
+    };
+    let info_before_scan: HashMap<DeviceId, DeviceInfo> = tracked_before_scan
+        .into_iter()
+        .filter(|tracked| target.matches_device(&tracked.info))
+        .map(|tracked| (tracked.info.id, tracked.info))
+        .collect();
     let incremental = Arc::new(Mutex::new(IncrementalDiscoveryState::default()));
     let incremental_for_progress = Arc::clone(&incremental);
     let runtime_for_progress = runtime.clone();
@@ -681,8 +692,16 @@ async fn scan_target(
             let runtime = runtime_for_progress.clone();
             let incremental = Arc::clone(&incremental_for_progress);
             let target = target.clone();
+            let info_before_scan = &info_before_scan;
             async move {
-                process_discovery_progress(&runtime, &target, progress, &incremental).await;
+                process_discovery_progress(
+                    &runtime,
+                    &target,
+                    progress,
+                    &incremental,
+                    info_before_scan,
+                )
+                .await;
             }
         })
         .await?;
@@ -899,6 +918,7 @@ async fn process_discovery_progress(
     target: &DiscoveryTarget,
     progress: DiscoveryProgress,
     incremental: &Arc<Mutex<IncrementalDiscoveryState>>,
+    info_before_scan: &HashMap<DeviceId, DeviceInfo>,
 ) {
     for id in progress.new_devices {
         if let Some((device_ref, _)) =
@@ -916,6 +936,18 @@ async fn process_discovery_progress(
         else {
             continue;
         };
+
+        if let Some(before) = info_before_scan.get(&id)
+            && let Some(after) = runtime.device_registry.get(&id).await
+            && *before != after.info
+        {
+            runtime
+                .event_bus
+                .publish(HypercolorEvent::DeviceStateChanged {
+                    device_id: id.to_string(),
+                    changes: HashMap::from([("info".to_owned(), serde_json::json!(after.info))]),
+                });
+        }
 
         let mut state = incremental.lock().await;
         state.found.push(device_ref.clone());

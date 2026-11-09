@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -26,7 +26,10 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
     SegmentInfo,
 };
+use hypercolor_types::pairing::{PairDeviceRequest, PairDeviceStatus};
 use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 fn tracked_nanoleaf_device() -> DriverTrackedDevice {
@@ -140,6 +143,162 @@ async fn nanoleaf_auth_summary_propagates_credential_store_failure() {
             .to_string()
             .contains("injected credential read failure")
     );
+}
+
+#[tokio::test]
+async fn nanoleaf_already_paired_requests_discovery_without_forcing_activation() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let module = NanoleafDriverModule::new(Arc::new(CredentialStore::open(temp.path()).await?));
+    let tracked = tracked_nanoleaf_device();
+    for fail_discovery in [false, true] {
+        let host = TestHost::default();
+        host.runtime
+            .fail_discovery
+            .store(fail_discovery, Ordering::SeqCst);
+        host.credentials
+            .set_json(
+                "nanoleaf",
+                "nanoleaf-shapes",
+                serde_json::json!({"auth_token": "fixture"}),
+            )
+            .await?;
+        let outcome = module
+            .pairing()
+            .expect("pairing capability")
+            .pair(
+                &host,
+                &TrackedDeviceCtx {
+                    device_id: tracked.info.id,
+                    info: &tracked.info,
+                    metadata: Some(&tracked.metadata),
+                    current_state: &tracked.current_state,
+                },
+                &PairDeviceRequest {
+                    values: HashMap::new(),
+                    activate_after_pair: false,
+                },
+            )
+            .await?;
+        assert_eq!(outcome.status, PairDeviceStatus::AlreadyPaired);
+        assert!(!outcome.activated);
+        assert_eq!(*host.runtime.discovery_requests.lock().await, ["nanoleaf"]);
+        assert_eq!(host.runtime.activations.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn nanoleaf_pairing_requests_discovery_only_when_pairing_succeeds() -> Result<()> {
+    for (allowed, fail_discovery) in [(true, false), (true, true), (false, false)] {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        let server = tokio::spawn(async move {
+            let responses = if allowed {
+                vec![
+                    ("POST /api/v1/new ", "200 OK", r#"{"auth_token":"fixture"}"#),
+                    (
+                        "GET /api/v1/fixture ",
+                        "200 OK",
+                        r#"{"name":"Canvas","serialNo":"fixture","model":"NL29","firmwareVersion":"1"}"#,
+                    ),
+                ]
+            } else {
+                vec![("POST /api/v1/new ", "403 Forbidden", "{}")]
+            };
+            for (path, status, body) in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept pairing request");
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    header.push(stream.read_u8().await.expect("request header"));
+                    assert!(header.len() <= 4096);
+                }
+                assert!(String::from_utf8_lossy(&header).starts_with(path));
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(reply.as_bytes())
+                    .await
+                    .expect("pairing response");
+            }
+        });
+        let temp = tempfile::tempdir()?;
+        let module = NanoleafDriverModule::new(Arc::new(CredentialStore::open(temp.path()).await?));
+        let mut tracked = tracked_nanoleaf_device();
+        tracked.info.segments.clear();
+        tracked
+            .metadata
+            .insert("ip".into(), Ipv4Addr::LOCALHOST.to_string());
+        tracked.metadata.insert("api_port".into(), port.to_string());
+        let host = TestHost::default();
+        host.runtime
+            .fail_discovery
+            .store(fail_discovery, Ordering::SeqCst);
+        let result = module
+            .pairing()
+            .expect("pairing capability")
+            .pair(
+                &host,
+                &TrackedDeviceCtx {
+                    device_id: tracked.info.id,
+                    info: &tracked.info,
+                    metadata: Some(&tracked.metadata),
+                    current_state: &tracked.current_state,
+                },
+                &PairDeviceRequest {
+                    values: HashMap::new(),
+                    activate_after_pair: false,
+                },
+            )
+            .await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), server).await??;
+        let outcome = result?;
+        assert_eq!(
+            outcome.status,
+            if allowed {
+                PairDeviceStatus::Paired
+            } else {
+                PairDeviceStatus::ActionRequired
+            }
+        );
+        assert!(!outcome.activated);
+        assert_eq!(
+            host.runtime.discovery_requests.lock().await.len(),
+            usize::from(allowed)
+        );
+        assert_eq!(host.runtime.activations.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn nanoleaf_pairing_invalid_input_does_not_request_discovery() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let module = NanoleafDriverModule::new(Arc::new(CredentialStore::open(temp.path()).await?));
+    let tracked = tracked_nanoleaf_device();
+    let host = TestHost::default();
+    let outcome = module
+        .pairing()
+        .expect("pairing capability")
+        .pair(
+            &host,
+            &TrackedDeviceCtx {
+                device_id: tracked.info.id,
+                info: &tracked.info,
+                metadata: None,
+                current_state: &tracked.current_state,
+            },
+            &PairDeviceRequest {
+                values: HashMap::new(),
+                activate_after_pair: false,
+            },
+        )
+        .await?;
+    assert_eq!(outcome.status, PairDeviceStatus::InvalidInput);
+    assert!(host.runtime.discovery_requests.lock().await.is_empty());
+    assert_eq!(host.runtime.activations.load(Ordering::SeqCst), 0);
+    Ok(())
 }
 
 #[test]
@@ -344,13 +503,30 @@ impl DriverCredentialStore for TestCredentialStore {
 }
 
 #[derive(Default)]
-struct TestRuntimeActions;
+struct TestRuntimeActions {
+    activations: AtomicUsize,
+    discovery_requests: Mutex<Vec<String>>,
+    fail_discovery: AtomicBool,
+}
 
 #[async_trait]
 impl DriverRuntimeActions for TestRuntimeActions {
     async fn activate_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
         let _ = (device_id, backend_id);
+        self.activations.fetch_add(1, Ordering::SeqCst);
         Ok(false)
+    }
+
+    async fn request_discovery(&self, driver_id: &str) -> Result<()> {
+        self.discovery_requests
+            .lock()
+            .await
+            .push(driver_id.to_owned());
+        anyhow::ensure!(
+            !self.fail_discovery.load(Ordering::SeqCst),
+            "injected discovery failure"
+        );
+        Ok(())
     }
 
     async fn disconnect_device(
@@ -471,7 +647,7 @@ impl Default for TestHost {
     fn default() -> Self {
         Self {
             credentials: TestCredentialStore::default(),
-            runtime: TestRuntimeActions,
+            runtime: TestRuntimeActions::default(),
             discovery: TestDiscoveryState,
             control: TestControlHost::default(),
         }
