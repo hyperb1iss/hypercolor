@@ -108,15 +108,19 @@ impl PortableSetupService {
             current.push((device.info.id, layout_id, hint, live));
         }
         let mut assigned = HashMap::new();
+        let mut yielded = Vec::new();
         for (device_id, layout_id, _, _) in &current {
-            if let Some(portable) = durable
+            if let Some(&portable) = durable
                 .devices
                 .get(device_id)
                 .or_else(|| durable.outputs.get(layout_id))
             {
-                // An explicit association is valid only within its original setup.
-                if manifest.is_none_or(|manifest| manifest.devices.contains_key(portable)) {
-                    assigned.insert(*device_id, *portable);
+                // An identity the compared setup never defined yields to that
+                // setup's own matching definition before it is reused.
+                if manifest.is_none_or(|manifest| manifest.devices.contains_key(&portable)) {
+                    assigned.insert(*device_id, portable);
+                } else {
+                    yielded.push((*device_id, portable));
                 }
             }
         }
@@ -163,6 +167,19 @@ impl PortableSetupService {
                 {
                     assigned.insert(*id, portable);
                 }
+            }
+        }
+        // No definition claimed these devices, so each keeps the identity it
+        // already holds unless the compared setup gives that identity to a
+        // logical device. A fresh one would be dropped again by the next pass
+        // that compares against the same setup.
+        let mut taken: HashSet<Uuid> = assigned.values().copied().collect();
+        if let Some(manifest) = manifest {
+            taken.extend(manifest.logical_devices.keys().copied());
+        }
+        for (device_id, portable) in yielded {
+            if !assigned.contains_key(&device_id) && taken.insert(portable) {
+                assigned.insert(device_id, portable);
             }
         }
         let mut result = SetupBindings::default();
