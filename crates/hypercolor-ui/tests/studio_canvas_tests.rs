@@ -15,6 +15,7 @@ fn hit(id: &str, center: (f32, f32), half: (f32, f32), order: usize) -> HitBox {
         half,
         rotation: 0.0,
         circular: false,
+        polygon: None,
         order,
     }
 }
@@ -279,4 +280,66 @@ fn a_quarter_turned_box_at_the_right_edge_hangs_its_callout_inward() {
         &fan_at((0.92887, 0.66454), 4.712_389),
         aspect
     ));
+}
+
+#[test]
+fn polygon_panels_do_not_capture_the_empty_corners_of_their_boxes() {
+    use hypercolor_types::spatial::ZoneShape;
+    let mut panel = ring_output("triangle");
+    panel.topology = LedTopology::Point;
+    panel.shape = Some(ZoneShape::Custom {
+        vertices: vec![
+            NormalizedPosition::new(0.5, 0.0),
+            NormalizedPosition::new(1.0, 1.0),
+            NormalizedPosition::new(0.0, 1.0),
+        ],
+    });
+    let hit = HitBox::from_output(&panel, 4.0 / 3.0, 1);
+    assert!(
+        !hit.circular,
+        "a panel with one addressable color is not a circle"
+    );
+    assert!(hit.contains(hit.center));
+    assert!(!hit.contains((
+        hit.center.0 - hit.half.0 * 0.9,
+        hit.center.1 - hit.half.1 * 0.9
+    )));
+    assert!(
+        hit.contains((hit.center.0, hit.center.1 - hit.half.1)),
+        "the tip belongs to the panel"
+    );
+    panel.rotation = std::f32::consts::FRAC_PI_2;
+    let turned = HitBox::from_output(&panel, 4.0 / 3.0, 1);
+    assert!(turned.contains((turned.center.0 + turned.half.1, turned.center.1)));
+    assert!(!turned.contains((
+        turned.center.0 + turned.half.1 * 0.9,
+        turned.center.1 - turned.half.0 * 0.9
+    )));
+}
+
+#[test]
+fn polygon_boundaries_support_concave_shapes_and_reject_invalid_vertices() {
+    use hypercolor_types::spatial::ZoneShape;
+    use hypercolor_ui::components::layout_canvas::polygons;
+    let corners = vec![
+        NormalizedPosition::new(0.0, 0.0),
+        NormalizedPosition::new(1.0, 0.0),
+        NormalizedPosition::new(1.0, 0.3),
+        NormalizedPosition::new(0.3, 0.3),
+        NormalizedPosition::new(0.3, 1.0),
+        NormalizedPosition::new(0.0, 1.0),
+    ];
+    assert!(polygons::contains(
+        &corners,
+        NormalizedPosition::new(0.1, 0.8)
+    ));
+    assert!(!polygons::contains(
+        &corners,
+        NormalizedPosition::new(0.8, 0.8)
+    ));
+    assert!(polygons::svg_points(Some(&ZoneShape::Custom { vertices: corners })).is_some());
+    let invalid = ZoneShape::Custom {
+        vertices: vec![NormalizedPosition::new(f32::NAN, 0.0); 3],
+    };
+    assert!(polygons::svg_points(Some(&invalid)).is_none());
 }

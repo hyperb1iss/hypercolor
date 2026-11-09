@@ -8,7 +8,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{Context, Result};
-use hypercolor_driver_support::http::{BoundedRequest, BoundedResponse, ReadBudget};
+use hypercolor_driver_support::http::{BoundedRequest, BoundedResponse, EventStream, ReadBudget};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -61,6 +61,20 @@ impl<'a> AuthenticatedApi<'a> {
     ) -> Result<()> {
         let request = nanoleaf_http_client()?.put(self.url(path)).json(body);
         self.send(request, budget, purpose).await.map(drop)
+    }
+
+    /// Keep touch delivery registered while draining bounded SSE events.
+    pub(super) async fn touch_events(&self, port: u16) -> Result<EventStream> {
+        nanoleaf_http_client()?
+            .get(self.url("/events?id=4"))
+            .header("Accept", "text/event-stream")
+            .header("TouchEventsPort", &port.to_string())
+            .subscribe(
+                super::NANOLEAF_SMALL_REPLY_BYTES,
+                super::NANOLEAF_HTTP_TIMEOUT,
+            )
+            .await
+            .with_context(|| format!("Nanoleaf touch subscription to {} failed", self.controller))
     }
 
     fn url(&self, path: &str) -> String {

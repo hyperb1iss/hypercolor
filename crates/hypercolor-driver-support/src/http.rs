@@ -181,6 +181,37 @@ impl BoundedRequest {
         self
     }
 
+    /// Subscribe to server-sent events without expiring a quiet connection.
+    ///
+    /// `timeout` bounds receipt of the headers and completion of each event
+    /// once its first byte arrives. `max_event_bytes` bounds one event,
+    /// including comments and framing. The body is drained without collecting
+    /// payloads; use this when the subscription itself owns another transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::DeadlineExceeded`] for late headers, or
+    /// [`HttpError::Transport`] without the request URL.
+    pub async fn subscribe(
+        self,
+        max_event_bytes: usize,
+        timeout: Duration,
+    ) -> Result<EventStream, HttpError> {
+        let inner = until_deadline(Instant::now() + timeout, self.inner.send())
+            .await
+            .ok_or(HttpError::DeadlineExceeded)?
+            .map_err(transport_error)?;
+        Ok(EventStream {
+            inner,
+            max_event_bytes,
+            timeout,
+            deadline: None,
+            event_bytes: 0,
+            line_empty: true,
+            previous_cr: false,
+        })
+    }
+
     /// Send the request. The budget's clock is already running and keeps
     /// running through the body.
     ///
@@ -267,6 +298,81 @@ impl BoundedResponse {
     pub async fn json<T: DeserializeOwned>(self) -> Result<T, HttpError> {
         let body = self.bytes().await?;
         serde_json::from_slice(&body).map_err(HttpError::Json)
+    }
+}
+
+/// An SSE response with bounded event framing and no idle deadline.
+///
+/// The response stays open until its owner drops it or the peer closes it.
+/// A healthy peer can remain silent indefinitely; TCP keepalive still detects
+/// dead connections through the client's transport policy.
+#[derive(Debug)]
+pub struct EventStream {
+    inner: reqwest::Response,
+    max_event_bytes: usize,
+    timeout: Duration,
+    deadline: Option<Instant>,
+    event_bytes: usize,
+    line_empty: bool,
+    previous_cr: bool,
+}
+
+impl EventStream {
+    /// The subscription response status, before reading its body.
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        self.inner.status()
+    }
+
+    /// Drain the next chunk while validating event size and completion time.
+    /// Returns `false` when the stream closes. Cancellation preserves framing
+    /// state, so callers can select this against another transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::BodyTooLarge`] for an oversized event,
+    /// [`HttpError::DeadlineExceeded`] for a partial event that stops making
+    /// progress within its original deadline, or [`HttpError::Transport`].
+    pub async fn receive(&mut self) -> Result<bool, HttpError> {
+        let chunk = if let Some(deadline) = self.deadline {
+            until_deadline(deadline, self.inner.chunk())
+                .await
+                .ok_or(HttpError::DeadlineExceeded)?
+        } else {
+            self.inner.chunk().await
+        }
+        .map_err(transport_error)?;
+        let Some(chunk) = chunk else {
+            return Ok(false);
+        };
+        for byte in chunk {
+            // CR completes a line immediately; a following LF belongs to the
+            // same event's byte budget, even after its terminating blank line.
+            let continues_cr = byte == b'\n' && self.previous_cr;
+            if self.deadline.is_none() && !continues_cr {
+                self.event_bytes = 0;
+                self.deadline = Some(Instant::now() + self.timeout);
+            }
+            self.previous_cr = byte == b'\r';
+            self.event_bytes = self.event_bytes.saturating_add(1);
+            if self.event_bytes > self.max_event_bytes {
+                return Err(HttpError::BodyTooLarge {
+                    limit: self.max_event_bytes,
+                });
+            }
+            if continues_cr {
+                continue;
+            }
+            if matches!(byte, b'\r' | b'\n') {
+                if self.line_empty {
+                    self.deadline = None;
+                }
+                self.line_empty = true;
+            } else {
+                self.line_empty = false;
+            }
+        }
+        Ok(true)
     }
 }
 

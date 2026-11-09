@@ -72,7 +72,7 @@ impl NanoleafShapeType {
         )
     }
 
-    /// Approximate side length in millimeters for future layout work.
+    /// Side length in the API's Cartesian layout units (not millimeters).
     #[must_use]
     pub const fn side_length(self) -> f64 {
         match self {

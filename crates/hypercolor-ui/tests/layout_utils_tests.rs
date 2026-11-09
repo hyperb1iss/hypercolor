@@ -47,6 +47,7 @@ fn sample_zone_summary(id: &str, name: &str, led_count: u32) -> api::SegmentSumm
         led_count,
         topology: "ring".to_owned(),
         topology_hint: Some(api::SegmentTopologySummary::Ring { count: led_count }),
+        layout_hint: None,
     }
 }
 
@@ -435,6 +436,7 @@ fn a_display_output_reports_its_resolution_and_an_led_output_none() {
                     height: 400,
                     circular: true,
                 }),
+                layout_hint: None,
             },
             sample_zone_summary("channel-1", "Channel 1", 20),
         ],

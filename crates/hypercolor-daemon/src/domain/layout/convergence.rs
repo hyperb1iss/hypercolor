@@ -65,6 +65,7 @@ impl LayoutConvergence {
         &self,
         runtime: &DiscoveryRuntime,
         requested_layout_id: &str,
+        canvas: (u32, u32),
     ) -> Vec<Output> {
         let tracked = runtime.device_registry.list().await;
         for device in &tracked {
@@ -76,8 +77,8 @@ impl LayoutConvergence {
                 id: format!("mint-{layout_device_id}"),
                 name: device.info.name.clone(),
                 description: None,
-                canvas_width: 1,
-                canvas_height: 1,
+                canvas_width: canvas.0,
+                canvas_height: canvas.1,
                 zones: Vec::new(),
                 default_sampling_mode: SamplingMode::Bilinear,
                 default_edge_behavior: EdgeBehavior::Clamp,

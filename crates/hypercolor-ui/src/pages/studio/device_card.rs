@@ -355,6 +355,16 @@ pub fn StudioDeviceCard(
         format!("device-menu::{select}::{row_device_id}"),
     );
     let menu_physical_id = device.id.clone();
+    let menu_zone_id = select.clone();
+    let hardware_device = zone_outputs.as_ref().and_then(|outputs| {
+        let mut probe = outputs.clone();
+        super::placement::restore_hardware_layout(
+            &mut probe,
+            &device,
+            studio.render_canvas_size.get_untracked(),
+        )
+        .then(|| device.clone())
+    });
     let kebab_id = device_menu_dom_id(&select, &row_device_id);
     let menu_kebab_id = kebab_id.clone();
     // An Unassigned card carries the device record so its add action can
@@ -548,6 +558,8 @@ pub fn StudioDeviceCard(
                                 menu_physical_id,
                                 menu_kebab_id,
                                 scopes,
+                                menu_zone_id,
+                                hardware_device,
                             )}
                         </div>
                     }
@@ -838,10 +850,13 @@ fn card_ops_menu(
     physical_id: String,
     kebab_id: String,
     scopes: StoredValue<Vec<(String, MovePayload)>>,
+    zone_id: String,
+    hardware_device: Option<DeviceSummary>,
 ) -> impl IntoView {
     let (identifying, set_identifying) = signal(false);
     let identify_id = StoredValue::new(physical_id);
     let kebab_id = StoredValue::new(kebab_id);
+    let hardware_zone_id = StoredValue::new(zone_id);
 
     let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
                text-[11px] transition-colors";
@@ -890,6 +905,27 @@ fn card_ops_menu(
                 <span class="flex-1">"Move to"</span>
                 <Icon icon=LuChevronRight width="11px" height="11px" />
             </button>
+            {hardware_device.map(|device| view! {
+                <button
+                    type="button"
+                    class=format!("{row} text-fg-secondary hover:bg-surface-hover/40 disabled:opacity-40")
+                    title=move || if studio.selected_surface_id.get().as_deref() == Some(&hardware_zone_id.get_value()) {
+                        "Restore the arrangement detected from this device"
+                    } else {
+                        "Select this zone to restore its hardware layout"
+                    }
+                    disabled=move || studio.history.busy.get()
+                        || studio.selected_surface_id.get().as_deref() != Some(&hardware_zone_id.get_value())
+                    on:click=move |ev: web_sys::MouseEvent| {
+                        ev.stop_propagation();
+                        ops_open.set(false);
+                        studio.history.restore_hardware_layout(hardware_zone_id.get_value(), device.clone());
+                    }
+                >
+                    <Icon icon=LuGrid2x2 width="12px" height="12px" />
+                    <span>"Hardware layout"</span>
+                </button>
+            })}
             <button
                 type="button"
                 class=format!("{row} text-status-error hover:bg-surface-hover/40 disabled:opacity-40")

@@ -211,6 +211,17 @@ fn sample_layout(outputs: Vec<Output>) -> SpatialLayout {
 /// Seed the live tree with a primary zone running one effect over two
 /// member segments, which is the shape every test below reads back.
 async fn seed_tree(state: &Arc<AppState>) -> EffectId {
+    seed_tree_with_layout(
+        state,
+        sample_layout(vec![
+            sample_output("out-a", Some("ch1")),
+            sample_output("out-b", Some("ch2")),
+        ]),
+    )
+    .await
+}
+
+async fn seed_tree_with_layout(state: &Arc<AppState>, layout: SpatialLayout) -> EffectId {
     let metadata = sample_effect("Aurora");
     let effect_id = metadata.id;
     let _ = state
@@ -229,10 +240,7 @@ async fn seed_tree(state: &Arc<AppState>) -> EffectId {
             &metadata,
             HashMap::<String, ControlValue>::new(),
             None,
-            sample_layout(vec![
-                sample_output("out-a", Some("ch1")),
-                sample_output("out-b", Some("ch2")),
-            ]),
+            layout,
             hypercolor_types::event::ChangeTrigger::System,
             None,
         )
@@ -2741,6 +2749,510 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert_eq!(output.shape, hint.shape);
     assert_eq!(output.position, NormalizedPosition::new(0.7, 0.6));
     assert_eq!(output.size, NormalizedPosition::new(0.15, 0.1));
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+fn mixed_physical_panel_device() -> hypercolor_types::device::DeviceInfo {
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+        DeviceOrigin, DeviceTopologyHint, SegmentInfo, SegmentLayoutHint, SegmentPlacement,
+    };
+    use hypercolor_types::spatial::ZoneShape;
+
+    let triangle_height = 67.0 * 3.0_f32.sqrt() / 2.0;
+    let geometries = [
+        (
+            "Panel 1",
+            NormalizedPosition::new(0.0, 0.0),
+            NormalizedPosition::new(134.0, triangle_height * 2.0),
+            NormalizedPosition::new(0.5, 0.5),
+            vec![
+                (1.0, 0.5),
+                (0.75, 0.0),
+                (0.25, 0.0),
+                (0.0, 0.5),
+                (0.25, 1.0),
+                (0.75, 1.0),
+            ],
+        ),
+        (
+            "Panel 2",
+            NormalizedPosition::new(0.0, -triangle_height * 1.5),
+            NormalizedPosition::new(67.0, triangle_height),
+            NormalizedPosition::new(0.5, 2.0 / 3.0),
+            vec![(0.5, 0.0), (0.0, 1.0), (1.0, 1.0)],
+        ),
+    ];
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: "Mixed physical panels".into(),
+        vendor: "TestVendor".into(),
+        family: DeviceFamily::named("test"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
+        segments: geometries
+            .into_iter()
+            .map(|(name, position, size, sample, vertices)| SegmentInfo {
+                name: name.into(),
+                led_count: 1,
+                topology: DeviceTopologyHint::Point,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: Some(SegmentLayoutHint {
+                    topology: Some(LedTopology::Custom {
+                        positions: vec![sample],
+                    }),
+                    placement: Some(SegmentPlacement {
+                        position,
+                        size,
+                        rotation: 0.0,
+                    }),
+                    shape: Some(ZoneShape::Custom {
+                        vertices: vertices
+                            .into_iter()
+                            .map(|(x, y)| NormalizedPosition::new(x, y))
+                            .collect(),
+                    }),
+                    ..SegmentLayoutHint::default()
+                }),
+            })
+            .collect(),
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 2,
+            ..DeviceCapabilities::default()
+        },
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+fn physical_panel_point(
+    placement: &hypercolor_types::api::scene::MemberPlacement,
+    point: NormalizedPosition,
+    canvas: (u32, u32),
+) -> NormalizedPosition {
+    NormalizedPosition::new(
+        (placement.position.x + (point.x - 0.5) * placement.size.x) * canvas.0 as f32,
+        (placement.position.y + (point.y - 0.5) * placement.size.y) * canvas.1 as f32,
+    )
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+fn assert_physical_panel_proportions(
+    panels: &[hypercolor_types::api::scene::MemberPlacement],
+    canvas: (u32, u32),
+) {
+    use hypercolor_types::spatial::ZoneShape;
+    let close = |actual: f32, expected: f32| {
+        assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+    };
+    assert_eq!(panels.len(), 2);
+    assert_ne!(
+        canvas.0, canvas.1,
+        "physical fit must account for canvas aspect"
+    );
+    let (hex, mini) = (&panels[0], &panels[1]);
+    close(hex.size.x, mini.size.x * 2.0);
+    close(hex.size.y, mini.size.y * 2.0);
+    let mini_pixel_width = mini.size.x * canvas.0 as f32;
+    let mini_pixel_height = mini.size.y * canvas.1 as f32;
+    close(mini_pixel_height / mini_pixel_width, 3.0_f32.sqrt() / 2.0);
+    let Some(ZoneShape::Custom {
+        vertices: hex_vertices,
+    }) = &hex.shape
+    else {
+        panic!("hexagon polygon must reach the scene API");
+    };
+    let Some(ZoneShape::Custom {
+        vertices: mini_vertices,
+    }) = &mini.shape
+    else {
+        panic!("triangle polygon must reach the scene API");
+    };
+    assert_eq!(hex_vertices.len(), 6);
+    assert_eq!(mini_vertices.len(), 3);
+    for (hex_vertex, mini_vertex) in [(2, 1), (1, 2)] {
+        let a = physical_panel_point(hex, hex_vertices[hex_vertex], canvas);
+        let b = physical_panel_point(mini, mini_vertices[mini_vertex], canvas);
+        close(a.x, b.x);
+        close(a.y, b.y);
+    }
+    let LedTopology::Custom { positions } = &mini.topology else {
+        panic!("triangle keeps its centroid sample");
+    };
+    assert_eq!(positions, &[NormalizedPosition::new(0.5, 2.0 / 3.0)]);
+    let center = physical_panel_point(mini, positions[0], canvas);
+    let base = physical_panel_point(mini, mini_vertices[1], canvas);
+    close(base.y - center.y, mini_pixel_height / 3.0);
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+async fn send_with_layout_publications(
+    state: &AppState,
+    app: &axum::Router,
+    request: Request<Body>,
+) -> (axum::response::Response, usize) {
+    let work = send(app, request);
+    tokio::pin!(work);
+    let executor = state.layout_publication_test_executor();
+    let mut publications = Vec::new();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                response = &mut work => break response,
+                () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {
+                    if executor.pending_layout_publications() > 0 {
+                        let executor = executor.clone();
+                        publications.push(tokio::spawn(async move {
+                            executor.execute_next_layout_publication().await
+                        }));
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("layout request must complete after renderer publications are serviced");
+    let mut published = 0;
+    for publication in publications {
+        let layout = publication
+            .await
+            .expect("renderer task")
+            .expect("layout publication succeeds");
+        published += usize::from(layout.is_some());
+    }
+    (response, published)
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn physical_panel_geometry_survives_assignment_scene_reads_and_layout_edits() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, MemberAssignmentTarget, MemberPlacement,
+    };
+    use hypercolor_types::spatial::ZoneShape;
+
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    // Real activation stamps layouts with the configured render canvas.
+    // Seed the same dimensions when bypassing activation in this fixture.
+    let render_layout = state.spatial_engine.layout();
+    let mut layout = sample_layout(vec![
+        sample_output("out-a", Some("ch1")),
+        sample_output("out-b", Some("ch2")),
+    ]);
+    layout.canvas_width = render_layout.canvas_width;
+    layout.canvas_height = render_layout.canvas_height;
+    seed_tree_with_layout(&state, layout).await;
+    let info = mixed_physical_panel_device();
+    let device_id =
+        hypercolor_core::device::DeviceLifecycleManager::canonical_layout_device_id(&info, None);
+    let _ = state.device_registry.add(info).await;
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id: ZoneId =
+        serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let request = EditMembersRequest {
+        scene_id,
+        changes: Vec::new(),
+        assignment: Some(MemberAssignmentTarget {
+            zone_id,
+            device_id,
+            segments: Vec::new(),
+            placements: Vec::new(),
+        }),
+    };
+    let assigned = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+            document["data"]["revision"].as_u64().expect("revision"),
+        ),
+    )
+    .await;
+    assert_eq!(assigned.status(), StatusCode::OK);
+    let assigned: EditMembersResponse =
+        serde_json::from_value(body_json(assigned).await["data"].clone()).expect("receipt");
+    assert_eq!(assigned.changes.len(), 2);
+    let panel_ids: Vec<_> = ["Panel 1", "Panel 2"]
+        .into_iter()
+        .map(|name| {
+            assigned
+                .changes
+                .iter()
+                .filter_map(|change| change.after.as_ref())
+                .find(|after| after.output.zone_name.as_deref() == Some(name))
+                .expect("assigned physical panel")
+                .output
+                .id
+                .clone()
+        })
+        .collect();
+    let scene = state.scene_manager.snapshot().await;
+    let layout = &scene
+        .active_scene()
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
+        .expect("primary zone")
+        .layout;
+    let canvas = (layout.canvas_width, layout.canvas_height);
+    let document = read_document(&app).await;
+    let mut placements: Vec<MemberPlacement> =
+        serde_json::from_value(primary_zone(&document)["layout"]["placements"].clone())
+            .expect("placements");
+    let panels: Vec<_> = panel_ids
+        .iter()
+        .map(|id| {
+            placements
+                .iter()
+                .find(|placement| &placement.member.0 == id)
+                .expect("panel placement")
+                .clone()
+        })
+        .collect();
+    assert_physical_panel_proportions(&panels, canvas);
+    for panel in &panels {
+        let output = assigned
+            .changes
+            .iter()
+            .filter_map(|change| change.after.as_ref())
+            .find(|after| after.output.id == panel.member.0)
+            .expect("assigned panel");
+        assert_eq!(panel.shape, output.output.shape);
+        assert_eq!(panel.topology, output.output.topology);
+    }
+
+    let moved = placements
+        .iter_mut()
+        .find(|placement| placement.member == panels[1].member)
+        .expect("mini triangle");
+    moved.position = NormalizedPosition::new(0.72, 0.63);
+    moved.rotation = 37.0;
+    moved.scale = 1.25;
+    moved.shape = Some(ZoneShape::Rectangle);
+    let (edited, publications) = send_with_layout_publications(
+        &state,
+        &app,
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone_id}/layout"),
+            json!({"placements": placements}),
+        ),
+    )
+    .await;
+    assert!(
+        publications > 0,
+        "primary-zone edits publish the active layout"
+    );
+    assert_eq!(edited.status(), StatusCode::OK);
+    let document = read_document(&app).await;
+    let edited_placements: Vec<MemberPlacement> =
+        serde_json::from_value(primary_zone(&document)["layout"]["placements"].clone())
+            .expect("edited placements");
+    let edited_panel = edited_placements
+        .iter()
+        .find(|placement| placement.member == panels[1].member)
+        .expect("edited mini");
+    assert_eq!(edited_panel.position, NormalizedPosition::new(0.72, 0.63));
+    assert_eq!(edited_panel.rotation, 37.0);
+    assert_eq!(edited_panel.scale, 1.25);
+    assert_eq!(
+        edited_panel.shape, panels[1].shape,
+        "layout edits cannot replace device geometry"
+    );
+    assert_eq!(edited_panel.topology, panels[1].topology);
+    assert_eq!(
+        edited_placements
+            .iter()
+            .find(|placement| placement.member == panels[0].member),
+        Some(&panels[0])
+    );
+
+    let reassigned = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+            document["data"]["revision"].as_u64().expect("revision"),
+        ),
+    )
+    .await;
+    assert_eq!(reassigned.status(), StatusCode::OK);
+    let reassigned: EditMembersResponse =
+        serde_json::from_value(body_json(reassigned).await["data"].clone()).expect("receipt");
+    assert!(
+        reassigned.changes.is_empty(),
+        "reassigning the device must retain user placement"
+    );
+    let document = read_document(&app).await;
+    let final_placements: Vec<MemberPlacement> =
+        serde_json::from_value(primary_zone(&document)["layout"]["placements"].clone())
+            .expect("final placements");
+    assert_eq!(final_placements, edited_placements);
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn custom_zone_panel_removal_and_reassignment_refreshes_device_geometry() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, MemberAssignmentTarget, MemberEdit,
+        MemberPlacementHint,
+    };
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let enriched = mixed_physical_panel_device();
+    let device_id = hypercolor_core::device::DeviceLifecycleManager::canonical_layout_device_id(
+        &enriched, None,
+    );
+    let mut old_info = enriched.clone();
+    for segment in &mut old_info.segments {
+        segment.layout_hint = None;
+    }
+    let _ = state.device_registry.add(old_info).await;
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({"name": "Wall panels"}),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let zone_id: ZoneId = serde_json::from_value(body_json(created).await["data"]["id"].clone())
+        .expect("custom zone id");
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let authored = MemberPlacementHint {
+        segment: Some("Panel 1".into()),
+        position: NormalizedPosition::new(0.7, 0.6),
+        size: NormalizedPosition::new(0.2, 0.15),
+        rotation: 37.0,
+        scale: 1.25,
+        orientation: None,
+    };
+    let assignment = EditMembersRequest {
+        scene_id,
+        changes: Vec::new(),
+        assignment: Some(MemberAssignmentTarget {
+            zone_id,
+            device_id,
+            segments: Vec::new(),
+            placements: vec![authored.clone()],
+        }),
+    };
+    let assigned = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(assignment),
+            ),
+            document["data"]["revision"].as_u64().expect("revision"),
+        ),
+    )
+    .await;
+    assert_eq!(assigned.status(), StatusCode::OK);
+    let assigned: EditMembersResponse =
+        serde_json::from_value(body_json(assigned).await["data"].clone())
+            .expect("assignment receipt");
+    assert_eq!(assigned.changes.len(), 2);
+    assert!(assigned.changes.iter().all(|change| {
+        change
+            .after
+            .as_ref()
+            .expect("old panel")
+            .output
+            .shape
+            .is_none()
+    }));
+
+    let _ = state
+        .device_registry
+        .update_info(&enriched.id, enriched.clone())
+        .await;
+    let held = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(assignment),
+            ),
+            assigned.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(held.status(), StatusCode::OK);
+    let held: EditMembersResponse =
+        serde_json::from_value(body_json(held).await["data"].clone()).expect("held receipt");
+    assert!(
+        held.changes.is_empty(),
+        "still-held members keep their authored geometry"
+    );
+    let removed = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(EditMembersRequest {
+                    scene_id,
+                    assignment: None,
+                    changes: assigned
+                        .changes
+                        .iter()
+                        .map(|change| MemberEdit {
+                            before: change.after.clone(),
+                            after: None,
+                        })
+                        .collect(),
+                }),
+            ),
+            held.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(removed.status(), StatusCode::OK);
+    let removed: EditMembersResponse =
+        serde_json::from_value(body_json(removed).await["data"].clone()).expect("removal receipt");
+    let refreshed = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(assignment),
+            ),
+            removed.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(refreshed.status(), StatusCode::OK);
+    let refreshed: EditMembersResponse =
+        serde_json::from_value(body_json(refreshed).await["data"].clone())
+            .expect("refresh receipt");
+    assert_eq!(refreshed.changes.len(), 2);
+    for change in &refreshed.changes {
+        let after = change.after.as_ref().expect("refreshed panel");
+        assert_eq!(after.zone_id, zone_id);
+        let expected = enriched
+            .segments
+            .iter()
+            .find(|segment| Some(&segment.name) == after.output.zone_name.as_ref())
+            .expect("device segment")
+            .layout_hint
+            .as_ref()
+            .expect("physical metadata");
+        assert_eq!(after.output.shape, expected.shape);
+        assert_eq!(Some(after.output.topology.clone()), expected.topology);
+        if after.output.zone_name == authored.segment {
+            assert_eq!(after.output.position, authored.position);
+            assert_eq!(after.output.size, authored.size);
+            assert_eq!(after.output.rotation, authored.rotation);
+            assert_eq!(after.output.scale, authored.scale);
+        }
+    }
 }
 
 #[tokio::test]

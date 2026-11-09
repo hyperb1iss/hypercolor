@@ -37,6 +37,7 @@ pub(super) struct ZoneRenderData {
     /// The line under the name: LED count, or resolution for a display.
     pub(super) detail: String,
     pub(super) shape: Option<ZoneShape>,
+    pub(super) polygon_points: Option<String>,
 }
 
 /// A box rotated past a quarter turn either way would show its name

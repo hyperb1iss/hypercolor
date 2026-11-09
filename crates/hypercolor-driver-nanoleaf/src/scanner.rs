@@ -318,6 +318,7 @@ async fn build_discovered_device(
     let mut firmware = candidate.firmware.clone();
     let mut serial_no = String::new();
     let mut panels: Vec<NanoleafPanelLayout> = Vec::new();
+    let mut global_orientation = 0.0;
     let connect_behavior = if let Some(auth_token) = auth_token {
         match fetch_device_info(candidate.ip, candidate.port, &auth_token).await {
             Ok(device_info) => {
@@ -336,7 +337,8 @@ async fn build_discovered_device(
 
                 match fetch_panel_layout(candidate.ip, candidate.port, &auth_token).await {
                     Ok(layout) => {
-                        panels = layout.position_data;
+                        panels = layout.layout.position_data;
+                        global_orientation = layout.global_orientation.value;
                         DiscoveryConnectBehavior::AutoConnect
                     }
                     Err(error) => {
@@ -400,6 +402,7 @@ async fn build_discovered_device(
         (!model.is_empty()).then_some(model.as_str()),
         (!firmware.is_empty()).then_some(firmware.as_str()),
         panels.as_slice(),
+        global_orientation,
     );
     let panel_ids = panel_ids_from_layout(panels.as_slice());
 

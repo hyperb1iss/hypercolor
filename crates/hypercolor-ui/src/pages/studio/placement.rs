@@ -12,6 +12,7 @@
 //! spans 1), so a uniform scale never distorts a box on a wide canvas.
 
 use hypercolor_types::api::scene::{MemberEdit, MemberPlacementHint, MemberState, SceneDocument};
+use hypercolor_types::device::SegmentPlacement;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{NormalizedPosition, Orientation, Output, SpatialLayout};
 
@@ -493,6 +494,103 @@ pub fn place_arrivals(
         .collect()
 }
 
+/// Restore the detected assembly for this device's members in one zone.
+/// Keeps the group's drawn center and diagonal, using one physical scale;
+/// a group that would leave the canvas is uniformly fitted and recentered.
+/// Invalid or unassigned segments and other devices are left alone.
+pub fn restore_hardware_layout(
+    outputs: &mut [Output],
+    device: &DeviceSummary,
+    canvas: (u32, u32),
+) -> bool {
+    let aspect = layout_geometry::canvas_pixel_aspect(canvas.0, canvas.1);
+    let hints: Vec<_> = outputs
+        .iter()
+        .map(|output| {
+            (output.device_id == device.layout_device_id)
+                .then(|| {
+                    device.segments.iter().find(|segment| {
+                        channel_name_matches_slot_alias(
+                            output.zone_name.as_deref(),
+                            Some(&segment.name),
+                        )
+                    })
+                })
+                .flatten()
+                .and_then(|segment| segment.layout_hint.as_ref())
+        })
+        .collect();
+    let placements: Vec<_> = hints
+        .iter()
+        .map(|hint| hint.and_then(|hint| hint.placement))
+        .collect();
+    let fitted = SegmentPlacement::fit_all(
+        &placements,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+        canvas,
+    );
+    let Some(before) = union_of(
+        outputs
+            .iter()
+            .zip(&fitted)
+            .filter_map(|(output, placement)| {
+                placement.map(|_| Footprint::of(output).bounds(aspect))
+            }),
+    ) else {
+        return false;
+    };
+    let mut restored = Vec::new();
+    for (index, (output, placement)) in outputs.iter().zip(fitted).enumerate() {
+        let Some(placement) = placement else {
+            continue;
+        };
+        let mut panel = output.clone();
+        panel.position = placement.position;
+        panel.size = placement.size;
+        panel.rotation = placement.rotation;
+        panel.scale = 1.0;
+        panel.orientation = None;
+        restored.push((index, panel));
+    }
+    let Some(after) = union_of(
+        restored
+            .iter()
+            .map(|(_, output)| Footprint::of(output).bounds(aspect)),
+    ) else {
+        return false;
+    };
+    let scale = (before.diagonal() / after.diagonal())
+        .min(aspect / after.width())
+        .min(1.0 / after.height());
+    if !scale.is_finite() || scale <= 0.0 {
+        return false;
+    }
+    let (center_x, center_y) = before.center();
+    let (old_x, old_y) = after.center();
+    let transform = Similarity {
+        scale,
+        dx: center_x - old_x * scale,
+        dy: center_y - old_y * scale,
+    };
+    for (_, panel) in &mut restored {
+        transform.apply(Footprint::of(panel), aspect).apply(panel);
+    }
+    let center = NormalizedPosition::new(center_x / aspect, center_y);
+    let (dx, dy) = offset_to_center(
+        restored.iter().map(|(_, panel)| Footprint::of(panel)),
+        center,
+        canvas,
+    )
+    .unwrap_or_default();
+    for (index, mut panel) in restored {
+        panel.position.x += dx;
+        panel.position.y += dy;
+        outputs[index] = panel;
+    }
+    true
+}
+
 /// Scale and center `outputs` as one group so the `framed` ones (the
 /// boxes the canvas shows) fill the canvas inside [`FIT_MARGIN`], keeping
 /// their arrangement; with none framed, every output frames. The rest
@@ -645,16 +743,38 @@ pub fn assignment_seeds(
         canvas.1,
         0,
     );
+    let physical = SegmentPlacement::fit_all(
+        &all.iter()
+            .map(|segment| segment.layout_hint.as_ref().and_then(|hint| hint.placement))
+            .collect::<Vec<_>>(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(0.26, 0.18),
+        canvas,
+    );
     let arrivals: Vec<Arrival> = segments
         .iter()
         .zip(default_arrangement(device, &segments, canvas))
         .map(|(segment, default)| {
-            let seed = seeded.as_ref().and_then(|seeded| {
-                seeded
-                    .zones
-                    .iter()
-                    .find(|output| output.zone_name.as_deref() == Some(segment.name.as_str()))
-                    .map(Footprint::of)
+            let physical = all
+                .iter()
+                .position(|candidate| candidate.name == segment.name)
+                .and_then(|index| physical[index])
+                .map(|placement| Footprint {
+                    position: placement.position,
+                    size: placement.size,
+                    rotation: placement.rotation,
+                    scale: 1.0,
+                    orientation: None,
+                    circular: false,
+                });
+            let seed = physical.or_else(|| {
+                seeded.as_ref().and_then(|seeded| {
+                    seeded
+                        .zones
+                        .iter()
+                        .find(|output| output.zone_name.as_deref() == Some(segment.name.as_str()))
+                        .map(Footprint::of)
+                })
             });
             Arrival {
                 output_id: None,

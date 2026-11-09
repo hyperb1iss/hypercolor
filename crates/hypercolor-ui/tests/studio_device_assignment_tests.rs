@@ -85,6 +85,7 @@ fn zone_resource_with_outputs(outputs: Vec<Output>) -> ZoneResource {
                 scale: output.scale,
                 orientation: output.orientation,
                 topology: output.topology,
+                shape: output.shape,
             };
             (member, placement)
         })

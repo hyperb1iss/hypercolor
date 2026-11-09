@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from ..models.led_topology_type_5 import LedTopologyType5
     from ..models.led_topology_type_6 import LedTopologyType6
     from ..models.normalized_position import NormalizedPosition
+    from ..models.zone_shape_type_0 import ZoneShapeType0
+    from ..models.zone_shape_type_1 import ZoneShapeType1
+    from ..models.zone_shape_type_2 import ZoneShapeType2
+    from ..models.zone_shape_type_3 import ZoneShapeType3
 
 
 T = TypeVar("T", bound="MemberPlacement")
@@ -67,6 +71,7 @@ class MemberPlacement:
             orientation (None | Orientation | Unset):
             rotation (float | Unset):
             scale (float | Unset):
+            shape (None | Unset | ZoneShapeType0 | ZoneShapeType1 | ZoneShapeType2 | ZoneShapeType3):
     """
 
     member: str
@@ -84,6 +89,9 @@ class MemberPlacement:
     orientation: None | Orientation | Unset = UNSET
     rotation: float | Unset = UNSET
     scale: float | Unset = UNSET
+    shape: (
+        None | Unset | ZoneShapeType0 | ZoneShapeType1 | ZoneShapeType2 | ZoneShapeType3
+    ) = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -93,6 +101,10 @@ class MemberPlacement:
         from ..models.led_topology_type_3 import LedTopologyType3
         from ..models.led_topology_type_4 import LedTopologyType4
         from ..models.led_topology_type_5 import LedTopologyType5
+        from ..models.zone_shape_type_0 import ZoneShapeType0
+        from ..models.zone_shape_type_1 import ZoneShapeType1
+        from ..models.zone_shape_type_2 import ZoneShapeType2
+        from ..models.zone_shape_type_3 import ZoneShapeType3
 
         member = self.member
 
@@ -125,6 +137,19 @@ class MemberPlacement:
 
         scale = self.scale
 
+        shape: dict[str, Any] | None | Unset
+        if isinstance(self.shape, Unset):
+            shape = UNSET
+        elif (
+            isinstance(self.shape, ZoneShapeType0)
+            or isinstance(self.shape, ZoneShapeType1)
+            or isinstance(self.shape, ZoneShapeType2)
+            or isinstance(self.shape, ZoneShapeType3)
+        ):
+            shape = self.shape.to_dict()
+        else:
+            shape = self.shape
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -141,6 +166,8 @@ class MemberPlacement:
             field_dict["rotation"] = rotation
         if scale is not UNSET:
             field_dict["scale"] = scale
+        if shape is not UNSET:
+            field_dict["shape"] = shape
 
         return field_dict
 
@@ -154,6 +181,10 @@ class MemberPlacement:
         from ..models.led_topology_type_5 import LedTopologyType5
         from ..models.led_topology_type_6 import LedTopologyType6
         from ..models.normalized_position import NormalizedPosition
+        from ..models.zone_shape_type_0 import ZoneShapeType0
+        from ..models.zone_shape_type_1 import ZoneShapeType1
+        from ..models.zone_shape_type_2 import ZoneShapeType2
+        from ..models.zone_shape_type_3 import ZoneShapeType3
 
         d = dict(src_dict)
         member = d.pop("member")
@@ -250,6 +281,64 @@ class MemberPlacement:
 
         scale = d.pop("scale", UNSET)
 
+        def _parse_shape(
+            data: object,
+        ) -> (
+            None
+            | Unset
+            | ZoneShapeType0
+            | ZoneShapeType1
+            | ZoneShapeType2
+            | ZoneShapeType3
+        ):
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_zone_shape_type_0 = ZoneShapeType0.from_dict(data)
+
+                return componentsschemas_zone_shape_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_zone_shape_type_1 = ZoneShapeType1.from_dict(data)
+
+                return componentsschemas_zone_shape_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_zone_shape_type_2 = ZoneShapeType2.from_dict(data)
+
+                return componentsschemas_zone_shape_type_2
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_zone_shape_type_3 = ZoneShapeType3.from_dict(data)
+
+                return componentsschemas_zone_shape_type_3
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(
+                None
+                | Unset
+                | ZoneShapeType0
+                | ZoneShapeType1
+                | ZoneShapeType2
+                | ZoneShapeType3,
+                data,
+            )
+
+        shape = _parse_shape(d.pop("shape", UNSET))
+
         member_placement = cls(
             member=member,
             position=position,
@@ -258,6 +347,7 @@ class MemberPlacement:
             orientation=orientation,
             rotation=rotation,
             scale=scale,
+            shape=shape,
         )
 
         member_placement.additional_properties = d

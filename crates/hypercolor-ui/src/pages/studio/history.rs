@@ -439,6 +439,7 @@ pub(crate) struct EditorHooks {
     pub commits_pending: Callback<(), bool>,
     pub drain_commits: Callback<()>,
     pub gesture_active: Callback<(), bool>,
+    pub hardware_layout: Callback<(String, api::DeviceSummary)>,
 }
 
 /// How the history speaks through Studio's live region once an undo or
@@ -684,6 +685,16 @@ impl StudioHistory {
         if self.is_current(generation) {
             self.committing.set(false);
             self.next_waiting();
+        }
+    }
+
+    /// Restore a device through the editor's normal reversible write path.
+    pub fn restore_hardware_layout(self, zone_id: String, device: api::DeviceSummary) {
+        if self.busy.get_untracked() || self.gesture_running() {
+            return;
+        }
+        if let Some(editor) = self.editor_hooks() {
+            editor.hardware_layout.run((zone_id, device));
         }
     }
 
@@ -1791,6 +1802,7 @@ mod replay_tests {
                     let _ = history.begin_commit();
                 }),
                 gesture_active: Callback::new(|()| false),
+                hardware_layout: Callback::new(|_| {}),
             }));
             // An undo asked for while a structural operation runs.
             history.replay(false);
@@ -2496,6 +2508,7 @@ mod replay_tests {
                 commits_pending: Callback::new(move |()| pending.get_untracked()),
                 drain_commits: Callback::new(move |()| drained.update(|count| *count += 1)),
                 gesture_active: Callback::new(|()| false),
+                hardware_layout: Callback::new(|_| {}),
             }));
             history.delete_zone(zone.to_owned(), Callback::new(|_| {}));
             assert!(
@@ -2525,6 +2538,7 @@ mod replay_tests {
                 commits_pending: Callback::new(|()| false),
                 drain_commits: Callback::new(|()| {}),
                 gesture_active: Callback::new(move |()| dragging.get_untracked()),
+                hardware_layout: Callback::new(|_| {}),
             }));
             history.delete_zone(zone.to_owned(), Callback::new(|_| {}));
             history.undo_deletion(1);
@@ -2552,6 +2566,7 @@ mod replay_tests {
                 commits_pending: Callback::new(|()| false),
                 drain_commits: Callback::new(|()| {}),
                 gesture_active: Callback::new(move |()| dragging.get_untracked()),
+                hardware_layout: Callback::new(|_| {}),
             }));
             history.replay(false);
             assert!(

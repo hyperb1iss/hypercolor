@@ -9,11 +9,13 @@ mod api;
 pub mod backend;
 #[cfg(test)]
 mod bounds_tests;
+mod geometry;
 mod scanner;
 mod streaming;
 #[cfg(test)]
 mod token_log_tests;
 mod topology;
+mod touch;
 mod types;
 
 use std::collections::{BTreeMap, HashMap};
@@ -56,7 +58,6 @@ use hypercolor_types::pairing::{
 use serde::Deserialize;
 
 use self::api::AuthenticatedApi;
-use self::types::NanoleafPanelLayoutResponse;
 
 pub use backend::{NanoleafBackend, NanoleafConfig};
 pub use scanner::{NanoleafKnownDevice, NanoleafScanner};
@@ -65,7 +66,12 @@ pub use streaming::{
     encode_frame_into,
 };
 pub use topology::NanoleafShapeType;
-pub use types::{NanoleafDeviceInfo, NanoleafDiscoveredDevice, NanoleafPanelLayout};
+#[doc(hidden)]
+pub use touch::NanoleafTouchDecoder;
+pub use types::{
+    NanoleafDeviceInfo, NanoleafDiscoveredDevice, NanoleafOrientation, NanoleafPanelLayout,
+    NanoleafPanelLayoutDocument, NanoleafPanelLayoutResponse,
+};
 #[doc(hidden)]
 pub use types::{build_device_info, panel_ids_from_layout};
 
@@ -214,10 +220,10 @@ async fn fetch_panel_layout(
     ip: IpAddr,
     api_port: u16,
     auth_token: &str,
-) -> Result<NanoleafPanelLayoutResponse> {
+) -> Result<NanoleafPanelLayoutDocument> {
     AuthenticatedApi::new(ip, api_port, auth_token)
         .get_json(
-            "/panelLayout/layout",
+            "/panelLayout",
             ReadBudget::new(NANOLEAF_LAYOUT_REPLY_BYTES, NANOLEAF_HTTP_TIMEOUT),
             "panel-layout",
         )
@@ -272,14 +278,15 @@ impl DriverModule for NanoleafDriverModule {
 impl DeviceBackendFactory for NanoleafDriverModule {
     fn build(
         &self,
-        _context: DriverContext,
+        context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<NanoleafConfig>()?;
-        Ok(Arc::new(NanoleafBackend::new(
-            config,
-            Arc::clone(&self.credential_store),
-        )))
+        let mut backend = NanoleafBackend::new(config, Arc::clone(&self.credential_store));
+        if let Some(sink) = context.device_input {
+            backend = backend.with_device_input(sink);
+        }
+        Ok(Arc::new(backend))
     }
 }
 

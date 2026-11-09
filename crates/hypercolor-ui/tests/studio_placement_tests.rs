@@ -9,7 +9,8 @@ use hypercolor_types::spatial::{
 use hypercolor_ui::api::DeviceSummary;
 use hypercolor_ui::pages::studio::placement::{
     Arrival, FIT_MARGIN, Fallback, Footprint, Seed, assignment_seeds, center_seeds_on, fit_outputs,
-    move_edits, offset_to_center, place_arrivals, rig_footprint, rig_layouts,
+    move_edits, offset_to_center, place_arrivals, restore_hardware_layout, rig_footprint,
+    rig_layouts,
 };
 
 const CANVAS: (u32, u32) = (640, 480);
@@ -736,4 +737,192 @@ fn a_fan_device_seeds_its_rings_as_circles() {
     let seeds = assignment_seeds(&scene, None, &fan, &zone_id, &[], CANVAS);
     assert_eq!(seeds.len(), 1);
     assert!(seeds[0].footprint.circular);
+}
+
+#[test]
+fn first_assignment_keeps_a_devices_physical_panel_arrangement_without_a_rig() {
+    let scene = scene(&[("primary", &[])], &[]);
+    let panels = device(
+        "nanoleaf",
+        serde_json::json!([
+            { "id": "large", "name": "Panel 1", "led_count": 1, "topology": "point",
+              "layout_hint": { "placement": {
+                "position": { "x": 0.0, "y": 0.0 }, "size": { "x": 100.0, "y": 100.0 }, "rotation": 0.0
+              } } },
+            { "id": "mini", "name": "Panel 2", "led_count": 1, "topology": "point",
+              "layout_hint": { "placement": {
+                "position": { "x": 75.0, "y": -25.0 }, "size": { "x": 50.0, "y": 50.0 }, "rotation": 0.0
+              } } }
+        ]),
+    );
+    let seeds = assignment_seeds(
+        &scene,
+        None,
+        &panels,
+        &scene.zones[0].id.to_string(),
+        &[],
+        CANVAS,
+    );
+    assert_eq!(seeds.len(), 2);
+    let (large, mini) = (seeds[0].footprint, seeds[1].footprint);
+    assert_close(large.size.x, 2.0 * mini.size.x);
+    assert_close(large.size.y, 2.0 * mini.size.y);
+    assert_close(large.size.x * ASPECT, large.size.y);
+    assert_close(mini.position.x - large.position.x, large.size.x * 0.75);
+    assert_close(mini.position.y - large.position.y, -large.size.y * 0.25);
+}
+
+#[test]
+fn scene_readback_preserves_panel_polygons_through_fit() {
+    let mut scene = scene(
+        &[
+            ("primary", &[("panel", "nanoleaf", "Panel 1", 0.5, 0.5)]),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let shape = ZoneShape::Custom {
+        vertices: vec![
+            NormalizedPosition::new(0.5, 0.0),
+            NormalizedPosition::new(1.0, 1.0),
+            NormalizedPosition::new(0.0, 1.0),
+        ],
+    };
+    scene.zones[0]
+        .layout
+        .as_mut()
+        .expect("member layout")
+        .placements[0]
+        .shape = Some(shape.clone());
+    let mut outputs = hypercolor_ui::api::zone_outputs(&scene.zones[0]);
+    assert_eq!(outputs[0].shape, Some(shape.clone()));
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
+    assert_eq!(outputs[0].shape, Some(shape));
+}
+
+fn hardware_panels() -> DeviceSummary {
+    device(
+        "nanoleaf",
+        serde_json::json!([
+            {"id":"one", "name":"Panel 1", "led_count":1, "topology":"point", "layout_hint":{
+                "placement":{"position":{"x":0.0,"y":0.0},"size":{"x":100.0,"y":100.0},"rotation":0.0},
+                "shape":{"shape_type":"custom","vertices":[{"x":0.0,"y":0.0},{"x":1.0,"y":0.0},{"x":1.0,"y":1.0},{"x":0.0,"y":1.0}]},
+                "topology":{"type":"custom","positions":[{"x":0.5,"y":0.5}]}
+            }},
+            {"id":"two", "name":"Panel 2", "led_count":1, "topology":"point", "layout_hint":{
+                "placement":{"position":{"x":75.0,"y":25.0},"size":{"x":50.0,"y":50.0},"rotation":0.0},
+                "shape":{"shape_type":"custom","vertices":[{"x":0.0,"y":0.0},{"x":1.0,"y":0.0},{"x":0.5,"y":1.0}]},
+                "topology":{"type":"custom","positions":[{"x":0.5,"y":0.33333334}]}
+            }},
+            {"id":"invalid", "name":"Panel 3", "led_count":1, "topology":"point", "layout_hint":{
+                "placement":{"position":{"x":125.0,"y":25.0},"size":{"x":0.0,"y":50.0},"rotation":0.0}
+            }}
+        ]),
+    )
+}
+
+fn drawn_bounds(outputs: &[Output]) -> (f32, f32, f32) {
+    let bounds: Vec<_> = outputs
+        .iter()
+        .map(|output| Footprint::of(output).bounds(ASPECT))
+        .collect();
+    let min_x = bounds.iter().map(|b| b.min_x).fold(f32::INFINITY, f32::min);
+    let min_y = bounds.iter().map(|b| b.min_y).fold(f32::INFINITY, f32::min);
+    let max_x = bounds
+        .iter()
+        .map(|b| b.max_x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let max_y = bounds
+        .iter()
+        .map(|b| b.max_y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    (
+        min_x.midpoint(max_x),
+        min_y.midpoint(max_y),
+        (max_x - min_x).hypot(max_y - min_y),
+    )
+}
+
+#[test]
+fn hardware_layout_reassembles_old_boxes_at_the_same_center_and_visual_span() {
+    let mut outputs = vec![
+        output("one", "nanoleaf", "Panel 1", 0.35, 0.4, 0.04, 0.04),
+        output("two", "nanoleaf", "Panel 2", 0.65, 0.4, 0.04, 0.04),
+    ];
+    let device = hardware_panels();
+    for (output, segment) in outputs.iter_mut().zip(&device.segments) {
+        let hint = segment.layout_hint.as_ref().expect("physical hint");
+        output.shape.clone_from(&hint.shape);
+        output.topology = hint.topology.clone().expect("physical topology");
+        output.scale = 1.4;
+        output.rotation = 0.7;
+    }
+    let before = drawn_bounds(&outputs);
+    assert!(restore_hardware_layout(
+        &mut outputs,
+        &hardware_panels(),
+        CANVAS
+    ));
+    let after = drawn_bounds(&outputs);
+    assert_close(after.0, before.0);
+    assert_close(after.1, before.1);
+    assert_close(after.2, before.2);
+    let (large, mini) = (&outputs[0], &outputs[1]);
+    assert_close(large.size.x, mini.size.x * 2.0);
+    assert_close(large.size.y, mini.size.y * 2.0);
+    assert_close(large.size.x * ASPECT, large.size.y);
+    assert_close(mini.position.x - large.position.x, large.size.x * 0.75);
+    assert_close(mini.position.y - large.position.y, large.size.y * 0.25);
+    assert_eq!(large.rotation, 0.0);
+    assert_eq!(large.scale, 1.0);
+    assert!(matches!(&large.shape, Some(ZoneShape::Custom {vertices}) if vertices.len() == 4));
+    assert!(matches!(&mini.shape, Some(ZoneShape::Custom {vertices}) if vertices.len() == 3));
+    assert!(matches!(&mini.topology, LedTopology::Custom {positions} if positions[0].y < 0.34));
+}
+
+#[test]
+fn hardware_layout_only_restores_assigned_valid_segments_in_this_zone() {
+    let other = output("other", "other", "Panel 1", 0.8, 0.7, 0.2, 0.1);
+    let invalid = output("bad", "nanoleaf", "Panel 3", 0.1, 0.1, 0.1, 0.1);
+    let mut outputs = vec![
+        output("mini", "nanoleaf", "Panel 2", 0.4, 0.6, 0.1, 0.1),
+        other.clone(),
+        invalid.clone(),
+    ];
+    assert!(restore_hardware_layout(
+        &mut outputs,
+        &hardware_panels(),
+        CANVAS
+    ));
+    assert_eq!(outputs.len(), 3, "unassigned Panel 1 is not added");
+    assert_position(Footprint::of(&outputs[0]), 0.4, 0.6);
+    assert_close(outputs[0].size.x * ASPECT, outputs[0].size.y);
+    assert_eq!(outputs[1], other);
+    assert_eq!(outputs[2], invalid);
+    let unchanged = outputs[1..].to_vec();
+    assert!(!restore_hardware_layout(
+        &mut outputs[1..],
+        &hardware_panels(),
+        CANVAS
+    ));
+    assert_eq!(outputs[1..], unchanged);
+}
+
+#[test]
+fn hardware_layout_keeps_restored_assembly_on_canvas_without_changing_ratios() {
+    let mut outputs = vec![
+        output("one", "nanoleaf", "Panel 1", 0.95, 0.95, 0.5, 0.5),
+        output("two", "nanoleaf", "Panel 2", 1.2, 0.95, 0.5, 0.5),
+    ];
+    assert!(restore_hardware_layout(
+        &mut outputs,
+        &hardware_panels(),
+        CANVAS
+    ));
+    for output in &outputs {
+        let bounds = Footprint::of(output).bounds(ASPECT);
+        assert!(bounds.min_x >= -EPSILON && bounds.max_x <= ASPECT + EPSILON);
+        assert!(bounds.min_y >= -EPSILON && bounds.max_y <= 1.0 + EPSILON);
+    }
+    assert_close(outputs[0].size.x, outputs[1].size.x * 2.0);
 }

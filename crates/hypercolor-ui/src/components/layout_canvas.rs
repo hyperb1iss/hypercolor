@@ -44,6 +44,7 @@ mod interaction;
 pub mod labels;
 mod overlays;
 pub mod picking;
+pub mod polygons;
 mod render;
 pub(crate) mod stacking;
 
@@ -114,6 +115,7 @@ fn zone_render_data(
             layout_utils::display_resolution(zone, devices),
         ),
         shape: zone.shape.clone(),
+        polygon_points: polygons::svg_points(zone.shape.as_ref()),
     })
 }
 
@@ -894,6 +896,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 .to_string()
                                         };
                                         let shape = zone_shape_style(&zd.shape);
+                                        let (border, bg, shadow) = if zd.polygon_points.is_some() {
+                                            ("border: none".to_owned(), "background: none".to_owned(), "box-shadow: none; pointer-events: none".to_owned())
+                                        } else {
+                                            (border, bg, shadow)
+                                        };
                                         let z = stacking_z.get();
                                         // A box not in focus while something else is recedes,
                                         // so a dense canvas reads around the selection/hover.
@@ -1107,6 +1114,27 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         swallow_next_click.set_value(false);
                                     }
                                 >
+                                    {move || zone_style.get().and_then(|zd| zd.polygon_points.map(|points| {
+                                        view! {
+                                            <svg
+                                                class="absolute inset-0 h-full w-full overflow-visible pointer-events-none"
+                                                viewBox="0 0 1 1"
+                                                preserveAspectRatio="none"
+                                                aria-hidden="true"
+                                            >
+                                                <polygon
+                                                    data-panel-outline="true"
+                                                    points=points
+                                                    vector-effect="non-scaling-stroke"
+                                                    stroke-linejoin="round"
+                                                    style=move || if is_hidden.get() { "pointer-events: none" } else { "pointer-events: all" }
+                                                    stroke=move || format!("rgba({}, {})", zd.primary_rgb, if is_selected.get() { 0.95 } else if is_hovered.get() { 0.75 } else { 0.55 })
+                                                    stroke-width=move || if is_selected.get() { "2" } else { "1.5" }
+                                                    fill=move || format!("rgba({}, {})", zd.secondary_rgb, if is_selected.get() { 0.14 } else { 0.07 })
+                                                />
+                                            </svg>
+                                        }
+                                    }))}
                                     {move || {
                                         zone_style.get().and_then(|zd| {
                                             ring_inner_style(
@@ -1158,7 +1186,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let zid_resize_nw = zid_resize_nw.clone();
                                         let zid_for_rotation = zid_for_resize.clone();
 
-                                        let handle_class = "absolute w-3 h-3 rounded-full border-2 transition-[box-shadow,transform] duration-150 \
+                                        let handle_class = "absolute w-3 h-3 rounded-full border-2 pointer-events-auto transition-[box-shadow,transform] duration-150 \
                                                            hover:scale-125 touch-grab";
 
                                         // Shared resize starter — builds a `DragRuntime` keyed to the
