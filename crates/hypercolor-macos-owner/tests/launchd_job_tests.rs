@@ -32,8 +32,18 @@ impl FixtureAgent {
         );
         let program = program
             .iter()
-            .flat_map(|argument| ["<string>", argument, "</string>"])
-            .collect::<String>();
+            .map(|argument| {
+                argument
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            })
+            .fold(String::new(), |mut program, argument| {
+                program.push_str("<string>");
+                program.push_str(&argument);
+                program.push_str("</string>");
+                program
+            });
         let plist = tempfile::Builder::new()
             .suffix(".plist")
             .tempfile()
@@ -200,11 +210,16 @@ fn launchd_gates_loading_on_the_disabled_state_and_never_a_loaded_job() {
 fn bootout_answers_before_the_job_leaves_and_launchd_drops_it_at_exit() {
     let scratch = tempfile::tempdir().expect("scratch directory");
     let ready = scratch.path().join("trapped");
-    let script = format!(
-        "trap 'sleep 1; exit 0' TERM; : > '{}'; while :; do sleep 1; done",
-        ready.display()
+    let agent = FixtureAgent::new(
+        "lingers",
+        &[
+            "/bin/sh",
+            "-c",
+            "trap 'sleep 1; exit 0' TERM; : > \"$1\"; while :; do sleep 1; done",
+            "lingers",
+            ready.to_str().expect("UTF-8 scratch path"),
+        ],
     );
-    let agent = FixtureAgent::new("lingers", &["/bin/sh", "-c", &script]);
     let bootstrap = agent.bootstrap();
     assert!(bootstrap.status.success(), "{bootstrap:?}");
     let pid = running_pid(agent.wait_for_job(|job| matches!(job, MacosLaunchdJob::Running { .. })));
