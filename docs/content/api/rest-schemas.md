@@ -1445,6 +1445,36 @@ How the UI or CLI should present a pairing flow.
 
 One of `physical_action`, `credentials_form`.
 
+<div class="schema-anchor" id="SegmentLayoutHint"></div>
+
+### SegmentLayoutHint
+
+Device-declared spatial hint used when auto-generating or repairing layouts.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `co_located` | boolean | no | Place this segment at the same center as sibling segments. |
+| `placement` | [`SegmentPlacement`](@/api/rest-schemas.md#SegmentPlacement) or null | no |  |
+| `shape` | [`ZoneShape`](@/api/rest-schemas.md#ZoneShape) or null | no |  |
+| `size` | [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) or null | no |  |
+| `topology` | [`LedTopology`](@/api/rest-schemas.md#LedTopology) or null | no |  |
+
+<div class="schema-anchor" id="SegmentPlacement"></div>
+
+### SegmentPlacement
+
+A segment's bounding box in the device's physical coordinate system.
+
+Coordinates use one isotropic unit across every sibling, with x pointing
+right and y pointing down. The position is the box center, not necessarily
+the lighting centroid; custom topology carries the actual sample position.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `position` | [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes |  |
+| `rotation` | number (float) | yes | Rotation in radians about the bounding-box center, matching [`Output`](@/api/rest-schemas.md#Output). |
+| `size` | [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes |  |
+
 <div class="schema-anchor" id="SegmentSummary"></div>
 
 ### SegmentSummary
@@ -1454,6 +1484,7 @@ One LED segment of a device (hardware topology, not scene render zones).
 | Field | Type | Required |
 | --- | --- | --- |
 | `id` | string | yes |
+| `layout_hint` | [`SegmentLayoutHint`](@/api/rest-schemas.md#SegmentLayoutHint) or null | no |
 | `led_count` | integer (int32) | yes |
 | `name` | string | yes |
 | `topology` | string | yes |
@@ -5084,6 +5115,7 @@ strict envelope around it still rejects unknown top-level fields.
 | `position` | [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes | Center on the canvas, normalized `[0.0, 1.0]`. |
 | `rotation` | number (float) | no |  |
 | `scale` | number (float) | no |  |
+| `shape` | [`ZoneShape`](@/api/rest-schemas.md#ZoneShape) or null | no | Read-only. |
 | `size` | [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes | Dimensions, normalized relative to canvas size. |
 | `topology` | [`LedTopology`](@/api/rest-schemas.md#LedTopology) | yes |  |
 
