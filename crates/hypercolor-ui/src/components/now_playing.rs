@@ -314,8 +314,7 @@ pub fn provide_now_playing() -> NowPlaying {
         });
     }
 
-    // The player acts on the zone the preview shows: the thumbnail's
-    // primary zone, or the zone a page's picker focused.
+    // The player and preview follow the zone selected anywhere in the app.
     let preview_zone = use_context::<PreviewZoneContext>();
     let shown_zone_effect = Memo::new(move |last_seen: Option<&Option<ZoneEffectState>>| {
         let zone_id = preview_zone.and_then(|preview| preview.zone.get());

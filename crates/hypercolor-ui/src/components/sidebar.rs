@@ -13,7 +13,7 @@ use crate::app::{EffectsContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::now_playing::{NowPlaying, use_now_playing};
-use crate::components::zone_now_playing::SidebarZoneRows;
+use crate::components::zone_now_playing::SidebarZoneSelector;
 use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
@@ -229,7 +229,7 @@ pub fn Sidebar() -> impl IntoView {
                         // Header — the effect itself titles the widget: alive
                         // dot, name, category, audio toggle in one row. A
                         // multi-zone scene has no singular effect, so the
-                        // header yields and the zone rows carry the names.
+                        // header yields to the zone selector.
                         {move || (!zones_ctx.multi_zone.get()).then(|| view! {
                             <div class="px-3 flex items-center gap-2 min-w-0">
                                 <div
@@ -279,9 +279,8 @@ pub fn Sidebar() -> impl IntoView {
                             })
                         }}
 
-                        // Multi-zone scenes get one honest row per zone
-                        // (capped, overflow links to Studio).
-                        {move || zones_ctx.multi_zone.get().then(|| view! { <SidebarZoneRows /> })}
+                        // The zone selector keeps the player compact as the scene grows.
+                        {move || zones_ctx.multi_zone.get().then(|| view! { <SidebarZoneSelector /> })}
 
                         // Player controls
                         <div class="px-3 flex items-center justify-between">
