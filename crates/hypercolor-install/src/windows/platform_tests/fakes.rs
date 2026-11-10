@@ -36,7 +36,10 @@ pub(super) struct Crash;
 pub(super) struct Boundaries {
     pub(super) passed: usize,
     pub(super) crash_at: Option<usize>,
+    /// Every boundary passed, in order: entry `n - 1` is boundary `n`.
     pub(super) log: Vec<String>,
+    /// How many boundaries had passed at each registry flush.
+    pub(super) flushes: Vec<usize>,
 }
 
 pub(super) type SharedBoundaries = Arc<Mutex<Boundaries>>;
@@ -111,10 +114,22 @@ pub(super) struct Broker {
     pub(super) process: Option<WindowsProcessId>,
 }
 
+/// What the registry's `SYSTEM` hive holds on disk: the update service's
+/// image and failure action, the broker's image and the firewall's rules.
+/// Windows writes the hive lazily, so a power cut leaves exactly this.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Hive {
+    bootstrap: Option<(BootstrapSlot, BootstrapSlot)>,
+    broker: Option<String>,
+    firewall: Option<WindowsFirewallObservation>,
+}
+
 /// What the fake machine holds.
 #[derive(Debug)]
 pub(super) struct World {
     pub(super) store_root: PathBuf,
+    /// The update service's registration as it reads now, and the two slot
+    /// files, which are durable as they are written.
     pub(super) bootstrap: Option<Bootstrap>,
     /// A bootstrap with this digest does not load.
     pub(super) broken_bootstrap: Option<String>,
@@ -155,6 +170,13 @@ pub(super) struct World {
     /// How many deadlines were spent waiting on processes that never quit.
     pub(super) waited_out_deadlines: usize,
     pub(super) probation_windows: Vec<Duration>,
+    /// The registry as the last flush left it on disk.
+    pub(super) on_disk: Hive,
+    /// The install journal the transaction under test writes.
+    pub(super) journal: PathBuf,
+    /// The journal's revision when the registry first changed after the
+    /// last flush, or `None` when everything it holds is on disk.
+    pub(super) unflushed_since: Option<u64>,
 }
 
 impl World {
@@ -200,15 +222,90 @@ impl World {
         Ok(process)
     }
 
-    /// Lose power: every process dies, nobody is signed in, and the service
-    /// control manager starts the broker from whatever its image names.
+    /// The registry as it reads now, flushed or not.
+    fn hive(&self) -> Hive {
+        Hive {
+            bootstrap: self
+                .bootstrap
+                .as_ref()
+                .map(|bootstrap| (bootstrap.image, bootstrap.fallback)),
+            broker: self.broker.as_ref().map(|broker| broker.image.clone()),
+            firewall: self.firewall.clone(),
+        }
+    }
+
+    /// The revision of the journal on disk, zero before the first one.
+    fn journal_revision(&self) -> u64 {
+        match fs::read(&self.journal) {
+            Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+                .expect("a journal")
+                .get("revision")
+                .and_then(serde_json::Value::as_u64)
+                .expect("a revision"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => panic!("read the journal: {error}"),
+        }
+    }
+
+    /// Fail the test the moment the journal has moved past a registry
+    /// change that is still only in memory: a power cut now would take the
+    /// change back while the journal says it happened.
+    pub(super) fn assert_journal_waits_for_the_disk(&self) {
+        if let Some(changed) = self.unflushed_since {
+            let journal = self.journal_revision();
+            assert!(
+                journal <= changed,
+                "the journal reached revision {journal} over a registry change made at \
+                 revision {changed} that never reached the disk"
+            );
+        }
+    }
+
+    /// The registry changed in memory.
+    fn registry_changed(&mut self) {
+        self.assert_journal_waits_for_the_disk();
+        if self.unflushed_since.is_none() {
+            self.unflushed_since = Some(self.journal_revision());
+        }
+    }
+
+    /// Write the registry to disk.
+    pub(super) fn flush_hive(&mut self) {
+        self.assert_journal_waits_for_the_disk();
+        self.on_disk = self.hive();
+        self.unflushed_since = None;
+    }
+
+    /// Lose power: every registry change since the last flush is gone,
+    /// every process dies, nobody is signed in, and the service control
+    /// manager starts the broker from whatever its image names on disk.
     pub(super) fn reboot(&mut self) {
+        self.assert_journal_waits_for_the_disk();
+        self.unflushed_since = None;
+        let Hive {
+            bootstrap,
+            broker,
+            firewall,
+        } = self.on_disk.clone();
+        match (&mut self.bootstrap, bootstrap) {
+            (Some(live), Some((image, fallback))) => {
+                live.image = image;
+                live.fallback = fallback;
+            }
+            (live, on_disk) => assert_eq!(
+                live.is_some(),
+                on_disk.is_some(),
+                "no transaction registers or removes the update service"
+            ),
+        }
+        self.broker = broker.map(|image| Broker {
+            image,
+            process: None,
+        });
+        self.firewall = firewall;
         self.apps.clear();
         self.daemons.clear();
         self.session = false;
-        if let Some(broker) = &mut self.broker {
-            broker.process = None;
-        }
         if self.broker.is_some() {
             drop(self.start_broker_process());
         }
@@ -263,7 +360,13 @@ struct FakeUpdateService<'a> {
 }
 
 impl FakeUpdateService<'_> {
-    fn change(&mut self, label: &str, change: impl FnOnce(&mut Bootstrap)) -> io::Result<()> {
+    /// One change, to the registry or, for a slot, to a file.
+    fn change(
+        &mut self,
+        label: &str,
+        in_registry: bool,
+        change: impl FnOnce(&mut Bootstrap),
+    ) -> io::Result<()> {
         boundary(self.boundaries, &format!("{label}:before"));
         {
             let mut world = lock(self.world);
@@ -272,6 +375,9 @@ impl FakeUpdateService<'_> {
                 .as_mut()
                 .ok_or_else(|| io::Error::other("no update service registered"))?;
             change(bootstrap);
+            if in_registry {
+                world.registry_changed();
+            }
         }
         boundary(self.boundaries, &format!("{label}:after"));
         Ok(())
@@ -280,16 +386,18 @@ impl FakeUpdateService<'_> {
 
 impl UpdateServiceConfig for FakeUpdateService<'_> {
     fn set_image(&mut self, slot: BootstrapSlot) -> io::Result<()> {
-        self.change("bootstrap-image", |bootstrap| bootstrap.image = slot)
+        self.change("bootstrap-image", true, |bootstrap| bootstrap.image = slot)
     }
 
     fn set_fallback(&mut self, slot: BootstrapSlot) -> io::Result<()> {
-        self.change("bootstrap-fallback", |bootstrap| bootstrap.fallback = slot)
+        self.change("bootstrap-fallback", true, |bootstrap| {
+            bootstrap.fallback = slot;
+        })
     }
 
     fn write_slot(&mut self, slot: BootstrapSlot, source: &Path) -> io::Result<()> {
         let digest = identity_of(source.to_str().expect("UTF-8 source")).sha256;
-        self.change("bootstrap-write", |bootstrap| match slot {
+        self.change("bootstrap-write", false, |bootstrap| match slot {
             BootstrapSlot::A => bootstrap.slot_a = digest,
             BootstrapSlot::B => bootstrap.slot_b = digest,
         })
@@ -307,9 +415,22 @@ impl UpdateServiceConfig for FakeUpdateService<'_> {
         Ok(())
     }
 
+    fn flush(&mut self) -> io::Result<()> {
+        flush(self.world, self.boundaries);
+        Ok(())
+    }
+
     fn start(&mut self) -> io::Result<()> {
         panic!("a transaction never starts the update service");
     }
+}
+
+/// Write the registry to disk, and record where it happened.
+fn flush(world: &SharedWorld, boundaries: &SharedBoundaries) {
+    lock(world).flush_hive();
+    let mut boundaries = lock(boundaries);
+    let passed = boundaries.passed;
+    boundaries.flushes.push(passed);
 }
 
 fn service_failure(source: &io::Error) -> InstallPlatformError {
@@ -411,6 +532,7 @@ impl WindowsInstallExecutor for FakeExecutor {
                 .as_mut()
                 .ok_or_else(|| fail("no broker registered"))?;
             broker.image = format!("\"{program}\"");
+            world.registry_changed();
         }
         boundary(&self.boundaries, "broker-switch:after");
         Ok(())
@@ -449,8 +571,14 @@ impl WindowsInstallExecutor for FakeExecutor {
                 WindowsFirewallRule::App => &mut firewall.app,
             };
             *held = program.map(str::to_owned);
+            world.registry_changed();
         }
         boundary(&self.boundaries, "firewall:after");
+        Ok(())
+    }
+
+    fn flush_registry(&mut self) -> Result<(), InstallPlatformError> {
+        flush(&self.world, &self.boundaries);
         Ok(())
     }
 

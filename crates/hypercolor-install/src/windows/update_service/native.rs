@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess};
+use hypercolor_windows_install_native::flush_system_hive;
 use windows_service::service::{
     Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl,
     ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState,
@@ -136,8 +137,10 @@ impl ScmUpdateService {
         Ok(registered)
     }
 
-    /// Stop the registered service and delete it. A service that is not
-    /// registered is already gone.
+    /// Stop the registered service and delete it, and write the deletion to
+    /// disk, since an installer removes the slots it named next. A service
+    /// that is not registered is already gone, but its deletion is flushed
+    /// all the same: a run killed between the two left it only in memory.
     ///
     /// # Errors
     ///
@@ -152,7 +155,7 @@ impl ScmUpdateService {
             Err(windows_service::Error::Winapi(error))
                 if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST) =>
             {
-                return Ok(());
+                return flush_system_hive();
             }
             Err(error) => return Err(service_error(error)),
         };
@@ -182,7 +185,11 @@ impl ScmUpdateService {
             }
             std::thread::sleep(STOP_PAUSE);
         }
-        service.delete().map_err(service_error)
+        service.delete().map_err(service_error)?;
+        // The service manager removes the registration once the last handle
+        // to it closes.
+        drop(service);
+        flush_system_hive()
     }
 
     /// The service handle, for a host that sets what this safe surface does
@@ -242,6 +249,10 @@ impl UpdateServiceConfig for ScmUpdateService {
                 ]),
             })
             .map_err(service_error)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        flush_system_hive()
     }
 
     fn write_slot(&mut self, slot: BootstrapSlot, source: &Path) -> io::Result<()> {
