@@ -379,3 +379,5 @@ mod ensure_tests;
 mod enumeration_tests;
 #[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
 mod tests;
+#[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
+mod tree_removal_tests;

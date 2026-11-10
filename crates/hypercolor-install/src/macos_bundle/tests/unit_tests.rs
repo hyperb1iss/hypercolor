@@ -250,6 +250,42 @@ fn a_unit_root_turns_read_only_only_after_publication_and_a_crash_between_is_fin
 }
 
 #[test]
+fn collection_removes_an_unreferenced_read_only_unit_and_keeps_the_retained_one() {
+    // Collection opens the store through its whole ancestry, which a sticky
+    // temporary directory would fail.
+    let store_root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("store root");
+    let store = InstallStore::new(store_root.path().join("releases"), 64 * 1024);
+    let lock = store.acquire_lock().expect("lock");
+    let stage = |tree: UnitTree| {
+        let source = tempfile::tempdir().expect("source");
+        let id = tree.write(source.path());
+        stage_macos_bundle_unit(&store, &lock, source.path(), &id).expect("stage");
+        unlock(source.path());
+        id
+    };
+    let adopted = stage(UnitTree::new("adopted", "adopted", "1.0.0"));
+    let retained = stage(UnitTree::new("retained", "retained", "1.1.0"));
+    let permissions = |id| {
+        fs::metadata(store.unit_path(id))
+            .expect("unit root")
+            .permissions()
+    };
+    assert_eq!(permissions(&adopted).mode() & 0o777, 0o555);
+
+    // macOS 15 refuses to rename a directory its owner cannot write, so a
+    // unit's read-only root must regain owner write before its tombstone.
+    let collection = store
+        .collect_units(&lock, std::slice::from_ref(&retained))
+        .expect("collect");
+    assert_eq!(collection.removed_units, vec![adopted.clone()]);
+    assert!(collection.refused.is_empty(), "{:?}", collection.refused);
+    assert!(!store.unit_path(&adopted).exists());
+    assert_eq!(permissions(&retained).mode() & 0o777, 0o555);
+    crate::retain_macos_bundle_unit(&store, &lock, &retained).expect("the retained unit");
+    unlock(store_root.path());
+}
+
+#[test]
 fn a_bundle_config_refuses_a_translocated_bundle_and_an_unbounded_window() {
     let config = |installed_bundle: &str, probation| crate::macos_bundle::MacosBundleConfig {
         installed_bundle: std::path::PathBuf::from(installed_bundle),
