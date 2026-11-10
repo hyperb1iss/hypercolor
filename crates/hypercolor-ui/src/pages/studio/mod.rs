@@ -255,6 +255,25 @@ fn StudioWorkspace() -> impl IntoView {
         selected_surface_id.set(next);
     });
 
+    // Picks outside Studio also select its tab. Only a new focus moves
+    // the tab, so scene refreshes preserve an open Screen.
+    Effect::new(move |_| {
+        let Some(focused) = zones_ctx.focused_zone.get() else {
+            return;
+        };
+        let is_led_zone = active_scene.with_untracked(|scene| {
+            scene.as_ref().is_some_and(|scene| {
+                scene
+                    .zones
+                    .iter()
+                    .any(|zone| zone.id.to_string() == focused && zone.role != ZoneRole::Display)
+            })
+        });
+        if is_led_zone && selected_surface_id.get_untracked().as_ref() != Some(&focused) {
+            selected_surface_id.set(Some(focused));
+        }
+    });
+
     // Studio's selected LED zone is the app's target zone, so an apply
     // from anywhere lands in the zone being composed. A Screen is not a
     // target and leaves the focus alone; a focus left over from another

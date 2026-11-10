@@ -4,7 +4,7 @@ use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::events::document as browser_document;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_router::hooks::{use_location, use_navigate};
+use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
 
 use hypercolor_types::scene::SceneMutationMode;
@@ -49,9 +49,8 @@ fn focus_page_search() {
 pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
 
-    // One zone per preview: the page's focused zone where it has a zone
-    // picker, the primary zone everywhere else.
-    crate::preview_zone::follow_preview_zone(use_location().pathname);
+    // The sidebar and page previews follow the same selected zone.
+    crate::preview_zone::follow_preview_zone();
     // The player state the sidebar and the phone strip share.
     provide_now_playing();
     let phone = crate::viewport::is_phone_layout();

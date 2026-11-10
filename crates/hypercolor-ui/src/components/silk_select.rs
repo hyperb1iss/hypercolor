@@ -82,6 +82,12 @@ pub fn SilkSelect(
     /// reads in full.
     #[prop(optional)]
     fit_options: bool,
+    /// Accessible name when the trigger contains richer content than its label.
+    #[prop(into, optional)]
+    aria_label: MaybeProp<String>,
+    /// Optional trigger content; option labels still drive the dropdown.
+    #[prop(optional)]
+    children: Option<Children>,
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let highlighted = RwSignal::new(None::<usize>);
@@ -158,6 +164,7 @@ pub fn SilkSelect(
         <div class=wrapper_class>
             <button
                 type="button"
+                role="combobox"
                 node_ref=trigger_ref
                 class=trigger_class
                 class=("rounded-t-lg", move || open.get())
@@ -167,9 +174,10 @@ pub fn SilkSelect(
                 class=("cursor-not-allowed", move || disabled.get().unwrap_or(false))
                 class=("opacity-60", move || disabled.get().unwrap_or(false))
                 disabled=move || disabled.get().unwrap_or(false)
+                aria-label=move || aria_label.get()
                 aria-haspopup="listbox"
                 aria-expanded=move || open.get().to_string()
-                aria-controls=move || listbox_id_attr.get_value()
+                aria-controls=move || open.get().then(|| listbox_id_attr.get_value())
                 aria-activedescendant=move || {
                     (open.get())
                         .then(|| highlighted.get().map(option_id))
@@ -228,7 +236,10 @@ pub fn SilkSelect(
                     class=label_class
                     class=("text-fg-tertiary", move || !has_value.get())
                 >
-                    {move || display_label.get()}
+                    {match children {
+                        Some(children) => children().into_any(),
+                        None => (move || display_label.get()).into_any(),
+                    }}
                 </span>
                 <svg
                     class="w-3 h-3 shrink-0 transition-transform duration-200"
@@ -262,6 +273,7 @@ pub fn SilkSelect(
                                    overflow-y-auto scrollbar-dropdown"
                             id=move || listbox_id_attr.get_value()
                             role="listbox"
+                            aria-label=move || aria_label.get()
                             style=move || {
                                 let trigger = trigger_ref.get();
                                 let style = dropdown_panel_style(trigger.clone());
