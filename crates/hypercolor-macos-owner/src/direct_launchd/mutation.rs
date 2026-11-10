@@ -13,6 +13,8 @@ use super::{
 use super::{MacosDirectLaunchdInspector, MacosDirectLaunchdState, exact_published_proof};
 #[cfg(any(test, target_os = "macos"))]
 use crate::MacosOwnerStore;
+#[cfg(any(test, target_os = "macos"))]
+use crate::launchd_adapter::ExitWatch;
 use crate::{
     MAX_MACOS_EXECUTABLE_PATH_BYTES, MacosOwnerExecutionError, MacosOwnerStoreError,
     validate_bounded_identity_text,
@@ -333,13 +335,6 @@ trait LaunchctlCommandBoundary {
         source: &MacosDirectLaunchdBootstrapSource,
         deadline: Instant,
     ) -> Result<bool, MacosOwnerExecutionError>;
-}
-
-/// A watch on one process's exit, armed before anything can end it.
-#[cfg(any(test, target_os = "macos"))]
-trait ExitWatch {
-    /// Whether the watched process exited by `deadline`.
-    fn exited_by(&mut self, deadline: Instant) -> Result<bool, MacosOwnerExecutionError>;
 }
 
 #[cfg(any(test, target_os = "macos"))]

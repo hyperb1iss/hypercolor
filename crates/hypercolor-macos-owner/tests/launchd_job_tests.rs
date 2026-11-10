@@ -8,8 +8,8 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use hypercolor_macos_owner::{
-    MacosLaunchdJob, ProcessExitWatch, parse_launchd_autostart_state, parse_launchd_job,
-    wait_for_process_exit_within,
+    LaunchdAdapter, MacosLaunchdJob, ProcessExitWatch, parse_launchd_autostart_state,
+    parse_launchd_job, wait_for_process_exit_within,
 };
 
 struct FixtureAgent {
@@ -209,28 +209,7 @@ fn launchd_gates_loading_on_the_disabled_state_and_never_a_loaded_job() {
 #[test]
 fn bootout_answers_before_the_job_leaves_and_launchd_drops_it_at_exit() {
     let scratch = tempfile::tempdir().expect("scratch directory");
-    let ready = scratch.path().join("trapped");
-    let agent = FixtureAgent::new(
-        "lingers",
-        &[
-            "/bin/sh",
-            "-c",
-            "trap 'sleep 1; exit 0' TERM; : > \"$1\"; while :; do sleep 1; done",
-            "lingers",
-            ready.to_str().expect("UTF-8 scratch path"),
-        ],
-    );
-    let bootstrap = agent.bootstrap();
-    assert!(bootstrap.status.success(), "{bootstrap:?}");
-    let pid = running_pid(agent.wait_for_job(|job| matches!(job, MacosLaunchdJob::Running { .. })));
-    let trapped = Instant::now() + Duration::from_secs(10);
-    while !ready.exists() {
-        assert!(
-            Instant::now() < trapped,
-            "the agent never installed its trap"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let (agent, pid) = lingering_agent("lingers", scratch.path());
     let mut exit = ProcessExitWatch::arm(pid).expect("arm the exit watch");
 
     let target = agent.target();
@@ -252,6 +231,55 @@ fn bootout_answers_before_the_job_leaves_and_launchd_drops_it_at_exit() {
         MacosLaunchdJob::NotLoaded,
         "launchd drops the job with its process"
     );
+}
+
+/// The adapter's bootout returns only once launchd has dropped the job, so
+/// the same label loads again at once instead of colliding with a job
+/// launchd still holds.
+#[test]
+fn adapter_bootout_returns_once_the_job_has_left_so_it_loads_again() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let (agent, pid) = lingering_agent("adapter", scratch.path());
+    let adapter = LaunchdAdapter::with_uid(agent.uid.to_string());
+
+    adapter
+        .bootout(&adapter.target(&agent.label))
+        .expect("the bootout proves the job gone");
+    assert_eq!(agent.job(), MacosLaunchdJob::NotLoaded);
+    assert!(
+        wait_for_process_exit_within(pid, Duration::ZERO).expect("watch"),
+        "the process is gone when the bootout returns"
+    );
+    let bootstrap = agent.bootstrap();
+    assert!(bootstrap.status.success(), "{bootstrap:?}");
+}
+
+/// A running agent whose process takes a second to leave after SIGTERM,
+/// with its trap installed, and that process's pid.
+fn lingering_agent(role: &str, scratch: &Path) -> (FixtureAgent, u32) {
+    let ready = scratch.join("trapped");
+    let agent = FixtureAgent::new(
+        role,
+        &[
+            "/bin/sh",
+            "-c",
+            "trap 'sleep 1; exit 0' TERM; : > \"$1\"; while :; do sleep 1; done",
+            role,
+            ready.to_str().expect("UTF-8 scratch path"),
+        ],
+    );
+    let bootstrap = agent.bootstrap();
+    assert!(bootstrap.status.success(), "{bootstrap:?}");
+    let pid = running_pid(agent.wait_for_job(|job| matches!(job, MacosLaunchdJob::Running { .. })));
+    let trapped = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() {
+        assert!(
+            Instant::now() < trapped,
+            "the agent never installed its trap"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    (agent, pid)
 }
 
 /// A process this test binary starts from inside a fixture bundle sits here.
