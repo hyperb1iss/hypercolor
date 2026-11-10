@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    DeadlineDirectLaunchdInspector, ExitWatch, LaunchctlAction, LaunchctlCommandBoundary,
+    DeadlineDirectLaunchdInspector, LaunchctlAction, LaunchctlCommandBoundary,
     MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdBootstrapSource,
     MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator, MutationController,
     SubmittedCommand,
@@ -78,12 +78,6 @@ impl NativeMacosDirectLaunchdMutator {
 
 #[derive(Debug, Clone, Copy)]
 struct DeadlineNativeMacosDirectLaunchdInspector;
-
-impl ExitWatch for ProcessExitWatch {
-    fn exited_by(&mut self, deadline: Instant) -> Result<bool, MacosOwnerExecutionError> {
-        self.wait_until(deadline)
-    }
-}
 
 impl DeadlineDirectLaunchdInspector for DeadlineNativeMacosDirectLaunchdInspector {
     type ExitWatch = ProcessExitWatch;

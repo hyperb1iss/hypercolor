@@ -13,14 +13,85 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
+#[cfg(any(test, target_os = "macos"))]
+use std::time::Instant;
 
 use crate::MacosOwnerExecutionError;
+#[cfg(any(test, target_os = "macos"))]
+use crate::{MacosLaunchdJob, parse_launchd_job};
 
 /// The launchctl binary every adapter call executes.
 pub const LAUNCHCTL_PATH: &str = "/bin/launchctl";
 
 /// Upper bound on captured launchctl output.
 const MAX_LAUNCHCTL_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// Bound on a bootout's wait for the job's process. launchd kills a job at
+/// its own exit timeout (5 s for these agents), so this only bounds a
+/// launchd that never does.
+#[cfg(target_os = "macos")]
+const BOOTOUT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A watch on one process's exit, armed before anything can end it.
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) trait ExitWatch {
+    /// Whether the watched process exited by `deadline`.
+    fn exited_by(&mut self, deadline: Instant) -> Result<bool, MacosOwnerExecutionError>;
+}
+
+#[cfg(target_os = "macos")]
+impl ExitWatch for crate::ProcessExitWatch {
+    fn exited_by(&mut self, deadline: Instant) -> Result<bool, MacosOwnerExecutionError> {
+        self.wait_until(deadline)
+    }
+}
+
+/// One finished launchctl call.
+#[cfg(any(test, target_os = "macos"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaunchctlReply {
+    status: Option<i32>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// What launchd and the kernel answer the adapter's proofs.
+#[cfg(any(test, target_os = "macos"))]
+trait LaunchdHost {
+    type ExitWatch: ExitWatch;
+
+    fn launchctl(&mut self, args: &[&str]) -> Result<LaunchctlReply, MacosOwnerExecutionError>;
+
+    /// Arm a watch on the exit of process `pid`. A process already gone has
+    /// exited.
+    fn watch_exit(&mut self, pid: u32) -> Result<Self::ExitWatch, MacosOwnerExecutionError>;
+}
+
+#[cfg(target_os = "macos")]
+struct NativeLaunchdHost;
+
+#[cfg(target_os = "macos")]
+impl LaunchdHost for NativeLaunchdHost {
+    type ExitWatch = crate::ProcessExitWatch;
+
+    fn launchctl(&mut self, args: &[&str]) -> Result<LaunchctlReply, MacosOwnerExecutionError> {
+        let output = launchctl_output(args)?;
+        Ok(LaunchctlReply {
+            status: output.status.code(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+
+    fn watch_exit(
+        &mut self,
+        pid: u32,
+    ) -> Result<crate::ProcessExitWatch, MacosOwnerExecutionError> {
+        crate::ProcessExitWatch::arm(pid)
+    }
+}
 
 /// A launchd agent label inside one user's gui domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,16 +215,19 @@ impl LaunchdAdapter {
     }
 
     /// Unload the agent from the gui domain (`launchctl bootout`), stopping
-    /// it if it runs. A target that is not loaded is not an error.
+    /// it if it runs, and return once launchd no longer holds it. A target
+    /// that is not loaded is not an error.
     ///
     /// # Errors
     ///
-    /// Returns an error when launchctl fails for a loaded agent.
+    /// Returns an error when launchctl refuses the bootout, or when the job
+    /// is still loaded once its process has exited or the wait ran out.
+    #[cfg(target_os = "macos")]
     pub fn bootout(&self, target: &LaunchdTarget) -> Result<(), MacosOwnerExecutionError> {
-        if !self.is_loaded(target)? {
-            return Ok(());
-        }
-        run_launchctl(&["bootout", &target.service()])
+        let deadline = Instant::now()
+            .checked_add(BOOTOUT_TIMEOUT)
+            .ok_or_else(|| MacosOwnerExecutionError::new("bootout deadline overflowed"))?;
+        bootout_until_gone(&mut NativeLaunchdHost, target, deadline)
     }
 
     /// Start a loaded agent now (`launchctl kickstart`).
@@ -248,6 +322,82 @@ impl LaunchdAdapter {
     }
 }
 
+/// Unload `target` and prove launchd dropped it by `deadline`.
+///
+/// launchctl answers a bootout once launchd has signalled the job, which
+/// runs on until it exits or launchd kills it at its exit timeout, and
+/// launchd drops the label when that process ends. So the proof arms a watch
+/// on the job's process before submitting, waits on its exit, and only then
+/// asks launchd. A loaded job with no process leaves with the bootout itself.
+#[cfg(any(test, target_os = "macos"))]
+fn bootout_until_gone(
+    host: &mut impl LaunchdHost,
+    target: &LaunchdTarget,
+    deadline: Instant,
+) -> Result<(), MacosOwnerExecutionError> {
+    let mut exit = match launchd_job(host, target)? {
+        MacosLaunchdJob::NotLoaded => return Ok(()),
+        MacosLaunchdJob::Idle => None,
+        MacosLaunchdJob::Running { pid } => Some(host.watch_exit(pid)?),
+    };
+    let service = target.service();
+    let reply = host.launchctl(&["bootout", &service])?;
+    if reply.status != Some(0) {
+        // `Boot-out failed: 3: No such process`: it left on its own.
+        if launchd_job(host, target)? == MacosLaunchdJob::NotLoaded {
+            return Ok(());
+        }
+        return Err(launchctl_failure(&["bootout", &service], &reply));
+    }
+    if let Some(exit) = exit.as_mut()
+        && !exit.exited_by(deadline)?
+    {
+        return Err(MacosOwnerExecutionError::new(format!(
+            "{} did not exit before its bootout deadline",
+            target.label()
+        )));
+    }
+    match launchd_job(host, target)? {
+        MacosLaunchdJob::NotLoaded => Ok(()),
+        job => Err(MacosOwnerExecutionError::new(format!(
+            "launchd still holds {} after its bootout: {job:?}",
+            target.label()
+        ))),
+    }
+}
+
+/// What launchd holds for `target`, read from exact `launchctl print` output.
+#[cfg(any(test, target_os = "macos"))]
+fn launchd_job(
+    host: &mut impl LaunchdHost,
+    target: &LaunchdTarget,
+) -> Result<MacosLaunchdJob, MacosOwnerExecutionError> {
+    let uid = target
+        .uid
+        .parse()
+        .map_err(|_| MacosOwnerExecutionError::new("launchd user id is not numeric"))?;
+    let reply = host.launchctl(&["print", &target.service()])?;
+    parse_launchd_job(
+        target.label(),
+        uid,
+        reply.status,
+        &reply.stdout,
+        &reply.stderr,
+    )
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn launchctl_failure(args: &[&str], reply: &LaunchctlReply) -> MacosOwnerExecutionError {
+    let mut stderr = String::from_utf8_lossy(&reply.stderr).into_owned();
+    stderr.truncate(4_096);
+    MacosOwnerExecutionError::new(format!(
+        "launchctl {} failed with status {:?}: {}",
+        args.join(" "),
+        reply.status,
+        stderr.trim()
+    ))
+}
+
 /// Resolve the agent plist path for a target inside a LaunchAgents dir.
 #[must_use]
 pub fn launch_agent_plist(launch_agents: &Path, target: &LaunchdTarget) -> PathBuf {
@@ -281,6 +431,8 @@ fn bounded_text(bytes: &[u8]) -> String {
 fn launchctl_output(args: &[&str]) -> Result<Output, MacosOwnerExecutionError> {
     Command::new(LAUNCHCTL_PATH)
         .args(args)
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
         .output()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))
 }
@@ -299,3 +451,6 @@ fn run_launchctl(args: &[&str]) -> Result<(), MacosOwnerExecutionError> {
         stderr.trim()
     )))
 }
+
+#[cfg(test)]
+mod tests;
