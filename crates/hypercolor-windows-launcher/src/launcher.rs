@@ -1,5 +1,11 @@
 //! The launcher: read the journal before the pointer, run the app it
 //! names, and get out of the way.
+//!
+//! Sign-in runs it as well, and after a power cut that is usually before
+//! the update service's delayed start has run recovery. A transaction whose
+//! candidate already proved itself has only its commit record left, so the
+//! launcher starts the candidate there: a prior started then would keep
+//! running under that commit.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -7,7 +13,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 use hypercolor_install::windows::{
-    ReleaseSelectionError, WINDOWS_APP_PROGRAM, WindowsInstallLayout, select_release,
+    ReleaseSelectionError, WINDOWS_APP_PROGRAM, WindowsInstallLayout, select_app_release,
 };
 use hypercolor_install::{InstallStore, MAX_MANAGED_INSTALL_JOURNAL_BYTES};
 
@@ -61,6 +67,6 @@ fn app_program() -> Result<PathBuf, LaunchFailure> {
         MAX_MANAGED_INSTALL_JOURNAL_BYTES,
     )?;
     let mut records = store.release_records()?;
-    let unit = select_release(&mut records).map_err(LaunchFailure::Selection)?;
+    let unit = select_app_release(&mut records).map_err(LaunchFailure::Selection)?;
     Ok(records.unit_program(&unit, WINDOWS_APP_PROGRAM)?)
 }
