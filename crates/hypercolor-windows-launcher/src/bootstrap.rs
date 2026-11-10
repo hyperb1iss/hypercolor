@@ -21,9 +21,10 @@ use std::time::Duration;
 
 use hypercolor_install::windows::{
     BootstrapCommand, BootstrapSlot, EXIT_NO_ACTIVATOR, INHERITED_PIPE_VARIABLE, ScmUpdateService,
-    UPDATE_SERVICE_NAME, UpdatePipeName, UpdateServiceExit, UpdateServiceHost, UpdateServiceMode,
-    WINDOWS_CLI_PROGRAM, WindowsInstallLayout, WindowsReleaseRecords, recover_fallback,
-    run_update_service, select_release, session_logon_notice, update_service_sddl,
+    UPDATE_SERVICE_NAME, UpdatePipeName, UpdateServiceConfig as _, UpdateServiceExit,
+    UpdateServiceHost, UpdateServiceMode, WINDOWS_CLI_PROGRAM, WindowsInstallLayout,
+    WindowsReleaseRecords, recover_fallback, run_update_service, select_release,
+    session_logon_notice, update_service_sddl,
 };
 use hypercolor_install::{InstallStore, MAX_MANAGED_INSTALL_JOURNAL_BYTES};
 use hypercolor_platform_fs::{WindowsSid, windows_create_pipe_server};
@@ -83,16 +84,18 @@ fn fall_back() -> io::Result<()> {
 }
 
 /// Register the service on this slot, with the other retained, for the user
-/// the installer recorded.
+/// the installer recorded, and write the registration to disk: the
+/// installer reports the update service installed once this exits.
 fn register() -> Result<(), Box<dyn Error>> {
     let (layout, slot) = own_layout()?;
     let records = release_records(&layout)?;
     let installation = records.installation()?;
-    let service = ScmUpdateService::register(&layout, slot, slot.other())?;
+    let mut service = ScmUpdateService::register(&layout, slot, slot.other())?;
     set_service_dacl(
         service.service(),
         &update_service_sddl(installation.user_sid()),
     )?;
+    service.flush()?;
     Ok(())
 }
 

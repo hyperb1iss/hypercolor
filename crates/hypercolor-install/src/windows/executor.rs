@@ -9,9 +9,13 @@ use crate::{InstallPlatformError, LocalHttpResponse, UnitId, UnitRecord};
 
 /// What a Windows installation does to the machine and asks of it.
 ///
-/// Every effect is one exact step, durable on return, and idempotent from
-/// the observation the platform matched first. The platform decides which
-/// step to take and what an observation means.
+/// Every effect is one exact step, idempotent from the observation the
+/// platform matched first. A file it writes is durable on return. The
+/// update service's and the broker's registrations and the firewall's rules
+/// live in the registry's `SYSTEM` hive, which Windows writes to disk
+/// lazily, so a change there is durable only once
+/// [`flush_registry`](Self::flush_registry) has returned after it. The
+/// platform decides which step to take and what an observation means.
 pub trait WindowsInstallExecutor {
     /// The unit `active.json` names.
     ///
@@ -100,6 +104,15 @@ pub trait WindowsInstallExecutor {
         rule: WindowsFirewallRule,
         program: Option<&str>,
     ) -> Result<(), InstallPlatformError>;
+
+    /// Write every change made in the registry's `SYSTEM` hive to disk, and
+    /// return once it is there. Until then a power cut can take back a
+    /// service's registration or a firewall rule that already reads as
+    /// changed.
+    ///
+    /// # Errors
+    /// Returns an error when the hive cannot be written.
+    fn flush_registry(&mut self) -> Result<(), InstallPlatformError>;
 
     /// Every process running under the app's or the daemon's file name,
     /// from wherever it runs.

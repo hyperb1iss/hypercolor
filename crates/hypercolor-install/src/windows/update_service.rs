@@ -240,7 +240,12 @@ pub fn update_service_sddl(user_sid: &str) -> String {
     )
 }
 
-/// The service's registration, one durable change at a time.
+/// The service's registration, one change at a time.
+///
+/// The service control manager keeps `ImagePath` and the failure actions in
+/// the registry, which Windows writes to disk lazily: a power cut can take
+/// back either change until [`flush`](Self::flush) returns. A slot's file
+/// is durable on return.
 pub trait UpdateServiceConfig {
     /// Point `ImagePath` at `slot`.
     ///
@@ -255,6 +260,13 @@ pub trait UpdateServiceConfig {
     ///
     /// Returns the host's error when the change is refused.
     fn set_fallback(&mut self, slot: BootstrapSlot) -> io::Result<()>;
+
+    /// Write every registration change made so far to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's error when the registry cannot be written.
+    fn flush(&mut self) -> io::Result<()>;
 
     /// Durably replace the bootstrap in `slot` with the one at `source`.
     ///
@@ -283,8 +295,10 @@ pub trait UpdateServiceConfig {
 /// back to this slot and start it. No recovery happens in this process, so
 /// recovery always runs as the registered service, under its supervision.
 ///
-/// Killed before the start, this leaves the service stopped on its last
-/// image, and the next boot's auto-start fails into this same fallback.
+/// The registration is on disk before the start, so the recovery that start
+/// runs never journals under an image a power cut could take back. Killed
+/// before the start, this leaves the service stopped on its last image, and
+/// the next boot's auto-start fails into this same fallback.
 ///
 /// # Errors
 ///
@@ -295,6 +309,7 @@ pub fn recover_fallback<S: UpdateServiceConfig>(
 ) -> io::Result<()> {
     service.set_image(own)?;
     service.set_fallback(own)?;
+    service.flush()?;
     service.start()
 }
 
@@ -303,11 +318,13 @@ pub fn recover_fallback<S: UpdateServiceConfig>(
 /// transaction began, recorded so a resumed step cannot mistake the new
 /// slot for the proven one.
 ///
-/// Each step is durable before the next, so at every crash point the
-/// failure action names the proven slot, and the slot it names is never
-/// the one being written. `ImagePath` moves last and only to a bootstrap
-/// that loaded: the service manager runs no failure action for an image
-/// that never reaches it, so nothing could recover from naming one.
+/// The failure action reaches the disk before the slot it used to name is
+/// written, so at every crash and power cut the failure action names the
+/// proven slot, and the slot it names is never the one being written.
+/// `ImagePath` moves last and only to a bootstrap that loaded: the service
+/// manager runs no failure action for an image that never reaches it, so
+/// nothing could recover from naming one. That last change reaches the disk
+/// when the caller next flushes, before anything records it.
 ///
 /// # Errors
 ///
@@ -319,6 +336,7 @@ pub fn install_bootstrap<S: UpdateServiceConfig>(
 ) -> io::Result<()> {
     let next = proven.other();
     service.set_fallback(proven)?;
+    service.flush()?;
     service.write_slot(next, source)?;
     service.probe_slot(next)?;
     service.set_image(next)

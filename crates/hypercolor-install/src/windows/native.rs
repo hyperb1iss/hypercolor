@@ -15,9 +15,9 @@ use hypercolor_platform_fs::{
     WindowsDirectory, WindowsDirectoryAccess, windows_named_pipe_server_process_id,
 };
 use hypercolor_windows_install_native::{
-    FirewallRule, ProcessId, RunningProcess, firewall_rule, process, process_with_pid,
-    processes_named, set_firewall_rule_program, terminate_processes, wait_for_any_exit,
-    wait_for_every_exit,
+    FirewallRule, ProcessId, RunningProcess, firewall_rule, flush_system_hive, process,
+    process_with_pid, processes_named, set_firewall_rule_program, terminate_processes,
+    wait_for_any_exit, wait_for_every_exit,
 };
 use hypercolor_windows_pawnio::{BROKER_PIPE_NAME, BROKER_SERVICE_NAME};
 use sha2::{Digest as _, Sha256};
@@ -435,6 +435,10 @@ impl WindowsInstallExecutor for WindowsNativeExecutor {
     ) -> Result<(), InstallPlatformError> {
         set_firewall_rule_program(rule.name(), program)
             .map_err(|source| io_error("change a firewall rule", source))
+    }
+
+    fn flush_registry(&mut self) -> Result<(), InstallPlatformError> {
+        flush_system_hive().map_err(|source| io_error("write the SYSTEM hive to disk", source))
     }
 
     fn observe_runtime(&mut self) -> Result<WindowsRuntimeObservation, InstallPlatformError> {

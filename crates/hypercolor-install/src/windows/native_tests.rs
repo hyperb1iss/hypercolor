@@ -388,3 +388,12 @@ fn the_firewall_answers_without_administrator_rights() {
     let mut executor = fixture.executor(nowhere());
     executor.observe_firewall().expect("ask the firewall");
 }
+
+#[test]
+fn the_registry_flushes_through_the_executor() {
+    let fixture = Fixture::new();
+    let mut executor = fixture.executor(nowhere());
+    executor
+        .flush_registry()
+        .expect("write the SYSTEM hive to disk");
+}

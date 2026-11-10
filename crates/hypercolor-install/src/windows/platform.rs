@@ -140,12 +140,23 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> WindowsInstallPlatform<E,
         })
     }
 
+    /// The layout, once what it reads is on disk.
+    ///
+    /// The journal only ever records a layout this platform observed: the
+    /// baseline it prepares from, the state after each step, and a step a
+    /// killed run had already taken, which recovery then skips. Windows
+    /// writes registry changes to disk lazily, so a layout read from memory
+    /// could vanish in a power cut after the journal recorded it, and
+    /// recovery would find neither side of its step. Flushing after every
+    /// read covers each of those records with one rule.
     fn observe_layout(&mut self) -> Result<WindowsLayoutObservation, InstallPlatformError> {
-        Ok(WindowsLayoutObservation {
+        let layout = WindowsLayoutObservation {
             bootstrap: self.executor.observe_bootstrap()?,
             broker: self.executor.observe_broker()?,
             firewall: self.executor.observe_firewall()?,
-        })
+        };
+        self.executor.flush_registry()?;
+        Ok(layout)
     }
 
     /// The coordinator's coarse view: the layout and the launcher follow

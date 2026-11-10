@@ -227,11 +227,15 @@ fn the_recorded_user_may_start_and_watch_the_service_and_nothing_more() {
     );
 }
 
-/// A registration that records its durable state, and fails on a step.
+/// A registration that records its state, and fails on a step. Its image
+/// and failure action live in a registry that reaches the disk only when
+/// flushed; its slots are files, on disk as they are written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FakeRegistration {
     image: BootstrapSlot,
     fallback: BootstrapSlot,
+    /// The image and failure action as the last flush wrote them.
+    on_disk: (BootstrapSlot, BootstrapSlot),
     slots: [&'static str; 2],
     written: Vec<(BootstrapSlot, PathBuf)>,
     started: u32,
@@ -244,12 +248,18 @@ impl FakeRegistration {
         Self {
             image: BootstrapSlot::A,
             fallback: BootstrapSlot::B,
+            on_disk: (BootstrapSlot::A, BootstrapSlot::B),
             slots: ["proven", "retained"],
             written: Vec::new(),
             started: 0,
             steps: Vec::new(),
             crash_at: None,
         }
+    }
+
+    /// Lose power: what the registry never flushed is gone.
+    fn power_cut(&mut self) {
+        (self.image, self.fallback) = self.on_disk;
     }
 
     fn crash(&mut self, step: &'static str) -> io::Result<()> {
@@ -279,6 +289,12 @@ impl UpdateServiceConfig for FakeRegistration {
     fn set_fallback(&mut self, slot: BootstrapSlot) -> io::Result<()> {
         self.crash("fallback")?;
         self.fallback = slot;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.crash("flush")?;
+        self.on_disk = (self.image, self.fallback);
         Ok(())
     }
 
@@ -313,7 +329,12 @@ fn the_fallback_takes_the_service_back_to_its_slot_before_starting_it() {
 
     recover_fallback(&mut service, BootstrapSlot::B).expect("fall back");
 
-    assert_eq!(service.steps, ["image", "fallback", "start"]);
+    assert_eq!(service.steps, ["image", "fallback", "flush", "start"]);
+    assert_eq!(
+        service.on_disk,
+        (BootstrapSlot::B, BootstrapSlot::B),
+        "the recovery the start runs never journals under an image a power cut takes back"
+    );
     assert_eq!(service.image, BootstrapSlot::B);
     assert_eq!(service.fallback, BootstrapSlot::B);
     assert_eq!(service.started, 1);
@@ -340,7 +361,10 @@ fn a_new_bootstrap_lands_in_the_inactive_slot_behind_the_proven_one() {
     )
     .expect("install");
 
-    assert_eq!(service.steps, ["fallback", "write", "probe", "image"]);
+    assert_eq!(
+        service.steps,
+        ["fallback", "flush", "write", "probe", "image"]
+    );
     assert_eq!(service.image, BootstrapSlot::B, "the new bootstrap runs");
     assert_eq!(
         service.fallback,
@@ -354,7 +378,7 @@ fn a_new_bootstrap_lands_in_the_inactive_slot_behind_the_proven_one() {
 
 #[test]
 fn at_every_crash_point_the_failure_action_names_a_slot_with_the_proven_bootstrap() {
-    for step in ["fallback", "write", "probe", "image"] {
+    for step in ["fallback", "flush", "write", "probe", "image"] {
         let mut service = FakeRegistration::installed();
         service.crash_at = Some(step);
 
@@ -381,6 +405,29 @@ fn at_every_crash_point_the_failure_action_names_a_slot_with_the_proven_bootstra
 }
 
 #[test]
+fn no_power_cut_leaves_the_failure_action_on_the_slot_being_written() {
+    for step in ["fallback", "write", "probe", "image"] {
+        let mut service = FakeRegistration::installed();
+        service.crash_at = Some(step);
+        install_bootstrap(&mut service, BootstrapSlot::A, Path::new("new.exe"))
+            .expect_err("crashed");
+
+        service.power_cut();
+
+        assert_ne!(
+            service.slot_contents(service.fallback),
+            "new",
+            "power cut at {step}: the failure action names an unproven bootstrap"
+        );
+        assert_eq!(
+            service.slot_contents(service.image),
+            "proven",
+            "power cut at {step}"
+        );
+    }
+}
+
+#[test]
 fn a_bootstrap_that_does_not_load_never_becomes_the_image() {
     struct Unloadable(FakeRegistration);
 
@@ -390,6 +437,9 @@ fn a_bootstrap_that_does_not_load_never_becomes_the_image() {
         }
         fn set_fallback(&mut self, slot: BootstrapSlot) -> io::Result<()> {
             self.0.set_fallback(slot)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.flush()
         }
         fn write_slot(&mut self, slot: BootstrapSlot, source: &Path) -> io::Result<()> {
             self.0.write_slot(slot, source)?;

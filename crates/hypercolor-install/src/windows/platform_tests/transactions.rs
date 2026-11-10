@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use super::fakes::{
     Bootstrap, Boundaries, Broker, CANDIDATE_VERSION, Crash, FakeExecutor, FakeSession, Fixture,
-    PRIOR_VERSION, SharedBoundaries, SharedWorld, UNITS_ROOT, World, identity_of, lock,
+    Hive, PRIOR_VERSION, SharedBoundaries, SharedWorld, UNITS_ROOT, World, identity_of, lock,
     member_path, survive,
 };
 use crate::windows::{
@@ -79,7 +79,12 @@ impl Harness {
             relocated_image: None,
             waited_out_deadlines: 0,
             probation_windows: Vec::new(),
+            on_disk: Hive::default(),
+            journal: fixture.store.journal_path(),
+            unflushed_since: None,
         };
+        // An installation that has run for a while has its registry on disk.
+        world.flush_hive();
         world.reboot();
         world.session = true;
         world.launch(&prior);
@@ -139,12 +144,14 @@ impl Harness {
     ) -> Result<Result<InstallOutcome, InstallCoordinatorError>, Crash> {
         let mut platform = self.platform();
         let request = self.request(target_policy);
-        survive(|| {
+        let result = survive(|| {
             self.fixture.with_lock(|lock| {
                 InstallCoordinator::new(&self.fixture.store, &mut platform)
                     .install_with_lock(request, lock)
             })
-        })
+        });
+        lock(&self.world).assert_journal_waits_for_the_disk();
+        result
     }
 
     fn install(&self) -> Result<Result<InstallOutcome, InstallCoordinatorError>, Crash> {
@@ -164,6 +171,7 @@ impl Harness {
                 InstallCoordinator::new(&self.fixture.store, &mut platform).recover_with_lock(lock)
             })
         });
+        lock(&self.world).assert_journal_waits_for_the_disk();
         (result, platform.waiting_for_owner())
     }
 
@@ -199,15 +207,11 @@ impl Harness {
         change(&mut lock(&self.world));
     }
 
-    fn assert_names(&self, unit: &UnitId) {
+    /// The update service's failure action names a slot holding the
+    /// bootstrap that already proved itself, and that slot was never written.
+    fn assert_fallback_proven(&self) {
         let world = lock(&self.world);
         if let Some(bootstrap) = &world.bootstrap {
-            let image = if *unit == self.candidate() {
-                PROVEN.other()
-            } else {
-                PROVEN
-            };
-            assert_eq!(bootstrap.image, image, "the update service's image");
             assert_eq!(
                 bootstrap.held(bootstrap.fallback),
                 bootstrap_of(&self.prior()),
@@ -218,6 +222,19 @@ impl Harness {
                 bootstrap_of(&self.prior()),
                 "the proven slot is never written"
             );
+        }
+    }
+
+    fn assert_names(&self, unit: &UnitId) {
+        self.assert_fallback_proven();
+        let world = lock(&self.world);
+        if let Some(bootstrap) = &world.bootstrap {
+            let image = if *unit == self.candidate() {
+                PROVEN.other()
+            } else {
+                PROVEN
+            };
+            assert_eq!(bootstrap.image, image, "the update service's image");
         }
         assert_eq!(
             world.broker.as_ref().map(|broker| broker.image.clone()),
@@ -341,6 +358,49 @@ fn an_update_stops_the_broker_only_after_the_daemon_and_starts_it_before_the_app
     assert!(at("broker-start:after") < at("start:before"));
 }
 
+/// Every change to the update service's or the broker's registration and
+/// every firewall rule reaches the disk before the next step begins, and
+/// with it before the journal can record it. The fake machine fails any
+/// test whose journal gets ahead of the disk; this pins where each flush
+/// lands, forward and back.
+#[test]
+fn every_registry_change_reaches_the_disk_before_the_next_step() {
+    for fail in [false, true] {
+        let harness = Harness::new();
+        if fail {
+            fail_the_candidate(&harness);
+        }
+        let outcome = harness.outcome();
+        assert_eq!(is_rolled_back(&outcome), fail, "{outcome:?}");
+
+        let boundaries = lock(&harness.boundaries);
+        let changes: Vec<_> = boundaries
+            .log
+            .iter()
+            .enumerate()
+            .filter(|(_, label)| {
+                [
+                    "bootstrap-fallback:after",
+                    "bootstrap-image:after",
+                    "broker-switch:after",
+                    "firewall:after",
+                ]
+                .contains(&label.as_str())
+            })
+            .map(|(index, label)| (index + 1, label.clone()))
+            .collect();
+        assert_eq!(changes.len(), if fail { 9 } else { 5 }, "{changes:?}");
+        for (boundary, label) in changes {
+            assert!(
+                boundaries.flushes.contains(&boundary),
+                "{label} at boundary {boundary} was not flushed before the next step: \
+                 flushes at {:?}",
+                boundaries.flushes
+            );
+        }
+    }
+}
+
 #[test]
 fn a_crash_at_every_boundary_ends_committed_or_restored() {
     let total = {
@@ -397,6 +457,7 @@ fn a_power_loss_at_every_boundary_restores_the_prior_for_its_owner() {
         harness.crash_at(Some(crash_at));
         assert!(matches!(harness.install(), Err(Crash)));
         harness.with_world(World::reboot);
+        harness.assert_fallback_proven();
 
         // At boot nobody is signed in, so recovery can start nothing.
         let (booted, waiting) = harness.recover();
@@ -447,6 +508,7 @@ fn a_power_loss_at_every_boundary_of_a_rollback_restores_the_prior_for_its_owner
             "boundary {crash_at} never ran"
         );
         harness.with_world(World::reboot);
+        harness.assert_fallback_proven();
 
         let (booted, waiting) = harness.recover();
         let booted = booted.expect("no crash armed for this run");

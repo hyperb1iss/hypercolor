@@ -149,6 +149,7 @@ fn the_broker_switches_units_through_the_service_control_manager() {
     );
 
     executor.switch_broker(text(&second)).expect("switch");
+    executor.flush_registry().expect("write the switch to disk");
     let observed = executor
         .observe_broker()
         .expect("observe")
