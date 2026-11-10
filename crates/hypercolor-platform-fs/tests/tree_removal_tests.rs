@@ -144,6 +144,42 @@ fn owned_tree_removal_refuses_special_and_hardlinked_members_and_non_directories
     assert!(fixture.outside.join("keep").exists());
 }
 
+/// An installed unit's root is read-only like everything beneath it, and
+/// macOS 15 refuses to rename a directory its owner cannot write. This runs
+/// the real rename, so only a macOS 15 host can fail it.
+#[test]
+fn owned_tree_removal_renames_a_read_only_root_and_a_refusal_keeps_its_mode() {
+    let fixture = Fixture::new();
+    let tree = fixture.populate();
+    let units = tree.join("units");
+    let unit = units.join("a");
+    let mode = |path: &Path| fs::metadata(path).expect("mode").permissions().mode() & 0o7777;
+    assert_eq!(mode(&unit), 0o555);
+    let authority = fixture
+        .gate
+        .open_public_directory(&units)
+        .expect("units authority");
+
+    fs::write(fixture.public.join("shared"), b"linked").expect("shared file");
+    fs::set_permissions(&unit, fs::Permissions::from_mode(0o755)).expect("open the unit");
+    fs::hard_link(fixture.public.join("shared"), unit.join("hardlink")).expect("hardlink");
+    fs::set_permissions(&unit, fs::Permissions::from_mode(0o555)).expect("close the unit");
+    assert!(authority.durable_remove_child_tree(Path::new("a")).is_err());
+    assert_eq!(mode(&unit), 0o555, "a refused tree keeps its root mode");
+    assert!(unit.join("bin/hypercolor-daemon").exists());
+
+    fs::set_permissions(&unit, fs::Permissions::from_mode(0o755)).expect("open the unit");
+    fs::remove_file(unit.join("hardlink")).expect("drop hardlink");
+    fs::set_permissions(&unit, fs::Permissions::from_mode(0o555)).expect("close the unit");
+    assert!(
+        authority
+            .durable_remove_child_tree(Path::new("a"))
+            .expect("remove a read-only unit")
+    );
+    assert!(!unit.exists());
+    assert_eq!(fs::read_dir(&units).expect("units").count(), 0);
+}
+
 #[test]
 fn owned_tree_removal_refuses_a_replaced_ancestry() {
     let fixture = Fixture::new();
