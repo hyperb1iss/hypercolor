@@ -43,7 +43,9 @@ mod unit;
 mod update_pipe;
 mod update_service;
 
-pub use crate::release_selection::{ReleaseRecords, ReleaseSelectionError, select_release};
+pub use crate::release_selection::{
+    ReleaseRecords, ReleaseSelectionError, select_app_release, select_release,
+};
 pub use error::ReleasePayloadError;
 pub use executor::WindowsInstallExecutor;
 pub use installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation, WindowsRuntimeMode};

@@ -8,6 +8,14 @@
 //! after the pointer: a transaction that opened in between would otherwise
 //! leave a stale "nothing is pending" beside a candidate's pointer.
 //!
+//! The two part ways once the journal records the candidate's proof. All
+//! that is left then is the commit record, which recovery writes without
+//! starting or stopping anything, so the app the launcher starts from that
+//! point on is the candidate's: a prior started at sign-in would keep
+//! running under a commit that names the candidate. Recovery itself still
+//! runs from the prior until the journal is terminal, since the prior's
+//! code reads the journal it wrote.
+//!
 //! Both programs outlive the releases they select. An update replaces
 //! neither the launcher nor, as a matter of course, the bootstrap, so they
 //! read only the journal fields that decide this, not its whole schema.
@@ -18,7 +26,7 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{InstallDisposition, UnitId};
+use crate::model::{InstallAction, InstallDisposition, UnitId};
 
 const ACTIVE_POINTER_SCHEMA_VERSION: u32 = 1;
 /// A journal only changes between two reads when a transaction opens, and
@@ -61,6 +69,12 @@ pub(crate) fn decode_active_pointer(bytes: &[u8]) -> Result<UnitId, String> {
 struct JournalDecision {
     disposition: InstallDisposition,
     prior_active_unit: Option<UnitId>,
+    #[serde(default)]
+    candidate_unit: Option<UnitId>,
+    /// Kept as written, so an action this program does not know reads as
+    /// "not the commit" rather than as a journal it refuses.
+    #[serde(default)]
+    next_action: Option<serde_json::Value>,
 }
 
 impl JournalDecision {
@@ -70,6 +84,27 @@ impl JournalDecision {
             InstallDisposition::Forward | InstallDisposition::Rollback
         )
     }
+
+    /// The candidate, once the journal records its proof and only the
+    /// commit record is left to write.
+    fn proven_candidate(&self) -> Option<&UnitId> {
+        let commit_is_next = self.disposition == InstallDisposition::Forward
+            && self
+                .next_action
+                .as_ref()
+                .and_then(|action| InstallAction::deserialize(action).ok())
+                == Some(InstallAction::Commit);
+        self.candidate_unit.as_ref().filter(|_| commit_is_next)
+    }
+}
+
+/// Who a selection is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Selecting {
+    /// The code that drives a transaction to its end.
+    Recovery,
+    /// The app a person, or their sign-in, starts.
+    App,
 }
 
 /// The two records selection reads, each as one consistent snapshot.
@@ -116,15 +151,34 @@ pub enum ReleaseSelectionError {
     Unsettled,
 }
 
-/// The unit to run now: the transaction's prior while a journal is
-/// nonterminal, otherwise the active unit. Never a candidate that has not
-/// committed.
+/// The unit whose code runs now: the transaction's prior while a journal
+/// is nonterminal, otherwise the active unit. Never a candidate that has
+/// not committed.
 ///
 /// # Errors
 ///
 /// Returns an error for records that cannot be read or decoded, and when
 /// neither rule names a unit. It never settles for another release.
 pub fn select_release<R: ReleaseRecords>(records: &mut R) -> Result<UnitId, ReleaseSelectionError> {
+    select(records, Selecting::Recovery)
+}
+
+/// The unit whose app a launcher starts now: as [`select_release`], except
+/// that a candidate whose proof the journal records is the one to run.
+///
+/// # Errors
+///
+/// As [`select_release`].
+pub fn select_app_release<R: ReleaseRecords>(
+    records: &mut R,
+) -> Result<UnitId, ReleaseSelectionError> {
+    select(records, Selecting::App)
+}
+
+fn select<R: ReleaseRecords>(
+    records: &mut R,
+    selecting: Selecting,
+) -> Result<UnitId, ReleaseSelectionError> {
     for _ in 0..SELECTION_ATTEMPTS {
         let journal = records
             .read_journal()
@@ -133,6 +187,11 @@ pub fn select_release<R: ReleaseRecords>(records: &mut R) -> Result<UnitId, Rele
             let decision: JournalDecision =
                 serde_json::from_slice(bytes).map_err(ReleaseSelectionError::InvalidJournal)?;
             if decision.is_pending() {
+                if selecting == Selecting::App
+                    && let Some(candidate) = decision.proven_candidate()
+                {
+                    return Ok(candidate.clone());
+                }
                 return decision
                     .prior_active_unit
                     .ok_or(ReleaseSelectionError::NoPrior);

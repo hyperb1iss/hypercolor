@@ -1,6 +1,8 @@
 //! Whole transactions through the shared coordinator against the in-memory
 //! machine, including a crash and a power loss at every effect boundary.
 
+use std::fs;
+use std::io;
 use std::sync::{Arc, Mutex};
 
 use super::fakes::{
@@ -8,10 +10,12 @@ use super::fakes::{
     Hive, PRIOR_VERSION, SharedBoundaries, SharedWorld, UNITS_ROOT, World, identity_of, lock,
     member_path, survive,
 };
+use crate::release_selection::encode_active_pointer;
 use crate::windows::{
-    BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM,
-    WINDOWS_DAEMON_PROGRAM, WindowsFirewallObservation, WindowsFirewallRule, WindowsInstallConfig,
-    WindowsInstallPlatform, WindowsRunningProcess,
+    BootstrapSlot, ReleaseRecords, WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM,
+    WINDOWS_BROKER_PROGRAM, WINDOWS_DAEMON_PROGRAM, WindowsFirewallObservation,
+    WindowsFirewallRule, WindowsInstallConfig, WindowsInstallPlatform, WindowsRunningProcess,
+    select_app_release,
 };
 use crate::{
     InstallAction, InstallCoordinator, InstallCoordinatorError, InstallDisposition,
@@ -28,6 +32,27 @@ const PROVEN: BootstrapSlot = BootstrapSlot::A;
 /// The digest of the bootstrap `unit` ships.
 fn bootstrap_of(unit: &UnitId) -> String {
     identity_of(&member_path(unit, WINDOWS_BOOTSTRAP_PROGRAM)).sha256
+}
+
+/// The records as the stable launcher reads them: the journal's bytes,
+/// then the pointer, without the install lock.
+struct LauncherRecords<'a>(&'a Fixture);
+
+impl ReleaseRecords for LauncherRecords<'_> {
+    fn read_journal(&mut self) -> io::Result<Option<Vec<u8>>> {
+        match fs::read(self.0.store.journal_path()) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read_pointer(&mut self) -> io::Result<Option<Vec<u8>>> {
+        Ok(self
+            .0
+            .active_unit()
+            .map(|unit| encode_active_pointer(&unit).expect("encode the pointer")))
+    }
 }
 
 struct Harness {
@@ -205,6 +230,17 @@ impl Harness {
 
     fn with_world(&self, change: impl FnOnce(&mut World)) {
         change(&mut lock(&self.world));
+    }
+
+    /// The owner signs in with "start with Windows" on, so the stable
+    /// launcher starts the app of the release it selects.
+    fn sign_in_with_autostart(&self) {
+        let unit = select_app_release(&mut LauncherRecords(&self.fixture))
+            .expect("the launcher selects a release");
+        self.with_world(|world| {
+            world.session = true;
+            world.launch(&unit);
+        });
     }
 
     /// The update service's failure action names a slot holding the
@@ -524,6 +560,49 @@ fn a_power_loss_at_every_boundary_of_a_rollback_restores_the_prior_for_its_owner
     }
 }
 
+/// The order a real power cut takes with "start with Windows" on: the
+/// owner signs in and the launcher starts whatever the journal leaves
+/// runnable, and only then does the update service's delayed start run
+/// recovery. Whatever the boundary, the installation settles on one
+/// release, running, with every name pointing at it.
+#[test]
+fn a_power_loss_at_every_boundary_with_start_with_windows_settles_on_one_release() {
+    for fail in [false, true] {
+        let arrange = |harness: &Harness| {
+            if fail {
+                fail_the_candidate(harness);
+            }
+        };
+        let total = {
+            let harness = Harness::new();
+            arrange(&harness);
+            harness.outcome();
+            harness.passed()
+        };
+        for crash_at in 1..=total {
+            let harness = Harness::new();
+            arrange(&harness);
+            harness.crash_at(Some(crash_at));
+            assert!(
+                matches!(harness.install(), Err(Crash)),
+                "boundary {crash_at} never ran"
+            );
+            harness.crash_at(None);
+            harness.with_world(World::reboot);
+            harness.assert_fallback_proven();
+
+            harness.sign_in_with_autostart();
+            let outcome = harness.converge();
+
+            if is_rolled_back(&outcome) {
+                harness.assert_restored();
+            } else {
+                harness.assert_committed(&outcome);
+            }
+        }
+    }
+}
+
 /// A journal resting at the prior's proof, with nothing running.
 fn prior_lost_at_its_proof() -> Harness {
     // The candidate fails its first request; the second is the prior's.
@@ -687,6 +766,44 @@ fn a_prior_the_launcher_started_at_sign_in_is_proven_and_its_broker_restarted() 
     assert!(is_rolled_back(&outcome), "{outcome:?}");
     harness.assert_restored();
     assert_eq!(lock(&harness.world).apps.len(), 1);
+}
+
+/// A transaction a power cut stopped right after the candidate's proof was
+/// journaled: forward, with only the commit record left, and the machine
+/// just booted with nobody signed in.
+fn proven_when_the_power_went() -> Harness {
+    let harness = Harness::new();
+    harness.assert_committed(&harness.outcome());
+    let mut journal = harness.journal();
+    journal.revision -= 1;
+    journal.disposition = InstallDisposition::Forward;
+    journal.next_action = Some(InstallAction::Commit);
+    harness
+        .fixture
+        .with_lock(|lock| harness.fixture.store.write_journal(&journal, lock))
+        .expect("the journal as the power cut left it");
+    harness.with_world(World::reboot);
+    harness
+}
+
+#[test]
+fn a_candidate_proven_before_a_power_loss_is_what_sign_in_starts() {
+    // Sign-in starts the app before the update service's delayed start
+    // runs recovery, which then only writes the commit record.
+    let harness = proven_when_the_power_went();
+    harness.sign_in_with_autostart();
+    let outcome = harness.converge();
+    harness.assert_committed(&outcome);
+
+    // Recovery can also come first, before anyone signs in.
+    let harness = proven_when_the_power_went();
+    let (booted, _) = harness.recover();
+    let outcome = booted
+        .expect("no crash armed")
+        .expect("recovery")
+        .expect("a journal");
+    harness.sign_in_with_autostart();
+    harness.assert_committed(&outcome);
 }
 
 #[test]

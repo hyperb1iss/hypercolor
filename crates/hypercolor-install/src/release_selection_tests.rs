@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io;
 
-use super::{ReleaseRecords, ReleaseSelectionError, select_release};
+use super::{ReleaseRecords, ReleaseSelectionError, select_app_release, select_release};
 use crate::model::UnitId;
 
 fn unit(byte: char) -> UnitId {
@@ -19,6 +19,19 @@ fn journal(disposition: &str, prior: Option<&UnitId>, candidate: &UnitId) -> Vec
     })
     .to_string()
     .into_bytes()
+}
+
+/// A journal resting before `action`.
+fn journal_at(
+    disposition: &str,
+    action: &str,
+    prior: Option<&UnitId>,
+    candidate: &UnitId,
+) -> Vec<u8> {
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&journal(disposition, prior, candidate)).expect("journal");
+    journal["next_action"] = serde_json::Value::from(action);
+    journal.to_string().into_bytes()
 }
 
 fn pointer(unit: &UnitId) -> Vec<u8> {
@@ -103,6 +116,82 @@ fn an_open_transaction_runs_its_prior_even_when_the_pointer_names_the_candidate(
             "an open journal decides before the pointer is read"
         );
     }
+}
+
+#[test]
+fn once_the_journal_records_the_candidate_s_proof_its_app_runs() {
+    let prior = unit('a');
+    let candidate = unit('b');
+    let at_commit = journal_at("forward", "commit", Some(&prior), &candidate);
+
+    let mut records = scripted(vec![Some(at_commit.clone())], vec![]);
+    assert_eq!(
+        select_app_release(&mut records).expect("select"),
+        candidate,
+        "only the commit record is left, and it names the candidate"
+    );
+    assert_eq!(records.reads, ["journal"]);
+
+    let mut records = scripted(vec![Some(at_commit)], vec![]);
+    assert_eq!(
+        select_release(&mut records).expect("select"),
+        prior,
+        "recovery still runs the code that wrote the journal"
+    );
+}
+
+#[test]
+fn before_the_candidate_s_proof_is_recorded_its_app_never_runs() {
+    let prior = unit('a');
+    let candidate = unit('b');
+    for (disposition, action) in [
+        ("forward", "switch_to_candidate"),
+        ("forward", "restore_candidate_runtime"),
+        ("forward", "prove_candidate"),
+        ("forward", "an_action_a_later_release_added"),
+        ("rollback", "unload_candidate_runtime"),
+        ("rollback", "prove_prior"),
+    ] {
+        let mut records = scripted(
+            vec![Some(journal_at(
+                disposition,
+                action,
+                Some(&prior),
+                &candidate,
+            ))],
+            vec![Some(pointer(&candidate))],
+        );
+
+        assert_eq!(
+            select_app_release(&mut records).expect("select"),
+            prior,
+            "{disposition} at {action}"
+        );
+    }
+}
+
+#[test]
+fn a_first_install_runs_its_candidate_only_once_its_proof_is_recorded() {
+    let candidate = unit('b');
+    let mut records = scripted(
+        vec![Some(journal_at("forward", "commit", None, &candidate))],
+        vec![],
+    );
+    assert_eq!(select_app_release(&mut records).expect("select"), candidate);
+
+    let mut records = scripted(
+        vec![Some(journal_at(
+            "forward",
+            "prove_candidate",
+            None,
+            &candidate,
+        ))],
+        vec![],
+    );
+    assert!(matches!(
+        select_app_release(&mut records),
+        Err(ReleaseSelectionError::NoPrior)
+    ));
 }
 
 #[test]
