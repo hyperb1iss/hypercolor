@@ -492,31 +492,30 @@ where
         if self.exact_not_loaded(deadline) {
             return Ok(MacosDirectLaunchdMutationOutcome::Complete(()));
         }
-        let mut submitted = false;
-        let result = self
-            .store
-            .request_stop_if_current(&expected.record().incarnation(), || {
-                let mut inspector = DeadlineInspectorBridge {
-                    inspector: self.inspector,
-                    deadline,
-                };
-                super::corroborate_direct_launchd_owner(expected.record(), &mut inspector)?;
-                let exit = self
-                    .inspector
-                    .watch_exit(expected.record().active_identity.pid)?;
-                let gone = self.bootout_until_gone(Some(exit), deadline)?;
-                submitted = true;
-                if gone {
-                    Ok(())
-                } else {
-                    Err(MacosOwnerExecutionError::new(
-                        "submitted launchd bootout has no exact terminal proof",
-                    ))
-                }
-            });
-        match result {
-            Ok(()) => Ok(MacosDirectLaunchdMutationOutcome::Complete(())),
-            Err(_) if submitted => Ok(MacosDirectLaunchdMutationOutcome::SubmittedUnknown),
+        // The coordination lock binds the stop to the exact owner: no newer
+        // publication lands between its corroboration and the submission.
+        // The wait runs after the lock is released, because the exiting
+        // daemon clears its session record under that same lock; holding it
+        // here would leave launchd to SIGKILL the daemon at its exit timeout.
+        let incarnation = expected.record().incarnation();
+        let mut exit = None;
+        let submitted = self.store.request_stop_if_current(&incarnation, || {
+            let mut inspector = DeadlineInspectorBridge {
+                inspector: self.inspector,
+                deadline,
+            };
+            super::corroborate_direct_launchd_owner(expected.record(), &mut inspector)?;
+            exit = Some(
+                self.inspector
+                    .watch_exit(expected.record().active_identity.pid)?,
+            );
+            self.submit_bootout(deadline)
+        });
+        match submitted {
+            Ok(()) if self.gone_after(exit, deadline) => {
+                Ok(MacosDirectLaunchdMutationOutcome::Complete(()))
+            }
+            Ok(()) => Ok(MacosDirectLaunchdMutationOutcome::SubmittedUnknown),
             Err(_) if self.exact_not_loaded(deadline) => {
                 Ok(MacosDirectLaunchdMutationOutcome::Complete(()))
             }
@@ -540,9 +539,11 @@ where
             Ok(MacosDirectLaunchdState::Loaded { pid }) => Some(self.inspector.watch_exit(pid)?),
             Ok(MacosDirectLaunchdState::NotLoaded) | Err(_) => None,
         };
-        match self.bootout_until_gone(exit, deadline) {
-            Ok(true) => Ok(MacosDirectLaunchdMutationOutcome::Complete(())),
-            Ok(false) => Ok(MacosDirectLaunchdMutationOutcome::SubmittedUnknown),
+        match self.submit_bootout(deadline) {
+            Ok(()) if self.gone_after(exit, deadline) => {
+                Ok(MacosDirectLaunchdMutationOutcome::Complete(()))
+            }
+            Ok(()) => Ok(MacosDirectLaunchdMutationOutcome::SubmittedUnknown),
             Err(_) if self.exact_not_loaded(deadline) => {
                 Ok(MacosDirectLaunchdMutationOutcome::Complete(()))
             }
@@ -550,23 +551,12 @@ where
         }
     }
 
-    /// Submit one bootout of the fixed label and report whether the job was
-    /// proven gone by `deadline`.
-    ///
-    /// launchctl answers once launchd has signalled the job, which runs on
-    /// until it exits or launchd kills it at its exit timeout, and launchd
-    /// drops the label when the process ends. So the proof waits on `exit`,
-    /// armed on the job's process before submission, and only then asks
-    /// launchd. A job with no process to watch is asked at once.
+    /// Submit one bootout of the fixed label.
     ///
     /// A nonzero exit status means launchd refused the request and nothing
     /// was submitted: that is an error carrying launchctl's own words, so a
     /// refusal is never reported as an unconfirmed stop.
-    fn bootout_until_gone(
-        &mut self,
-        exit: Option<I::ExitWatch>,
-        deadline: Instant,
-    ) -> Result<bool, MacosOwnerExecutionError> {
+    fn submit_bootout(&mut self, deadline: Instant) -> Result<(), MacosOwnerExecutionError> {
         if let SubmittedCommand::Completed {
             status: Some(status),
             stderr,
@@ -579,8 +569,20 @@ where
                 String::from_utf8_lossy(&stderr).trim()
             )));
         }
-        let exited = exit.map_or(Ok(true), |mut exit| exit.exited_by(deadline));
-        Ok(exited.unwrap_or(false) && self.exact_not_loaded(deadline))
+        Ok(())
+    }
+
+    /// Whether a submitted bootout's job was proven gone by `deadline`.
+    ///
+    /// launchctl answers once launchd has signalled the job, which runs on
+    /// until it exits or launchd kills it at its exit timeout, and launchd
+    /// drops the label when the process ends. So the proof waits on `exit`,
+    /// armed on the job's process before submission, and only then asks
+    /// launchd. A job with no process to watch is asked at once.
+    fn gone_after(&mut self, exit: Option<I::ExitWatch>, deadline: Instant) -> bool {
+        exit.map_or(Ok(true), |mut exit| exit.exited_by(deadline))
+            .unwrap_or(false)
+            && self.exact_not_loaded(deadline)
     }
 
     fn exact_not_loaded(&mut self, deadline: Instant) -> bool {

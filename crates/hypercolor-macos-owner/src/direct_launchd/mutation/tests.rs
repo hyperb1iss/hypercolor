@@ -30,6 +30,21 @@ struct SharedInspector {
     publication_matches: bool,
     exit: FakeExit,
     trace: Vec<Trace>,
+    daemon: Option<FakeDaemonExit>,
+}
+
+/// launchd's exit timeout for these agents, as measured on macOS 15 and 26.
+const LAUNCHD_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A daemon whose shutdown ends by clearing its session record, which takes
+/// the store's coordination lock.
+#[derive(Debug)]
+struct FakeDaemonExit {
+    store: MacosOwnerStore,
+    /// How long its exit took, once it took place; `None` when launchd had
+    /// to kill it at its exit timeout.
+    clean_exit: Option<Duration>,
+    shutdown: Option<std::thread::JoinHandle<()>>,
 }
 
 /// What the job's process does once something waits on its exit.
@@ -42,6 +57,10 @@ enum FakeExit {
     ExitsAndLaunchdDropsTheJob,
     /// It outlives every deadline.
     Never,
+    /// It shuts down, clears its session record under the coordination
+    /// lock, then exits; launchd kills it at its exit timeout if that lock
+    /// never comes. launchd drops the label either way.
+    ClearsItsSessionThenExits,
 }
 
 /// The order the engine armed watches and submitted commands in.
@@ -70,6 +89,24 @@ impl ExitWatch for FakeExitWatch {
                 true
             }
             FakeExit::Never => false,
+            FakeExit::ClearsItsSessionThenExits => {
+                let daemon = shared
+                    .daemon
+                    .as_mut()
+                    .expect("a daemon exit needs its store");
+                let store = daemon.store.clone();
+                let (exited_tx, exited_rx) = std::sync::mpsc::sync_channel(1);
+                let started = Instant::now();
+                daemon.shutdown = Some(std::thread::spawn(move || {
+                    // Takes the coordination lock exactly as the daemon's
+                    // session clear does.
+                    let _ = store.load_daemon_session_attestation();
+                    let _ = exited_tx.send(started.elapsed());
+                }));
+                daemon.clean_exit = exited_rx.recv_timeout(LAUNCHD_EXIT_TIMEOUT).ok();
+                shared.state = MacosDirectLaunchdState::NotLoaded;
+                true
+            }
         })
     }
 }
@@ -344,6 +381,7 @@ fn fixture(
         publication_matches: true,
         exit: FakeExit::Exits,
         trace: Vec::new(),
+        daemon: None,
     }));
     let inspector = FakeInspector(Rc::clone(&shared));
     let commands = FakeCommands::new(store.clone(), shared);
@@ -839,7 +877,7 @@ fn bootout_terminal_fence_keeps_publication_outside_the_stop_lock() {
                 self.published_rx
                     .recv_timeout(Duration::from_millis(50))
                     .is_err(),
-                "new publication must remain blocked through terminal fencing"
+                "new publication must remain blocked through the stop submission"
             );
             self.shared.borrow_mut().state = MacosDirectLaunchdState::NotLoaded;
             Ok(SubmittedCommand::Unknown)
@@ -914,6 +952,66 @@ fn bootout_terminal_fence_keeps_publication_outside_the_stop_lock() {
         .expect("publication should finish after terminal fencing");
     publisher.join().expect("publisher should finish");
     assert!(replacement.owner_epoch > current.owner_epoch);
+}
+
+/// The exiting daemon clears its session record under the coordination lock
+/// the stop holds while it binds the bootout to the exact owner. Waiting
+/// for the exit inside that lock would leave the daemon blocked until
+/// launchd killed it at its exit timeout, with its session record left
+/// behind.
+#[test]
+fn exact_bootout_waits_for_the_daemon_outside_the_store_lock() {
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    let current = store
+        .publish_owner(
+            MacosDaemonOwner::DirectLaunchd,
+            identity("current", DAEMON_PATH, REQUIREMENT, 42),
+        )
+        .expect("current should publish");
+    let proof = super::super::corroborate_direct_launchd_owner(&current, &mut inspector)
+        .expect("current should corroborate");
+    {
+        let mut shared = inspector.0.borrow_mut();
+        shared.exit = FakeExit::ClearsItsSessionThenExits;
+        shared.daemon = Some(FakeDaemonExit {
+            store: store.clone(),
+            clean_exit: None,
+            shutdown: None,
+        });
+    }
+    commands.push(LaunchctlAction::Bootout, completed(0, b""));
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+
+    assert_eq!(
+        controller
+            .bootout_exact(&proof, fixture_deadline())
+            .expect("the owner leaves"),
+        MacosDirectLaunchdMutationOutcome::Complete(())
+    );
+    let mut daemon = inspector
+        .0
+        .borrow_mut()
+        .daemon
+        .take()
+        .expect("the daemon exit ran");
+    daemon
+        .shutdown
+        .take()
+        .expect("the daemon shut down")
+        .join()
+        .expect("the shutdown thread finishes");
+    let clean_exit = daemon
+        .clean_exit
+        .expect("the daemon exits on its own instead of at launchd's exit timeout");
+    assert!(
+        clean_exit < LAUNCHD_EXIT_TIMEOUT / 5,
+        "the session clear waited {clean_exit:?} for the lock"
+    );
 }
 
 #[test]
