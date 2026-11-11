@@ -44,7 +44,7 @@ class SupportRequestTests(unittest.TestCase):
             patch.object(request_support, "daemon_version", return_value=version),
             patch.object(
                 request_support, "existing_issues", return_value=duplicates or []
-            ),
+            ) as search,
             patch.object(request_support, "host_platform", return_value="Linux"),
             patch.object(
                 request_support.subprocess,
@@ -64,6 +64,10 @@ class SupportRequestTests(unittest.TestCase):
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(request_support.main(), 0)
+            product = None
+            if "--product" in arguments:
+                product = arguments[arguments.index("--product") + 1].strip() or None
+            search.assert_called_once_with("1A2C:2C27", product)
         return output.getvalue()
 
     def test_json_separates_facts_from_unanswered_intake_and_omits_private_identifiers(
@@ -105,6 +109,12 @@ class SupportRequestTests(unittest.TestCase):
         query = parse_qs(urlsplit(result["url"]).query)
         self.assertEqual(query["product"], ["Retail & Model"])
         self.assertEqual(query["platform"], ["Windows"])
+        self.assertEqual(query["title"], ["[device] Retail & Model"])
+
+    def test_blank_owner_product_does_not_use_usb_name_as_title(self):
+        result = json.loads(self.run_main("--json", "--product", "  "))
+        query = parse_qs(urlsplit(result["url"]).query)
+        self.assertNotIn("product", query)
         self.assertNotIn("title", query)
 
     def test_missing_version_remains_unanswered(self):
@@ -264,6 +274,44 @@ class SupportRequestTests(unittest.TestCase):
                     "--json",
                     "number,title,url,state",
                 ],
+            )
+
+    def test_product_lookup_finds_requests_without_usb_ids_and_deduplicates(self):
+        by_id = {"number": 543, "title": "USB Keyboard"}
+        by_product = {"number": 550, "title": "Retail & Model"}
+        with (
+            patch.object(request_support, "gh_ready", return_value=True),
+            patch.object(
+                request_support.subprocess,
+                "run",
+                side_effect=[
+                    MagicMock(returncode=0, stdout=json.dumps([by_id])),
+                    MagicMock(returncode=0, stdout=json.dumps([by_id, by_product])),
+                ],
+            ) as run,
+        ):
+            self.assertEqual(
+                request_support.existing_issues("1A2C:2C27", "Retail & Model"),
+                [by_id, by_product],
+            )
+            queries = [call.args[0][10] for call in run.call_args_list]
+            self.assertEqual(queries, ["1A2C:2C27", '"Retail & Model"'])
+
+    def test_failed_id_search_does_not_hide_product_matches(self):
+        matches = [{"number": 550, "title": "Retail Model"}]
+        with (
+            patch.object(request_support, "gh_ready", return_value=True),
+            patch.object(
+                request_support.subprocess,
+                "run",
+                side_effect=[
+                    MagicMock(returncode=1),
+                    MagicMock(returncode=0, stdout=json.dumps(matches)),
+                ],
+            ),
+        ):
+            self.assertEqual(
+                request_support.existing_issues("1A2C:2C27", "Retail Model"), matches
             )
 
 

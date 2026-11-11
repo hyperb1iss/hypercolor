@@ -85,19 +85,27 @@ def gh_ready() -> bool:
     return subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, check=False).returncode == 0
 
 
-def existing_issues(vid_pid: str) -> list[dict]:
-    """Open and closed issues that mention the VID:PID, via gh search (read-only)."""
+def existing_issues(vid_pid: str, product: str | None = None) -> list[dict]:
+    """Read existing requests by USB ID and any owner-supplied product name."""
     if not gh_ready():
         return []
-    proc = subprocess.run(["gh", "issue", "list", "--repo", REPO, "--state", "all", "--limit", "10",
-                           "--search", vid_pid, "--json", "number,title,url,state"],
-                          capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        return []
-    try:
-        return json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError:
-        return []
+    queries = [vid_pid]
+    if product:
+        queries.append(json.dumps(product, ensure_ascii=False))
+    matches = {}
+    for query in queries:
+        proc = subprocess.run(["gh", "issue", "list", "--repo", REPO, "--state", "all", "--limit", "10",
+                               "--search", query, "--json", "number,title,url,state"],
+                              capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            continue
+        try:
+            issues = json.loads(proc.stdout or "[]")
+        except json.JSONDecodeError:
+            continue
+        for issue in issues:
+            matches[issue["number"]] = issue
+    return list(matches.values())
 
 
 def detected_details(device: dict, source: str) -> str:
@@ -144,8 +152,9 @@ def main() -> int:
         fields["version"] = version
     if args.product and args.product.strip():
         fields["product"] = args.product.strip()
+        fields["title"] = f"[device] {fields['product']}"
     url = build_url(fields)
-    dupes = existing_issues(vid_pid)
+    dupes = existing_issues(vid_pid, fields.get("product"))
 
     if args.json:
         json.dump({"fields": fields, "url": url, "existing_issues": dupes, "source": source}, sys.stdout, indent=1)
@@ -153,7 +162,7 @@ def main() -> int:
         return 0
 
     if dupes:
-        print(f"existing issues mention {vid_pid}; check whether one covers your product:")
+        print("existing issues match the USB ID or supplied product; check whether one covers your device:")
         for issue in dupes:
             print(f"  #{issue['number']} [{issue['state']}] {issue['title']}\n     {issue['url']}")
         print()

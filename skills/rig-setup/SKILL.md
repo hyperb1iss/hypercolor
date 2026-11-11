@@ -97,11 +97,13 @@ For each unclaimed device, take the first row that fits:
    `hypercolor openrgb start` → `hypercolor devices discover --target openrgb` → size hub
    zones with `hypercolor openrgb resize` and copy the sizes into the rig's
    `bridge.zone_sizes`. Each rung has a check; stop at the first one that fails.
-3. **Neither.** First identify the retail product and its lighting or display with the
-   owner. An unclaimed USB device may have neither. For a support request,
+3. **Neither.** Ask the owner about the retail product and its lighting or display.
+   Accept their best available information or an explicit unknown. An unclaimed USB
+   device may have neither lighting nor a display. For a support request,
    `python3 scripts/request_support.py --vid-pid VVVV:PPPP` prepares a GitHub form URL
-   with detected facts and lists existing issues for that ID. Complete the form using
-   the owner's product and lighting answers; the script never posts an issue.
+   with detected facts and lists existing issues for that ID and any supplied `--product`.
+   Complete the form using the owner's product and lighting answers; the script never
+   posts an issue.
    Then continue: a layout that covers what is drivable today is a finished layout.
 
 Conflict rows mean both stacks reached the same silicon. Native keeps driving and the

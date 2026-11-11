@@ -121,7 +121,8 @@ minutes even when rung 3 lit the device.
 The [device-support issue form](https://github.com/hyperb1iss/hypercolor/issues/new?template=device-support.yml)
 asks which product you own, what lighting or display you want to control, and how you
 control it today. Put the retail brand and model in the title. If you cannot identify
-the product, include a product link or a photo of its label with the serial number covered.
+the product, say unknown and share what you can, such as a product link or a photo of
+its label with the serial number covered.
 
 The **Request device support** button on an unclaimed row fills in the USB IDs, detected
 device details, operating system, and running Hypercolor version when available. USB
@@ -139,7 +140,7 @@ You do not need packet captures or protocol knowledge to ask for support.
   what you want to change, and whether an app, physical buttons, or keyboard shortcuts
   control it today. "I am not sure" is a useful answer too.
 - **Software and version.** Name any app that controls it and what works. Include your
-  Hypercolor version from Settings > About or `hypercolor --version`.
+  running daemon version from Settings > About or `hypercolor status`.
 - **Connection details.** USB IDs help match the device. For network or serial hardware,
   describe the connection instead. Leave this blank if you do not know.
 - **Optional evidence.** Diagnostics, photos, and existing captures help. Review diagnostics

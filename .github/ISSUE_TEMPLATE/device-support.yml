@@ -22,7 +22,7 @@ body:
       label: Product brand and model
       description: |
         Use the name on the product, packaging, or receipt. Include a product link if you have one.
-        If you cannot identify it, attach a photo of the device and its label (cover any serial number).
+        If you cannot identify it, say unknown and share what you can, such as a photo of the device or label (cover any serial number).
         Names such as "USB Keyboard" or "VID 1A2C" do not identify the retail product.
       placeholder: "Brand and model, plus a product link or photo"
     validations:
@@ -77,7 +77,7 @@ body:
     id: version
     attributes:
       label: Hypercolor version
-      description: "Find it in Settings > About or run `hypercolor --version`. Enter unknown if you cannot check."
+      description: "Find the running daemon version in Settings > About or run `hypercolor status`. Enter unknown if you cannot check."
       placeholder: "Version shown in Settings > About"
     validations:
       required: true

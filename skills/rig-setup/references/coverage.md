@@ -4,8 +4,9 @@ Coverage answers one question per physical device: who drives it. The answer dec
 whether OpenRGB enters the setup at all. Hypercolor drives everything it has a driver
 for; the OpenRGB bridge drives only what native cannot; OpenRGB gets installed only when
 an unclaimed device needs it, never as a prerequisite. For hardware neither stack covers,
-identify the retail product and what lighting or display the owner wants to control
-before preparing a device-support request.
+ask the owner about the retail product and what lighting or display they want to control.
+Accept their best available information or an explicit unknown when preparing a
+device-support request.
 
 ## Reading the report
 
