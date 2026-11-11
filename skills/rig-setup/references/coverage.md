@@ -3,8 +3,9 @@
 Coverage answers one question per physical device: who drives it. The answer decides
 whether OpenRGB enters the setup at all. Hypercolor drives everything it has a driver
 for; the OpenRGB bridge drives only what native cannot; OpenRGB gets installed only when
-an unclaimed device needs it, never as a prerequisite; and hardware neither stack covers
-becomes a device-support request with the facts already filled in.
+an unclaimed device needs it, never as a prerequisite. For hardware neither stack covers,
+identify the retail product and what lighting or display the owner wants to control
+before preparing a device-support request.
 
 ## Reading the report
 
@@ -35,10 +36,16 @@ Work down; stop at the first row that applies.
 |---|---|---|
 | `claimable_by` names a driver | `hypercolor config set drivers.<id>.enabled true` (or `PUT /config/keys/drivers.<id>.enabled` with body `true`), then `hypercolor devices discover` | a native driver exists; it is only switched off. Native output, no OpenRGB |
 | OpenRGB lists the device (its supported-devices page, or the owner already uses it) | the guided install ladder below | the bridge fills exactly this gap |
-| neither | `python3 scripts/request_support.py --vid-pid VVVV:PPPP` | the maintainers need the VID:PID, platform, and what drives it today; the script fills those and dedupes against open issues |
+| neither, and the owner wants lighting or display support | `python3 scripts/request_support.py --vid-pid VVVV:PPPP` | prepares a form URL with detected facts and lists open and closed issues mentioning the ID; complete the form using the owner's product and lighting answers |
 
 Tell the owner which row each device landed in. A layout that covers what is drivable
 today is a finished layout; the request is the path for the rest.
+
+The request helper never posts an issue. It leaves the retail product, lighting, and
+working software answers blank unless the owner supplied the retail identity through
+`--product`. USB descriptors stay in a separate detected-details field. The script
+does not verify OpenRGB support. Review matching issues by product before submitting:
+several products can share a USB ID.
 
 Some devices the host scan lists are not lighting at all (a flash drive, a USB audio
 interface, the board's Bluetooth radio). The fallback hides a device when its interfaces,

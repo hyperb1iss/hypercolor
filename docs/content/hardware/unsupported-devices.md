@@ -119,45 +119,34 @@ minutes even when rung 3 lit the device.
 ## Rung 4: file a device-support request
 
 The [device-support issue form](https://github.com/hyperb1iss/hypercolor/issues/new?template=device-support.yml)
-asks for the vendor, model, USB VID:PID, your OS, what currently controls the device,
-protocol notes or captures, and whether you can test a driver. Every field except the
-final acknowledgement checkbox accepts a prefilled value through the URL, so the form
-can arrive with the facts already in place:
+asks which product you own, what lighting or display you want to control, and how you
+control it today. Put the retail brand and model in the title. If you cannot identify
+the product, include a product link or a photo of its label with the serial number covered.
 
-```
-https://github.com/hyperb1iss/hypercolor/issues/new
-  ?template=device-support.yml
-  &vendor=<vendor>
-  &model=<model>
-  &vid-pid=<vid>%3A<pid>
-  &platform=Linux
-  &existing-support=<what drives it today>
-```
+The **Request device support** button on an unclaimed row fills in the USB IDs, detected
+device details, operating system, and running Hypercolor version when available. USB
+names such as "USB Keyboard" are kept in the detected details; they do not identify the
+retail product or prove it has controllable lighting. If the device has no lighting or
+display, it does not need Hypercolor support.
 
-Encode spaces as `%20` and the colon in the VID:PID as `%3A`. The `platform` value must be
-one of `Linux`, `macOS`, or `Windows` exactly. The **Request support** button on an
-unclaimed row builds this URL for you, and the shipped `rig-setup` skill does the same
-from the CLI (or files directly with `gh` when you are logged in):
-
-```bash
-gh issue create --repo hyperb1iss/hypercolor --template device-support.yml
-```
-
-Tick the acknowledgement checkbox yourself; GitHub does not allow it to be prefilled.
+The shipped `rig-setup` skill can also prepare a form link and look for existing requests.
+Open the link, answer the product and lighting questions, and submit through GitHub.
+You do not need packet captures or protocol knowledge to ask for support.
 
 ### What makes a request actionable
 
-- **USB VID:PID** from `lsusb` (Linux), System Report → USB (macOS), or Device Manager →
-  Hardware Ids (Windows). `hypercolor devices unclaimed` already has it.
-- **Existing support.** If OpenRGB drives the device, say so and name the OpenRGB
-  version: it tells the driver author the protocol is knowable. SignalRGB, the vendor
-  app, or nothing at all are equally useful answers.
-- **Captures.** Wireshark `pcapng` files of the vendor app talking to the device, or
-  `hidapitester` output, turn a Known device into a Researched one. The
-  [protocol research](@/contributing/adding-a-driver.md) workflow describes how to
-  capture cleanly.
-- **Willing to test.** A driver for hardware nobody on the team owns ships only when
-  someone with the device can run a patched build and send logs.
+- **Product and behavior.** Name the actual product and describe its lights or screen,
+  what you want to change, and whether an app, physical buttons, or keyboard shortcuts
+  control it today. "I am not sure" is a useful answer too.
+- **Software and version.** Name any app that controls it and what works. Include your
+  Hypercolor version from Settings > About or `hypercolor --version`.
+- **Connection details.** USB IDs help match the device. For network or serial hardware,
+  describe the connection instead. Leave this blank if you do not know.
+- **Optional evidence.** Diagnostics, photos, and existing captures help. Review diagnostics
+  before attaching them publicly. The [protocol research](@/contributing/adding-a-driver.md)
+  workflow explains captures if a driver author needs them later.
+- **Testing availability.** Tell us whether you can test a build on the device or would
+  need instructions. You can still request support if you cannot test.
 
 ---
 

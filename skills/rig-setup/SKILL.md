@@ -36,8 +36,9 @@ one script turns them into daemon state:
   profiles, the layout, and a scene. It is idempotent, so the whole dial-in loop is
   "edit rig, apply, look".
 
-`scripts/coverage.py` (who drives each device) and `scripts/request_support.py` (an
-unclaimed device becomes a prefilled support request) serve the coverage phase.
+`scripts/coverage.py` identifies who drives each device. When lighting or display
+support is missing, `scripts/request_support.py` prepares a form with detected
+facts; complete it using the owner's product and lighting answers.
 
 The daemon stays the authority on template geometry: the generator asks it for the
 suggested zones of each binding and only places them. Read `references/daemon-api.md`
@@ -96,10 +97,12 @@ For each unclaimed device, take the first row that fits:
    `hypercolor openrgb start` → `hypercolor devices discover --target openrgb` → size hub
    zones with `hypercolor openrgb resize` and copy the sizes into the rig's
    `bridge.zone_sizes`. Each rung has a check; stop at the first one that fails.
-3. **Neither.** `python3 scripts/request_support.py --vid-pid VVVV:PPPP` builds the
-   prefilled device-support issue (or files it with `gh`) and points at an existing
-   issue instead of filing twice. Tell the owner, then continue: a layout that covers
-   what is drivable today is a finished layout.
+3. **Neither.** First identify the retail product and its lighting or display with the
+   owner. An unclaimed USB device may have neither. For a support request,
+   `python3 scripts/request_support.py --vid-pid VVVV:PPPP` prepares a GitHub form URL
+   with detected facts and lists existing issues for that ID. Complete the form using
+   the owner's product and lighting answers; the script never posts an issue.
+   Then continue: a layout that covers what is drivable today is a finished layout.
 
 Conflict rows mean both stacks reached the same silicon. Native keeps driving and the
 bridge route is output-disabled with a `disabled_reason` naming the owner. Leave it,
