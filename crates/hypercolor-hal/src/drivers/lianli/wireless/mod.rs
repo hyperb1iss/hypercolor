@@ -228,6 +228,16 @@ impl WirelessState {
             self.table.complete_membership = complete_membership;
             for cluster in &mut self.table.clusters {
                 if let Some(fresh) = fresh.iter().find(|fresh| fresh.mac == cluster.mac) {
+                    if (fresh.channel, fresh.rx_type) != (cluster.channel, cluster.rx_type) {
+                        info!(
+                            mac = %format_mac(cluster.mac),
+                            channel = fresh.channel,
+                            rx_type = fresh.rx_type,
+                            was_channel = cluster.channel,
+                            was_rx_type = cluster.rx_type,
+                            "wireless receiver reports a new address; its RGB follows the report"
+                        );
+                    }
                     cluster.rpm = fresh.rpm;
                     cluster.pwm = fresh.pwm;
                     cluster.cmd_seq = fresh.cmd_seq;
