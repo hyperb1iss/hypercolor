@@ -2748,13 +2748,13 @@ async fn run_lianli_session(
 /// Fans that stop confirming past the resync budget: the next session
 /// rests the cluster's RGB with upkeep going on, then
 /// ends the actor as a disconnect asking for a fresh connect, which the
-/// lifecycle turns into a reconnect. When the fans confirm again, their
-/// recovery budget starts over.
+/// lifecycle turns into a reconnect. When the fans confirm again and their
+/// delivery holds, their recovery budget starts over.
 #[tokio::test(start_paused = true)]
 async fn lianli_fans_past_their_resync_budget_rest_then_end_the_actor_for_a_fresh_connect() {
     use hypercolor_hal::drivers::lianli::wireless::pacing::{
-        MAX_RESYNCS_WITHOUT_DELIVERY, RECONNECT_RESTS, reconnects_without_delivery,
-        resyncs_without_delivery,
+        MAX_RESYNCS_WITHOUT_DELIVERY, RECONNECT_RESTS, SUSTAINED_DELIVERY,
+        reconnects_without_delivery, resyncs_without_delivery,
     };
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x05];
@@ -2810,10 +2810,25 @@ async fn lianli_fans_past_their_resync_budget_rest_then_end_the_actor_for_a_fres
     );
     assert_eq!(reconnects_without_delivery(cluster), 1);
 
-    // The fans answer again on the fresh connect.
+    // The fans answer again on the fresh connect. A few seconds of frames
+    // keep the budget; delivery that holds starts it over.
     pair.state().rf_dead = false;
     let (result, _) = run_lianli_session(master, controller, &pair, Duration::from_secs(5)).await;
     assert!(result.is_none(), "the recovered session streams on");
+    assert_eq!(
+        resyncs_without_delivery(cluster),
+        MAX_RESYNCS_WITHOUT_DELIVERY,
+        "a few seconds of frames are not yet a recovery"
+    );
+    assert_eq!(reconnects_without_delivery(cluster), 1);
+    let (result, _) = run_lianli_session(
+        master,
+        controller,
+        &pair,
+        SUSTAINED_DELIVERY + Duration::from_secs(5),
+    )
+    .await;
+    assert!(result.is_none(), "the session streams through the window");
     assert_eq!(resyncs_without_delivery(cluster), 0);
     assert_eq!(reconnects_without_delivery(cluster), 0);
 }

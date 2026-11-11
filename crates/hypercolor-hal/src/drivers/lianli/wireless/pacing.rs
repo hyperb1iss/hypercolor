@@ -71,15 +71,17 @@
 //!   return without a confirmed frame; later brief omissions keep the failed
 //!   probes as evidence, and only an absence past [`ABSENT_AFTER`] earns a
 //!   fresh interval again. At most [`MAX_RESYNCS_WITHOUT_DELIVERY`] resyncs
-//!   are asked for on behalf of one cluster until it confirms a frame
-//!   again, across sessions.
+//!   are asked for on behalf of one cluster until its delivery holds again,
+//!   across sessions.
 //! - Past that the stall is the fans', not the session's: the cluster's RGB
 //!   rests (upkeep goes on, so its fans hold their speed and clock), then
 //!   the session ends so the connect sequence runs again on fresh handles.
 //!   The rests grow ([`RECONNECT_RESTS`]); after the last, the log says to
 //!   power-cycle the controller, and a reconnect still follows every
 //!   [`RECONNECT_REST_HELD`]. Clusters that still confirm keep streaming
-//!   through a rest. Any confirmed frame clears the cluster's budget.
+//!   through a rest. The budget starts over once the cluster's fans confirm
+//!   frames for [`SUSTAINED_DELIVERY`] with no stall verdict between: a few
+//!   frames between stalls are a burst, not a recovery.
 //!
 //! Counters feed [`DeliveryStats`] and a periodic info line comparing frames
 //! sent with frames the echoes confirmed.
@@ -153,9 +155,15 @@ pub const ECHO_STALL: Duration = Duration::from_secs(5);
 /// A cluster counts as heard for the stall verdict when it was in a table
 /// reply this recently.
 const HEARD_WITHIN: Duration = Duration::from_secs(1);
-/// Resyncs asked for on behalf of one cluster before it confirms a frame
+/// Resyncs asked for on behalf of one cluster before its delivery holds
 /// again.
 pub const MAX_RESYNCS_WITHOUT_DELIVERY: u32 = 2;
+/// How long a recovering cluster's fans must keep confirming frames, with
+/// no stall verdict between, before its recovery budget starts over. On the
+/// owner's rig stalls have come in bursts 8 to 60 s apart, each cleared by a
+/// resync; starting over on the first confirmed frame turned every burst
+/// into a resync loop that never reached the rests.
+pub const SUSTAINED_DELIVERY: Duration = Duration::from_mins(2);
 /// Once a cluster's resync budget is spent, how long its RGB rests before
 /// each reconnect runs the connect sequence again. On the owner's rig,
 /// three TX resets and three reconnects within 25 s did not bring stalled
@@ -168,8 +176,8 @@ pub const RECONNECT_RESTS: [Duration; 5] = [
     Duration::from_mins(2),
     Duration::from_mins(5),
 ];
-/// Reconnects asked for on behalf of one cluster before the log says to
-/// power-cycle the controller.
+/// Reconnects asked for on behalf of one cluster, before its delivery holds
+/// again, before the log says to power-cycle the controller.
 pub const MAX_RECONNECTS_WITHOUT_DELIVERY: u32 = 5;
 /// The rest before each reconnect after that: the only recovery seen came
 /// after a long rest, so the reconnects never stop, only slow.
@@ -208,8 +216,8 @@ pub enum StallVerdict {
         unconfirmed_for: Duration,
         /// Resends tried in that time.
         resends: u32,
-        /// Resyncs asked for since this cluster last confirmed, this one
-        /// included.
+        /// Resyncs asked for since this cluster's delivery last held, this
+        /// one included.
         resyncs: u32,
     },
     /// The cluster's resync budget is spent: its RGB rests, with upkeep
@@ -221,16 +229,16 @@ pub enum StallVerdict {
         unconfirmed_for: Duration,
         /// How long the rest lasts.
         rest: Duration,
-        /// The reconnect the rest leads to, counted since the cluster last
-        /// confirmed a frame.
+        /// The reconnect the rest leads to, counted since the cluster's
+        /// delivery last held.
         attempt: u32,
     },
     /// A rest ran out: the session ends so the connect sequence runs again.
     Reconnect {
         /// Index of the cluster the reconnect is for.
         cluster: usize,
-        /// Reconnects asked for since the cluster last confirmed a frame,
-        /// this one included.
+        /// Reconnects asked for since the cluster's delivery last held, this
+        /// one included.
         attempt: u32,
     },
 }
@@ -1163,16 +1171,24 @@ impl DeliveryPacer {
                 stats.congestion_events += 1 + shared;
             }
         });
-        if let Some(mac) = mac
-            && let Some(recovery) = forget_recovery(mac)
-            && recovery.reconnects > 0
-        {
-            info!(
+        let Some(mac) = mac else {
+            return;
+        };
+        match note_delivery(mac, now) {
+            DeliveryProgress::Resumed(recovery) => info!(
                 cluster,
                 resyncs = recovery.resyncs,
                 reconnects = recovery.reconnects,
-                "L-Wireless fans confirm frames again after reconnecting"
-            );
+                hold_s = SUSTAINED_DELIVERY.as_secs(),
+                "L-Wireless fans confirm frames again; their recovery budget starts over once delivery holds"
+            ),
+            DeliveryProgress::Recovered(recovery) => info!(
+                cluster,
+                resyncs = recovery.resyncs,
+                reconnects = recovery.reconnects,
+                "L-Wireless fans held their delivery; their recovery budget starts over"
+            ),
+            DeliveryProgress::Steady | DeliveryProgress::Holding => {}
         }
     }
 
@@ -1267,6 +1283,9 @@ impl DeliveryPacer {
             let attempt = done.saturating_add(1);
             link.holding = true;
             link.rest_until = Some(now + rest);
+            if let Some(mac) = link.mac {
+                interrupt_delivery(mac);
+            }
             match done.cmp(&MAX_RECONNECTS_WITHOUT_DELIVERY) {
                 std::cmp::Ordering::Less => warn!(
                     cluster,
@@ -1444,15 +1463,18 @@ fn next_send_number() -> u32 {
     .fetch_add(1, Ordering::Relaxed)
 }
 
-/// What recovering a cluster that stopped confirming has cost since it
-/// last confirmed a frame: resyncs, then rested reconnects.
+/// What recovering a cluster that stopped confirming has cost since its
+/// delivery last held: resyncs, then rested reconnects.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Recovery {
     resyncs: u32,
     reconnects: u32,
+    /// When the fans began confirming frames again with no stall verdict
+    /// since; the budget starts over [`SUSTAINED_DELIVERY`] later.
+    delivering_since: Option<Instant>,
 }
 
-/// Each cluster's recovery (by radio MAC) since it last confirmed a frame.
+/// Each cluster's recovery (by radio MAC) since its delivery last held.
 /// Kept for the process, so a reconnect cannot turn fans that stay silent
 /// into a resync loop, and per cluster, so fans that still confirm cannot
 /// renew a failing cluster's budget.
@@ -1471,22 +1493,22 @@ fn recovery_of(mac: Mac) -> Recovery {
 }
 
 /// Whether the cluster `mac` is being recovered from a stall: a resync or
-/// a reconnect was asked for on its behalf since it last confirmed a frame.
+/// a reconnect was asked for on its behalf since its delivery last held.
 #[must_use]
 pub fn recovering(mac: Mac) -> bool {
     let recovery = recovery_of(mac);
     recovery.resyncs > 0 || recovery.reconnects > 0
 }
 
-/// Resyncs asked for on behalf of the cluster `mac` since it last confirmed
-/// a frame.
+/// Resyncs asked for on behalf of the cluster `mac` since its delivery last
+/// held.
 #[must_use]
 pub fn resyncs_without_delivery(mac: Mac) -> u32 {
     recovery_of(mac).resyncs
 }
 
-/// Reconnects asked for on behalf of the cluster `mac` since it last
-/// confirmed a frame.
+/// Reconnects asked for on behalf of the cluster `mac` since its delivery
+/// last held.
 #[must_use]
 pub fn reconnects_without_delivery(mac: Mac) -> u32 {
     recovery_of(mac).reconnects
@@ -1498,6 +1520,7 @@ fn note_resync(mac: Mac) -> u32 {
         .unwrap_or_else(PoisonError::into_inner);
     let recovery = budget.entry(mac).or_default();
     recovery.resyncs = recovery.resyncs.saturating_add(1);
+    recovery.delivering_since = None;
     recovery.resyncs
 }
 
@@ -1507,19 +1530,55 @@ fn note_reconnect(mac: Mac) -> u32 {
         .unwrap_or_else(PoisonError::into_inner);
     let recovery = budget.entry(mac).or_default();
     recovery.reconnects = recovery.reconnects.saturating_add(1);
+    recovery.delivering_since = None;
     recovery.reconnects
 }
 
-/// The cluster `mac` confirmed a frame: its recovery starts over. Returns
-/// what it had cost.
-fn forget_recovery(mac: Mac) -> Option<Recovery> {
+/// A stall verdict for the cluster `mac`: whatever delivery it had resumed
+/// no longer counts toward [`SUSTAINED_DELIVERY`].
+fn interrupt_delivery(mac: Mac) {
+    if let Some(recovery) = recovery_budget()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get_mut(&mac)
+    {
+        recovery.delivering_since = None;
+    }
+}
+
+/// Where a recovering cluster stands after one of its frames was confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryProgress {
+    /// Nothing was being recovered.
+    Steady,
+    /// The first confirmed frame since the last stall verdict.
+    Resumed(Recovery),
+    /// Confirming again, not yet for [`SUSTAINED_DELIVERY`].
+    Holding,
+    /// Delivery held for [`SUSTAINED_DELIVERY`]: the recovery starts over.
+    Recovered(Recovery),
+}
+
+/// The cluster `mac` confirmed a frame at `now`. Its recovery starts over
+/// once its fans have kept confirming for [`SUSTAINED_DELIVERY`] with no
+/// stall verdict between.
+fn note_delivery(mac: Mac, now: Instant) -> DeliveryProgress {
     let mut budget = recovery_budget()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if budget.is_empty() {
-        return None;
+    let Some(recovery) = budget.get_mut(&mac) else {
+        return DeliveryProgress::Steady;
+    };
+    let Some(since) = recovery.delivering_since else {
+        recovery.delivering_since = Some(now);
+        return DeliveryProgress::Resumed(*recovery);
+    };
+    if now.saturating_duration_since(since) < SUSTAINED_DELIVERY {
+        return DeliveryProgress::Holding;
     }
-    budget.remove(&mac)
+    budget
+        .remove(&mac)
+        .map_or(DeliveryProgress::Steady, DeliveryProgress::Recovered)
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -1776,11 +1835,12 @@ mod tests {
             assert_eq!(reconnects_without_delivery(mac), attempt);
         }
         assert_eq!(
-            forget_recovery(mac),
-            Some(Recovery {
+            recovery_of(mac),
+            Recovery {
                 resyncs: MAX_RESYNCS_WITHOUT_DELIVERY,
                 reconnects: MAX_RECONNECTS_WITHOUT_DELIVERY + 2,
-            })
+                delivering_since: None,
+            }
         );
     }
 

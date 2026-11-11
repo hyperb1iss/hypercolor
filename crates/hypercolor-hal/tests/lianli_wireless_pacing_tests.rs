@@ -18,7 +18,8 @@ use std::time::Duration;
 
 use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, SessionEnd, content_of, moving_frame};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
-    DeliveryStats, ECHO_STALL, MAX_RESYNCS_WITHOUT_DELIVERY, MAX_WINDOW, resyncs_without_delivery,
+    DeliveryStats, ECHO_STALL, MAX_RESYNCS_WITHOUT_DELIVERY, MAX_WINDOW, SUSTAINED_DELIVERY,
+    resyncs_without_delivery,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
 
@@ -646,11 +647,17 @@ fn a_tx_that_never_delivers_spends_a_bounded_resync_budget_then_rests() {
     );
 
     // A power-cycled controller whose fans confirm again gets its budget
-    // back.
+    // back once their delivery holds.
     rig.radio.rf_dead = false;
     let mut rig = rig.reconnect();
     rig.run_for(Duration::from_secs(2));
     assert!(rig.stats().frames_delivered > 0);
+    assert_eq!(
+        resyncs_without_delivery(cluster),
+        MAX_RESYNCS_WITHOUT_DELIVERY,
+        "a few confirmed frames do not reset the budget yet"
+    );
+    rig.run_for(SUSTAINED_DELIVERY);
     assert_eq!(resyncs_without_delivery(cluster), 0);
 }
 

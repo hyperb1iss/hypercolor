@@ -21,7 +21,7 @@ use std::time::Duration;
 use fake::{FRAME_PERIOD, FakeRadio, Rig, SessionEnd};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
     MAX_RECONNECTS_WITHOUT_DELIVERY, MAX_RESYNCS_WITHOUT_DELIVERY, RECONNECT_REST_HELD,
-    RECONNECT_RESTS, reconnects_without_delivery, resyncs_without_delivery,
+    RECONNECT_RESTS, SUSTAINED_DELIVERY, reconnects_without_delivery, resyncs_without_delivery,
 };
 use hypercolor_hal::protocol::Protocol;
 
@@ -112,6 +112,11 @@ fn fans_stalled_past_their_resyncs_come_back_after_a_rested_reconnect() {
         taken * 100 >= usize::try_from(offered).expect("small") * 90,
         "streaming at the offered rate again: {taken} of {offered} frames in 20 s"
     );
+    assert!(
+        reconnects_without_delivery(mac) > 0,
+        "20 s of frames is not yet a recovery"
+    );
+    rig.run_for(SUSTAINED_DELIVERY);
     assert_eq!(resyncs_without_delivery(mac), 0, "the budget starts over");
     assert_eq!(reconnects_without_delivery(mac), 0);
     assert!(rig.protocol.session_restart().is_none());
@@ -259,4 +264,51 @@ fn a_radio_that_comes_back_needs_no_rest() {
         taken * 100 >= usize::try_from(offered).expect("small") * 90,
         "{taken} of {offered} frames"
     );
+}
+
+/// The owner's burst: stalls every few seconds of delivery, each cleared by
+/// the next fresh connect. Every resync works, so starting the budget over
+/// on the first confirmed frame resynced forever. A burst now spends the
+/// budget, then rests between reconnects; once the stalls stop and delivery
+/// holds for [`SUSTAINED_DELIVERY`], the budget starts over.
+#[test]
+fn a_burst_of_stalls_that_resyncs_clear_escalates_to_rests() {
+    let mut rig = streaming_rig();
+    let mac = rig.radio.clusters[0].mac;
+    for stall in 0..6 {
+        let at = rig.now();
+        rig.radio.clusters[0].stall_from(at, Duration::ZERO);
+        let waited = rig.now();
+        while rig.radio.clusters[0].stall_cleared_at.is_none() {
+            assert!(
+                rig.now().saturating_sub(waited) <= Duration::from_mins(10),
+                "stall {stall} clears: {:?}",
+                rig.session_ends
+            );
+            rig.run_for(Duration::from_millis(250));
+        }
+        rig.run_for(Duration::from_secs(15));
+    }
+
+    let (resyncs, restarts) = ends(&rig);
+    assert_eq!(
+        u32::try_from(resyncs).expect("small"),
+        MAX_RESYNCS_WITHOUT_DELIVERY,
+        "the burst spends the resync budget once, no resync loop: {:?}",
+        rig.session_ends
+    );
+    assert_eq!(
+        restarts, 4,
+        "the other stalls each rest before a reconnect: {:?}",
+        rig.session_ends
+    );
+    assert_eq!(reconnects_without_delivery(mac), 4);
+
+    let (taken, offered) = streaming_over(&mut rig, SUSTAINED_DELIVERY);
+    assert!(
+        taken * 100 >= usize::try_from(offered).expect("small") * 90,
+        "streaming at the offered rate once the burst ends: {taken} of {offered} frames"
+    );
+    assert_eq!(resyncs_without_delivery(mac), 0, "the budget starts over");
+    assert_eq!(reconnects_without_delivery(mac), 0);
 }
