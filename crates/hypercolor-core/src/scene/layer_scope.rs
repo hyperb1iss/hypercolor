@@ -134,7 +134,10 @@ enum Carry {
 ///   scope intact and goes dormant, because no one zone holds what it
 ///   named and dropping every id would leave an empty scope.
 ///
-/// A layer whose id the destination already uses also stays.
+/// A layer whose id the destination already uses also stays, and so does
+/// the second of two layers that share an id and would land in the same
+/// zone. Layer ids are unique within a zone, not across a scene, and a
+/// carry never overwrites a layer or drops one.
 #[must_use]
 pub fn plan_layer_carry(scene: &Scene, moves: &[OutputMove]) -> Vec<LayerMove> {
     let mut carries: Vec<(ZoneId, SceneLayerId, Carry)> = Vec::new();
@@ -158,7 +161,17 @@ pub fn plan_layer_carry(scene: &Scene, moves: &[OutputMove]) -> Vec<LayerMove> {
             let Some(scope) = &layer.scope else {
                 continue;
             };
-            if let Some(carry) = carry_for(scene, zone, layer.id, scope, &leaving) {
+            let Some(carry) = carry_for(scene, zone, layer.id, scope, &leaving) else {
+                continue;
+            };
+            let lands_on_a_twin = carries.iter().any(|(_, carried, prior)| {
+                *carried == layer.id
+                    && matches!(
+                        (prior, &carry),
+                        (Carry::Move(taken), Carry::Move(wanted)) if taken == wanted
+                    )
+            });
+            if !lands_on_a_twin {
                 carries.push((zone.id, layer.id, carry));
             }
         }
@@ -292,10 +305,16 @@ pub(super) fn validate_layer_moves(
             .find(|zone| zone.id == zone_id)
             .ok_or(LayerMutationError::ZoneMissing)
     };
+    // A layer id is unique within a zone, not across a scene, so a move is
+    // identified by its source zone and id, and two moves may not land the
+    // same id in one zone.
     let mut moving = HashSet::new();
+    let mut landing = HashSet::new();
     for moved in moves {
         let layer_id = moved.layer_id;
-        if !moving.insert(layer_id) {
+        if !moving.insert((moved.from.zone_id, layer_id))
+            || !landing.insert((moved.to.zone_id, layer_id))
+        {
             return Err(LayerMutationError::DuplicateLayer { layer_id });
         }
         let source = zone(moved.from.zone_id)?;
@@ -358,7 +377,7 @@ pub(super) fn validate_layer_moves(
 /// index in ascending order, so an index always names a position in the
 /// finished stack. Returns the zones whose stacks changed.
 pub(super) fn execute_layer_moves(scene: &mut Scene, moves: &[LayerMove]) -> Vec<ZoneId> {
-    let mut lifted: HashMap<SceneLayerId, SceneLayer> = HashMap::new();
+    let mut lifted: HashMap<(ZoneId, SceneLayerId), SceneLayer> = HashMap::new();
     let mut touched = Vec::new();
     for moved in moves {
         let Some(zone) = scene
@@ -373,7 +392,7 @@ pub(super) fn execute_layer_moves(scene: &mut Scene, moves: &[LayerMove]) -> Vec
             .iter()
             .position(|layer| layer.id == moved.layer_id)
         {
-            lifted.insert(moved.layer_id, zone.layers.remove(index));
+            lifted.insert((zone.id, moved.layer_id), zone.layers.remove(index));
             if !touched.contains(&zone.id) {
                 touched.push(zone.id);
             }
@@ -383,7 +402,7 @@ pub(super) fn execute_layer_moves(scene: &mut Scene, moves: &[LayerMove]) -> Vec
     let mut landing = moves.iter().collect::<Vec<_>>();
     landing.sort_by_key(|moved| moved.to.index);
     for moved in landing {
-        let Some(mut layer) = lifted.remove(&moved.layer_id) else {
+        let Some(mut layer) = lifted.remove(&(moved.from.zone_id, moved.layer_id)) else {
             continue;
         };
         let Some(zone) = scene

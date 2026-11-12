@@ -792,6 +792,145 @@ fn a_replayed_move_cannot_land_on_a_zone_that_already_uses_the_layer_id() {
     );
 }
 
+/// A third zone holding the strip and the screen, with a scoped layer
+/// that shares its id with one in the primary zone. Scene validation
+/// accepts the shared id: layer ids are unique per zone.
+fn rig_with_a_twin(main_scope: &[&str], shelf_scope: &[&str]) -> (Rig, ZoneId, SceneLayerId) {
+    let mut rig = rig();
+    let shared = rig.add(rig.main, main_scope);
+    let shelf = rig
+        .manager
+        .create_zone(&SCENE, "Shelf".to_owned(), None, (320, 200))
+        .expect("third zone");
+    rig.move_outputs(shelf, &[STRIP, SCREEN]);
+    let mut twin = scoped_layer(shelf_scope);
+    twin.id = shared;
+    twin.name = Some("Twin".to_owned());
+    let mut scene = rig.scene().clone();
+    scene
+        .zones
+        .iter_mut()
+        .find(|zone| zone.id == shelf)
+        .expect("shelf")
+        .layers
+        .push(twin);
+    rig.manager.update(scene).expect("store the twin");
+    (rig, shelf, shared)
+}
+
+fn scene_layer_count(rig: &Rig) -> usize {
+    rig.scene().zones.iter().map(|zone| zone.layers.len()).sum()
+}
+
+#[test]
+fn two_layers_sharing_an_id_are_never_carried_into_one_zone() {
+    let (mut rig, shelf, shared) = rig_with_a_twin(&[KEYS], &[STRIP]);
+    let layers_before = scene_layer_count(&rig);
+
+    // One edit takes each twin's only output to the same third zone.
+    let moves = rig.move_outputs(rig.desk, &[KEYS, STRIP]);
+
+    assert_eq!(
+        moves.len(),
+        1,
+        "the second twin stays rather than land on the first: {moves:?}"
+    );
+    assert_eq!(moves[0].from.zone_id, rig.main);
+    assert_eq!(scene_layer_count(&rig), layers_before, "no layer is lost");
+    assert_eq!(rig.stack(rig.desk), vec![shared]);
+    let carried = rig.layer(rig.desk, shared);
+    assert_eq!(carried.scope, Some(scope(&[KEYS])));
+    assert_eq!(
+        carried.name, None,
+        "the primary zone's layer is the one carried"
+    );
+    let stayed = rig.layer(shelf, shared);
+    assert_eq!(stayed.name.as_deref(), Some("Twin"));
+    assert_eq!(
+        stayed.scope,
+        Some(scope(&[STRIP])),
+        "the twin keeps its scope and goes dormant"
+    );
+    assert!(rig.zone(shelf).layer_is_dormant(stayed));
+}
+
+#[test]
+fn two_layers_sharing_an_id_are_narrowed_independently() {
+    let (mut rig, shelf, shared) = rig_with_a_twin(&[KEYS, LOGO], &[STRIP, SCREEN]);
+    let layers_before = scene_layer_count(&rig);
+
+    // One edit takes one output from each twin, so both stay and narrow.
+    let moves = rig.move_outputs(rig.desk, &[KEYS, STRIP]);
+
+    assert_eq!(moves.len(), 2);
+    assert_eq!(scene_layer_count(&rig), layers_before, "no layer is lost");
+    assert!(rig.stack(rig.desk).is_empty());
+    assert_eq!(rig.layer(rig.main, shared).scope, Some(scope(&[LOGO])));
+    assert_eq!(rig.layer(rig.main, shared).name, None);
+    assert_eq!(rig.layer(shelf, shared).scope, Some(scope(&[SCREEN])));
+    assert_eq!(rig.layer(shelf, shared).name.as_deref(), Some("Twin"));
+
+    // The same moves replay in reverse, each finding its own layer.
+    for moved in [KEYS, STRIP] {
+        rig.manager
+            .unassign_output(&SCENE, moved)
+            .expect("lift the output");
+    }
+    rig.manager
+        .assign_output_to_zone(&SCENE, rig.main, output(KEYS), OutputPlacement::Preserve)
+        .expect("return the keys");
+    rig.manager
+        .assign_output_to_zone(&SCENE, shelf, output(STRIP), OutputPlacement::Preserve)
+        .expect("return the strip");
+    let reversed = moves.iter().map(LayerMove::reversed).collect::<Vec<_>>();
+    rig.manager
+        .apply_layer_moves(SCENE, &reversed)
+        .expect("moves that share an id are told apart by their zone");
+    assert_eq!(
+        rig.layer(rig.main, shared).scope,
+        Some(scope(&[KEYS, LOGO]))
+    );
+    assert_eq!(
+        rig.layer(shelf, shared).scope,
+        Some(scope(&[SCREEN, STRIP]))
+    );
+}
+
+#[test]
+fn replayed_moves_may_not_land_one_id_twice_in_a_zone() {
+    let (mut rig, shelf, shared) = rig_with_a_twin(&[KEYS], &[STRIP]);
+    let before = rig.scene().clone();
+    let landing = |from: ZoneId, outputs: &[&str], index| LayerMove {
+        layer_id: shared,
+        from: LayerSlot {
+            zone_id: from,
+            index: 1,
+        },
+        to: LayerSlot {
+            zone_id: rig.desk,
+            index,
+        },
+        scope_before: scope(outputs),
+        scope_after: scope(outputs),
+    };
+    let both = [
+        landing(rig.main, &[KEYS], 0),
+        LayerMove {
+            from: LayerSlot {
+                zone_id: shelf,
+                index: 0,
+            },
+            ..landing(shelf, &[STRIP], 1)
+        },
+    ];
+
+    assert_eq!(
+        rig.manager.apply_layer_moves(SCENE, &both),
+        Err(LayerMutationError::DuplicateLayer { layer_id: shared })
+    );
+    assert_eq!(rig.scene(), &before, "a refused replay changes nothing");
+}
+
 #[test]
 fn the_stop_gesture_names_the_first_effect_it_removes() {
     use hypercolor_core::scene::first_lighting_effect;
