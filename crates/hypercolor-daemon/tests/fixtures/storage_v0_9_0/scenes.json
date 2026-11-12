@@ -1,0 +1,612 @@
+{
+  "schema_version": 2,
+  "scenes": {
+    "01a1d074-95a2-756b-aa84-078796274b23": {
+      "id": "01a1d074-95a2-756b-aa84-078796274b23",
+      "name": "Studio Session",
+      "description": null,
+      "zones": [
+        {
+          "id": "01a1d074-95a2-756b-aa84-078829f3c077",
+          "name": "Main",
+          "description": "The scene's main zone.",
+          "layers": [
+            {
+              "id": "01a1d074-95a2-756b-aa84-078987ba4c35",
+              "source": {
+                "type": "effect",
+                "effect_id": "01a1d074-95a2-756b-aa84-077adfa64352",
+                "controls": {
+                  "speed": {
+                    "kind": "float",
+                    "value": 0.6
+                  },
+                  "density": {
+                    "kind": "float",
+                    "value": 0.35
+                  }
+                }
+              },
+              "blend": "replace",
+              "opacity": 1.0,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            }
+          ],
+          "layout": {
+            "id": "default",
+            "name": "Default Layout",
+            "description": null,
+            "canvas_width": 640,
+            "canvas_height": 480,
+            "zones": [
+              {
+                "id": "usb:keyboard-main",
+                "name": "Keyboard",
+                "device_id": "usb:keyboard",
+                "zone_name": "main",
+                "position": {
+                  "x": 0.2,
+                  "y": 0.5
+                },
+                "size": {
+                  "x": 0.2,
+                  "y": 0.15
+                },
+                "rotation": 0.0,
+                "scale": 1.0,
+                "display_order": 0,
+                "orientation": null,
+                "topology": {
+                  "type": "matrix",
+                  "width": 22,
+                  "height": 6,
+                  "serpentine": false,
+                  "start_corner": "top_left"
+                },
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null,
+                "attachment": null
+              },
+              {
+                "id": "usb:hub-channel-1",
+                "name": "Case Strip",
+                "device_id": "usb:hub",
+                "zone_name": "Channel 1",
+                "position": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "size": {
+                  "x": 0.2,
+                  "y": 0.15
+                },
+                "rotation": 0.0,
+                "scale": 1.0,
+                "display_order": 0,
+                "orientation": null,
+                "topology": {
+                  "type": "strip",
+                  "count": 30,
+                  "direction": "left_to_right"
+                },
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null,
+                "attachment": null
+              },
+              {
+                "id": "usb:pump-lcd-display",
+                "name": "Pump LCD",
+                "device_id": "usb:pump-lcd",
+                "zone_name": "Display",
+                "position": {
+                  "x": 0.4,
+                  "y": 0.5
+                },
+                "size": {
+                  "x": 0.12,
+                  "y": 0.12
+                },
+                "rotation": 0.0,
+                "scale": 1.0,
+                "display_order": 0,
+                "orientation": null,
+                "topology": {
+                  "type": "point"
+                },
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null,
+                "attachment": null
+              },
+              {
+                "id": "usb:fan-lcd-display",
+                "name": "Fan LCD",
+                "device_id": "usb:fan-lcd",
+                "zone_name": "Display",
+                "position": {
+                  "x": 0.6,
+                  "y": 0.5
+                },
+                "size": {
+                  "x": 0.12,
+                  "y": 0.12
+                },
+                "rotation": 0.0,
+                "scale": 1.0,
+                "display_order": 0,
+                "orientation": null,
+                "topology": {
+                  "type": "point"
+                },
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null,
+                "attachment": null
+              },
+              {
+                "id": "usb:push2-display",
+                "name": "Push 2 Display",
+                "device_id": "usb:push2",
+                "zone_name": "Display",
+                "position": {
+                  "x": 0.8,
+                  "y": 0.5
+                },
+                "size": {
+                  "x": 0.12,
+                  "y": 0.12
+                },
+                "rotation": 0.0,
+                "scale": 1.0,
+                "display_order": 0,
+                "orientation": null,
+                "topology": {
+                  "type": "point"
+                },
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null,
+                "attachment": null
+              }
+            ],
+            "default_sampling_mode": {
+              "type": "bilinear"
+            },
+            "default_edge_behavior": "clamp",
+            "version": 1
+          },
+          "brightness": 1.0,
+          "enabled": true,
+          "color": null,
+          "role": "primary",
+          "controls_version": 0,
+          "layers_version": 1
+        },
+        {
+          "id": "01a1d074-95a2-756b-aa84-078a9d3a30a4",
+          "name": "Push 2",
+          "description": null,
+          "layers": [
+            {
+              "id": "01a1d074-95a2-756b-aa84-078b262e8ac7",
+              "source": {
+                "type": "effect",
+                "effect_id": "01a1d074-95a2-756b-aa84-077adfa64352",
+                "controls": {}
+              },
+              "blend": "replace",
+              "opacity": 1.0,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            },
+            {
+              "id": "01a1d074-95a2-756b-aa84-078c1b59e94c",
+              "source": {
+                "type": "effect",
+                "effect_id": "01a1d074-95a2-756b-aa84-077bb01bb9fa",
+                "controls": {
+                  "radius": {
+                    "kind": "float",
+                    "value": 0.25
+                  }
+                }
+              },
+              "blend": "screen",
+              "opacity": 1.0,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            }
+          ],
+          "layout": {
+            "id": "zone-01a1d074-95a2-756b-aa84-078a9d3a30a4",
+            "name": "Zone Layout",
+            "description": null,
+            "canvas_width": 640,
+            "canvas_height": 480,
+            "zones": [
+              {
+                "id": "usb:push2-pads",
+                "name": "Push 2 Pads",
+                "device_id": "usb:push2",
+                "zone_name": "Pads",
+                "position": {
+                  "x": 0.75,
+                  "y": 0.5
+                },
+                "size": {
+                  "x": 0.2,
+                  "y": 0.15
+                },
+                "rotation": 0.0,
+                "scale": 1.0,
+                "display_order": 0,
+                "orientation": null,
+                "topology": {
+                  "type": "matrix",
+                  "width": 8,
+                  "height": 8,
+                  "serpentine": false,
+                  "start_corner": "top_left"
+                },
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null,
+                "attachment": null
+              }
+            ],
+            "default_sampling_mode": {
+              "type": "bilinear"
+            },
+            "default_edge_behavior": "clamp",
+            "version": 1
+          },
+          "brightness": 1.0,
+          "enabled": true,
+          "color": "#e135ff",
+          "role": "custom",
+          "controls_version": 1,
+          "layers_version": 2
+        },
+        {
+          "id": "01a1d074-95a2-756b-aa84-078de2516f31",
+          "name": "Pump LCD Face",
+          "description": "Display face for Pump LCD",
+          "layers": [
+            {
+              "id": "01a1d074-95a2-756b-aa84-078e1734ff15",
+              "source": {
+                "type": "effect",
+                "effect_id": "01a1d074-95a2-756b-aa84-077c9a7755d3",
+                "controls": {
+                  "unit": {
+                    "kind": "text",
+                    "value": "celsius"
+                  }
+                }
+              },
+              "blend": "replace",
+              "opacity": 1.0,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            }
+          ],
+          "layout": {
+            "id": "display-face:01a1d074-95a2-756b-aa84-077f03f7fb53",
+            "name": "Pump LCD Display Face",
+            "description": "Native-resolution face canvas for Pump LCD",
+            "canvas_width": 480,
+            "canvas_height": 480,
+            "zones": [],
+            "default_sampling_mode": {
+              "type": "bilinear"
+            },
+            "default_edge_behavior": "clamp",
+            "version": 1
+          },
+          "brightness": 1.0,
+          "enabled": true,
+          "color": null,
+          "display_target": {
+            "device_id": "01a1d074-95a2-756b-aa84-077f03f7fb53"
+          },
+          "role": "display",
+          "controls_version": 0,
+          "layers_version": 1
+        },
+        {
+          "id": "01a1d074-95a2-756b-aa84-078fa705fb29",
+          "name": "Push 2 Display Face",
+          "description": "Display face for Push 2 Display",
+          "layers": [
+            {
+              "id": "01a1d074-95a2-756b-aa84-0790da924491",
+              "source": {
+                "type": "effect",
+                "effect_id": "01a1d074-95a2-756b-aa84-077d8bc34d0b",
+                "controls": {}
+              },
+              "blend": "replace",
+              "opacity": 1.0,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            },
+            {
+              "id": "01a1d074-95a2-756b-aa84-079110176a55",
+              "name": "Tint",
+              "source": {
+                "type": "color_fill",
+                "rgba": [
+                  0.5,
+                  0.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "blend": "multiply",
+              "opacity": 0.5,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            },
+            {
+              "id": "01a1d074-95a2-756b-aa84-0792ef82fb1c",
+              "name": "Tint",
+              "source": {
+                "type": "color_fill",
+                "rgba": [
+                  0.0,
+                  1.0,
+                  0.8,
+                  1.0
+                ]
+              },
+              "blend": "add",
+              "opacity": 0.25,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            }
+          ],
+          "layout": {
+            "id": "display-face:01a1d074-95a2-756b-aa84-0781ed549436",
+            "name": "Push 2 Display Display Face",
+            "description": "Native-resolution face canvas for Push 2 Display",
+            "canvas_width": 960,
+            "canvas_height": 160,
+            "zones": [],
+            "default_sampling_mode": {
+              "type": "bilinear"
+            },
+            "default_edge_behavior": "clamp",
+            "version": 1
+          },
+          "brightness": 1.0,
+          "enabled": true,
+          "color": null,
+          "display_target": {
+            "device_id": "01a1d074-95a2-756b-aa84-0781ed549436",
+            "blend_mode": "screen",
+            "opacity": 0.8
+          },
+          "role": "display",
+          "controls_version": 0,
+          "layers_version": 3
+        },
+        {
+          "id": "01a1d074-95a2-756b-aa84-0793026f95b5",
+          "name": "Fan LCD",
+          "description": "Screen surface for Fan LCD",
+          "layers": [],
+          "layout": {
+            "id": "display-face:01a1d074-95a2-756b-aa84-0780c00852ad",
+            "name": "Fan LCD Display Face",
+            "description": "Native-resolution face canvas for Fan LCD",
+            "canvas_width": 400,
+            "canvas_height": 400,
+            "zones": [],
+            "default_sampling_mode": {
+              "type": "bilinear"
+            },
+            "default_edge_behavior": "clamp",
+            "version": 1
+          },
+          "brightness": 1.0,
+          "enabled": true,
+          "color": null,
+          "display_target": {
+            "device_id": "01a1d074-95a2-756b-aa84-0780c00852ad"
+          },
+          "role": "display",
+          "controls_version": 0,
+          "layers_version": 0
+        }
+      ],
+      "zones_revision": 4,
+      "transition": {
+        "duration_ms": 1000,
+        "easing": "Linear",
+        "color_interpolation": "Oklab"
+      },
+      "priority": 50,
+      "enabled": true,
+      "metadata": {},
+      "kind": "named",
+      "mutation_mode": "live"
+    }
+  }
+}

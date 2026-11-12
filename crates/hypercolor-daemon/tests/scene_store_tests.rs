@@ -139,7 +139,7 @@ fn scene_store_rejects_unversioned_legacy_data_without_rewriting_the_file() {
 
     let error = scene_store::load(&path).expect_err("legacy scene store must fail closed");
     let message = format!("{error:#}");
-    assert!(message.contains(r#"{"schema_version":2,"scenes":{...}}"#));
+    assert!(message.contains(r#"{"schema_version":3,"scenes":{...}}"#));
     assert!(message.contains("pre-v2 Hypercolor release"));
     assert_eq!(
         std::fs::read_to_string(&path).expect("legacy payload should remain readable"),
@@ -149,17 +149,139 @@ fn scene_store_rejects_unversioned_legacy_data_without_rewriting_the_file() {
 }
 
 #[test]
-fn scene_store_rejects_unknown_versions_without_rewriting_the_file() {
+fn scene_store_rejects_a_newer_schema_without_rewriting_the_file() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
-    let payload = r#"{"schema_version":3,"scenes":{}}"#;
+    let payload = r#"{"schema_version":4,"scenes":{},"written_by_a_newer_release":true}"#;
     std::fs::write(&path, payload).expect("future scene store should write");
 
     let error = scene_store::load(&path).expect_err("future schema must fail closed");
-    assert!(format!("{error:#}").contains("zones/layers schema"));
+    let message = format!("{error:#}");
+    assert!(message.contains("schema version 4"), "{message}");
+    assert!(message.contains("newer Hypercolor"), "{message}");
+    assert!(message.contains("schemas 2 through 3"), "{message}");
     assert_eq!(
         std::fs::read_to_string(&path).expect("future payload should remain readable"),
         payload
+    );
+}
+
+#[test]
+fn scene_store_rejects_a_schema_below_the_floor_without_rewriting_the_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let payload = r#"{"schema_version":1,"scenes":{}}"#;
+    std::fs::write(&path, payload).expect("old scene store should write");
+
+    let error = scene_store::load(&path).expect_err("a retired schema must fail closed");
+    assert!(format!("{error:#}").contains("zones/layers schema"));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("old payload should remain readable"),
+        payload
+    );
+}
+
+/// `scenes.json` as the real v0.9.0 scene store wrote it: schema 2, one
+/// named scene with a primary zone that places three screens, a custom
+/// zone with a two-layer stack, and three display zones (a single face, a
+/// three-layer stack under a `screen` target at 0.8 opacity, and a surface
+/// with no layers whose face is the kept one in the sibling
+/// `display-preferences.json`). Captured by running the v0.9.0 scene
+/// manager and `SceneStore`. Frozen: never edit it to make a test pass.
+const V0_9_0_SCENES: &str = include_str!("fixtures/storage_v0_9_0/scenes.json");
+
+fn v0_9_0_scenes() -> serde_json::Value {
+    serde_json::from_str(V0_9_0_SCENES).expect("the captured store is valid JSON")
+}
+
+#[test]
+fn the_scene_store_captured_from_v0_9_0_loads_with_its_scenes_unchanged() {
+    use hypercolor_types::layer::BlendMode;
+    use hypercolor_types::scene::{Scene, ZoneRole};
+
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    std::fs::write(&path, V0_9_0_SCENES).expect("captured store should write");
+    assert_eq!(v0_9_0_scenes()["schema_version"], 2);
+
+    let loaded = scene_store::load(&path).expect("a schema 2 store loads");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("captured store should remain readable"),
+        V0_9_0_SCENES,
+        "read admission must never acquire write authority"
+    );
+    let scene = loaded.list().next().expect("the captured scene");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(scene.name, "Studio Session");
+    let expected: Scene =
+        serde_json::from_value(v0_9_0_scenes()["scenes"][scene.id.to_string()].clone())
+            .expect("the captured scene decodes on its own");
+    assert_eq!(
+        scene, &expected,
+        "a schema 2 store upgrades with no change to its scenes"
+    );
+
+    let roles = scene.zones.iter().map(|zone| zone.role).collect::<Vec<_>>();
+    assert_eq!(
+        roles,
+        [
+            ZoneRole::Primary,
+            ZoneRole::Custom,
+            ZoneRole::Display,
+            ZoneRole::Display,
+            ZoneRole::Display,
+        ]
+    );
+    assert!(
+        scene
+            .zones
+            .iter()
+            .flat_map(|zone| &zone.layers)
+            .all(|layer| layer.scope.is_none()),
+        "no 0.9.0 layer has a scope"
+    );
+    let screens = scene.zones[0]
+        .layout
+        .zones
+        .iter()
+        .filter(|output| output.zone_name.as_deref() == Some("Display"))
+        .count();
+    assert_eq!(screens, 3, "the primary zone places every screen");
+    let stacked = &scene.zones[3];
+    assert_eq!(stacked.layers.len(), 3);
+    let target = stacked.display_target.as_ref().expect("display target");
+    assert_eq!(target.blend_mode, BlendMode::Screen);
+    assert!((target.opacity - 0.8).abs() < f32::EPSILON);
+    assert!(
+        scene.zones[4].layers.is_empty(),
+        "the kept face's screen has a surface and no layers"
+    );
+}
+
+#[test]
+fn the_kept_face_captured_beside_the_v0_9_0_scenes_names_its_layerless_display_zone() {
+    let preferences: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/storage_v0_9_0/display-preferences.json"
+    ))
+    .expect("the captured preferences are valid JSON");
+    let scenes = v0_9_0_scenes();
+    let layerless = scenes["scenes"]
+        .as_object()
+        .expect("scenes")
+        .values()
+        .flat_map(|scene| scene["zones"].as_array().expect("zones"))
+        .find(|zone| {
+            zone["role"] == "display" && zone["layers"].as_array().is_some_and(Vec::is_empty)
+        })
+        .expect("the layerless display zone");
+    let device = layerless["display_target"]["device_id"]
+        .as_str()
+        .expect("device id");
+
+    assert!(
+        preferences[device]["effect_id"].is_string(),
+        "the kept face belongs to the screen the scene leaves empty"
     );
 }
 

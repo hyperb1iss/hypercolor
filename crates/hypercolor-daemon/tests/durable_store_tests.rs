@@ -84,7 +84,8 @@ fn enforced_versions_come_from_the_stores_own_constants() {
     );
     for (name, min, max) in [
         ("config", 4, 7),
-        ("scenes", 2, 2),
+        ("scenes", 2, 3),
+        ("runtime-state", 0, 1),
         ("device-settings", 1, 3),
         ("device-aliases", 2, 2),
         ("library", 1, 2),
@@ -143,6 +144,13 @@ fn the_real_readers_accept_exactly_the_declared_ranges() {
         hypercolor_daemon::scene_store::load(&write(
             "scenes.json",
             json!({"schema_version": version, "scenes": {}}),
+        ))
+        .is_ok()
+    });
+    assert_reader_matches_declaration("runtime-state", |version| {
+        hypercolor_daemon::runtime_state::load(&write(
+            "runtime-state.json",
+            json!({"schema_version": version, "default_scene_zones": []}),
         ))
         .is_ok()
     });

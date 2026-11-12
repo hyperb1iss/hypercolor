@@ -60,8 +60,8 @@
       "name": "scenes",
       "storage_format": "json",
       "readable_schema_min": 2,
-      "readable_schema_max": 2,
-      "written_schema": 2,
+      "readable_schema_max": 3,
+      "written_schema": 3,
       "migration_mode": "backward_compatible"
     },
     {
@@ -132,8 +132,8 @@
       "name": "runtime-state",
       "storage_format": "json",
       "readable_schema_min": 0,
-      "readable_schema_max": 0,
-      "written_schema": 0,
+      "readable_schema_max": 1,
+      "written_schema": 1,
       "migration_mode": "backward_compatible"
     },
     {

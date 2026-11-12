@@ -18,8 +18,17 @@ use crate::persistence::{
     AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
-pub(crate) const SCENE_STORE_SCHEMA_VERSION: u32 = 2;
-const SCENE_STORE_V2_SHAPE: &str = r#"{"schema_version":2,"scenes":{...}}"#;
+/// The scene store schema this build writes.
+///
+/// Schema 3 has the shape of schema 2. The number moved when scene layers
+/// gained an output scope: a build that reads only schema 2 would decode a
+/// scoped layer, drop the scope it does not know, and run the layer on its
+/// whole zone. Refusing the store by version prevents that.
+pub(crate) const SCENE_STORE_SCHEMA_VERSION: u32 = 3;
+/// The oldest scene store schema this build reads. A schema 2 store is
+/// upgraded in memory with no change to its scenes.
+pub(crate) const OLDEST_SCENE_STORE_SCHEMA_VERSION: u32 = 2;
+const SCENE_STORE_SHAPE: &str = r#"{"schema_version":3,"scenes":{...}}"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -302,16 +311,25 @@ fn load_scenes(path: &Path) -> anyhow::Result<(HashMap<SceneId, Scene>, bool)> {
         .and_then(serde_json::Value::as_u64)
     else {
         bail!(
-            "scene store uses the retired unversioned schema; this release accepts the v2 \
-             envelope {SCENE_STORE_V2_SHAPE}. Restore the file with a pre-v2 Hypercolor release, \
+            "scene store uses the retired unversioned schema; this release accepts the \
+             envelope {SCENE_STORE_SHAPE}. Restore the file with a pre-v2 Hypercolor release, \
              export or rewrite its scenes into the zones/layers schema, then restart. The \
              original file was not modified"
         );
     };
-    if schema_version != u64::from(SCENE_STORE_SCHEMA_VERSION) {
+    if schema_version > u64::from(SCENE_STORE_SCHEMA_VERSION) {
         bail!(
-            "unsupported scene store schema version {schema_version}; this release accepts the \
-             v2 envelope {SCENE_STORE_V2_SHAPE}. Export or rewrite the store into the \
+            "scene store schema version {schema_version} was written by a newer Hypercolor; \
+             this release reads schemas {OLDEST_SCENE_STORE_SCHEMA_VERSION} through \
+             {SCENE_STORE_SCHEMA_VERSION}. Upgrade Hypercolor, or restore the data directory \
+             from before the newer release ran. The original file was not modified"
+        );
+    }
+    if schema_version < u64::from(OLDEST_SCENE_STORE_SCHEMA_VERSION) {
+        bail!(
+            "unsupported scene store schema version {schema_version}; this release reads \
+             schemas {OLDEST_SCENE_STORE_SCHEMA_VERSION} through {SCENE_STORE_SCHEMA_VERSION} \
+             of the envelope {SCENE_STORE_SHAPE}. Export or rewrite the store into the \
              zones/layers schema before restarting. The original file was not modified"
         );
     }
@@ -544,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_persists_empty_unversioned_store_as_v2() {
+    fn startup_persists_empty_unversioned_store_as_the_current_schema() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("scenes.json");
         std::fs::write(&path, "{}").expect("legacy scene store should write");
@@ -560,19 +578,122 @@ mod tests {
         assert!(
             store
                 .persist_normalization()
-                .expect("startup should persist the v2 envelope")
+                .expect("startup should persist the versioned envelope")
         );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(
-                &std::fs::read_to_string(&path).expect("v2 payload should remain readable")
+                &std::fs::read_to_string(&path).expect("payload should remain readable")
             )
-            .expect("v2 payload should parse"),
-            serde_json::json!({"schema_version": 2, "scenes": {}})
+            .expect("payload should parse"),
+            serde_json::json!({"schema_version": 3, "scenes": {}})
         );
         assert!(
             !store
                 .persist_normalization()
                 .expect("persisted store should no longer need normalization")
+        );
+    }
+
+    fn scoped_scene(name: &str) -> hypercolor_types::scene::Scene {
+        let mut scene = SceneManager::with_default()
+            .get(&SceneId::DEFAULT)
+            .cloned()
+            .expect("default scene should exist");
+        scene.id = SceneId::new();
+        scene.name = name.to_owned();
+        scene.kind = SceneKind::Named;
+        scene.mutation_mode = SceneMutationMode::Live;
+        let mut layer = SceneLayer::from_effect(
+            SceneLayerId::new(),
+            EffectId::new(uuid::Uuid::now_v7()),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        layer.scope = Some(hypercolor_types::layer::LayerScope {
+            outputs: vec!["usb:keyboard-main".to_owned()],
+        });
+        scene.zones[0].layers = vec![layer];
+        scene
+    }
+
+    /// The whole acceptance rule of the v0.9.0 scene store reader: it read
+    /// schema 2 and refused every other version before decoding a scene.
+    fn v0_9_0_accepts(document: &serde_json::Value) -> bool {
+        document
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(2)
+    }
+
+    #[test]
+    fn a_schema_2_store_upgrades_in_memory_and_startup_persists_schema_3() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("scenes.json");
+        let scene = make_scene("Focus");
+        let raw = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "scenes": { scene.id.to_string(): scene },
+        }))
+        .expect("scene document should serialize");
+        std::fs::write(&path, &raw).expect("scene document should write");
+        assert!(v0_9_0_accepts(
+            &serde_json::from_slice(&raw).expect("schema 2 document")
+        ));
+
+        let mut store = SceneStore::load(&path).expect("a schema 2 store loads");
+        assert_eq!(store.list().collect::<Vec<_>>(), vec![&scene]);
+        assert_eq!(
+            std::fs::read(&path).expect("scene document should read"),
+            raw,
+            "the upgrade happens in memory"
+        );
+
+        assert!(
+            store
+                .persist_normalization()
+                .expect("startup should persist the new schema")
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("persisted document should read"))
+                .expect("persisted document should parse");
+        assert_eq!(persisted["schema_version"], 3);
+        assert_eq!(
+            persisted["scenes"],
+            serde_json::json!({ scene.id.to_string(): scene }),
+            "the scenes are written back exactly as they were read"
+        );
+        assert!(
+            !v0_9_0_accepts(&persisted),
+            "a build from before the schema moved refuses the store"
+        );
+    }
+
+    #[test]
+    fn a_scoped_layer_round_trips_and_the_store_that_holds_it_is_schema_3() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("scenes.json");
+        let scene = scoped_scene("Keyboard ripples");
+        let mut store = SceneStore::new(path.clone()).expect("scene store");
+        store.replace_named_scenes([scene.clone()]);
+        store.save().expect("scoped scene should persist");
+        drop(store);
+
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("scene document should read"))
+                .expect("scene document should parse");
+        assert_eq!(written["schema_version"], 3);
+        assert!(
+            !v0_9_0_accepts(&written),
+            "a build that would drop the scope must not read the store"
+        );
+
+        let mut reopened = SceneStore::load(&path).expect("scene store should reopen");
+        assert_eq!(reopened.list().collect::<Vec<_>>(), vec![&scene]);
+        assert!(
+            !reopened
+                .persist_normalization()
+                .expect("a current store needs no rewrite")
         );
     }
 

@@ -944,3 +944,65 @@ async fn replacing_a_scene_keeps_the_scope_of_the_layers_it_names() {
     );
     assert_eq!(zone.layers[2].scope, None, "a new layer starts whole-zone");
 }
+
+// ── Persistence ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_scoped_layer_is_persisted_behind_the_new_schemas_and_reloads() {
+    let rig = rig().await;
+    let keyboard = rig.add(rig.main, &[KEYS, LOGO]).await;
+    let mut studio = hypercolor_core::scene::make_scene("Studio");
+    studio.zones = rig.scene().await.zones;
+    let scene_id = studio.id;
+    let mut mutation = rig.state.scene_manager.begin_mutation().await;
+    mutation.create_scene(studio).expect("named scene");
+    commit_scene(&rig.state.domains.scene, mutation)
+        .await
+        .expect("scene commit");
+    rig.state
+        .scene_manager
+        .save_snapshot()
+        .await
+        .expect("scene store save");
+    rig.state.domains.scene.save_runtime_session().await;
+    for path in [
+        rig.state.data_dir.join("scenes.json"),
+        rig.state.runtime_state_path.clone(),
+    ] {
+        hypercolor_daemon::persistence::AtomicFileWriter::new(&path)
+            .expect("writer should open")
+            .flush(std::time::Duration::from_secs(5))
+            .expect("the write should land");
+    }
+
+    let scenes_path = rig.state.data_dir.join("scenes.json");
+    let scenes: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&scenes_path).expect("scenes.json"))
+            .expect("scene store JSON");
+    assert_eq!(scenes["schema_version"], 3);
+    assert_eq!(
+        scenes["scenes"][scene_id.to_string()]["zones"][0]["layers"][1]["scope"],
+        json!({"outputs": [KEYS, LOGO]})
+    );
+    let session: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&rig.state.runtime_state_path).expect("runtime-state.json"),
+    )
+    .expect("runtime session JSON");
+    assert_eq!(session["schema_version"], 1);
+    assert_eq!(
+        session["default_scene_zones"][0]["layers"][1]["scope"],
+        json!({"outputs": [KEYS, LOGO]})
+    );
+
+    let stored = hypercolor_daemon::scene_store::load(&scenes_path).expect("scene store reloads");
+    let stored = stored.list().next().expect("the named scene");
+    assert_eq!(stored.zones[0].layers[1].id, keyboard);
+    assert_eq!(stored.zones[0].layers[1].scope, Some(scope(&[KEYS, LOGO])));
+    let reloaded = hypercolor_daemon::runtime_state::load(&rig.state.runtime_state_path)
+        .expect("runtime session reloads")
+        .expect("runtime session exists");
+    assert_eq!(
+        reloaded.default_scene_zones[0].layers[1].scope,
+        Some(scope(&[KEYS, LOGO]))
+    );
+}

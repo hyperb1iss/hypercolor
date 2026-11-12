@@ -209,7 +209,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
             missing: None,
             empty_is_absent: true,
         },
-        readable_schema_min: crate::scene_store::SCENE_STORE_SCHEMA_VERSION,
+        readable_schema_min: crate::scene_store::OLDEST_SCENE_STORE_SCHEMA_VERSION,
         readable_schema_max: crate::scene_store::SCENE_STORE_SCHEMA_VERSION,
         written_schema: crate::scene_store::SCENE_STORE_SCHEMA_VERSION,
         migration_mode: BACKWARD_COMPATIBLE,
@@ -316,15 +316,24 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         StoreRoot::Data,
         StoreLocation::File("simulated-displays.json"),
     ),
+    // A missing version is schema 0, the shape before the field existed,
+    // and is upgraded in memory.
     DurableStore {
+        name: "runtime-state",
+        storage_format: "json",
+        owner: StoreOwner::Daemon,
+        root: StoreRoot::State,
+        location: StoreLocation::File("runtime-state.json"),
         legacy_data_file: Some("runtime-state.json"),
-        ..unversioned(
-            "runtime-state",
-            "json",
-            StoreOwner::Daemon,
-            StoreRoot::State,
-            StoreLocation::File("runtime-state.json"),
-        )
+        schema: StoreSchema::JsonField {
+            field: "schema_version",
+            missing: Some(0),
+            empty_is_absent: false,
+        },
+        readable_schema_min: 0,
+        readable_schema_max: crate::runtime_state::RUNTIME_SESSION_SCHEMA_VERSION,
+        written_schema: crate::runtime_state::RUNTIME_SESSION_SCHEMA_VERSION,
+        migration_mode: BACKWARD_COMPATIBLE,
     },
     // A missing version is schema 2; every other version is refused.
     DurableStore {
