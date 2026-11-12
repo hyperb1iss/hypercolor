@@ -674,7 +674,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                 style="background-image: radial-gradient(circle, var(--color-text-tertiary) 1px, transparent 1px); background-size: 20px 20px;"
             />
 
-            <div class="absolute inset-0 flex items-start justify-center p-2 overflow-hidden">
+            <div class="absolute inset-0 flex items-center justify-center p-2 overflow-hidden">
                 <div
                     class="relative rounded-lg overflow-hidden bg-black"
                     data-studio-canvas=""
