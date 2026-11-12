@@ -141,6 +141,7 @@ impl GpuSparkleFlinger {
             && layer.opacity >= 1.0
             && layer.transform.is_none()
             && layer.adjust.is_none()
+            && layer.placement.is_none()
             && matches!(
                 &layer.frame,
                 ProducerFrame::GpuTexture(frame)

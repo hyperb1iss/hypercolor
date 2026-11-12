@@ -32,6 +32,8 @@ use super::display_lane::PlacedScreen;
 use super::pipeline_runtime::ComposeRuntime;
 #[cfg(feature = "wgpu")]
 use super::producer_queue::ProducerFrame;
+#[cfg(feature = "wgpu")]
+use super::render_zones::RetainedOutputFrame;
 use super::scene_snapshot::SceneRuntimeSnapshot;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::{
@@ -428,11 +430,14 @@ fn base_on_gpu(
             );
             Some(&flat)
         }
-        None => compose
+        None => match compose
             .render_zone_runtime
-            .retained_zone_frames()?
-            .iter()
-            .find_map(|(zone_id, frame)| (*zone_id == screen.zone_id).then_some(frame)),
+            .retained_output_frame(screen.zone_id, screen.output_index)
+        {
+            RetainedOutputFrame::NotKept => return None,
+            RetainedOutputFrame::Nothing => None,
+            RetainedOutputFrame::Frame(frame) => Some(frame),
+        },
     };
     let (slot, fade) = match previous {
         None => (0, None),

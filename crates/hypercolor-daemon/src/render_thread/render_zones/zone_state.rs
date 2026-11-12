@@ -1,11 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::layer::LayerSource;
-use hypercolor_types::scene::Zone;
+use hypercolor_types::scene::{Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+use super::scope_classes::ZoneScopeClasses;
 
 pub(in crate::render_thread) fn zone_is_active(zone: &Zone) -> bool {
     enabled_layer_count(zone) > 0
@@ -60,7 +62,15 @@ pub(super) fn empty_zone_layout(width: u32, height: u32) -> SpatialLayout {
     }
 }
 
-pub(super) fn combine_led_zone_layouts(zones: &[Zone], width: u32, height: u32) -> SpatialLayout {
+/// Every scene zone's outputs as one routing layout, in the order their
+/// sampled colors arrive: zone order, and within a zone that has several
+/// scope classes, class by class, because each class is sampled on its own.
+pub(super) fn combine_led_zone_layouts(
+    zones: &[Zone],
+    scope_classes: &HashMap<ZoneId, Arc<ZoneScopeClasses>>,
+    width: u32,
+    height: u32,
+) -> SpatialLayout {
     let mut layout = empty_zone_layout(width, height);
     let zone_count = zones
         .iter()
@@ -72,7 +82,19 @@ pub(super) fn combine_led_zone_layouts(zones: &[Zone], width: u32, height: u32) 
         .iter()
         .filter(|zone| zone_contributes_to_scene_canvas(zone))
     {
-        spatial_zones.extend_from_slice(&zone.layout.zones);
+        match scope_classes
+            .get(&zone.id)
+            .filter(|classes| !classes.is_single())
+        {
+            None => spatial_zones.extend_from_slice(&zone.layout.zones),
+            Some(classes) => spatial_zones.extend(
+                classes
+                    .iter()
+                    .flat_map(|(_, class)| class.outputs.iter())
+                    .filter_map(|&index| zone.layout.zones.get(index))
+                    .cloned(),
+            ),
+        }
     }
     layout.zones = spatial_zones;
     layout

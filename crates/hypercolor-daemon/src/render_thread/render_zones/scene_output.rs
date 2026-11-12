@@ -6,8 +6,6 @@ use hypercolor_core::spatial::SpatialSamplingError;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::Zone;
-#[cfg(test)]
-use hypercolor_types::scene::ZoneId;
 
 use super::super::producer_queue::{ProducerFrame, record_producer_frame};
 #[cfg(feature = "wgpu")]
@@ -16,6 +14,7 @@ use super::ZoneRuntime;
 #[cfg(feature = "wgpu")]
 use super::frame_helpers::composed_frame_to_producer_frame;
 use super::projection::compose_authoritative_scene_canvas;
+use super::scope_classes::{multi_class, zone_class_keys};
 use super::zone_state::zone_contributes_to_scene_canvas;
 
 impl ZoneRuntime {
@@ -25,14 +24,24 @@ impl ZoneRuntime {
         zone_colors: &mut Vec<ZoneColors>,
     ) -> Result<(), SpatialSamplingError> {
         self.zone_sampling_scratch.clear();
-        for zone in zones
+        for (zone, key) in zones
             .iter()
             .filter(|zone| zone_contributes_to_scene_canvas(zone))
+            .flat_map(|zone| {
+                zone_class_keys(&self.scope_classes, zone.id).map(move |key| (zone, key))
+            })
         {
-            let Some(target) = self.target_canvases.get(&zone.id) else {
+            let Some(target) = self.target_canvases.get(&key) else {
                 continue;
             };
-            let Some(spatial_engine) = self.spatial_engines.get(&zone.id) else {
+            // Each scope class of a zone with several samples its own
+            // canvas with an engine over its own LED outputs.
+            let spatial_engine = if multi_class(&self.scope_classes, zone.id).is_some() {
+                self.class_spatial_engines.get(&key)
+            } else {
+                self.spatial_engines.get(&zone.id)
+            };
+            let Some(spatial_engine) = spatial_engine else {
                 continue;
             };
             let start = self.zone_sampling_scratch.len();
@@ -62,17 +71,20 @@ impl ZoneRuntime {
             .filter(|zone| zone_contributes_to_scene_canvas(zone))
         {
             let (width, height) = (zone.layout.canvas_width, zone.layout.canvas_height);
-            if self
-                .target_canvases
-                .get(&zone.id)
-                .is_some_and(|target| target.width() == width && target.height() == height)
-            {
-                continue;
+            let keys = zone_class_keys(&self.scope_classes, zone.id).collect::<Vec<_>>();
+            for key in keys {
+                if self
+                    .target_canvases
+                    .get(&key)
+                    .is_some_and(|target| target.width() == width && target.height() == height)
+                {
+                    continue;
+                }
+                self.target_canvases.try_reserve(1)?;
+                self.target_canvases
+                    .insert(key, Canvas::try_new(width, height)?);
+                admitted_targets = admitted_targets.saturating_add(1);
             }
-            self.target_canvases.try_reserve(1)?;
-            self.target_canvases
-                .insert(zone.id, Canvas::try_new(width, height)?);
-            admitted_targets = admitted_targets.saturating_add(1);
         }
         let admitted_scene_surface = self.admit_cpu_scene_surface_pool()?;
         if admitted_targets > 0 || admitted_scene_surface {
@@ -118,6 +130,7 @@ impl ZoneRuntime {
                 &mut scene_canvas,
                 zones,
                 &self.target_canvases,
+                &self.scope_classes,
                 self.scene_width,
                 self.scene_height,
                 &self.scene_projection_cache,
@@ -131,6 +144,7 @@ impl ZoneRuntime {
             lease.canvas_mut(),
             zones,
             &self.target_canvases,
+            &self.scope_classes,
             self.scene_width,
             self.scene_height,
             &self.scene_projection_cache,
@@ -244,7 +258,7 @@ impl ZoneRuntime {
 fn compose_preview_grid_canvas(
     preview: &mut Canvas,
     zones: &[Zone],
-    target_canvases: &HashMap<ZoneId, Canvas>,
+    target_canvases: &HashMap<super::scope_classes::ZoneClassKey, Canvas>,
     preview_width: u32,
     preview_height: u32,
 ) {
@@ -262,7 +276,7 @@ fn compose_preview_grid_canvas(
         && let Some(source) = zones
             .iter()
             .find(|zone| zone_contributes_to_scene_canvas(zone))
-            .and_then(|zone| target_canvases.get(&zone.id))
+            .and_then(|zone| target_canvases.get(&zone.id.into()))
     {
         if source.width() == preview_width && source.height() == preview_height {
             preview
@@ -282,7 +296,7 @@ fn compose_preview_grid_canvas(
         .filter(|zone| zone_contributes_to_scene_canvas(zone))
         .enumerate()
     {
-        let Some(source) = target_canvases.get(&zone.id) else {
+        let Some(source) = target_canvases.get(&zone.id.into()) else {
             continue;
         };
 

@@ -1,4 +1,5 @@
 use hypercolor_core::blend_math::apply_layer_adjust_rgba_pixels_in_place;
+use hypercolor_core::spatial::{FrameEdge, LayerPlacement};
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::viewport::FitMode;
 
@@ -32,6 +33,86 @@ pub(super) fn process_layer_canvas(
     }
 
     canvas
+}
+
+/// Draw a placed layer's source onto a transparent canvas of the target's
+/// size: each target pixel the placement draws on takes the source texel
+/// it gives that pixel, and every other pixel stays transparent, so the
+/// blend that follows leaves the target alone there.
+///
+/// `opaque_frame` makes every pixel the placement draws on opaque, black
+/// where the placed source does not reach: how a placed replace covers its
+/// region.
+pub(super) fn process_placed_layer_canvas(
+    source: &Canvas,
+    target_width: u32,
+    target_height: u32,
+    placement: &LayerPlacement,
+    opaque_frame: bool,
+    adjust: Option<CompositionAdjust>,
+) -> Canvas {
+    let mut target = Canvas::new(target_width, target_height);
+    if source.width() == 0 || source.height() == 0 {
+        return target;
+    }
+    target.fill(Rgba::TRANSPARENT);
+    // A clipped frame draws inside its own box; one whose edge runs on
+    // draws on every pixel.
+    let (columns, rows) = match placement.edge {
+        FrameEdge::Extend => (0..target_width, 0..target_height),
+        FrameEdge::Clip => {
+            let Some([left, top, right, bottom]) = placement.frame_bounds() else {
+                return target;
+            };
+            (
+                pixel_span(left, right, target_width),
+                pixel_span(top, bottom, target_height),
+            )
+        }
+    };
+    for y in rows {
+        for x in columns.clone() {
+            let zone_px = [x as f32 + 0.5, y as f32 + 0.5];
+            if !placement.covers(zone_px) {
+                continue;
+            }
+            let mut color = placement.source_texel(zone_px).map_or(
+                Rgba::TRANSPARENT,
+                |[source_x, source_y]| {
+                    source.get_pixel(
+                        source_x.min(source.width() - 1),
+                        source_y.min(source.height() - 1),
+                    )
+                },
+            );
+            if opaque_frame {
+                color.a = 255;
+            }
+            target.set_pixel(x, y, color);
+        }
+    }
+    if let Some(adjust) = adjust {
+        apply_layer_adjust_rgba_pixels_in_place(
+            target.as_rgba_bytes_mut(),
+            &adjust.to_layer_adjust(),
+        );
+    }
+    target
+}
+
+/// The pixels of an axis `extent` long whose centres can fall between `low`
+/// and `high`, with one pixel of slack either side.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    reason = "the bounds are clamped to the canvas before they become indices"
+)]
+fn pixel_span(low: f32, high: f32, extent: u32) -> std::ops::Range<u32> {
+    let limit = extent as f32;
+    let start = (low.floor() - 1.0).clamp(0.0, limit) as u32;
+    let end = (high.ceil() + 1.0).clamp(0.0, limit) as u32;
+    start..end.max(start)
 }
 
 fn sample_transformed_layer(

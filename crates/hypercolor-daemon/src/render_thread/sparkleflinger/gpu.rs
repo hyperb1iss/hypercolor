@@ -13,6 +13,7 @@ use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin,
 };
 use crate::render_thread::producer_queue::{NativeScreenTextureLease, SubmissionRetirementQueue};
+use crate::render_thread::render_zones::ZoneClassKey;
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSpatialSampler;
 use anyhow::{Context, Result};
 #[cfg(test)]
@@ -92,7 +93,7 @@ pub(crate) fn gpu_sparkleflinger_telemetry_snapshot() -> GpuSparkleFlingerTeleme
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const COMPOSE_WORKGROUP_WIDTH: u32 = 8;
 const COMPOSE_WORKGROUP_HEIGHT: u32 = 8;
-const COMPOSE_PARAM_BYTES: usize = 96;
+const COMPOSE_PARAM_BYTES: usize = 176;
 const SOURCE_COPY_PARAM_BYTES: usize = 16;
 const DISPLAY_FINALIZE_PARAM_BYTES: usize = 112;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
@@ -266,7 +267,8 @@ pub(crate) struct GpuSparkleFlinger {
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
     media_texture_epoch: u64,
-    projected_zone_snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+    /// The retained texture each scope class of a scene zone composes into.
+    projected_zone_snapshots: HashMap<ZoneClassKey, Option<GpuProjectionSnapshot>>,
     zone_preview_lanes: HashMap<ZoneId, GpuZonePreviewLane>,
     immutable_scene_snapshots: Vec<GpuImmutableSceneSnapshot>,
     current_output: Option<GpuCompositorOutputSurface>,

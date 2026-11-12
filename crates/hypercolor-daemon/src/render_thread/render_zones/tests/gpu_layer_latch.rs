@@ -680,7 +680,7 @@ pub(super) fn sample_zone_set_against(
 }
 
 /// One dispatch over `textures`, waiting for its readback.
-fn sample_zone_textures(
+pub(super) fn sample_zone_textures(
     sparkleflinger: &mut SparkleFlinger,
     textures: &[ZoneTextureSample],
 ) -> Vec<ZoneColors> {

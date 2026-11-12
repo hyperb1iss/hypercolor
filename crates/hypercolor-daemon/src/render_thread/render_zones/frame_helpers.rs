@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use hypercolor_core::input::ScreenBranchPublication;
-use hypercolor_core::spatial::sample_viewport;
+use hypercolor_core::spatial::{LayerPlacement, sample_viewport};
 use hypercolor_types::canvas::{
     Canvas, LinearRgba, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
     SurfaceResourceError,
@@ -92,6 +92,10 @@ pub(super) fn passthrough_effect_layer(zone: &Zone) -> Option<SceneLayer> {
     if !matches!(&layer.source, LayerSource::Effect { .. }) {
         return None;
     }
+    // A scoped layer is framed, or dormant: never the zone's own frame.
+    if layer.scope.is_some() {
+        return None;
+    }
     if layer.blend != BlendMode::Replace {
         return None;
     }
@@ -111,18 +115,27 @@ pub(super) fn passthrough_effect_layer(zone: &Zone) -> Option<SceneLayer> {
     Some(layer.clone())
 }
 
+/// The composition layer that draws `frame` the way `layer` asks.
+///
+/// `placement` is where the frame lands when the layer is framed to its
+/// scope. It carries the layer's transform, so the anchor, scale, and angle
+/// the compositor takes for a whole-zone layer are left out.
 pub(super) fn composition_layer_for_scene_layer(
     layer: &SceneLayer,
     frame: ProducerFrame,
+    placement: Option<LayerPlacement>,
 ) -> CompositionLayer {
-    CompositionLayer::from_parts(
+    let composition = CompositionLayer::from_parts(
         frame,
         composition_mode_for_layer(layer.blend),
         layer.opacity,
         false,
     )
-    .with_transform(CompositionTransform::from(layer.transform))
-    .with_adjust(CompositionAdjust::from(layer.adjust))
+    .with_adjust(CompositionAdjust::from(layer.adjust));
+    match placement {
+        Some(placement) => composition.with_placement(placement),
+        None => composition.with_transform(CompositionTransform::from(layer.transform)),
+    }
 }
 
 fn composition_mode_for_layer(blend: BlendMode) -> CompositionMode {
@@ -182,6 +195,16 @@ pub(super) fn transparent_black_frame(
     cache.frame(width, height, Rgba::TRANSPARENT)
 }
 
+/// The opaque black a stack is composed over when no whole-zone layer sits
+/// at its bottom.
+pub(super) fn opaque_black_frame(
+    cache: &mut StaticLayerSurfaceCache,
+    width: u32,
+    height: u32,
+) -> anyhow::Result<ProducerFrame> {
+    cache.frame(width, height, Rgba::new(0, 0, 0, 255))
+}
+
 pub(super) fn media_layer_producer_frame(
     layer_id: SceneLayerId,
     canvas: Canvas,
@@ -211,9 +234,10 @@ pub(super) fn media_layer_producer_frame(
 ///
 /// The GPU compositor scales GPU textures into a zone but takes CPU frames
 /// only at the zone's own extent, and refuses the whole plan otherwise. A
-/// screen-region crop and a media frame at its intrinsic size are CPU
-/// canvases of their own extent, so a plan that has to compose on the GPU
-/// carries them as textures instead of losing its frame.
+/// screen-region crop, a media frame at its intrinsic size, and a framed
+/// layer's frame at its frame's extent are CPU frames of their own extent,
+/// so a plan that has to compose on the GPU carries them as textures instead
+/// of losing its frame.
 #[cfg(feature = "wgpu")]
 pub(super) fn upload_off_extent_canvas(
     frame: &mut ProducerFrame,
@@ -221,15 +245,18 @@ pub(super) fn upload_off_extent_canvas(
     zone: &Zone,
     sparkleflinger: &mut SparkleFlinger,
 ) {
-    let ProducerFrame::Canvas(canvas) = frame else {
-        return;
-    };
-    if canvas.width() == zone.layout.canvas_width && canvas.height() == zone.layout.canvas_height {
+    if frame.width() == zone.layout.canvas_width && frame.height() == zone.layout.canvas_height {
         return;
     }
-    if let Some(uploaded) = sparkleflinger
-        .upload_media_canvas_frame(MediaTextureSourceKey::from_media_layer(layer_id), canvas)
-    {
+    let source = MediaTextureSourceKey::from_media_layer(layer_id);
+    let uploaded = match frame {
+        ProducerFrame::Canvas(canvas) => sparkleflinger.upload_media_canvas_frame(source, canvas),
+        // A framed color fill is a surface at its frame's extent.
+        ProducerFrame::Surface(surface) => sparkleflinger
+            .upload_media_canvas_frame(source, &Canvas::from_published_surface(surface)),
+        _ => return,
+    };
+    if let Some(uploaded) = uploaded {
         *frame = ProducerFrame::GpuTexture(uploaded);
     }
 }

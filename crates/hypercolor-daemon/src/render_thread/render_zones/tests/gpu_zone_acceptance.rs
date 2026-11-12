@@ -1043,14 +1043,14 @@ fn area_sampled_zones_allocate_no_summed_area_tables_after_warmup() {
     }
 }
 
-fn zone_set(result: &ZoneResult) -> &ZoneSamplingSet {
+pub(super) fn zone_set(result: &ZoneResult) -> &ZoneSamplingSet {
     let LedSamplingStrategy::SparkleFlingerZones(set) = &result.led_sampling_strategy else {
         panic!("a GPU multi-zone scene should sample each zone's own texture");
     };
     set
 }
 
-fn leds_of(zones: &[ZoneColors], output_id: &str) -> Option<Vec<[u8; 3]>> {
+pub(super) fn leds_of(zones: &[ZoneColors], output_id: &str) -> Option<Vec<[u8; 3]>> {
     zones
         .iter()
         .find(|zone| zone.zone_id == output_id)
@@ -1060,7 +1060,7 @@ fn leds_of(zones: &[ZoneColors], output_id: &str) -> Option<Vec<[u8; 3]>> {
 /// A GPU-resident producer frame of `extent` filled with `color`, standing
 /// in for one Servo render. Uploading under the same `key` again yields a
 /// new content generation of the same texture.
-fn upload_fill(
+pub(super) fn upload_fill(
     sparkleflinger: &mut SparkleFlinger,
     key: u128,
     (width, height): (u32, u32),
@@ -1075,7 +1075,7 @@ fn upload_fill(
     )
 }
 
-fn color_fill_layer(color: Rgba) -> SceneLayer {
+pub(super) fn color_fill_layer(color: Rgba) -> SceneLayer {
     scene_layer(LayerSource::ColorFill {
         rgba: [
             f32::from(color.r) / 255.0,
@@ -1088,7 +1088,7 @@ fn color_fill_layer(color: Rgba) -> SceneLayer {
 
 /// The scene canvas's color at each normalized position, read with nearest
 /// sampling wherever the frame lives.
-fn scene_colors_at(
+pub(super) fn scene_colors_at(
     sparkleflinger: &mut SparkleFlinger,
     scene_frame: &ProducerFrame,
     positions: &[(f32, f32)],
@@ -1106,7 +1106,7 @@ fn scene_colors_at(
 
 /// A GPU texture's color at each normalized position, read with nearest
 /// sampling.
-fn texture_colors_at(
+pub(super) fn texture_colors_at(
     sparkleflinger: &mut SparkleFlinger,
     texture: &GpuTextureFrame,
     positions: &[(f32, f32)],
@@ -1123,7 +1123,7 @@ fn texture_colors_at(
 
 /// One single-LED nearest output per position over a `width` by `height`
 /// canvas.
-fn nearest_probe(width: u32, height: u32, positions: &[(f32, f32)]) -> SpatialEngine {
+pub(super) fn nearest_probe(width: u32, height: u32, positions: &[(f32, f32)]) -> SpatialEngine {
     let outputs = positions
         .iter()
         .enumerate()
@@ -1147,7 +1147,7 @@ fn nearest_probe(width: u32, height: u32, positions: &[(f32, f32)]) -> SpatialEn
     })
 }
 
-fn scene_layer(source: LayerSource) -> SceneLayer {
+pub(super) fn scene_layer(source: LayerSource) -> SceneLayer {
     SceneLayer {
         id: SceneLayerId::new(),
         name: None,

@@ -16,6 +16,11 @@ use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 pub struct ScreenPlacement {
     /// The zone whose layout holds the screen's output.
     pub zone_id: ZoneId,
+    /// The output of that zone's layout whose box the screen shows, by its
+    /// index there, or `None` when the screen shows the zone's whole canvas.
+    /// The screen's backdrop is what that output shows: the layers of the
+    /// zone that apply to it.
+    pub output: Option<usize>,
     /// The region of that zone's canvas the screen shows.
     pub viewport: DisplayZoneViewport,
 }
@@ -31,30 +36,38 @@ enum ScreenClaim {
     Screen,
 }
 
-/// The output of `layout` that places the screen, with how firmly it does.
+/// The output of `layout` that places the screen, with its index in the
+/// layout and how firmly it places the screen.
 ///
 /// `layout_device_ids` are the layout ids of the screen's device.
 fn screen_claim<'a>(
     layout: &'a SpatialLayout,
     layout_device_ids: &[String],
-) -> Option<(ScreenClaim, &'a Output)> {
+) -> Option<(ScreenClaim, usize, &'a Output)> {
     let mut device_output = None;
     let mut whole_output = None;
-    for output in &layout.zones {
+    for (index, output) in layout.zones.iter().enumerate() {
         if !layout_device_ids.contains(&output.device_id) {
             continue;
         }
         if is_display_zone(output) {
-            return Some((ScreenClaim::Screen, output));
+            return Some((ScreenClaim::Screen, index, output));
         }
-        device_output.get_or_insert(output);
+        device_output.get_or_insert((index, output));
         if whole_output.is_none() && output.zone_name.is_none() {
-            whole_output = Some(output);
+            whole_output = Some((index, output));
         }
     }
     whole_output
-        .map(|output| (ScreenClaim::Whole, output))
-        .or_else(|| device_output.map(|output| (ScreenClaim::Device, output)))
+        .map(|(index, output)| (ScreenClaim::Whole, index, output))
+        .or_else(|| device_output.map(|(index, output)| (ScreenClaim::Device, index, output)))
+}
+
+/// Whether a claim shows the zone's whole canvas instead of its output's
+/// box: a device with LED segments whose screen has no box of its own. An
+/// LED segment's box says where its LEDs sit, not where the panel does.
+fn shows_whole_canvas(claim: ScreenClaim, has_led_segments: bool) -> bool {
+    claim == ScreenClaim::Device && has_led_segments
 }
 
 fn claimed_viewport(
@@ -63,10 +76,7 @@ fn claimed_viewport(
     layout: &SpatialLayout,
     has_led_segments: bool,
 ) -> DisplayZoneViewport {
-    // A device with LED segments whose screen has no box of its own shows the
-    // whole canvas: an LED segment's box says where its LEDs sit, not where
-    // the panel does.
-    if claim == ScreenClaim::Device && has_led_segments {
+    if shows_whole_canvas(claim, has_led_segments) {
         return DisplayZoneViewport {
             position: NormalizedPosition::new(0.5, 0.5),
             size: NormalizedPosition::new(1.0, 1.0),
@@ -95,7 +105,7 @@ pub fn screen_viewport_in_layout(
     layout_device_ids: &[String],
     has_led_segments: bool,
 ) -> Option<DisplayZoneViewport> {
-    let (claim, output) = screen_claim(layout, layout_device_ids)?;
+    let (claim, _, output) = screen_claim(layout, layout_device_ids)?;
     Some(claimed_viewport(claim, output, layout, has_led_segments))
 }
 
@@ -111,17 +121,18 @@ pub fn screen_placement(
     layout_device_ids: &[String],
     has_led_segments: bool,
 ) -> Option<ScreenPlacement> {
-    let mut placed: Option<(ScreenClaim, &Zone, &Output)> = None;
+    let mut placed: Option<(ScreenClaim, &Zone, usize, &Output)> = None;
     for zone in zones.iter().filter(|zone| zone.display_target.is_none()) {
-        let Some((claim, output)) = screen_claim(&zone.layout, layout_device_ids) else {
+        let Some((claim, index, output)) = screen_claim(&zone.layout, layout_device_ids) else {
             continue;
         };
-        if placed.is_none_or(|(placed_claim, _, _)| claim > placed_claim) {
-            placed = Some((claim, zone, output));
+        if placed.is_none_or(|(placed_claim, _, _, _)| claim > placed_claim) {
+            placed = Some((claim, zone, index, output));
         }
     }
-    placed.map(|(claim, zone, output)| ScreenPlacement {
+    placed.map(|(claim, zone, index, output)| ScreenPlacement {
         zone_id: zone.id,
+        output: (!shows_whole_canvas(claim, has_led_segments)).then_some(index),
         viewport: claimed_viewport(claim, output, &zone.layout, has_led_segments),
     })
 }

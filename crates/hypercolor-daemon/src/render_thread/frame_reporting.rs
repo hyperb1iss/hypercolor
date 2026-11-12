@@ -161,6 +161,7 @@ pub(crate) fn report_active_frame_completion(
         held_zone_count = metrics.held_zone_count,
         gpu_sampling_passes = metrics.gpu_sampling_passes,
         zone_composition_skips = metrics.zone_composition_skips,
+        scope_class_count = metrics.scope_class_count,
         gpu_sample_deferred = metrics.gpu_sample_deferred,
         gpu_sample_stale = metrics.gpu_sample_stale,
         gpu_sample_retry_hit = metrics.gpu_sample_retry_hit,

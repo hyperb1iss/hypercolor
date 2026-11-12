@@ -236,7 +236,7 @@ fn abandoned_prepared_zone_resources_preserve_the_installed_generation() {
     ));
 }
 
-fn sample_zone(width: u32, height: u32) -> Zone {
+pub(super) fn sample_zone(width: u32, height: u32) -> Zone {
     let effect_id = EffectId::from(Uuid::now_v7());
     Zone {
         id: ZoneId::new(),
@@ -387,7 +387,7 @@ fn rotated_zone(id: &str, rotation: f32, size: f32) -> Output {
     zone
 }
 
-fn point_zone_at(id: &str, x: f32, y: f32) -> Output {
+pub(super) fn point_zone_at(id: &str, x: f32, y: f32) -> Output {
     let mut zone = point_zone(id);
     zone.position = NormalizedPosition::new(x, y);
     zone.size = NormalizedPosition::new(0.4, 0.4);
@@ -620,5 +620,7 @@ mod pipeline_acceptance;
 mod projection;
 mod retention;
 mod scene_outputs;
+#[cfg(feature = "wgpu")]
+mod scope_classes;
 #[cfg(feature = "wgpu")]
 mod zone_previews;

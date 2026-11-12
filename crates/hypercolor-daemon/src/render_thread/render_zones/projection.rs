@@ -1,4 +1,5 @@
 use std::collections::{HashMap, TryReserveError};
+use std::sync::Arc;
 
 use hypercolor_core::spatial::{is_led_sampled_zone, sample_canvas_position};
 use hypercolor_types::canvas::Canvas;
@@ -10,6 +11,7 @@ use hypercolor_types::viewport::FitMode;
 
 use super::super::producer_queue::ProducerFrame;
 use super::super::sparkleflinger::{CompositionLayer, CompositionTransform};
+use super::scope_classes::{ZoneClassKey, ZoneScopeClasses, multi_class};
 use super::zone_state::zone_contributes_to_scene_canvas;
 
 pub(super) struct CachedZoneProjection {
@@ -104,22 +106,55 @@ pub(super) struct ProjectionBounds {
     pub(super) y1: u32,
 }
 
+/// Compose the scene canvas on the CPU from the zones' target canvases.
+/// Each output's box shows the canvas of its own scope class, so a box
+/// shows what its LEDs show.
 pub(super) fn compose_authoritative_scene_canvas(
     scene_canvas: &mut Canvas,
     zones: &[Zone],
-    target_canvases: &HashMap<ZoneId, Canvas>,
+    target_canvases: &HashMap<ZoneClassKey, Canvas>,
+    scope_classes: &HashMap<ZoneId, Arc<ZoneScopeClasses>>,
     scene_width: u32,
     scene_height: u32,
     scene_projection_cache: &HashMap<ZoneId, CachedZoneProjection>,
 ) {
     scene_canvas.clear();
+    let lone_scene_zone = zones
+        .iter()
+        .filter(|zone| zone_contributes_to_scene_canvas(zone))
+        .count()
+        == 1;
 
     for stratum in ProjectionStratum::COMPOSITION_ORDER {
         for zone in zones
             .iter()
             .filter(|zone| zone_contributes_to_scene_canvas(zone))
         {
-            let Some(source) = target_canvases.get(&zone.id) else {
+            if let Some(classes) = multi_class(scope_classes, zone.id) {
+                // A lone zone at the scene's extent is the scene's own
+                // picture: its base class shows where no output sits.
+                if stratum == ProjectionStratum::Led
+                    && lone_scene_zone
+                    && let Some(base) = target_canvases.get(&ZoneClassKey::base(zone.id))
+                    && base.width() == scene_canvas.width()
+                    && base.height() == scene_canvas.height()
+                {
+                    scene_canvas
+                        .as_rgba_bytes_mut()
+                        .copy_from_slice(base.as_rgba_bytes());
+                }
+                compose_class_projections(
+                    scene_canvas,
+                    zone,
+                    classes,
+                    target_canvases,
+                    scene_projection_cache.get(&zone.id),
+                    stratum,
+                    (scene_width, scene_height),
+                );
+                continue;
+            }
+            let Some(source) = target_canvases.get(&ZoneClassKey::base(zone.id)) else {
                 continue;
             };
 
@@ -164,6 +199,46 @@ pub(super) fn compose_authoritative_scene_canvas(
     }
 }
 
+/// Rasterize one stratum of a zone with several scope classes, each
+/// output from its own class's canvas.
+fn compose_class_projections(
+    scene_canvas: &mut Canvas,
+    zone: &Zone,
+    classes: &ZoneScopeClasses,
+    target_canvases: &HashMap<ZoneClassKey, Canvas>,
+    projection: Option<&CachedZoneProjection>,
+    stratum: ProjectionStratum,
+    (scene_width, scene_height): (u32, u32),
+) {
+    let source_of = |output_index: usize| {
+        target_canvases.get(&ZoneClassKey::new(
+            zone.id,
+            classes.class_of_output(output_index),
+        ))
+    };
+    for (index, output) in zone.layout.zones.iter().enumerate() {
+        if ProjectionStratum::of(output) != stratum {
+            continue;
+        }
+        let Some(source) = source_of(index) else {
+            continue;
+        };
+        match projection.and_then(|projection| projection.zones.get(index)) {
+            Some(output_projection) => {
+                rasterize_zone_projection(scene_canvas, source, output_projection);
+            }
+            None => blit_zone_projection(
+                scene_canvas,
+                source,
+                output,
+                &zone.layout,
+                scene_width,
+                scene_height,
+            ),
+        }
+    }
+}
+
 /// Whether every scene zone can be projected into the scene canvas on the
 /// GPU.
 ///
@@ -196,16 +271,19 @@ pub(super) fn zones_support_projection_composition(
 /// output, in scene composition order. Outputs without an affine placement
 /// add no layer, the way the CPU raster skips them.
 ///
+/// `output_frame` gives the frame the output at an index of the zone's
+/// layout shows: its scope class's frame. An output with none adds no layer.
+///
 /// `display_layer_start` is the index where display-output layers begin. An
 /// LED output's layer is inserted there and the boundary advances, so LED
 /// layers stay in zone order beneath every display backdrop; a display
 /// output's layer is pushed onto the end, in zone order. The capacity check
 /// covers every layer before any lands, and insertion shifts layers within
 /// that capacity, so a frame never allocates here.
-pub(super) fn append_projection_composition_layers_for_zone(
+pub(super) fn append_projection_composition_layers_for_zone<'frame>(
     layers: &mut Vec<CompositionLayer>,
     display_layer_start: &mut usize,
-    frame: &ProducerFrame,
+    output_frame: impl Fn(usize) -> Option<&'frame ProducerFrame>,
     zone: &Zone,
     projection: &CachedZoneProjection,
     scene_width: u32,
@@ -225,11 +303,15 @@ pub(super) fn append_projection_composition_layers_for_zone(
         "display layers must start within the projected scene layers"
     );
     let mut led_insert_at = (*display_layer_start).min(layers.len());
-    for output in projection
+    for (index, output) in projection
         .zones
         .iter()
-        .filter(|output| output.affine.is_some())
+        .enumerate()
+        .filter(|(_, output)| output.affine.is_some())
     {
+        let Some(frame) = output_frame(index) else {
+            continue;
+        };
         let layer =
             CompositionLayer::alpha(frame.clone(), 1.0).with_transform(CompositionTransform {
                 anchor: output.zone.position,
@@ -267,7 +349,7 @@ pub(super) fn projection_composition_layers_for_zone(
     append_projection_composition_layers_for_zone(
         &mut layers,
         &mut display_layer_start,
-        frame,
+        |_| Some(frame),
         zone,
         projection,
         scene_width,

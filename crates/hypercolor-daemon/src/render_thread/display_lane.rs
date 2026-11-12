@@ -19,7 +19,8 @@ use super::pipeline_runtime::ComposeRuntime;
 use super::pipeline_runtime::PendingDisplayFinalizeWork;
 use super::producer_queue::ProducerFrame;
 use super::render_zones::{
-    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdrop, ZoneContentRevision,
+    ClassFrames, DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdrop, ZoneClassKey,
+    ZoneContentRevision,
 };
 use super::scene_dependency::SceneDependencyKey;
 #[cfg(feature = "wgpu")]
@@ -51,6 +52,10 @@ pub(crate) struct PlacedScreen {
     pub(crate) device_id: DeviceId,
     /// The zone whose layout places the screen.
     pub(crate) zone_id: ZoneId,
+    /// The output of that zone's layout whose box the screen shows, or
+    /// `None` when it shows the zone's whole canvas. The screen's backdrop
+    /// is the frame of that output's scope class.
+    pub(crate) output_index: Option<usize>,
     /// The screen's surface, with the placing zone's viewport for it,
     /// turned the way the panel is mounted.
     pub(crate) output: DisplayZoneOutputRoute,
@@ -81,6 +86,7 @@ pub(super) fn place_screens(
             Some(PlacedScreen {
                 device_id: *device_id,
                 zone_id: placement.zone_id,
+                output_index: placement.output,
                 output,
                 target_fps: route.target_fps,
             })
@@ -149,13 +155,17 @@ pub(super) fn static_backdrop_lanes(
 /// A screen's backdrop is the frame of the zone that places it, seen through
 /// that zone's viewport for the screen (Spec 95 §5.10). Each screen resolves
 /// its own, so screens whose boxes overlap in different zones never show
-/// each other's zone.
+/// each other's zone. In a zone with scoped layers the frame is the one of
+/// the screen's own scope class: the layers that apply to its output.
 #[derive(Clone, Copy)]
 pub(super) struct ScreenBackdrops<'a> {
     /// The screens the frame's scene places, by device.
     pub(super) screens: &'a [PlacedScreen],
-    /// Each scene zone's frame this pass.
+    /// Each scene zone's frame this pass: its base scope class.
     pub(super) zone_frames: &'a [(ZoneId, ProducerFrame)],
+    /// The frames of every other scope class, with the classes the pass
+    /// grouped each zone's outputs into.
+    pub(super) class_frames: &'a ClassFrames,
     /// The content revision of each zone whose frame says what it was made
     /// from. A screen holds its picture while its zone's revision stands.
     pub(super) zone_revisions: &'a [(ZoneId, ZoneContentRevision)],
@@ -170,30 +180,49 @@ impl<'a> ScreenBackdrops<'a> {
             .find(|screen| screen.device_id == device_id)
     }
 
-    /// The frame a zone gives its screens, or `None` for a zone that
-    /// renders nothing this pass.
-    ///
-    /// It is always the zone's own frame, a scene transition included: the
-    /// composed scene crossfade is one flattened picture, and a screen that
-    /// read it would show whichever zone was painted last over its box.
-    /// Each screen fades its own backdrop instead (Spec 95 §5.10).
-    fn zone_frame(&self, zone_id: ZoneId) -> Option<&'a ProducerFrame> {
-        self.zone_frames
-            .iter()
-            .find_map(|(id, frame)| (*id == zone_id).then_some(frame))
+    /// The scope class `screen` reads: the class of the output that places
+    /// it, as the pass that rendered these frames grouped its zone.
+    fn class(&self, screen: &PlacedScreen) -> ZoneClassKey {
+        ZoneClassKey::new(
+            screen.zone_id,
+            self.class_frames
+                .class_of(screen.zone_id, screen.output_index),
+        )
     }
 
-    fn zone_revision(&self, zone_id: ZoneId) -> Option<ZoneContentRevision> {
+    /// The frame a screen's zone gives it, or `None` for a zone that
+    /// renders nothing this pass.
+    ///
+    /// It is always the frame of the screen's own scope class in its own
+    /// zone, a scene transition included: the composed scene crossfade is
+    /// one flattened picture, and a screen that read it would show
+    /// whichever zone was painted last over its box. Each screen fades its
+    /// own backdrop instead (Spec 95 §5.10).
+    fn zone_frame(&self, screen: &PlacedScreen) -> Option<&'a ProducerFrame> {
+        let class = self.class(screen);
+        if !class.class.is_base() {
+            return self.class_frames.frame(class);
+        }
+        self.zone_frames
+            .iter()
+            .find_map(|(id, frame)| (*id == screen.zone_id).then_some(frame))
+    }
+
+    fn zone_revision(&self, screen: &PlacedScreen) -> Option<ZoneContentRevision> {
+        let class = self.class(screen);
+        if !class.class.is_base() {
+            return self.class_frames.revision(class);
+        }
         self.zone_revisions
             .iter()
-            .find_map(|(id, revision)| (*id == zone_id).then_some(*revision))
+            .find_map(|(id, revision)| (*id == screen.zone_id).then_some(*revision))
     }
 
     /// The backdrop of the screen on `device_id`. A screen no zone places,
     /// or one whose zone renders nothing, shows black.
     fn frame_for_screen(&self, device_id: DeviceId) -> &'a ProducerFrame {
         self.screen(device_id)
-            .and_then(|screen| self.zone_frame(screen.zone_id))
+            .and_then(|screen| self.zone_frame(screen))
             .unwrap_or(self.black)
     }
 }
@@ -496,7 +525,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         let device_id = screen.device_id;
         let lane_id = screen_backdrop_lane_id(device_id);
         let backdrops = self.context.backdrops;
-        let backdrop = backdrops.zone_frame(screen.zone_id);
+        let backdrop = backdrops.zone_frame(screen);
         let (width, height) = (screen.output.width, screen.output.height);
         let finalize_fade = if finalizes {
             self.finalize_fade(&screen.output)
@@ -515,7 +544,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         // and a fading picture is a new one at every step.
         let content = backdrop
             .filter(|_| finalize_fade.is_none() && pixel_fade.is_none())
-            .and_then(|_| backdrops.zone_revision(screen.zone_id));
+            .and_then(|_| backdrops.zone_revision(screen));
         let retained = self
             .compose
             .render_zone_runtime
@@ -1004,9 +1033,12 @@ mod tests {
     use crate::render_thread::producer_queue::ProducerFrameIdentity;
     #[cfg(feature = "wgpu")]
     use crate::render_thread::producer_queue::ProducerQueue;
+    use crate::render_thread::render_zones::{
+        ClassFrames, ZoneClassKey, ZoneContentRevision, ZoneScopeClasses,
+    };
     #[cfg(feature = "wgpu")]
     use crate::render_thread::render_zones::{
-        DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneContentRevision, ZoneRuntime,
+        DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneRuntime,
     };
     #[cfg(feature = "wgpu")]
     use crate::render_thread::scene_dependency::SceneDependencyKey;
@@ -1093,6 +1125,7 @@ mod tests {
             screens: &screens,
             zone_frames: &zone_frames,
             zone_revisions: &[],
+            class_frames: &ClassFrames::default(),
             black: &black,
         };
 
@@ -1105,6 +1138,123 @@ mod tests {
         assert!(
             same(own_frames.frame_for_screen(unplaced_screen), &black),
             "a screen no zone places has no backdrop"
+        );
+    }
+
+    /// In a zone with scoped layers a screen's backdrop is the frame of the
+    /// scope class of the output that places it, held by that class's own
+    /// content. A screen that shows the zone's whole canvas reads the base
+    /// class, as every screen of a zone with no scoped layer does.
+    #[test]
+    fn a_screen_reads_the_frame_of_its_outputs_scope_class() {
+        use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
+        use hypercolor_types::scene::Zone;
+        use hypercolor_types::spatial::{LedTopology, Output, SamplingMode, SpatialLayout};
+
+        fn same(left: &ProducerFrame, right: &ProducerFrame) -> bool {
+            std::ptr::eq(left, right)
+        }
+        let output = |id: &str| Output {
+            id: id.into(),
+            name: id.into(),
+            device_id: format!("mock:{id}"),
+            zone_name: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(0.2, 0.2),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Point,
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            display_order: 0,
+            attachment: None,
+            brightness: None,
+        };
+        let layer = |scope: Option<&str>| {
+            let mut layer = SceneLayer::from_effect(
+                SceneLayerId::new(),
+                hypercolor_types::effect::EffectId::from(uuid::Uuid::now_v7()),
+                HashMap::new(),
+                HashMap::new(),
+                None,
+            );
+            layer.scope = scope.map(|id| LayerScope {
+                outputs: vec![id.to_owned()],
+            });
+            layer
+        };
+        let zone = Zone {
+            id: ZoneId::new(),
+            name: "Main".into(),
+            description: None,
+            layers: vec![layer(None), layer(Some("panel"))],
+            layout: SpatialLayout {
+                id: "main".into(),
+                name: "Main".into(),
+                description: None,
+                canvas_width: 8,
+                canvas_height: 8,
+                zones: vec![output("keys"), output("panel")],
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: None,
+            role: hypercolor_types::scene::ZoneRole::Primary,
+            controls_version: 0,
+            layers_version: 0,
+        };
+        let classes = ZoneScopeClasses::of(&zone)
+            .expect("classes fit")
+            .expect("the zone has a scoped layer");
+        let panel_class = ZoneClassKey::new(zone.id, classes.class_of_output(1));
+        assert!(!panel_class.class.is_base());
+
+        let (panel, whole_canvas) = (DeviceId::new(), DeviceId::new());
+        let mut panel_screen = placed_screen(panel, zone.id, 15);
+        panel_screen.output_index = Some(1);
+        let screens = [panel_screen, placed_screen(whole_canvas, zone.id, 15)];
+        let zone_frames = [(zone.id, solid_frame([255, 0, 0]))];
+        let zone_revisions = [(zone.id, ZoneContentRevision(3))];
+        let class_frames = ClassFrames {
+            zones: vec![(zone.id, std::sync::Arc::new(classes))],
+            frames: vec![(panel_class, solid_frame([0, 0, 255]))],
+            revisions: vec![(panel_class, ZoneContentRevision(7))],
+            pictures: Vec::new(),
+        };
+        let black = black_frame();
+        let backdrops = ScreenBackdrops {
+            screens: &screens,
+            zone_frames: &zone_frames,
+            zone_revisions: &zone_revisions,
+            class_frames: &class_frames,
+            black: &black,
+        };
+
+        assert!(same(
+            backdrops.frame_for_screen(panel),
+            &class_frames.frames[0].1
+        ));
+        assert_eq!(
+            backdrops.zone_revision(&screens[0]),
+            Some(ZoneContentRevision(7)),
+            "the panel holds its picture by its own class's content"
+        );
+        assert!(same(
+            backdrops.frame_for_screen(whole_canvas),
+            &zone_frames[0].1
+        ));
+        assert_eq!(
+            backdrops.zone_revision(&screens[1]),
+            Some(ZoneContentRevision(3))
         );
     }
 
@@ -1659,6 +1809,7 @@ mod tests {
                 screens: &[],
                 zone_frames: &[],
                 zone_revisions: &[],
+                class_frames: &ClassFrames::default(),
                 black: &black,
             },
             fade: None,
@@ -2004,6 +2155,7 @@ mod tests {
         PlacedScreen {
             device_id,
             zone_id,
+            output_index: None,
             output,
             target_fps,
         }
@@ -2144,6 +2296,7 @@ mod tests {
                 screens: &[],
                 zone_frames: &[],
                 zone_revisions: &[],
+                class_frames: &ClassFrames::default(),
                 black: &black,
             },
             fade: None,
@@ -2309,6 +2462,7 @@ mod tests {
                     screens: &placed,
                     zone_frames,
                     zone_revisions: &zone_revisions,
+                    class_frames: &ClassFrames::default(),
                     black: &black,
                 },
                 fade: self.fade,

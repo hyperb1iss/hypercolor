@@ -46,6 +46,7 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) held_zone_count: u32,
     pub(crate) gpu_sampling_passes: u32,
     pub(crate) zone_composition_skips: u32,
+    pub(crate) scope_class_count: u32,
     pub(crate) gpu_sample_deferred: bool,
     pub(crate) gpu_sample_stale: bool,
     pub(crate) gpu_sample_retry_hit: bool,
@@ -131,6 +132,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         held_zone_count,
         gpu_sampling_passes,
         zone_composition_skips,
+        scope_class_count,
         gpu_sample_deferred,
         gpu_sample_stale,
         gpu_sample_retry_hit,
@@ -208,6 +210,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         held_zone_count,
         gpu_sampling_passes,
         zone_composition_skips,
+        scope_class_count,
         gpu_sample_deferred,
         gpu_sample_stale,
         gpu_sample_retry_hit,
@@ -339,6 +342,7 @@ pub(crate) fn build_throttle_frame_metrics(
         held_zone_count: 0,
         gpu_sampling_passes: 0,
         zone_composition_skips: 0,
+        scope_class_count: 0,
         gpu_sample_deferred: false,
         gpu_sample_stale: false,
         gpu_sample_retry_hit: false,
@@ -603,6 +607,7 @@ mod tests {
             held_zone_count: 1,
             gpu_sampling_passes: 3,
             zone_composition_skips: 2,
+            scope_class_count: 3,
             gpu_sample_deferred: false,
             gpu_sample_stale: true,
             gpu_sample_retry_hit: true,
@@ -661,6 +666,7 @@ mod tests {
         assert_eq!(summary.metrics.held_zone_count, 1);
         assert_eq!(summary.metrics.gpu_sampling_passes, 3);
         assert_eq!(summary.metrics.zone_composition_skips, 2);
+        assert_eq!(summary.metrics.scope_class_count, 3);
         assert_eq!(summary.metrics.timeline.input_done_us, 60);
         assert_eq!(summary.metrics.timeline.producer_done_us, 145);
         assert_eq!(summary.metrics.timeline.composition_done_us, 155);

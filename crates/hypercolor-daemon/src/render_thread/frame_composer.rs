@@ -23,8 +23,8 @@ use super::frame_sampling::LedSamplingStrategy;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use super::render_zones::{
-    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneContentRevision, ZoneEffectError,
-    ZoneResult,
+    ClassFrames, DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneContentRevision,
+    ZoneEffectError, ZoneResult,
 };
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
@@ -48,6 +48,10 @@ pub(crate) struct RenderStageStats {
     pub(crate) zone_composition_skips: u32,
     pub(crate) display_zone_frames: Vec<(ZoneId, DisplayZoneCanvasFrame)>,
     pub(crate) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    /// The frames of scope classes beyond each zone's base class.
+    pub(crate) class_frames: ClassFrames,
+    /// Scope classes the scene's zones compose.
+    pub(crate) scope_class_count: u32,
     pub(crate) active_display_zone_ids: Vec<ZoneId>,
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
     /// A single-zone scene's own pre-transition frame, kept so a transition
@@ -341,6 +345,8 @@ impl ComposeContext<'_> {
             zone_composition_skips: 0,
             display_zone_frames: display_lanes.frames,
             zone_canvases: Vec::new(),
+            class_frames: ClassFrames::default(),
+            scope_class_count: 0,
             active_display_zone_ids: display_lanes.active_lane_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                 self.scene_snapshot.spatial_engine.clone(),
@@ -447,6 +453,7 @@ impl ComposeContext<'_> {
                     render_zone_result.display_zone_frames,
                     &render_zone_result.zone_canvases,
                     &render_zone_result.zone_revisions,
+                    &render_zone_result.class_frames,
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -461,6 +468,8 @@ impl ComposeContext<'_> {
                     zone_composition_skips: render_zone_result.zone_composition_skips,
                     display_zone_frames: display_lanes.frames,
                     zone_canvases: render_zone_result.zone_canvases,
+                    class_frames: render_zone_result.class_frames,
+                    scope_class_count: render_zone_result.scope_class_count,
                     active_display_zone_ids: display_lanes.active_lane_ids,
                     led_sampling_strategy: render_zone_result.led_sampling_strategy,
                     led_transition_source,
@@ -553,6 +562,8 @@ impl ComposeContext<'_> {
                     zone_composition_skips: 0,
                     display_zone_frames: display_lanes.frames,
                     zone_canvases: Vec::new(),
+                    class_frames: ClassFrames::default(),
+                    scope_class_count: 0,
                     active_display_zone_ids: display_lanes.active_lane_ids,
                     led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                         self.scene_snapshot.spatial_engine.clone(),
@@ -682,6 +693,7 @@ impl ComposeContext<'_> {
             Vec::new(),
             &[],
             &[],
+            &ClassFrames::default(),
         )
     }
 
@@ -694,6 +706,7 @@ impl ComposeContext<'_> {
         display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
         zone_frames: &[(ZoneId, ProducerFrame)],
         zone_revisions: &[(ZoneId, ZoneContentRevision)],
+        class_frames: &ClassFrames,
     ) -> MaterializedDisplayLanes {
         let scene_runtime = &self.scene_snapshot.scene_runtime;
         let (_, display_routes) = self.state.event_bus.display_zone_output_routes_snapshot();
@@ -718,6 +731,7 @@ impl ComposeContext<'_> {
                 screens: &screens,
                 zone_frames,
                 zone_revisions,
+                class_frames,
                 black: &black,
             },
             fade,

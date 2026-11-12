@@ -16,6 +16,7 @@ use tracing::debug;
 use super::RenderThreadState;
 use super::pipeline_runtime::PublicationCadenceState;
 use super::producer_queue::ProducerFrame;
+use super::render_zones::ClassFrames;
 use super::sparkleflinger::SparkleFlinger;
 use crate::preview_runtime::{PreviewDemandSummary, ZonePreviewSelection, uniform_preview_extent};
 
@@ -68,6 +69,11 @@ impl ZonePreviewDemand {
         }
     }
 
+    /// Whether a subscriber watches `zone_id`'s preview.
+    pub(crate) fn shows(&self, zone_id: ZoneId) -> bool {
+        self.active && self.selection.includes(&zone_id)
+    }
+
     /// Limit preview work to the zones `selection` names.
     #[must_use]
     pub(crate) fn with_selection(mut self, selection: ZonePreviewSelection) -> Self {
@@ -85,6 +91,30 @@ impl ZonePreviewDemand {
         }
         uniform_preview_extent(width, height, self.max_width, self.max_height)
     }
+}
+
+/// The frame each scene zone's preview is made from.
+///
+/// A zone with no scoped layer previews its own frame. A zone with several
+/// scope classes has a frame per class, so its preview is the picture the
+/// scene pass made of it; until one exists the zone is left out, the way a
+/// GPU zone is until its first readback lands.
+pub(crate) fn zone_preview_frames<'a>(
+    zone_canvases: &'a [(ZoneId, ProducerFrame)],
+    class_frames: &ClassFrames,
+) -> Cow<'a, [(ZoneId, ProducerFrame)]> {
+    if class_frames.zones.is_empty() {
+        return Cow::Borrowed(zone_canvases);
+    }
+    let pictured = |zone_id: ZoneId| class_frames.classes(zone_id).is_some();
+    Cow::Owned(
+        zone_canvases
+            .iter()
+            .filter(|(zone_id, _)| !pictured(*zone_id))
+            .cloned()
+            .chain(class_frames.pictures.iter().cloned())
+            .collect(),
+    )
 }
 
 /// The zones zone-preview publication serves: every zone when some bus

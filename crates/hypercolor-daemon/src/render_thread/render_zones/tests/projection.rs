@@ -31,7 +31,7 @@ fn single_zone_preview_publishes_surface_frame() {
     let zone = sample_zone(4, 4);
     let mut source = Canvas::new(4, 4);
     source.fill(Rgba::new(12, 34, 56, 255));
-    runtime.target_canvases.insert(zone.id, source);
+    runtime.target_canvases.insert(zone.id.into(), source);
 
     let preview = runtime.compose_preview_grid_for_test(&[zone]);
     let ProducerFrame::Surface(surface) = preview else {
@@ -53,7 +53,7 @@ fn single_zone_preview_scales_zone_canvas_to_preview_extent() {
     source.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
     source.set_pixel(0, 1, Rgba::new(0, 0, 255, 255));
     source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
-    runtime.target_canvases.insert(zone.id, source);
+    runtime.target_canvases.insert(zone.id.into(), source);
 
     let preview = runtime.compose_preview_grid_for_test(&[zone]);
     let ProducerFrame::Surface(surface) = preview else {
@@ -84,10 +84,10 @@ fn compose_preview_ignores_display_zones() {
     display_canvas.fill(Rgba::new(0, 0, 255, 255));
     runtime
         .target_canvases
-        .insert(preview_zone.id, preview_canvas);
+        .insert(preview_zone.id.into(), preview_canvas);
     runtime
         .target_canvases
-        .insert(display_zone.id, display_canvas);
+        .insert(display_zone.id.into(), display_canvas);
 
     let preview = runtime.compose_preview_grid_for_test(&[preview_zone, display_zone]);
     let ProducerFrame::Surface(surface) = preview else {
@@ -105,7 +105,7 @@ fn authoritative_scene_canvas_clips_rotated_zone_geometry() {
     zone.layout.zones = vec![rotated_zone("zone_rotated", FRAC_PI_4, 0.5)];
     let mut source = Canvas::new(8, 8);
     source.fill(Rgba::new(255, 0, 0, 255));
-    runtime.target_canvases.insert(zone.id, source);
+    runtime.target_canvases.insert(zone.id.into(), source);
 
     let scene_frame = runtime
         .compose_scene_frame(&[zone])
@@ -139,8 +139,12 @@ fn authoritative_scene_canvas_preserves_zone_overlap_order() {
     back_source.fill(Rgba::new(255, 0, 0, 255));
     let mut front_source = Canvas::new(8, 8);
     front_source.fill(Rgba::new(0, 0, 255, 255));
-    runtime.target_canvases.insert(back_zone.id, back_source);
-    runtime.target_canvases.insert(front_zone.id, front_source);
+    runtime
+        .target_canvases
+        .insert(back_zone.id.into(), back_source);
+    runtime
+        .target_canvases
+        .insert(front_zone.id.into(), front_source);
 
     let scene_frame = runtime
         .compose_scene_frame(&[back_zone, front_zone])
@@ -173,7 +177,7 @@ fn authoritative_scene_canvas_uses_zone_sampling_mode() {
     source.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
     source.set_pixel(0, 1, Rgba::new(0, 0, 255, 255));
     source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
-    runtime.target_canvases.insert(zone.id, source);
+    runtime.target_canvases.insert(zone.id.into(), source);
 
     let scene_frame = runtime
         .compose_scene_frame(&[zone])
@@ -516,12 +520,13 @@ fn projected_composition_layers_match_nearest_projection() {
     let mut projection_cache = HashMap::new();
     projection_cache.insert(zone.id, projection);
     let mut target_canvases = HashMap::new();
-    target_canvases.insert(zone.id, source.clone());
+    target_canvases.insert(zone.id.into(), source.clone());
     let mut projected = Canvas::new(4, 4);
     compose_authoritative_scene_canvas(
         &mut projected,
         std::slice::from_ref(&zone),
         &target_canvases,
+        &HashMap::new(),
         4,
         4,
         &projection_cache,
@@ -608,7 +613,7 @@ fn projected_contributors_refresh_current_cpu_replay() {
     assert_eq!(
         runtime
             .target_canvases
-            .get(&zone.id)
+            .get(&zone.id.into())
             .expect("zone target should remain installed")
             .get_pixel(0, 0),
         Rgba::new(255, 0, 0, 255)
@@ -640,12 +645,13 @@ fn projected_composition_matches_rotated_scaled_translated_zone() {
     )
     .expect("transformed nearest clamp projection should use composition layers");
     let projection_cache = HashMap::from([(zone.id, projection)]);
-    let target_canvases = HashMap::from([(zone.id, source)]);
+    let target_canvases = HashMap::from([(zone.id.into(), source)]);
     let mut expected = Canvas::new(8, 8);
     compose_authoritative_scene_canvas(
         &mut expected,
         std::slice::from_ref(&zone),
         &target_canvases,
+        &HashMap::new(),
         8,
         8,
         &projection_cache,
@@ -696,13 +702,17 @@ fn projected_composition_preserves_zone_and_zone_overlap_order() {
     );
     let projection_cache =
         HashMap::from([(back.id, back_projection), (front.id, front_projection)]);
-    let target_canvases = HashMap::from([(back.id, back_source), (front.id, front_source)]);
+    let target_canvases = HashMap::from([
+        (back.id.into(), back_source),
+        (front.id.into(), front_source),
+    ]);
     let zones = [back, front];
     let mut expected = Canvas::new(8, 8);
     compose_authoritative_scene_canvas(
         &mut expected,
         &zones,
         &target_canvases,
+        &HashMap::new(),
         8,
         8,
         &projection_cache,
@@ -719,12 +729,14 @@ fn projected_composition_preserves_zone_and_zone_overlap_order() {
 fn authoritative_scene_canvas_keeps_display_backdrop_on_its_owner_zone() {
     let mut runtime = cpu_backed_runtime(8, 8);
     let zones = display_backdrop_overlap_zones();
-    runtime
-        .target_canvases
-        .insert(zones[0].id, solid_canvas(8, 8, Rgba::new(255, 0, 0, 255)));
-    runtime
-        .target_canvases
-        .insert(zones[1].id, solid_canvas(8, 8, Rgba::new(0, 0, 255, 255)));
+    runtime.target_canvases.insert(
+        zones[0].id.into(),
+        solid_canvas(8, 8, Rgba::new(255, 0, 0, 255)),
+    );
+    runtime.target_canvases.insert(
+        zones[1].id.into(),
+        solid_canvas(8, 8, Rgba::new(0, 0, 255, 255)),
+    );
 
     let scene_frame = runtime
         .compose_scene_frame(&zones)
@@ -781,8 +793,11 @@ fn full_scene_identity_display_backdrop_lands_after_led_outputs() {
         ),
     ]);
     let target_canvases = HashMap::from([
-        (owner.id, owner_source),
-        (overlay.id, solid_canvas(8, 8, Rgba::new(0, 0, 255, 255))),
+        (owner.id.into(), owner_source),
+        (
+            overlay.id.into(),
+            solid_canvas(8, 8, Rgba::new(0, 0, 255, 255)),
+        ),
     ]);
     let mut scene = Canvas::new(8, 8);
 
@@ -790,6 +805,7 @@ fn full_scene_identity_display_backdrop_lands_after_led_outputs() {
         &mut scene,
         &[owner, overlay],
         &target_canvases,
+        &HashMap::new(),
         8,
         8,
         &projection_cache,
@@ -825,8 +841,14 @@ fn overlapping_display_backdrops_keep_zone_order() {
         ),
     ]);
     let target_canvases = HashMap::from([
-        (back.id, solid_canvas(8, 8, Rgba::new(255, 0, 0, 255))),
-        (front.id, solid_canvas(8, 8, Rgba::new(0, 0, 255, 255))),
+        (
+            back.id.into(),
+            solid_canvas(8, 8, Rgba::new(255, 0, 0, 255)),
+        ),
+        (
+            front.id.into(),
+            solid_canvas(8, 8, Rgba::new(0, 0, 255, 255)),
+        ),
     ]);
     let mut scene = Canvas::new(8, 8);
 
@@ -834,6 +856,7 @@ fn overlapping_display_backdrops_keep_zone_order() {
         &mut scene,
         &[back, front],
         &target_canvases,
+        &HashMap::new(),
         8,
         8,
         &projection_cache,
@@ -970,12 +993,13 @@ fn gpu_projected_composition_matches_nearest_projection() {
     let mut projection_cache = HashMap::new();
     projection_cache.insert(zone.id, projection);
     let mut target_canvases = HashMap::new();
-    target_canvases.insert(zone.id, source);
+    target_canvases.insert(zone.id.into(), source);
     let mut projected = Canvas::new(4, 4);
     compose_authoritative_scene_canvas(
         &mut projected,
         std::slice::from_ref(&zone),
         &target_canvases,
+        &HashMap::new(),
         4,
         4,
         &projection_cache,
@@ -2294,7 +2318,7 @@ fn projected_zone_requirements(
         .iter()
         .map(
             |zone| super::super::super::sparkleflinger::ProjectedZoneTextureRequirement {
-                zone_id: zone.id,
+                key: zone.id.into(),
                 width: zone.layout.canvas_width,
                 height: zone.layout.canvas_height,
             },

@@ -23,6 +23,7 @@ use super::super::producer_queue::{ProducerFrame, ProducerFrameIdentity};
 use super::super::scene_dependency::SceneDependencyKey;
 use super::super::sparkleflinger::{CompositionLayer, CompositionLayerIdentity};
 use super::display_retention::DisplayFrameCadence;
+use super::scope_classes::{ScopeClassIndex, ZoneClassKey, ZoneScopeClasses};
 use crate::performance::FullFrameCopyMetrics;
 
 #[derive(Clone)]
@@ -55,6 +56,58 @@ pub(crate) struct DisplayZoneCanvasFrame {
     pub display_target: DisplayZoneTarget,
 }
 
+/// The frames of a scene pass's scope classes beyond each zone's base
+/// class. Empty for a scene with no scoped layer.
+///
+/// A zone's entry in `zone_canvases` is its base class: what the canvas
+/// shows where no output sits, and the whole zone when no layer is scoped.
+/// An output in another class reads its frame from here, through the
+/// grouping the pass that rendered these frames used, so a retained result
+/// handed out again keeps the classes its frames were rendered for.
+#[derive(Clone, Default)]
+pub(crate) struct ClassFrames {
+    /// The classes of each zone that has more than one.
+    pub(crate) zones: Vec<(ZoneId, Arc<ZoneScopeClasses>)>,
+    pub(crate) frames: Vec<(ZoneClassKey, ProducerFrame)>,
+    /// The content revision of each class frame that says what it was made
+    /// from.
+    pub(crate) revisions: Vec<(ZoneClassKey, ZoneContentRevision)>,
+    /// A picture of each zone with several classes that a preview asked
+    /// for: its base class with every other output's box drawn from that
+    /// output's class.
+    pub(crate) pictures: Vec<(ZoneId, ProducerFrame)>,
+}
+
+impl ClassFrames {
+    pub(crate) fn classes(&self, zone_id: ZoneId) -> Option<&Arc<ZoneScopeClasses>> {
+        self.zones
+            .iter()
+            .find_map(|(id, classes)| (*id == zone_id).then_some(classes))
+    }
+
+    /// The class of the output at `output_index` of `zone_id`'s layout.
+    /// `None` is the zone's whole canvas, which is its base class.
+    pub(crate) fn class_of(&self, zone_id: ZoneId, output_index: Option<usize>) -> ScopeClassIndex {
+        output_index
+            .zip(self.classes(zone_id))
+            .map_or(ScopeClassIndex::BASE, |(index, classes)| {
+                classes.class_of_output(index)
+            })
+    }
+
+    pub(crate) fn frame(&self, key: ZoneClassKey) -> Option<&ProducerFrame> {
+        self.frames
+            .iter()
+            .find_map(|(id, frame)| (*id == key).then_some(frame))
+    }
+
+    pub(crate) fn revision(&self, key: ZoneClassKey) -> Option<ZoneContentRevision> {
+        self.revisions
+            .iter()
+            .find_map(|(id, revision)| (*id == key).then_some(*revision))
+    }
+}
+
 pub(crate) struct ZoneResult {
     pub scene_frame: ProducerFrame,
     /// The zone whose own frame is the scene frame: a lone scene zone at the
@@ -68,6 +121,11 @@ pub(crate) struct ZoneResult {
     /// again keeps the revisions its frames were rendered with, whatever
     /// the zones have rendered, or failed to render, since.
     pub zone_revisions: Vec<(ZoneId, ZoneContentRevision)>,
+    /// The frames of every scope class beyond a zone's base class.
+    pub class_frames: ClassFrames,
+    /// Scope classes the scene's zones compose: one per zone with no scoped
+    /// layer.
+    pub scope_class_count: u32,
     pub active_display_zone_ids: Vec<ZoneId>,
     pub led_sampling_strategy: LedSamplingStrategy,
     pub producer_full_frame_copy: FullFrameCopyMetrics,
@@ -275,6 +333,9 @@ pub(super) struct RenderedZoneFrame {
 pub(super) struct RenderedZoneParts {
     pub(super) display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     pub(super) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    pub(super) class_frames: Vec<(ZoneClassKey, ProducerFrame)>,
+    pub(super) zone_classes: Vec<(ZoneId, Arc<ZoneScopeClasses>)>,
+    pub(super) zone_pictures: Vec<(ZoneId, ProducerFrame)>,
     pub(super) active_display_zone_ids: Vec<ZoneId>,
 }
 
@@ -282,10 +343,32 @@ pub(super) struct RenderedZoneParts {
 pub(super) struct RenderedZoneSet {
     scene_frames: Vec<RenderedZoneFrame>,
     display_frames: Vec<RenderedZoneFrame>,
+    /// Frames of scope classes beyond their zone's base class.
+    class_frames: Vec<(ZoneClassKey, ProducerFrame)>,
+    /// The classes of each zone rendered with more than one.
+    zone_classes: Vec<(ZoneId, Arc<ZoneScopeClasses>)>,
+    /// Pictures of zones with several classes, made for previews.
+    zone_pictures: Vec<(ZoneId, ProducerFrame)>,
     active_display_zone_ids: Vec<ZoneId>,
 }
 
 impl RenderedZoneSet {
+    /// Record the classes a zone with more than one was rendered with.
+    pub(super) fn note_zone_classes(&mut self, zone_id: ZoneId, classes: Arc<ZoneScopeClasses>) {
+        self.zone_classes.push((zone_id, classes));
+    }
+
+    /// Record the picture of a zone with several classes.
+    pub(super) fn push_zone_picture(&mut self, zone_id: ZoneId, frame: ProducerFrame) {
+        self.zone_pictures.push((zone_id, frame));
+    }
+
+    /// Record the frame of a scope class beyond its zone's base class.
+    pub(super) fn push_class_frame(&mut self, key: ZoneClassKey, frame: ProducerFrame) {
+        debug_assert!(!key.class.is_base(), "a base class frame is its zone's");
+        self.class_frames.push((key, frame));
+    }
+
     pub(super) fn mark_direct_zone_active(&mut self, zone_id: ZoneId) {
         self.active_display_zone_ids.push(zone_id);
     }
@@ -321,6 +404,9 @@ impl RenderedZoneSet {
         let mut parts = RenderedZoneParts {
             display_zone_frames: Vec::new(),
             zone_canvases: Vec::new(),
+            class_frames: self.class_frames,
+            zone_classes: self.zone_classes,
+            zone_pictures: self.zone_pictures,
             active_display_zone_ids: self.active_display_zone_ids,
         };
         for frame in self.scene_frames {
@@ -336,6 +422,9 @@ impl RenderedZoneSet {
         let mut parts = RenderedZoneParts {
             display_zone_frames: Vec::new(),
             zone_canvases: Vec::new(),
+            class_frames: self.class_frames,
+            zone_classes: self.zone_classes,
+            zone_pictures: self.zone_pictures,
             active_display_zone_ids: self.active_display_zone_ids,
         };
         let mut frames = self.scene_frames;
@@ -422,6 +511,8 @@ pub(super) struct RetainedRenderZoneFrame {
     pub(super) active_display_zone_ids: Vec<ZoneId>,
     pub(super) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
     pub(super) zone_revisions: Vec<(ZoneId, ZoneContentRevision)>,
+    pub(super) class_frames: ClassFrames,
+    pub(super) scope_class_count: u32,
     pub(super) led_sampling_strategy: RetainedLedSamplingStrategy,
     pub(super) logical_layer_count: u32,
 }

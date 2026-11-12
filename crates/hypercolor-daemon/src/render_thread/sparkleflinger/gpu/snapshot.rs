@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use hypercolor_types::scene::ZoneId;
-
 use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin,
 };
+use anyhow::{Context, Result};
 
 use super::{
     GpuCompositorOutputSurface, GpuCompositorTexture, GpuImmutableSceneSnapshot,
     GpuProjectionSnapshot, GpuSparkleFlinger, texture_extent,
 };
+use crate::render_thread::render_zones::ZoneClassKey;
 
 impl GpuSparkleFlinger {
     pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {
@@ -39,14 +38,14 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn snapshot_projected_zone_frame(
         &mut self,
-        zone_id: ZoneId,
+        key: ZoneClassKey,
         frame: GpuTextureFrame,
     ) -> Result<GpuTextureFrame> {
         debug_assert_eq!(frame.origin, GpuTextureFrameOrigin::CompositorOutput);
         self.flush_pending_output_submission()?;
         let snapshot = self
             .projected_zone_snapshots
-            .get_mut(&zone_id)
+            .get_mut(&key)
             .and_then(Option::as_mut)
             .context("projected zone GPU snapshot was not admitted before rendering")?;
         anyhow::ensure!(

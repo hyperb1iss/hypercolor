@@ -1,22 +1,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(test)]
-use hypercolor_types::canvas::BYTES_PER_PIXEL;
-use hypercolor_types::scene::ZoneId;
-
 use super::super::ProjectedZoneTextureRequirement;
 use super::compositor::PreparedProjectedComposeBindGroups;
 use super::{
     GpuCanvasPreparation, GpuCompositorSurfaceSet, GpuProjectionSnapshot, GpuSparkleFlinger,
 };
+use crate::render_thread::render_zones::ZoneClassKey;
+#[cfg(test)]
+use hypercolor_types::canvas::BYTES_PER_PIXEL;
 
 pub(crate) enum GpuProjectedScenePreparation {
     Disabled {
         projected_bind_groups: Option<PreparedProjectedComposeBindGroups>,
     },
     Admitted {
-        snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+        snapshots: HashMap<ZoneClassKey, Option<GpuProjectionSnapshot>>,
         compositor_surfaces: HashMap<(u32, u32), Option<GpuCompositorSurfaceSet>>,
         projected_bind_groups: PreparedProjectedComposeBindGroups,
         scene_extent: (u32, u32),
@@ -115,7 +114,7 @@ impl GpuSparkleFlinger {
         for requirement in requirements {
             let reusable = self
                 .projected_zone_snapshots
-                .get(&requirement.zone_id)
+                .get(&requirement.key)
                 .and_then(Option::as_ref)
                 .is_some_and(|snapshot| {
                     snapshot.width == requirement.width && snapshot.height == requirement.height
@@ -151,7 +150,7 @@ impl GpuSparkleFlinger {
                 };
                 Some(snapshot)
             };
-            snapshots.insert(requirement.zone_id, snapshot);
+            snapshots.insert(requirement.key, snapshot);
         }
         let mut compositor_surfaces = HashMap::new();
         if let Err(error) = compositor_surfaces.try_reserve(requirements.len().saturating_add(1)) {
@@ -229,11 +228,11 @@ impl GpuSparkleFlinger {
         };
         let sources = requirements.iter().map(|requirement| {
             let snapshot = snapshots
-                .get(&requirement.zone_id)
+                .get(&requirement.key)
                 .and_then(Option::as_ref)
                 .or_else(|| {
                     self.projected_zone_snapshots
-                        .get(&requirement.zone_id)
+                        .get(&requirement.key)
                         .and_then(Option::as_ref)
                 })
                 .expect("projected source snapshot must be admitted before bind groups");
@@ -369,9 +368,9 @@ impl GpuSparkleFlinger {
         self.cached_sample_result = None;
         self.spatial_sampler.clear_bind_groups();
         let mut installed = std::mem::take(&mut self.projected_zone_snapshots);
-        for (zone_id, snapshot) in &mut snapshots {
+        for (key, snapshot) in &mut snapshots {
             if snapshot.is_none() {
-                *snapshot = installed.remove(zone_id).flatten();
+                *snapshot = installed.remove(key).flatten();
             }
             debug_assert!(snapshot.is_some());
         }
@@ -380,12 +379,12 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn has_projected_zone_resource(
         &self,
-        zone_id: ZoneId,
+        key: ZoneClassKey,
         width: u32,
         height: u32,
     ) -> bool {
         self.projected_zone_snapshots
-            .get(&zone_id)
+            .get(&key)
             .and_then(Option::as_ref)
             .is_some_and(|snapshot| snapshot.width == width && snapshot.height == height)
     }

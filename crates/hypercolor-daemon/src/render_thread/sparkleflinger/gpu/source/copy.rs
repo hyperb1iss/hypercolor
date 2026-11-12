@@ -5,6 +5,7 @@ use anyhow::Result;
 use super::super::admission::{AdmissionClock, AdmissionRetry};
 
 use crate::render_thread::sparkleflinger::gpu_buffer_init::create_buffer_with_contents;
+use hypercolor_core::spatial::LayerPlacement;
 use hypercolor_types::canvas::BYTES_PER_PIXEL;
 
 use super::super::super::{CompositionAdjust, CompositionPlan, CompositionTransform};
@@ -487,6 +488,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn cached_readback_key(
             opacity_bits: layer.opacity.to_bits(),
             transform: layer.transform.map(cached_transform),
             adjust: layer.adjust.map(cached_adjust),
+            placement: layer.placement.as_ref().map(LayerPlacement::key),
         });
     }
     Some(CachedReadbackKey {

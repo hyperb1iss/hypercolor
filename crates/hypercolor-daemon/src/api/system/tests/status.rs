@@ -91,6 +91,7 @@ async fn status_includes_latest_frame_surface_stats() {
             held_zone_count: 1,
             gpu_sampling_passes: 3,
             zone_composition_skips: 2,
+            scope_class_count: 2,
             gpu_sample_deferred: true,
             gpu_sample_stale: true,
             gpu_sample_retry_hit: true,

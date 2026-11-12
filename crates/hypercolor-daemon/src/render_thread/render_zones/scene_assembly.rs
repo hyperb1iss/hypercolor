@@ -4,8 +4,6 @@ use std::time::Instant;
 use anyhow::Result;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::Zone;
-#[cfg(feature = "wgpu")]
-use hypercolor_types::scene::ZoneId;
 
 use super::super::frame_sampling::LedSamplingStrategy;
 #[cfg(feature = "wgpu")]
@@ -19,10 +17,14 @@ use super::ZoneRuntime;
 #[cfg(feature = "wgpu")]
 use super::frame_helpers::producer_frame_is_gpu;
 use super::model::{
-    GpuProjectionReplayUnavailable, RenderSceneContext, ZoneFrameRequirements, ZoneResult,
+    ClassFrames, GpuProjectionReplayUnavailable, RenderSceneContext, ZoneFrameRequirements,
+    ZoneResult,
 };
 use super::projection::zones_support_projection_composition;
 use super::render_pass::RenderedZonePassOutput;
+#[cfg(feature = "wgpu")]
+use super::scope_classes::ZoneClassKey;
+use super::scope_classes::{multi_class, zone_class_keys};
 use super::zone_state::{
     enabled_layer_count, scene_logical_layer_count, zone_contributes_to_scene_canvas,
 };
@@ -64,11 +66,13 @@ impl ZoneRuntime {
                 .iter()
                 .filter(|zone| zone_contributes_to_scene_canvas(zone))
                 .all(|zone| {
-                    sparkleflinger.has_projected_zone_resource(
-                        zone.id,
-                        zone.layout.canvas_width,
-                        zone.layout.canvas_height,
-                    )
+                    zone_class_keys(&self.scope_classes, zone.id).all(|key| {
+                        sparkleflinger.has_projected_zone_resource(
+                            key,
+                            zone.layout.canvas_width,
+                            zone.layout.canvas_height,
+                        )
+                    })
                 });
         // Reconcile admits CPU targets and the CPU scene surface only for a
         // scene it cannot keep on the GPU; one that loses residency after
@@ -154,6 +158,13 @@ impl ZoneRuntime {
             display_zone_frames: rendered_parts.display_zone_frames,
             zone_revisions: self.zone_revisions_of(&rendered_parts.zone_canvases),
             zone_canvases: rendered_parts.zone_canvases,
+            class_frames: ClassFrames {
+                zones: rendered_parts.zone_classes,
+                revisions: self.class_revisions_of(&rendered_parts.class_frames),
+                frames: rendered_parts.class_frames,
+                pictures: rendered_parts.zone_pictures,
+            },
+            scope_class_count: self.scope_class_count(context.zones),
             active_display_zone_ids: rendered_parts.active_display_zone_ids,
             led_sampling_strategy,
             producer_full_frame_copy: rendered_zones.producer_full_frame_copy,
@@ -256,6 +267,8 @@ impl ZoneRuntime {
             display_zone_frames: rendered_parts.display_zone_frames,
             zone_revisions: self.zone_revisions_of(&rendered_parts.zone_canvases),
             zone_canvases: rendered_parts.zone_canvases,
+            class_frames: ClassFrames::default(),
+            scope_class_count: 1,
             active_display_zone_ids: rendered_parts.active_display_zone_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
             producer_full_frame_copy: rendered_zones.producer_full_frame_copy,
@@ -267,27 +280,49 @@ impl ZoneRuntime {
         }))
     }
 
-    /// Describe how each scene zone's LEDs sample this frame, in the zone
-    /// order the CPU per-zone path and the combined routing layout use.
+    /// The scope classes the scene's zones compose: one per zone with no
+    /// scoped layer.
+    fn scope_class_count(&self, zones: &[Zone]) -> u32 {
+        let count = zones
+            .iter()
+            .filter(|zone| zone_contributes_to_scene_canvas(zone))
+            .map(|zone| multi_class(&self.scope_classes, zone.id).map_or(1, |c| c.class_count()))
+            .sum::<usize>();
+        u32::try_from(count).unwrap_or(u32::MAX)
+    }
+
+    /// Describe how each scope class of every scene zone samples its LEDs
+    /// this frame, in the order the CPU per-zone path and the combined
+    /// routing layout use: zone order, and class order within a zone.
     #[cfg(feature = "wgpu")]
     fn zone_sampling_set(
         &self,
         zones: &[Zone],
-        zone_frames: &[(ZoneId, ProducerFrame)],
+        zone_frames: &[(ZoneClassKey, ProducerFrame)],
     ) -> Arc<ZoneSamplingSet> {
         let mut sampled = Vec::with_capacity(zone_frames.len());
         let mut gpu_textures = Vec::with_capacity(zone_frames.len());
-        for zone in zones
+        for (zone, key) in zones
             .iter()
             .filter(|zone| zone_contributes_to_scene_canvas(zone))
+            .flat_map(|zone| {
+                zone_class_keys(&self.scope_classes, zone.id).map(move |key| (zone, key))
+            })
         {
-            let Some(spatial_engine) = self.spatial_engines.get(&zone.id) else {
+            // A class of a zone with several has an engine over its own LED
+            // outputs, and none when it holds no LED.
+            let spatial_engine = if multi_class(&self.scope_classes, zone.id).is_some() {
+                self.class_spatial_engines.get(&key)
+            } else {
+                self.spatial_engines.get(&zone.id)
+            };
+            let Some(spatial_engine) = spatial_engine else {
                 continue;
             };
             let prepared_zones = spatial_engine.sampling_plan();
             let frame = zone_frames
                 .iter()
-                .find(|(zone_id, _)| *zone_id == zone.id)
+                .find(|(frame_key, _)| *frame_key == key)
                 .map(|(_, frame)| frame);
             let source = match frame {
                 Some(ProducerFrame::GpuTexture(texture)) => {
@@ -317,6 +352,15 @@ impl ZoneRuntime {
     }
 
     fn single_full_scene_zone<'a>(&self, zones: &'a [Zone]) -> Option<&'a Zone> {
+        // The lone-zone path samples one frame for every output. A zone
+        // with several scope classes has a frame per class.
+        self.lone_scene_zone(zones)
+            .filter(|zone| multi_class(&self.scope_classes, zone.id).is_none())
+    }
+
+    /// The scene's only contributing zone, when it has the scene's extent:
+    /// the zone whose canvas is the scene's own picture.
+    pub(super) fn lone_scene_zone<'a>(&self, zones: &'a [Zone]) -> Option<&'a Zone> {
         let mut scene_zones = zones
             .iter()
             .filter(|zone| zone_contributes_to_scene_canvas(zone));

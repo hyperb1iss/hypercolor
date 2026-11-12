@@ -36,7 +36,7 @@ use super::sparkleflinger::ComposedFrameSet;
 use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_generation};
 use super::zone_previews::{
     ZonePreviewDemand, collect_gpu_zone_previews, stage_gpu_zone_previews,
-    with_dark_inactive_zone_previews, zone_preview_sources,
+    with_dark_inactive_zone_previews, zone_preview_frames, zone_preview_sources,
 };
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
@@ -644,10 +644,13 @@ pub(crate) async fn execute_frame(
         &frame_loop.publication_cadence,
         scene_snapshot.scene_runtime.active_scene_id,
     );
+    render
+        .render_zone_runtime
+        .request_zone_pictures(|zone_id| zone_preview_demand.shows(zone_id));
     stage_gpu_zone_previews(
         &mut render.sparkleflinger,
         &zone_preview_demand,
-        &render_stage.zone_canvases,
+        &zone_preview_frames(&render_stage.zone_canvases, &render_stage.class_frames),
         &render_stage.active_display_zone_ids,
     );
     let preview_advance_us =
@@ -784,10 +787,12 @@ pub(crate) async fn execute_frame(
         let mut preview = render.preview_runtime();
         preview.finalize_gpu_preview(&mut render_stage);
     }
+    let zone_preview_canvases =
+        zone_preview_frames(&render_stage.zone_canvases, &render_stage.class_frames);
     let gpu_zone_previews = collect_gpu_zone_previews(
         &mut render.sparkleflinger,
         &zone_preview_demand,
-        &render_stage.zone_canvases,
+        &zone_preview_canvases,
         &render_stage.active_display_zone_ids,
     );
     let postprocess_us = micros_between(postprocess_start, Instant::now());
@@ -820,7 +825,7 @@ pub(crate) async fn execute_frame(
         &zone_preview_demand,
         zone_preview_sources(
             &zone_preview_demand,
-            &render_stage.zone_canvases,
+            &zone_preview_canvases,
             &gpu_zone_previews,
         ),
         &scene_snapshot.scene_runtime.resolved_zones,
@@ -954,6 +959,7 @@ pub(crate) async fn execute_frame(
         held_zone_count: zone_sources.held,
         gpu_sampling_passes,
         zone_composition_skips: render_stage.zone_composition_skips,
+        scope_class_count: render_stage.scope_class_count,
         gpu_sample_deferred,
         gpu_sample_stale,
         gpu_sample_retry_hit,
@@ -1313,6 +1319,8 @@ mod tests {
             zone_composition_skips: 0,
             display_zone_frames: Vec::new(),
             zone_canvases: Vec::new(),
+            class_frames: crate::render_thread::render_zones::ClassFrames::default(),
+            scope_class_count: 0,
             active_display_zone_ids: Vec::new(),
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(
                 sample_layout(&[]),

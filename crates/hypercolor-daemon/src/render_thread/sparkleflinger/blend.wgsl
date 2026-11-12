@@ -1,10 +1,19 @@
 struct ComposeParams {
     size_and_mode: vec4<u32>,
+    // Source width and height, the PROCESS_* constant, and the flip flag.
     source_and_flags: vec4<u32>,
     opacity: vec4<f32>,
     transform_a: vec4<f32>,
     adjust_a: vec4<f32>,
     adjust_b: vec4<f32>,
+    // A placed layer's placement: the two rows of the affine from frame
+    // units to source pixels, the two rows of the affine from target pixels
+    // to frame units, and the source rectangle the fit shows.
+    placement_source_x: vec4<f32>,
+    placement_source_y: vec4<f32>,
+    placement_frame_x: vec4<f32>,
+    placement_frame_y: vec4<f32>,
+    placement_crop: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -30,6 +39,17 @@ const MODE_COLOR_DODGE: u32 = 7u;
 const MODE_DIFFERENCE: u32 = 8u;
 const MODE_TINT: u32 = 9u;
 const MODE_LUMA_REVEAL: u32 = 10u;
+
+const PROCESS_NONE: u32 = 0u;
+const PROCESS_TRANSFORM: u32 = 1u;
+const PROCESS_PLACEMENT: u32 = 2u;
+const PROCESS_PLACEMENT_OPAQUE: u32 = 3u;
+const PROCESS_CLIPPED_PLACEMENT: u32 = 4u;
+const PROCESS_CLIPPED_PLACEMENT_OPAQUE: u32 = 5u;
+
+// How far outside the crop a point still counts as on the source, as
+// LayerPlacement holds it.
+const CROP_SLACK: f32 = 0.01;
 
 const FIT_CONTAIN: u32 = 0u;
 const FIT_COVER: u32 = 1u;
@@ -250,6 +270,53 @@ fn source_coord_for_destination(xy: vec2<u32>) -> vec3<f32> {
     return vec3<f32>(crop_origin + uv * crop_size - vec2<f32>(0.5), 1.0);
 }
 
+fn pixel_center(xy: vec2<u32>) -> vec2<f32> {
+    return vec2<f32>(f32(xy.x) + 0.5, f32(xy.y) + 0.5);
+}
+
+// Where a target pixel falls in a placed layer's frame, in frame units.
+fn placement_frame_point(xy: vec2<u32>) -> vec2<f32> {
+    let point = pixel_center(xy);
+    return vec2<f32>(
+        params.placement_frame_x.x * point.x + params.placement_frame_x.y * point.y + params.placement_frame_x.z,
+        params.placement_frame_y.x * point.x + params.placement_frame_y.y * point.y + params.placement_frame_y.z,
+    );
+}
+
+// Whether a target pixel is inside a placed layer's frame. A clipped layer
+// leaves the target as it is outside it, whatever its mode.
+fn inside_placement_frame(xy: vec2<u32>) -> bool {
+    let frame = placement_frame_point(xy);
+    return frame.x >= 0.0 && frame.x <= 1.0 && frame.y >= 0.0 && frame.y <= 1.0;
+}
+
+// The source texel a placed layer shows at a target pixel, with z = 0 where
+// the placed source does not reach. A pixel beyond the frame shows the
+// nearest point of the frame's edge. Takes the steps of
+// LayerPlacement::source_texel in the same order.
+fn placed_source_texel(xy: vec2<u32>) -> vec3<i32> {
+    let frame = clamp(placement_frame_point(xy), vec2<f32>(0.0), vec2<f32>(1.0));
+    let source = vec2<f32>(
+        params.placement_source_x.x * frame.x + params.placement_source_x.y * frame.y + params.placement_source_x.z,
+        params.placement_source_y.x * frame.x + params.placement_source_y.y * frame.y + params.placement_source_y.z,
+    );
+    if (params.size_and_mode.w == FIT_TILE || params.size_and_mode.w == FIT_MIRROR) {
+        let mirror = params.size_and_mode.w == FIT_MIRROR;
+        return vec3<i32>(
+            repeated_axis(source.x, params.source_and_flags.x, mirror),
+            repeated_axis(source.y, params.source_and_flags.y, mirror),
+            1,
+        );
+    }
+    let crop = params.placement_crop;
+    if (source.x < crop.x - CROP_SLACK || source.x > crop.x + crop.z + CROP_SLACK || source.y < crop.y - CROP_SLACK || source.y > crop.y + crop.w + CROP_SLACK) {
+        return vec3<i32>(0, 0, 0);
+    }
+    let max_coord = vec2<f32>(f32(params.source_and_flags.x - 1u), f32(params.source_and_flags.y - 1u));
+    let texel = vec2<i32>(clamp(floor(source), vec2<f32>(0.0), max_coord));
+    return vec3<i32>(texel, 1);
+}
+
 // Sources rendered bottom-up (imported Servo frames on macOS/Windows) set
 // source_and_flags.w; logical coordinates flip to physical rows here, at the
 // single texel load site, so every fit/tile/transform path stays upright.
@@ -262,8 +329,19 @@ fn load_source_texel(xy: vec2<i32>) -> vec4<f32> {
 }
 
 fn load_source_rgba(xy: vec2<u32>) -> vec4<f32> {
-    if (params.source_and_flags.z == 0u) {
+    if (params.source_and_flags.z == PROCESS_NONE) {
         return load_source_texel(vec2<i32>(i32(xy.x), i32(xy.y)));
+    }
+    if (params.source_and_flags.z >= PROCESS_PLACEMENT) {
+        let texel = placed_source_texel(xy);
+        var placed = vec4<f32>(0.0);
+        if (texel.z != 0) {
+            placed = load_source_texel(texel.xy);
+        }
+        if (params.source_and_flags.z == PROCESS_PLACEMENT_OPAQUE || params.source_and_flags.z == PROCESS_CLIPPED_PLACEMENT_OPAQUE) {
+            placed.a = 1.0;
+        }
+        return placed;
     }
 
     let coord = source_coord_for_destination(xy);
@@ -360,6 +438,10 @@ fn compose(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let xy = vec2<i32>(i32(gid.x), i32(gid.y));
+    if (params.source_and_flags.z >= PROCESS_CLIPPED_PLACEMENT && !inside_placement_frame(gid.xy)) {
+        textureStore(output_texture, xy, textureLoad(destination_texture, xy, 0));
+        return;
+    }
     let destination = decode_srgb(textureLoad(destination_texture, xy, 0));
     let source = apply_adjust(decode_srgb(load_source_rgba(gid.xy)));
 
