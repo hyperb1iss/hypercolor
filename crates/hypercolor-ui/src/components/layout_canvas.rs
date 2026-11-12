@@ -1138,10 +1138,13 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     // or pinned while the selection or the pane points at it.
                                     // One class binding: a reactive `class` replaces the whole
                                     // attribute, so the edge it hangs from rides in it too.
+                                    // Dark in both themes, like the canvas under it: the
+                                    // name wears the device's color, which is picked to
+                                    // read on black and washes out on a light surface.
                                     <div
                                         class=move || format!(
                                             "absolute left-0 text-[9px] font-mono whitespace-nowrap transition-opacity \
-                                             pointer-events-none px-2 py-0.5 rounded glass-subtle {} {}",
+                                             pointer-events-none px-2 py-0.5 rounded bg-black/80 {} {}",
                                             if zone_style.get().is_some_and(|zd| zd.label_below) { "-bottom-6" } else { "-top-6" },
                                             visibility_class(label_mode.get().callout),
                                         )
