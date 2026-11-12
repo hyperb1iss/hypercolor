@@ -1011,10 +1011,21 @@ transition's eased progress.
   from black. A screen with no base cuts to the incoming picture: one the
   outgoing scene did not place, or one whose panel changed shape since the base
   was taken.
-- **Interruption.** A transition that interrupts another starts from the mix
-  that was on the panel: the new base is the last incoming backdrop over the
-  old base, at the weight the old transition had reached. A base is a picture
-  and not the outgoing zone's frame and viewport for this reason.
+- **Interruption.** A transition that interrupts another starts each screen
+  from the mix that was on its panel: the new base is the incoming backdrop
+  over the old base, at the weight of the picture that screen last published.
+  A screen under its cadence cap has published less of the fade than the
+  transition has run, so the weight is kept per screen and travels with each
+  finalization through its readback. A screen that published nothing of the
+  interrupted transition keeps the base it had. On the GPU the incoming
+  backdrop is the zone's frame at the interruption, and the CPU backend starts
+  from the mix it retained. A base is a picture and not the outgoing zone's
+  frame and viewport for this reason.
+- **Output off.** Output that goes off ends every fade. The frame that
+  publishes the off color drops the bases, the transition's key and each
+  screen's retained backdrop, and a transition that begins before output is
+  back starts each screen from that color: black for released output, the
+  static color for held output.
 - **Cadence.** A fading screen is finalized at its own cadence cap, as it is
   outside a transition. The loop keeps composing while a screen fades into a
   scene that renders nothing, and idles once the fade is over.
