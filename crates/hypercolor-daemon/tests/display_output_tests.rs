@@ -2446,6 +2446,106 @@ async fn previewed_simulator_awaiting_its_lane_holds_render_demand() {
     thread.shutdown().await.expect("display thread should stop");
 }
 
+/// The hold is for a lane that is coming. Once the render thread has placed
+/// the screens it was handed and is making the simulator no lane, nothing
+/// is coming and the hold goes. A new set of screens is a new question, so
+/// the hold comes back until that one is answered, and an answer that names
+/// the simulator is a lane on its way.
+#[tokio::test]
+async fn previewed_simulator_no_lane_is_made_for_releases_render_demand() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "simulator:test-display")
+        .await
+        .expect("backend should connect");
+    device_registry
+        .add_with_fingerprint_and_metadata(
+            simulated_display_device_info(device_id, 320, 200),
+            DeviceFingerprint::from_persisted(format!("simulator:{device_id}")),
+            simulated_display_metadata(),
+        )
+        .await;
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
+        display_frames: Arc::clone(&display_frames),
+    });
+    let holds = |expected: usize, why: &'static str| {
+        let event_bus = Arc::clone(&event_bus);
+        async move {
+            timeout(DISPLAY_TEST_TIMEOUT, async {
+                while event_bus.output_demand().hold_count() != expected {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{why}"));
+        }
+    };
+
+    let _preview_rx = display_frames.write().await.subscribe(device_id);
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    holds(
+        1,
+        "a previewed simulator nobody has placed yet should hold demand",
+    )
+    .await;
+
+    // The render thread placed these screens: no zone has the simulator.
+    let routes_revision = event_bus.screen_backdrop_routes_revision();
+    event_bus.publish_screen_lane_plan(routes_revision, std::iter::empty());
+    holds(
+        0,
+        "a simulator that gets no lane should stop holding demand",
+    )
+    .await;
+
+    // The set of screens changes, and the old answer is for the old set.
+    insert_default_logical_device(&logical_devices, device_id).await;
+    timeout(DISPLAY_TEST_TIMEOUT, async {
+        while event_bus.screen_backdrop_routes_revision() == routes_revision {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a new layout id should republish the simulator's route");
+    holds(1, "a changed set of screens should be asked about again").await;
+
+    let routes_revision = event_bus.screen_backdrop_routes_revision();
+    event_bus.publish_screen_lane_plan(routes_revision, std::iter::empty());
+    holds(0, "the new set gets the simulator no lane either").await;
+
+    // A zone places the simulator: its lane is on the way.
+    event_bus.publish_screen_lane_plan(routes_revision, std::iter::once(device_id));
+    holds(1, "a simulator whose lane is being made should hold demand").await;
+
+    thread.shutdown().await.expect("display thread should stop");
+    assert!(display_writes.lock().await.is_empty());
+}
+
 #[tokio::test]
 async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let _guard = display_output_test_guard().await;

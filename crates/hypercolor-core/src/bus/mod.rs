@@ -22,7 +22,7 @@ mod filter;
 pub use demand::{ArmedOutputDemand, OutputDemandHold, OutputDemandSignal};
 pub use filter::{EventFilter, FilteredEventReceiver};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -661,6 +661,21 @@ pub struct ScreenBackdropRoute {
     pub target_fps: u32,
 }
 
+/// The screens the render thread makes a display lane for, worked out from
+/// one publication of the screen set.
+///
+/// Display output holds render demand for a previewed screen whose lane has
+/// not arrived, and the render thread is the only one who knows whether one
+/// will: a screen no zone places and no live face is shown on gets none.
+/// This is its answer, so the hold can end when the answer is no.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenLanePlan {
+    /// The revision of the screen set the render thread read.
+    pub routes_revision: u64,
+    /// The screens it makes a lane for.
+    pub screens: Arc<HashSet<DeviceId>>,
+}
+
 /// The display lane id of a screen's backdrop.
 ///
 /// A screen without a face has no display zone, so its backdrop travels the
@@ -691,6 +706,12 @@ struct DisplayZoneOutputRouteRegistry {
 struct ScreenBackdropRouteRegistry {
     revision: u64,
     routes: Arc<HashMap<DeviceId, ScreenBackdropRoute>>,
+}
+
+#[derive(Debug, Default)]
+struct ScreenLanePlanRegistry {
+    revision: u64,
+    plan: Option<ScreenLanePlan>,
 }
 
 /// Immutable counters for one latest-value bus lane.
@@ -931,6 +952,9 @@ pub struct HypercolorBus {
     /// Display-output-authored set of the screens it drives.
     screen_backdrop_routes: Arc<Mutex<ScreenBackdropRouteRegistry>>,
 
+    /// Render-thread-authored answer to that set: the screens with a lane.
+    screen_lane_plan: Arc<Mutex<ScreenLanePlanRegistry>>,
+
     /// Notified when output demand appears or observable state changes.
     output_demand: Arc<OutputDemandSignal>,
 
@@ -964,6 +988,7 @@ impl HypercolorBus {
                 DisplayZoneOutputRouteRegistry::default(),
             )),
             screen_backdrop_routes: Arc::new(Mutex::new(ScreenBackdropRouteRegistry::default())),
+            screen_lane_plan: Arc::new(Mutex::new(ScreenLanePlanRegistry::default())),
             output_demand,
             clock,
         }
@@ -1464,6 +1489,51 @@ impl HypercolorBus {
             .lock()
             .expect("screen backdrop route registry should not be poisoned");
         (registry.revision, Arc::clone(&registry.routes))
+    }
+
+    /// Publish the screens the render thread makes a lane for, out of the
+    /// screen set at `routes_revision`.
+    ///
+    /// The render thread gives this answer every time it places the
+    /// screens. One that says what the last one said keeps its revision
+    /// and allocates nothing.
+    pub fn publish_screen_lane_plan(
+        &self,
+        routes_revision: u64,
+        screens: impl Iterator<Item = DeviceId> + Clone,
+    ) {
+        let mut registry = self
+            .screen_lane_plan
+            .lock()
+            .expect("screen lane plan registry should not be poisoned");
+        let unchanged = registry.plan.as_ref().is_some_and(|plan| {
+            plan.routes_revision == routes_revision
+                && screens
+                    .clone()
+                    .all(|device_id| plan.screens.contains(&device_id))
+                && plan
+                    .screens
+                    .iter()
+                    .all(|planned| screens.clone().any(|device_id| device_id == *planned))
+        });
+        if !unchanged {
+            registry.plan = Some(ScreenLanePlan {
+                routes_revision,
+                screens: Arc::new(screens.collect()),
+            });
+            registry.revision = registry.revision.saturating_add(1);
+        }
+    }
+
+    /// The render thread's latest answer and the answer's own revision.
+    /// `None` until the render thread has placed any set of screens.
+    #[must_use]
+    pub fn screen_lane_plan_snapshot(&self) -> (u64, Option<ScreenLanePlan>) {
+        let registry = self
+            .screen_lane_plan
+            .lock()
+            .expect("screen lane plan registry should not be poisoned");
+        (registry.revision, registry.plan.clone())
     }
 
     /// Remove the render-thread-authored display-face route for a zone.

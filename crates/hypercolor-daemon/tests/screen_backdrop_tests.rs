@@ -2295,6 +2295,152 @@ async fn gpu_previewed_simulator_wakes_a_parked_render_loop() {
     previewed_simulator_wakes_a_parked_render_loop(RenderAccelerationMode::Gpu).await;
 }
 
+/// A previewed simulator holds render demand for the lane that is coming.
+/// When no zone places it and no face is shown on it, no lane is coming:
+/// once the render thread has looked and said so, nothing is left asking
+/// for frames, and a rig with nothing else to drive parks again. A scene
+/// that places the simulator later is a new question, and its lane arrives.
+async fn previewed_simulator_no_zone_places_lets_the_loop_park(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let simulator = Screen::named("unplaced-simulator");
+    rig.connect_simulator(&simulator).await;
+    let unplaced = test_scene(
+        "Unplaced",
+        vec![scene_zone(
+            "Red",
+            ZoneRole::Primary,
+            vec![rig.effects.solid(RED)],
+            vec![strip_output("strip:red", (0.5, 0.1), (0.8, 0.1))],
+        )],
+        0,
+    );
+    let placed = test_scene(
+        "Placed",
+        vec![scene_zone(
+            "Blue",
+            ZoneRole::Primary,
+            vec![rig.effects.solid(BLUE)],
+            vec![
+                strip_output("strip:blue", (0.5, 0.1), (0.8, 0.1)),
+                simulator.output((0.5, 0.5), (0.4, 0.4)),
+            ],
+        )],
+        0,
+    );
+    let bus = Arc::clone(&rig.state.event_bus);
+    let frame_number = || bus.frame_lane().borrow().frame_number;
+
+    let running = rig.run_scene(unplaced).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let _preview = rig
+        .display_frames
+        .write()
+        .await
+        .subscribe(simulator.device_id);
+    // Display output has the simulator on its list of screens, and asks.
+    let deadline = Instant::now() + WAIT;
+    while !bus
+        .screen_backdrop_routes_snapshot()
+        .1
+        .contains_key(&simulator.device_id)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the previewed simulator never became a screen display output drives"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The answer is no lane, so the hold goes and the loop parks.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let before = frame_number();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        if bus.output_demand().hold_count() == 0 && frame_number() == before {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a simulator no zone places kept the loop rendering: {} demand holds, frame {} then {}",
+            bus.output_demand().hold_count(),
+            before,
+            frame_number()
+        );
+    }
+    assert!(rig.writes.of(simulator.device_id).is_empty());
+
+    rig.activate(&placed).await;
+    rig.writes
+        .wait_for(simulator.device_id, "its blue zone", |panel| {
+            near(panel.center(), [0, 0, 255])
+        })
+        .await;
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_previewed_simulator_no_zone_places_lets_the_loop_park() {
+    previewed_simulator_no_zone_places_lets_the_loop_park(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_previewed_simulator_no_zone_places_lets_the_loop_park() {
+    previewed_simulator_no_zone_places_lets_the_loop_park(RenderAccelerationMode::Gpu).await;
+}
+
+/// A simulator no zone places still gets a lane when a face is shown on
+/// it. The render thread's answer names it for that reason, so in a rig
+/// with nothing else to render for, its preview keeps asking until the
+/// face has arrived.
+async fn previewed_simulator_with_only_a_face_gets_its_lane(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let simulator = Screen::named("faced-simulator");
+    rig.connect_simulator(&simulator).await;
+    let zones = vec![
+        scene_zone(
+            "Red",
+            ZoneRole::Primary,
+            vec![rig.effects.solid(RED)],
+            vec![strip_output("strip:red", (0.5, 0.1), (0.8, 0.1))],
+        ),
+        blending_face_zone(&simulator, vec![rig.effects.solid(GREEN)]),
+    ];
+
+    let running = rig.run(zones).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let _preview = rig
+        .display_frames
+        .write()
+        .await
+        .subscribe(simulator.device_id);
+    rig.writes
+        .wait_for(simulator.device_id, "its green face", |panel| {
+            let [r, g, b] = panel.center();
+            r <= 12 && g >= 60 && b <= 12
+        })
+        .await;
+    let (_, plan) = rig.state.event_bus.screen_lane_plan_snapshot();
+    running.stop().await;
+
+    assert!(
+        plan.is_some_and(|plan| plan.screens.contains(&simulator.device_id)),
+        "a screen a live face is shown on has a lane coming"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_previewed_simulator_with_only_a_face_gets_its_lane() {
+    previewed_simulator_with_only_a_face_gets_its_lane(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_previewed_simulator_with_only_a_face_gets_its_lane() {
+    previewed_simulator_with_only_a_face_gets_its_lane(RenderAccelerationMode::Gpu).await;
+}
+
 /// Output that goes off takes every fade with it. Red was fading to blue
 /// when output went off; that fade ran out unseen, and green began to fade
 /// in while the screen was still dark. When output comes back the screen

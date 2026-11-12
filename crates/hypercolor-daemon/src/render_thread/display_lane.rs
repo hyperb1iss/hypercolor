@@ -5,7 +5,7 @@ use tracing::debug;
 
 use hypercolor_core::bus::{
     DisplayBackdropFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget,
-    ScreenBackdropRoute, screen_backdrop_lane_id,
+    HypercolorBus, ScreenBackdropRoute, screen_backdrop_lane_id,
 };
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::device::DeviceId;
@@ -90,14 +90,38 @@ pub(super) fn place_screens(
     screens
 }
 
+/// Place the screens display output drives, and tell it which of them get
+/// a lane this frame: the ones `zones` place, and the ones in `faced` that
+/// a live face is shown on.
+///
+/// Display output holds render demand for a previewed simulator until its
+/// lane arrives. A simulator with neither a placement nor a face gets no
+/// lane, and this answer is how display output learns to stop waiting.
+pub(super) fn place_driven_screens(
+    bus: &HypercolorBus,
+    zones: &[Zone],
+    faced: &[DeviceId],
+) -> Vec<PlacedScreen> {
+    let (routes_revision, routes) = bus.screen_backdrop_routes_snapshot();
+    let screens = place_screens(&routes, zones);
+    bus.publish_screen_lane_plan(
+        routes_revision,
+        screens
+            .iter()
+            .map(|screen| screen.device_id)
+            .chain(faced.iter().copied()),
+    );
+    screens
+}
+
 /// The display lanes of a frame that composes no scene: every screen `zones`
 /// place shows `picture`, one flat color, and no face is live.
 pub(super) fn static_backdrop_lanes(
-    routes: &HashMap<DeviceId, ScreenBackdropRoute>,
+    bus: &HypercolorBus,
     zones: &[Zone],
     picture: &PublishedSurface,
 ) -> MaterializedDisplayLanes {
-    let screens = place_screens(routes, zones);
+    let screens = place_driven_screens(bus, zones, &[]);
     MaterializedDisplayLanes {
         active_lane_ids: screens
             .iter()

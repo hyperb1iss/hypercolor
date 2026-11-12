@@ -16,7 +16,7 @@ use self::preview_policy::{
 };
 use super::display_lane::{
     DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes, MaterializedDisplayLanes,
-    ScreenBackdrops, faced_screens, place_screens,
+    ScreenBackdrops, faced_screens, place_driven_screens,
 };
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
@@ -697,14 +697,14 @@ impl ComposeContext<'_> {
     ) -> MaterializedDisplayLanes {
         let scene_runtime = &self.scene_snapshot.scene_runtime;
         let (_, display_routes) = self.state.event_bus.display_zone_output_routes_snapshot();
-        let (_, backdrop_routes) = self.state.event_bus.screen_backdrop_routes_snapshot();
         let black = ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
             self.state.canvas_dims.width(),
             self.state.canvas_dims.height(),
             [0, 0, 0],
         ));
-        let screens = place_screens(&backdrop_routes, &scene_runtime.resolved_zones);
         let faced = faced_screens(&scene_runtime.resolved_zones, active_display_zone_ids);
+        let screens =
+            place_driven_screens(&self.state.event_bus, &scene_runtime.resolved_zones, &faced);
         let fade = ScreenTransition::of(scene_runtime).map(|transition| transition.weight);
         let context = DisplayLaneContext {
             elapsed_ms: self.scene_snapshot.elapsed_ms,

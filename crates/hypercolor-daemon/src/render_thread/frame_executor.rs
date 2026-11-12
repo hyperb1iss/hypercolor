@@ -1189,9 +1189,8 @@ async fn force_static_sleep_snapshot(
     // A placed screen with no lane yet, one that connected while output
     // was off, gets its backdrop lane here. Nothing else publishes lanes
     // until output is back.
-    let (_, screen_routes) = state.event_bus.screen_backdrop_routes_snapshot();
     let placed = static_backdrop_lanes(
-        &screen_routes,
+        &state.event_bus,
         &scene_snapshot.scene_runtime.resolved_zones,
         canvas_frame.surface(),
     );

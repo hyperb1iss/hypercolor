@@ -150,13 +150,19 @@ struct DisplayTargetCache {
 struct DisplayTargetDependencyKey {
     registry_generation: u64,
     display_zone_targets_revision: u64,
+    screen_lane_plan_revision: u64,
 }
 
 impl DisplayTargetDependencyKey {
-    const fn new(registry_generation: u64, display_zone_targets_revision: u64) -> Self {
+    const fn new(
+        registry_generation: u64,
+        display_zone_targets_revision: u64,
+        screen_lane_plan_revision: u64,
+    ) -> Self {
         Self {
             registry_generation,
             display_zone_targets_revision,
+            screen_lane_plan_revision,
         }
     }
 }
@@ -215,9 +221,11 @@ struct DisplayViewportSignature {
 struct DisplayTargetsSnapshot {
     version: u64,
     targets: Arc<[Arc<DisplayTarget>]>,
-    /// Whether a previewed simulator is routed but has no lane yet. The
-    /// render thread makes its lane, and a parked render thread makes
-    /// nothing: nobody but the preview is asking for frames.
+    /// Whether a previewed simulator is routed, has no lane yet, and may
+    /// still get one. The render thread makes its lane, and a parked render
+    /// thread makes nothing: nobody but the preview is asking for frames.
+    /// Once the render thread has placed the screens it was handed and made
+    /// the simulator no lane, none is coming and nothing is awaited.
     awaiting_lanes: bool,
 }
 
@@ -710,6 +718,7 @@ async fn display_targets(
     cache: &mut DisplayTargetCache,
     face_fps_cap: u32,
 ) -> DisplayTargetsSnapshot {
+    let (screen_lane_plan_revision, screen_lane_plan) = event_bus.screen_lane_plan_snapshot();
     let (display_zone_targets_revision, published_display_zone_targets) =
         event_bus.display_zone_targets_snapshot();
     let logical_store = logical_devices.read().await;
@@ -717,8 +726,11 @@ async fn display_targets(
     let registry_generation = registry.generation();
     let logical_signature = logical_device_store_signature(&logical_store);
     let display_preview_signature = device_id_set_signature(&display_preview_subscribers);
-    let dependency_key =
-        DisplayTargetDependencyKey::new(registry_generation, display_zone_targets_revision);
+    let dependency_key = DisplayTargetDependencyKey::new(
+        registry_generation,
+        display_zone_targets_revision,
+        screen_lane_plan_revision,
+    );
     let cache_key =
         DisplayTargetCacheKey::new(dependency_key, logical_signature, display_preview_signature);
 
@@ -733,7 +745,7 @@ async fn display_targets(
     let lane_targets = display_lane_targets_by_device(published_display_zone_targets);
     let mut targets = Vec::new();
     let mut screen_routes = HashMap::new();
-    let mut awaiting_lanes = false;
+    let mut simulators_without_lane = Vec::new();
     for tracked in registry
         .list()
         .await
@@ -811,7 +823,9 @@ async fn display_targets(
             ),
             None if has_backdrop_lane => (backdrop_source, backdrop_lane),
             None => {
-                awaiting_lanes |= is_simulator;
+                if is_simulator {
+                    simulators_without_lane.push(device_id);
+                }
                 continue;
             }
         };
@@ -857,6 +871,16 @@ async fn display_targets(
     });
     publish_display_zone_output_routes(event_bus, &targets);
     event_bus.replace_screen_backdrop_routes(screen_routes);
+    // A lane is awaited while the render thread has yet to place this set
+    // of screens, or has placed it and is making the simulator a lane that
+    // has not arrived. A set it placed with no lane for the simulator has
+    // nothing coming, until the set or the render thread's answer changes.
+    let routes_revision = event_bus.screen_backdrop_routes_revision();
+    let awaiting_lanes = simulators_without_lane.iter().any(|device_id| {
+        screen_lane_plan.as_ref().is_none_or(|plan| {
+            plan.routes_revision != routes_revision || plan.screens.contains(device_id)
+        })
+    });
     cache.version = cache.version.saturating_add(1);
     cache.cache_key = Some(cache_key);
     cache.targets = Arc::from(targets);

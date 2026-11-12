@@ -110,9 +110,8 @@ pub(crate) async fn maybe_sleep_throttle(
         // No scene composes here, so this frame carries the screens' black
         // itself. Publishing no lanes would drop them and leave each placed
         // screen on its last picture.
-        let (_, screen_routes) = state.event_bus.screen_backdrop_routes_snapshot();
         let dark_lanes = static_backdrop_lanes(
-            &screen_routes,
+            &state.event_bus,
             &scene_snapshot.scene_runtime.resolved_zones,
             &surface,
         );

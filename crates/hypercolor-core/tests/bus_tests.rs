@@ -1704,6 +1704,51 @@ fn screen_backdrop_routes_replace_as_a_set_and_keep_their_revision_when_unchange
 }
 
 #[test]
+fn screen_lane_plan_keeps_its_revision_until_the_answer_changes() {
+    let bus = HypercolorBus::new();
+    let placed = DeviceId::new();
+    let faced = DeviceId::new();
+    let (initial_revision, initial) = bus.screen_lane_plan_snapshot();
+    assert!(initial.is_none(), "nobody has placed any screens yet");
+
+    bus.publish_screen_lane_plan(3, [placed, faced].into_iter());
+    let (published_revision, published) = bus.screen_lane_plan_snapshot();
+    let published = published.expect("the render thread's answer");
+    assert_ne!(published_revision, initial_revision);
+    assert_eq!(published.routes_revision, 3);
+    assert!(published.screens.contains(&placed) && published.screens.contains(&faced));
+
+    // The same screens, in another order and one of them named twice.
+    bus.publish_screen_lane_plan(3, [faced, placed, faced].into_iter());
+    let (repeated_revision, repeated) = bus.screen_lane_plan_snapshot();
+    assert_eq!(
+        repeated_revision, published_revision,
+        "the same answer should keep its revision"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &repeated.expect("the same answer").screens,
+            &published.screens
+        ),
+        "the same answer should not be built again"
+    );
+
+    // One screen fewer is a new answer, and so is the same for a new set.
+    bus.publish_screen_lane_plan(3, std::iter::once(placed));
+    let (narrowed_revision, narrowed) = bus.screen_lane_plan_snapshot();
+    assert_ne!(narrowed_revision, published_revision);
+    assert!(!narrowed.expect("the new answer").screens.contains(&faced));
+
+    bus.publish_screen_lane_plan(4, std::iter::once(placed));
+    let (moved_revision, moved) = bus.screen_lane_plan_snapshot();
+    assert_ne!(moved_revision, narrowed_revision);
+    assert_eq!(
+        moved.expect("the answer for the new set").routes_revision,
+        4
+    );
+}
+
+#[test]
 fn render_thread_pruning_leaves_screen_backdrop_routes_alone() {
     let bus = HypercolorBus::new();
     let device_id = DeviceId::new();
