@@ -14,8 +14,9 @@
 //! square), normalized canvas units (where output placements live), and zone
 //! pixels. Pixel spaces are continuous, with pixel `i` covering `[i, i + 1)`.
 
-use hypercolor_types::layer::{LayerScope, LayerTransform};
-use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
+use hypercolor_types::layer::{LayerScope, LayerTransform, SceneLayer};
+use hypercolor_types::scene::Zone;
+use hypercolor_types::spatial::{NormalizedPosition, Output};
 use hypercolor_types::viewport::FitMode;
 
 /// Shortest side a framed layer renders at, in pixels.
@@ -67,13 +68,12 @@ impl LayerFrame {
         frame.is_placeable().then_some(frame)
     }
 
-    /// The frame of the outputs of `layout` that `scope` names: the one
+    /// The frame of the outputs of `zone` that `scope` names: the one
     /// output's own rectangle, or the axis-aligned bounding box of several.
-    /// `None` when the scope names no output the layout places.
+    /// `None` when the scope names no output the zone places.
     #[must_use]
-    pub fn of_scope(layout: &SpatialLayout, scope: &LayerScope) -> Option<Self> {
-        let mut frames =
-            scoped_outputs(layout, scope).filter_map(|(_, output)| Self::of_output(output));
+    pub fn of_scope(zone: &Zone, scope: &LayerScope) -> Option<Self> {
+        let mut frames = zone.scoped_outputs(scope).filter_map(Self::of_output);
         let first = frames.next()?;
         let Some(second) = frames.next() else {
             return Some(first);
@@ -187,20 +187,6 @@ impl LayerFrame {
     }
 }
 
-/// The outputs of `layout` that `scope` names, with their index in the
-/// layout, in layout order. An id that names no output of the layout is
-/// dormant and yields nothing.
-pub fn scoped_outputs<'a>(
-    layout: &'a SpatialLayout,
-    scope: &'a LayerScope,
-) -> impl Iterator<Item = (usize, &'a Output)> + 'a {
-    layout
-        .zones
-        .iter()
-        .enumerate()
-        .filter(|(_, output)| scope.contains(&output.id))
-}
-
 /// How a zone frames one of its layers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerFraming {
@@ -214,12 +200,12 @@ pub enum LayerFraming {
 }
 
 impl LayerFraming {
-    /// The framing `layout` gives a layer with `scope`.
+    /// The framing `zone` gives `layer`.
     #[must_use]
-    pub fn of(layout: &SpatialLayout, scope: Option<&LayerScope>) -> Self {
-        match scope {
+    pub fn of(zone: &Zone, layer: &SceneLayer) -> Self {
+        match &layer.scope {
             None => Self::Zone,
-            Some(scope) => LayerFrame::of_scope(layout, scope).map_or(Self::Dormant, Self::Framed),
+            Some(scope) => LayerFrame::of_scope(zone, scope).map_or(Self::Dormant, Self::Framed),
         }
     }
 

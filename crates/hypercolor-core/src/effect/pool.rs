@@ -829,7 +829,7 @@ fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer, (u32, u32))>
 /// The size `layer` renders at in `zone`: the zone canvas, or the extent of
 /// its scope's frame. `None` for a dormant layer.
 fn layer_render_extent(zone: &Zone, layer: &SceneLayer) -> Option<(u32, u32)> {
-    LayerFraming::of(&zone.layout, layer.scope.as_ref())
+    LayerFraming::of(zone, layer)
         .render_extent((zone.layout.canvas_width, zone.layout.canvas_height))
 }
 

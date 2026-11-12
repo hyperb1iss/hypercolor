@@ -7,15 +7,18 @@
 //! placement math the LED sampler uses, to the transform math an unscoped
 //! layer already draws with, and to itself in both directions.
 
+use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use std::sync::Arc;
 
 use hypercolor_core::spatial::{
     DeviceSurfaceMap, FrameEdge, LayerFrame, LayerFraming, LayerPlacement, SourceRepeat,
-    SpatialEngine, scoped_outputs,
+    SpatialEngine,
 };
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::layer::{LayerScope, LayerTransform};
+use hypercolor_types::effect::EffectId;
+use hypercolor_types::layer::{LayerScope, LayerTransform, SceneLayer, SceneLayerId};
+use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
@@ -70,6 +73,35 @@ fn scope(ids: &[&str]) -> LayerScope {
     LayerScope {
         outputs: ids.iter().map(|id| (*id).to_owned()).collect(),
     }
+}
+
+fn zone(layout: SpatialLayout) -> Zone {
+    Zone {
+        id: ZoneId::new(),
+        name: "Zone".into(),
+        description: None,
+        layers: Vec::new(),
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: ZoneRole::Custom,
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
+fn layer(scope: Option<LayerScope>) -> SceneLayer {
+    let mut layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::new(uuid::Uuid::now_v7()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    layer.scope = scope;
+    layer
 }
 
 fn transform(anchor: (f32, f32), scale: (f32, f32), rotation: f32, fit: FitMode) -> LayerTransform {
@@ -432,9 +464,9 @@ fn several_outputs_share_the_bounding_box_of_their_placed_rectangles() {
     let left = output("left", (0.25, 0.5), (0.2, 0.2), 0.0);
     let right = output("right", (0.75, 0.4), (0.2, 0.4), FRAC_PI_2);
     let other = output("other", (0.5, 0.9), (1.0, 0.1), 0.0);
-    let layout = layout(ZONE, vec![left, other, right]);
+    let zone = zone(layout(ZONE, vec![left, other, right]));
 
-    let frame = LayerFrame::of_scope(&layout, &scope(&["left", "right"])).expect("frame");
+    let frame = LayerFrame::of_scope(&zone, &scope(&["left", "right"])).expect("frame");
 
     // The right output is turned a quarter, so it spans 0.4 wide and 0.2
     // tall around (0.75, 0.4).
@@ -467,23 +499,17 @@ fn several_outputs_share_the_bounding_box_of_their_placed_rectangles() {
 #[test]
 fn a_scope_keeps_only_the_outputs_the_zone_places() {
     let keyboard = output("keyboard", (0.5, 0.5), (0.5, 0.2), 0.0);
-    let layout = layout(ZONE, vec![keyboard.clone()]);
+    let zone = zone(layout(ZONE, vec![keyboard.clone()]));
 
-    assert_eq!(LayerFraming::of(&layout, None), LayerFraming::Zone);
+    assert_eq!(LayerFraming::of(&zone, &layer(None)), LayerFraming::Zone);
     assert_eq!(
-        LayerFraming::of(&layout, Some(&scope(&["gone", "keyboard"]))),
+        LayerFraming::of(&zone, &layer(Some(scope(&["gone", "keyboard"])))),
         LayerFraming::Framed(LayerFrame::of_output(&keyboard).expect("placed output"))
     );
-    let dormant = LayerFraming::of(&layout, Some(&scope(&["gone"])));
+    let dormant = LayerFraming::of(&zone, &layer(Some(scope(&["gone"]))));
     assert!(dormant.is_dormant());
     assert_eq!(dormant.frame(), None);
     assert_eq!(dormant.render_extent(ZONE), None);
-    assert_eq!(
-        scoped_outputs(&layout, &scope(&["gone", "keyboard"]))
-            .map(|(index, output)| (index, output.id.as_str()))
-            .collect::<Vec<_>>(),
-        vec![(0, "keyboard")]
-    );
 }
 
 #[test]
@@ -613,7 +639,8 @@ fn a_touch_resolves_to_the_source_point_its_led_samples() {
                 _ => None,
             });
         let layer_scope = scope(&["scoped"]);
-        let frame = LayerFrame::of_scope(&layout, &layer_scope).expect("frame");
+        let frame =
+            LayerFrame::of_scope(&crate::zone(layout.clone()), &layer_scope).expect("frame");
         let source = frame.render_extent(zone).expect("extent");
         let layer_transform = transform(
             (random.between(0.3, 0.7), random.between(0.3, 0.7)),

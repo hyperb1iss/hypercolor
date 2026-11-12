@@ -137,7 +137,7 @@ impl ZoneScopeClasses {
         let framings = zone
             .layers
             .iter()
-            .map(|layer| LayerFraming::of(&zone.layout, layer.scope.as_ref()))
+            .map(|layer| LayerFraming::of(zone, layer))
             .collect::<Vec<_>>();
         let scopes = zone
             .layers

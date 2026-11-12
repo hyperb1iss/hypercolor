@@ -222,10 +222,7 @@ fn position_canvas(width: u32, height: u32) -> Canvas {
 
 /// The size a layer scoped to `outputs` renders at in `zone`.
 fn framed_extent(zone: &Zone, outputs: &[&str]) -> (u32, u32) {
-    let scope = LayerScope {
-        outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
-    };
-    LayerFraming::of(&zone.layout, Some(&scope))
+    LayerFraming::of(zone, &scoped(color_fill_layer(MAGENTA), outputs))
         .render_extent((zone.layout.canvas_width, zone.layout.canvas_height))
         .expect("the scope should name a placed output")
 }
