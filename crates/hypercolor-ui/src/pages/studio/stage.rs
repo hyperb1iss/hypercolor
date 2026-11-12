@@ -19,6 +19,7 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
+use crate::components::layer_panel::scope::Target;
 use crate::components::layout_builder::{LayoutEditorContext, LayoutWorkspace, ZoneCanvasActions};
 use crate::components::mounting_select::MountingSelect;
 use crate::components::preview_box::contained_width;
@@ -30,6 +31,7 @@ use crate::icons::*;
 use crate::ws::messages::zone_has_degraded_layer;
 
 use super::composition_panel::{COMPOSITION_PANEL_ID, COMPOSITION_TRIGGER_ID};
+use super::layer_target::PickBanner;
 use super::surface::{Surface, SurfaceKind, layer_label, now_playing, surfaces_from_zones};
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -90,6 +92,47 @@ pub fn Stage() -> impl IntoView {
         {
             studio.pointer_output_id.set(next);
         }
+    });
+    // What a layer row or a checklist entry points at takes the accent
+    // outline on the canvas.
+    Effect::new(move |_| editor.layer_focus.set(studio.targets.lit.get()));
+    // A pick hands the canvas what is picked so far and takes each toggle
+    // back. Screens are not for picking; the equality guards on both
+    // directions stop the two effects ping-ponging.
+    Effect::new(move |_| {
+        let next = studio
+            .targets
+            .pick
+            .with(|pick| pick.as_ref().map(|pick| pick.draft.ids()));
+        if editor.picking.with_untracked(|current| *current != next) {
+            editor.picking.set(next);
+        }
+    });
+    Effect::new(move |_| {
+        let Some(picked) = editor.picking.get() else {
+            return;
+        };
+        let stale = studio
+            .targets
+            .pick
+            .with_untracked(|pick| pick.as_ref().is_some_and(|pick| pick.draft.ids() != picked));
+        if stale {
+            studio.targets.pick.update(|pick| {
+                if let Some(pick) = pick {
+                    pick.draft = Target::Outputs(picked.into_iter().collect());
+                }
+            });
+        }
+    });
+    Effect::new(move |_| {
+        let screens = studio.targets.outputs.with(|outputs| {
+            outputs
+                .iter()
+                .filter(|output| output.screen)
+                .map(|output| output.id.clone())
+                .collect()
+        });
+        editor.pick_blocked.set(screens);
     });
     Effect::new(move |_| {
         let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {
@@ -322,6 +365,7 @@ pub fn Stage() -> impl IntoView {
                             {move || {
                                 surface_degraded.get().then(|| view! { <DegradedBanner /> })
                             }}
+                            <PickBanner />
                             // Must be a flex column: LayoutWorkspace's body is
                             // a flex-1 child with no h-full, so a plain block
                             // here collapses the canvas to zero height.

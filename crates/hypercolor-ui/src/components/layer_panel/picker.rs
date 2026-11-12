@@ -49,6 +49,10 @@ pub fn AddLayerPicker(
     /// scope so screens expose face effects and LED zones expose effects.
     #[prop(into)]
     selected_surface_role: Signal<Option<ZoneRole>>,
+    /// The outputs the new layer will be limited to, in words. `None` for
+    /// a layer on the whole zone.
+    #[prop(into)]
+    target: Signal<Option<String>>,
     on_pick: Callback<(NewLayerDraft, AddLayerScope)>,
     on_cancel: Callback<()>,
 ) -> impl IntoView {
@@ -80,7 +84,12 @@ pub fn AddLayerPicker(
                         <Icon icon=LuLayers width="16px" height="16px" style="color: rgba(225, 53, 255, 0.75)" />
                         <div>
                             <div class="text-sm font-semibold text-fg-primary">"Add Layer"</div>
-                            <div class="text-[11px] text-fg-tertiary">"Pick a content source for the new layer"</div>
+                            <div class="text-[11px] text-fg-tertiary">
+                                {move || match target.get() {
+                                    Some(target) => format!("Pick what plays on {target}"),
+                                    None => "Pick a content source for the new layer".to_owned(),
+                                }}
+                            </div>
                         </div>
                     </div>
                     <button

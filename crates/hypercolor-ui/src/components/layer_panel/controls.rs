@@ -176,7 +176,7 @@ pub fn MediaPlaybackSection(
     zone_id: String,
     layer: Signal<SceneLayer>,
     fence: Signal<crate::api::Fence>,
-    on_layers_mutated: Callback<()>,
+    writes: super::LayerWrites,
 ) -> impl IntoView {
     let LayerSource::Media { playback, .. } = layer.get_untracked().source else {
         return ().into_any();
@@ -193,12 +193,7 @@ pub fn MediaPlaybackSection(
             if let LayerSource::Media { playback, .. } = &mut next.source {
                 mutate(playback);
             }
-            update_layer(
-                zone_id.clone(),
-                next,
-                fence.get_untracked(),
-                on_layers_mutated,
-            );
+            update_layer(zone_id.clone(), next, fence.get_untracked(), writes);
         }
     };
     let push_speed = push.clone();

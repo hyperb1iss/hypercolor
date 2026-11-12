@@ -17,6 +17,7 @@ use crate::pointer_gesture::listener_element;
 
 use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
+use super::layer_target::{add_layer_to_outputs, offers_layer};
 use super::moves::{canvas_payload, led_zones, perform};
 use super::zone_strip::{focus_first_item, menu_position, move_item_focus};
 
@@ -37,6 +38,10 @@ pub(crate) struct MoveMenuAnchor {
     pub scope: usize,
     /// Where focus returns when the menu closes, and after a move.
     pub focus: FocusReturn,
+    /// Whether the menu also offers a layer for what it would move: a row's
+    /// own context menu does, a "Move to" button beside its own "+ Layer"
+    /// does not.
+    pub layer: bool,
 }
 
 impl MoveMenuAnchor {
@@ -55,6 +60,7 @@ impl MoveMenuAnchor {
             scopes,
             scope,
             focus,
+            layer: false,
         }
     }
 
@@ -73,7 +79,15 @@ impl MoveMenuAnchor {
             scopes,
             scope,
             focus,
+            layer: false,
         }
+    }
+
+    /// The same menu, also offering a layer for what it would move.
+    #[must_use]
+    pub fn with_layer(mut self) -> Self {
+        self.layer = true;
+        self
     }
 
     fn payload(&self) -> Option<&MovePayload> {
@@ -145,6 +159,36 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
     };
     let busy = move || studio.history.busy.get();
     let ambient_hue = crate::ambient::hue_style();
+    // What a layer for the menu's payload would be called, when the menu
+    // offers one and the payload's outputs can take it.
+    let layer_offer = Memo::new(move |_| {
+        menu.with(|anchor| {
+            let anchor = anchor.as_ref().filter(|anchor| anchor.layer)?;
+            let payload = anchor.payload()?;
+            let Origin::Zone(zone_id) = &payload.origin else {
+                return None;
+            };
+            offers_layer(studio, zone_id, &payload.outputs).then(|| {
+                if anchor.scope == 0 {
+                    "Add layer to this device".to_owned()
+                } else {
+                    let (label, _) = &anchor.scopes[anchor.scope.min(anchor.scopes.len() - 1)];
+                    format!("Add layer to {label}")
+                }
+            })
+        })
+    });
+    let add_layer = move || {
+        let Some(anchor) = menu.get_untracked() else {
+            return;
+        };
+        menu.set(None);
+        if let Some(payload) = anchor.payload()
+            && let Origin::Zone(zone_id) = &payload.origin
+        {
+            add_layer_to_outputs(studio, zone_id, &payload.outputs);
+        }
+    };
 
     view! {
         <Show when=move || menu.with(Option::is_some)>
@@ -293,6 +337,22 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
                                 .into_any()
                         }}
                     </div>
+                    {move || layer_offer.get().map(|label| view! {
+                        <div class="my-1 h-px bg-edge-subtle/60" role="separator" />
+                        <div role="group" aria-label="Layers">
+                            <button
+                                type="button"
+                                role="menuitem"
+                                class=ITEM_CLASS
+                                on:click=move |_| add_layer()
+                            >
+                                <span class="flex shrink-0 text-accent">
+                                    <Icon icon=LuPlus width="12px" height="12px" />
+                                </span>
+                                <span class="min-w-0 truncate">{label}</span>
+                            </button>
+                        </div>
+                    })}
                 </div>
             </Portal>
         </Show>

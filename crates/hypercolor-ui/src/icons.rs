@@ -11,7 +11,7 @@ pub use icondata::{
     LuInfo, LuKeyRound, LuKeyboard, LuLayers, LuLayoutDashboard, LuLayoutTemplate, LuLightbulb,
     LuLink, LuList, LuLoader, LuLock, LuMaximize, LuMic, LuMinimize, LuMinus, LuMonitor,
     LuMousePointerClick, LuNetwork, LuPalette, LuPause, LuPencil, LuPlay, LuPlus, LuPower, LuRadar,
-    LuRedo2, LuRefreshCw, LuRepeat, LuRotateCcw, LuSave, LuSearch, LuSearchX, LuSettings,
+    LuRedo2, LuRefreshCw, LuRepeat, LuRotateCcw, LuSave, LuScan, LuSearch, LuSearchX, LuSettings,
     LuSettings2, LuShieldCheck, LuShuffle, LuSkipBack, LuSkipForward, LuSlidersHorizontal,
     LuSquare, LuSquarePen, LuSun, LuTimer, LuToggleLeft, LuTrash2, LuTriangleAlert, LuType,
     LuUndo2, LuUnlink, LuUpload, LuVolume2, LuVolumeX, LuWifi, LuX, LuZap,

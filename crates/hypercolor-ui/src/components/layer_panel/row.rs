@@ -5,8 +5,14 @@
 //! an effect's parameters or a media clip's playback — and finally the
 //! transform/color disclosure. With one layer in the stack the reorder
 //! affordances are suppressed: a single layer has nowhere to move.
+//!
+//! Under the name the card says what the layer applies to, when its host
+//! can show that: "Whole zone" in plain text, a chip naming its outputs,
+//! or a warning once they have all left the zone. Each opens the target
+//! editor. Hovering the identity lights the layer's outputs on the host's
+//! canvas, and the card answers the canvas pointer the same way.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::event::LayerHealth;
@@ -15,10 +21,30 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use super::controls::{EffectControlsSection, MediaPlaybackSection};
+use super::scope::{
+    TargetWords, hover_outputs, names_output, outputs_detail, pickable_count, stands_back,
+    target_words,
+};
 use super::source::{blend_options, blend_value, fit_options, fit_value, parse_blend, parse_fit};
-use super::{delete_layer, reorder_layer, update_layer};
+use super::{
+    LayerTargetHost, LayerWrites, TargetSubject, delete_layer, reorder_layer, update_layer,
+};
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
+use crate::pointer_gesture::listener_element;
+
+/// What a row says its layer applies to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowTarget {
+    words: TargetWords,
+    /// Every output by its full name, for the tooltip.
+    detail: String,
+}
+
+/// The dark pill a layer's target shows in.
+const TARGET_CHIP: &str = "group/target inline-flex min-w-0 max-w-[13rem] items-center gap-1 rounded-full border \
+     border-edge-subtle bg-surface-overlay py-0.5 pl-1.5 pr-1 text-[10px] font-medium \
+     text-fg-secondary transition-colors hover:border-accent-muted hover:text-fg-primary";
 
 /// Icon, accent RGB triplet, and kind word for a layer source — the
 /// header chip's vocabulary. Never an internal enum name (§4).
@@ -66,7 +92,6 @@ pub fn LayerRow(
     zone_id: String,
     layer: Signal<SceneLayer>,
     stack_index: Signal<usize>,
-    stack: Signal<Vec<SceneLayer>>,
     fence: Signal<crate::api::Fence>,
     media_names: Memo<HashMap<String, String>>,
     effect_names: Memo<HashMap<String, String>>,
@@ -74,17 +99,94 @@ pub fn LayerRow(
     expanded: bool,
     on_disclosure: Callback<bool>,
     #[prop(into)] health: Signal<Option<LayerHealth>>,
-    on_layers_mutated: Callback<()>,
+    writes: LayerWrites,
+    /// The host's outputs and canvas, when it shows what a layer applies
+    /// to.
+    #[prop(into)]
+    targets: Signal<Option<LayerTargetHost>>,
 ) -> impl IntoView {
     let initial = layer.get_untracked();
+    let stack = writes.stack;
+    let on_layers_mutated = writes.mutated;
     let (icon, accent_rgb, kind_word) = source_meta(&initial.source);
-    let title = move || {
+    let title = Memo::new(move |_| {
         layer_title(
             &layer.get(),
             &media_names.get(),
             &effect_names.get(),
             kind_word,
         )
+    });
+
+    // What the layer applies to. A zone with nothing to choose between
+    // says nothing, unless the layer is limited anyway.
+    let target = Memo::new(move |_| {
+        let host = targets.get()?;
+        let scope = layer.with(|layer| layer.scope.clone());
+        host.outputs.with(|outputs| {
+            if scope.is_none() && pickable_count(outputs) < 2 {
+                return None;
+            }
+            let ids: HashSet<&str> = scope
+                .iter()
+                .flat_map(|scope| scope.outputs.iter().map(String::as_str))
+                .collect();
+            Some(RowTarget {
+                words: target_words(scope.as_ref(), outputs),
+                detail: outputs_detail(&ids, outputs),
+            })
+        })
+    });
+    let recedes = Memo::new(move |_| {
+        targets.get().is_some_and(|host| {
+            host.emphasis
+                .with(|selected| layer.with(|layer| stands_back(layer, selected)))
+        })
+    });
+    let answers_pointer = Memo::new(move |_| {
+        targets.get().is_some_and(|host| {
+            host.pointer
+                .with(|pointer| layer.with(|layer| names_output(layer, pointer.as_deref())))
+        })
+    });
+    // The canvas highlight this row raised must not outlive it.
+    let lighting = StoredValue::new(false);
+    let light = move |on: bool| {
+        let Some(host) = targets.get_untracked() else {
+            return;
+        };
+        let outputs = if on {
+            host.outputs.with_untracked(|outputs| {
+                let members: HashSet<&str> =
+                    outputs.iter().map(|output| output.id.as_str()).collect();
+                hover_outputs(&layer.get_untracked(), &members)
+            })
+        } else {
+            HashSet::new()
+        };
+        if on || lighting.get_value() {
+            lighting.set_value(on && !outputs.is_empty());
+            host.hover.run(outputs);
+        }
+    };
+    on_cleanup(move || {
+        if lighting.try_get_value() == Some(true)
+            && let Some(host) = targets.try_get_untracked().flatten()
+        {
+            let _ = host.hover.try_run(HashSet::new());
+        }
+    });
+    let edit_target = move |ev: web_sys::MouseEvent| {
+        ev.stop_propagation();
+        if let (Some(host), Some(element)) = (targets.get_untracked(), listener_element(&ev)) {
+            host.edit.run((
+                TargetSubject::Layer {
+                    id: layer.get_untracked().id,
+                    name: title.get_untracked(),
+                },
+                element,
+            ));
+        }
     };
     let layer_id = initial.id.to_string();
     let is_effect = matches!(initial.source, LayerSource::Effect { .. });
@@ -93,13 +195,31 @@ pub fn LayerRow(
     let can_move_up = move || stack_index.get() + 1 < stack.with(Vec::len);
     let can_move_down = move || stack_index.get() > 0;
 
+    let dormant_zone_id = zone_id.clone();
+    let dormant_layer_id = layer_id.clone();
+
     let chip_style = format!("background: rgba({accent_rgb}, 0.14)");
     let icon_style = format!("color: rgb({accent_rgb})");
 
     view! {
-        <article class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 transition-colors duration-150 hover:border-edge-subtle">
+        <article
+            class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 transition-[border-color,opacity] duration-150 hover:border-edge-subtle"
+            class=("opacity-45", move || recedes.get())
+            class=("hover:opacity-100", move || recedes.get())
+            style:border-color=move || {
+                answers_pointer
+                    .get()
+                    .then_some("color-mix(in oklch, var(--color-accent) 60%, transparent)")
+            }
+            data-layer-row=layer_id.clone()
+            data-layer-recedes=move || recedes.get().to_string()
+        >
             // ── Header: identity + ordering + delete ──────────────────
-            <div class="flex items-center gap-2.5 px-3 py-2.5">
+            <div
+                class="flex items-center gap-2.5 px-3 py-2.5"
+                on:mouseenter=move |_| light(true)
+                on:mouseleave=move |_| light(false)
+            >
                 <span
                     class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
                     style=chip_style
@@ -108,14 +228,113 @@ pub fn LayerRow(
                 </span>
                 <div class="min-w-0 flex-1">
                     <div class="flex items-center gap-1.5">
+                        // A row the selection does not reach keeps its place
+                        // and is marked, so the stack still reads in order.
+                        <Show when=move || recedes.get()>
+                            <span
+                                class="h-1 w-1 shrink-0 rounded-full bg-fg-tertiary"
+                                title="Does not apply to the selected output"
+                            />
+                        </Show>
                         <span class="min-w-0 truncate text-sm font-semibold text-fg-primary">
-                            {title}
+                            {move || title.get()}
                         </span>
                         {move || health_pill(health.get())}
                     </div>
-                    <span class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary/65">
-                        {kind_word}
-                    </span>
+                    <div class="mt-0.5 flex min-w-0 items-center gap-1.5">
+                        <span class="shrink-0 text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary/65">
+                            {kind_word}
+                        </span>
+                        {move || {
+                            let RowTarget { words, detail } = target.get()?;
+                            Some(match words {
+                                TargetWords::WholeZone => view! {
+                                    <button
+                                        type="button"
+                                        class="min-w-0 truncate rounded px-1 text-[10px] text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-secondary"
+                                        aria-haspopup="dialog"
+                                        aria-label=move || format!("{} applies to the whole zone", title.get())
+                                        title="Choose what this layer applies to"
+                                        on:click=edit_target
+                                    >
+                                        {words.label().to_owned()}
+                                    </button>
+                                }
+                                .into_any(),
+                                TargetWords::Outputs { ref label, missing } => {
+                                    let label = label.clone();
+                                    let tip = if missing == 0 {
+                                        format!("Applies to {detail}")
+                                    } else {
+                                        format!(
+                                            "Applies to {detail}. {missing} more {} not in this zone.",
+                                            if missing == 1 { "output is" } else { "outputs are" },
+                                        )
+                                    };
+                                    let named = label.clone();
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class=TARGET_CHIP
+                                            aria-haspopup="dialog"
+                                            aria-label=move || format!("{} applies to {named}", title.get())
+                                            title=tip
+                                            data-layer-target=""
+                                            on:click=edit_target
+                                        >
+                                            <span class="flex shrink-0 text-accent">
+                                                <Icon icon=LuScan width="10px" height="10px" />
+                                            </span>
+                                            <span class="min-w-0 truncate">{label}</span>
+                                            {(missing > 0).then(|| view! {
+                                                <span class="flex shrink-0 text-status-warning">
+                                                    <Icon icon=LuTriangleAlert width="10px" height="10px" />
+                                                </span>
+                                            })}
+                                            <span class="flex shrink-0 text-fg-tertiary transition-colors group-hover/target:text-fg-secondary">
+                                                <Icon icon=LuChevronDown width="10px" height="10px" />
+                                            </span>
+                                        </button>
+                                    }
+                                    .into_any()
+                                }
+                                TargetWords::Dormant => {
+                                    let zone_id = dormant_zone_id.clone();
+                                    let layer_id = dormant_layer_id.clone();
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="inline-flex min-w-0 items-center gap-1 rounded-full border border-status-warning/30 bg-status-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-status-warning transition-colors hover:border-status-warning/60"
+                                            aria-haspopup="dialog"
+                                            aria-label=move || format!("{} applies to outputs that are not in this zone", title.get())
+                                            title="Its outputs have left this zone, so it draws nothing. Choose other outputs, or remove it."
+                                            data-layer-target="dormant"
+                                            on:click=edit_target
+                                        >
+                                            <span class="flex shrink-0">
+                                                <Icon icon=LuTriangleAlert width="10px" height="10px" />
+                                            </span>
+                                            <span class="min-w-0 truncate">{words.label().to_owned()}</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="shrink-0 rounded px-1 text-[10px] font-medium text-fg-tertiary transition-colors hover:bg-status-error/10 hover:text-status-error"
+                                            aria-label=move || format!("Remove {}", title.get())
+                                            on:click=move |_| delete_layer(
+                                                zone_id.clone(),
+                                                layer_id.clone(),
+                                                fence.get_untracked(),
+                                                on_layers_mutated,
+                                            )
+                                        >
+                                            "Remove"
+                                        </button>
+                                    }
+                                    .into_any()
+                                }
+                            })
+                        }}
+                    </div>
                 </div>
                 <div class="flex shrink-0 items-center gap-1">
                     {let zone_id = zone_id.clone(); move || show_reorder()
@@ -195,7 +414,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             })
@@ -230,7 +449,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             }
@@ -266,7 +485,7 @@ pub fn LayerRow(
                                     zone_id=zone_id.clone()
                                     layer=layer
                                     fence=fence
-                                    on_layers_mutated=on_layers_mutated
+                                    writes=writes
                                 />
                             </div>
                         }
@@ -303,7 +522,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             })
@@ -326,7 +545,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             })
@@ -346,7 +565,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             })
@@ -366,7 +585,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             })
@@ -386,7 +605,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             })
@@ -406,7 +625,7 @@ pub fn LayerRow(
                                         zone_id.clone(),
                                         next,
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     );
                                 }
                             })

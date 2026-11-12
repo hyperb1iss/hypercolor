@@ -9,6 +9,7 @@ use crate::components::layout_builder::gesture::merge_gesture;
 use crate::compound_selection::CompoundDepth;
 use crate::icons::*;
 use crate::layout_geometry;
+use crate::pages::studio::layer_target::OutputLayerButton;
 use crate::pages::studio::move_menu::OutputMoveButton;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
@@ -35,6 +36,7 @@ pub(super) fn CompoundZoneProperties(
 ) -> impl IntoView {
     let count = ids.len();
     let move_ids: Vec<String> = ids.iter().cloned().collect();
+    let layer_ids = move_ids.clone();
     let (cw, ch) = canvas_dims.get_untracked();
 
     let centroid = layout
@@ -538,6 +540,7 @@ pub(super) fn CompoundZoneProperties(
                 </div>
 
                 <div class="flex shrink-0 items-center gap-0.5">
+                    <OutputLayerButton output_ids=layer_ids />
                     <OutputMoveButton output_ids=move_ids />
                 </div>
         </div>

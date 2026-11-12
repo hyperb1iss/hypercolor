@@ -10,6 +10,7 @@ use crate::app::DevicesContext;
 use crate::async_helpers::spawn_identify;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
+use crate::pages::studio::layer_target::OutputLayerButton;
 use crate::pages::studio::move_menu::OutputMoveButton;
 
 mod compound_panel;
@@ -244,6 +245,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let reset_device_id = zone.device_id.clone();
                 let reset_zone_name = zone.zone_name.clone();
                 let move_ids = vec![zone_id.clone()];
+                let layer_ids = move_ids.clone();
                 let zid_remove = zone_id;
 
                 view! {
@@ -454,6 +456,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
 
                             // Zone actions — destructive separated by divider
                             <div class="flex shrink-0 items-center gap-0.5">
+                                <OutputLayerButton output_ids=layer_ids />
                                 <OutputMoveButton output_ids=move_ids />
                                 {identify_action.map(|target| view! {
                                     <button
