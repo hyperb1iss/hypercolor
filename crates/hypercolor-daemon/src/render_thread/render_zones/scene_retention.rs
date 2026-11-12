@@ -1,9 +1,13 @@
 use hypercolor_types::event::ZoneColors;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::scene::ZoneId;
 
 use super::ZoneRuntime;
 use super::model::{RetainedRenderZoneFrame, ZoneResult};
 use crate::performance::FullFrameCopyMetrics;
 use crate::render_thread::frame_sampling::LedSamplingStrategy;
+#[cfg(feature = "wgpu")]
+use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
 impl ZoneRuntime {
@@ -18,6 +22,15 @@ impl ZoneRuntime {
         }
 
         Some(zone_result_from_retained(retained))
+    }
+
+    /// The zone frames of the last scene pass that rendered, while they are
+    /// still retained: what each zone showed in the frame before this one.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn retained_zone_frames(&self) -> Option<&[(ZoneId, ProducerFrame)]> {
+        self.retained_frame
+            .as_ref()
+            .map(|retained| retained.zone_canvases.as_slice())
     }
 
     pub(super) fn reuse_last_good_scene(&self) -> Option<ZoneResult> {

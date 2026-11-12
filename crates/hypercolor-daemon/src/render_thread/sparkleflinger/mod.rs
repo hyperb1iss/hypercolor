@@ -547,6 +547,29 @@ pub(crate) struct DisplayFinalizeParams {
     pub(crate) viewport_edge_behavior: EdgeBehavior,
     pub(crate) blend_mode: BlendMode,
     pub(crate) opacity: f32,
+    /// The backdrop fades in over the one the screen showed before, while a
+    /// scene transition runs. The face, if any, is laid over the mix.
+    pub(crate) fade: Option<DisplayFinalizeFade>,
+}
+
+/// A backdrop part way in over the backdrop its screen showed before.
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DisplayFinalizeFade {
+    pub(crate) base: DisplayFinalizeFadeBase,
+    /// How far the backdrop has faded in, from 0 to 1.
+    pub(crate) weight: f32,
+}
+
+/// The backdrop a fade starts from.
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DisplayFinalizeFadeBase {
+    Black,
+    /// The picture another route's last pass left on the GPU, at the size
+    /// of the panel this pass draws. A base that is gone, or another size,
+    /// is no base: the backdrop shows as it is.
+    Route(DisplayFinalizeCacheKey),
 }
 
 #[derive(Debug, Clone)]

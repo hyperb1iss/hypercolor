@@ -1339,6 +1339,7 @@ fn display_finalize_params_for_format(
         viewport_edge_behavior: EdgeBehavior::Clamp,
         blend_mode,
         opacity: 1.0,
+        fade: None,
     }
 }
 

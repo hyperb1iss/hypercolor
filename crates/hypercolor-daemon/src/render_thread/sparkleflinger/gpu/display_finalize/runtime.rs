@@ -8,7 +8,9 @@ use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::scene::ZoneId;
 
-use super::super::super::{DisplayFinalizeCacheKey, DisplayFinalizeParams};
+use super::super::super::{
+    DisplayFinalizeCacheKey, DisplayFinalizeFadeBase, DisplayFinalizeParams,
+};
 use super::super::admission::AdmissionRetry;
 use super::super::readback::copy_mapped_range_into_surface;
 use super::super::source::{GpuSourceFrame, gpu_source_frame, prepare_display_source_texture};
@@ -27,7 +29,9 @@ use super::readback::{
     begin_display_finalize_readback, finish_yuv420_display_readback,
     poll_display_finalize_readback_ready,
 };
-use super::shader::{create_display_finalize_bind_group, encode_display_finalize_params};
+use super::shader::{
+    DisplayFinalizeFadeFrom, create_display_finalize_bind_group, encode_display_finalize_params,
+};
 use super::{
     DisplayFinalizeRoute, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFormat,
     GpuDisplayFinalizeFrame, GpuDisplayFinalizeSurfaceSet, PendingGpuDisplayFinalize,
@@ -153,6 +157,27 @@ impl GpuSparkleFlinger {
             // The route's surfaces are waiting out a failed admission.
             return Ok(GpuDisplayFinalizeDispatch::Saturated);
         }
+        // What the backdrop fades in over, resolved before this route's
+        // surfaces are borrowed: a base is another route's output.
+        let fade = params.fade.and_then(|fade| match fade.base {
+            DisplayFinalizeFadeBase::Black => {
+                Some((DisplayFinalizeFadeFrom::Black, None, fade.weight))
+            }
+            DisplayFinalizeFadeBase::Route(base) => {
+                let fits = base != params.cache_key
+                    && (base.width, base.height) == (params.width, params.height);
+                let surfaces = self
+                    .display_finalize_surfaces
+                    .get_mut(&base)
+                    .and_then(DisplayFinalizeRoute::surfaces_mut)
+                    .filter(|_| fits)?;
+                Some((
+                    DisplayFinalizeFadeFrom::Texture,
+                    Some(surfaces.output.view.clone()),
+                    fade.weight,
+                ))
+            }
+        });
         let admission_clock = self.admission_clock;
         let device = &self.device;
         let queue = &self.queue;
@@ -278,13 +303,23 @@ impl GpuSparkleFlinger {
             face_view,
             &surfaces.output.view,
             &surfaces.yuv_output,
+            // A pass that fades over no texture never reads the slot, so
+            // the backdrop stands in for it.
+            fade.as_ref()
+                .and_then(|(_, base, _)| base.as_ref())
+                .unwrap_or(scene_view),
         );
         let params_write = pipeline.display_finalize_params.write(
             device,
             queue,
             &mut encoder,
             &mut surfaces.pending_upload_buffers,
-            &encode_display_finalize_params(&params, scene, face),
+            &encode_display_finalize_params(
+                &params,
+                scene,
+                face,
+                fade.as_ref().map(|(from, _, weight)| (*from, *weight)),
+            ),
         );
         let params_offset = match params_write {
             Ok(write) => write.offset,

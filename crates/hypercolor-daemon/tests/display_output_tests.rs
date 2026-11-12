@@ -829,6 +829,7 @@ fn publish_screen_backdrop(
         .send_replace(DisplayZoneFrame::Backdrop(DisplayBackdropFrame {
             frame,
             viewport,
+            cropped: false,
         }));
 }
 

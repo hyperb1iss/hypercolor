@@ -16,7 +16,7 @@ use std::collections::{
     hash_map::{DefaultHasher, Entry},
 };
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneViewport, HypercolorBus,
-    OutputDemandHold, ScreenBackdropRoute, ScreenFade, screen_backdrop_lane_id,
+    OutputDemandHold, ScreenBackdropRoute, screen_backdrop_lane_id,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
@@ -34,13 +34,13 @@ use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
-use self::encode::ScreenFadeMemory;
+pub(crate) use self::encode::PanelCropper;
 pub use self::placement::{ScreenPlacement, screen_placement, screen_viewport_in_layout};
 use self::render::display_viewport_signature;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::logical_devices::LogicalDevice;
 use crate::output_power::OutputPowerState;
-use worker::{DisplayWorkerHandle, fade_step};
+use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
@@ -219,17 +219,21 @@ struct DisplayTargetsSnapshot {
 #[derive(Clone, Debug)]
 pub(super) enum DisplayWorkerFrameSource {
     /// The owning zone's frame, for the worker to crop to the screen
-    /// through the viewport it arrived with.
+    /// through the viewport it arrived with, or the crop itself when the
+    /// render thread already made it.
     Backdrop {
         frame: Arc<CanvasFrame>,
         viewport: DisplayViewport,
+        cropped: bool,
     },
     /// A frame the render thread finalized for the screen.
     Direct(Arc<DisplayZoneFrame>),
     /// A face for the worker to blend over the screen's backdrop.
-    /// `viewport` crops the backdrop and turns the face.
+    /// `viewport` turns the face, and crops the backdrop unless it arrived
+    /// cropped.
     Face {
         backdrop_frame: Option<Arc<CanvasFrame>>,
+        backdrop_cropped: bool,
         face_frame: Arc<CanvasFrame>,
         viewport: DisplayViewport,
         blend_mode: BlendMode,
@@ -240,10 +244,6 @@ pub(super) enum DisplayWorkerFrameSource {
 #[derive(Clone, Debug)]
 pub(super) struct DisplayWorkerFrameSet {
     pub source: DisplayWorkerFrameSource,
-    /// The scene transition the picture fades with, when it shows a
-    /// backdrop: a face that replaces its backdrop shows nothing of the
-    /// scene, so the scene's transition leaves it alone.
-    pub fade: Option<ScreenFade>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,7 +264,6 @@ enum DisplaySourceIdentity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StableDisplayFrameSetIdentity {
     source: StableDisplayFrameSourceIdentity,
-    fade: Option<(u64, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,10 +271,12 @@ enum StableDisplayFrameSourceIdentity {
     Backdrop {
         frame: DisplaySourceIdentity,
         viewport: DisplayViewportSignature,
+        cropped: bool,
     },
     Direct(DisplaySourceIdentity),
     Face {
         backdrop_frame: Option<DisplaySourceIdentity>,
+        backdrop_cropped: bool,
         face_frame: DisplaySourceIdentity,
         viewport: DisplayViewportSignature,
         blend_mode: BlendMode,
@@ -389,7 +390,6 @@ impl DisplayOutputThread {
 
 async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot::Receiver<()>) {
     let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
-    let mut fade_memories = FadeMemories::new();
     let mut targets_cache = DisplayTargetCache::default();
     let initial_targets = display_targets(
         &state.device_registry,
@@ -406,13 +406,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         &state.event_bus,
         !initial_targets.targets.is_empty(),
     );
-    reconcile_display_workers(
-        &state,
-        &mut workers,
-        &mut fade_memories,
-        initial_targets.targets.as_ref(),
-    )
-    .await;
+    reconcile_display_workers(&state, &mut workers, initial_targets.targets.as_ref()).await;
     let mut last_reconciled_target_version = Some(initial_targets.version);
     let mut last_dispatched_sources =
         HashMap::<DisplayWorkerKey, StableDisplayFrameSetIdentity>::new();
@@ -440,13 +434,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         .await;
         let backend_generation_changed = workers.values().any(|worker| !worker.lane_is_active());
         if last_reconciled_target_version != Some(targets.version) || backend_generation_changed {
-            reconcile_display_workers(
-                &state,
-                &mut workers,
-                &mut fade_memories,
-                targets.targets.as_ref(),
-            )
-            .await;
+            reconcile_display_workers(&state, &mut workers, targets.targets.as_ref()).await;
             last_reconciled_target_version = Some(targets.version);
             last_dispatched_sources.clear();
         }
@@ -463,14 +451,10 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         for target in targets.targets.iter() {
             let lane_frame = stable_lane_frame(&target.lane_sender);
             let backdrop_frame = target.backdrop_sender.as_ref().and_then(stable_lane_frame);
-            // Read after the frames it applies to: see
-            // `HypercolorBus::publish_screen_fade`.
-            let fade = state.event_bus.screen_fade();
             let Some((frames, dispatch_identity)) = build_display_worker_frame_set(
                 target.as_ref(),
                 lane_frame.as_ref(),
                 backdrop_frame.as_ref(),
-                fade,
             ) else {
                 continue;
             };
@@ -523,57 +507,47 @@ fn build_display_worker_frame_set(
     target: &DisplayTarget,
     lane_frame: Option<&Arc<DisplayZoneFrame>>,
     backdrop_frame: Option<&Arc<DisplayZoneFrame>>,
-    fade: Option<ScreenFade>,
 ) -> Option<(DisplayWorkerFrameSet, StableDisplayFrameSetIdentity)> {
     let lane_frame = lane_frame?;
     let lane_identity = stable_display_zone_source_identity(lane_frame.as_ref())?;
-    let fade = fade.filter(|_| match target.canvas_source {
-        DisplayCanvasSource::Backdrop => true,
-        DisplayCanvasSource::ZoneDirect { .. } => target.blends_with_effect(),
-    });
-    let (source, identity) =
-        display_worker_frame_source(target, lane_frame, lane_identity, backdrop_frame)?;
-    Some((
-        DisplayWorkerFrameSet { source, fade },
-        StableDisplayFrameSetIdentity {
-            source: identity,
-            fade: fade_step(fade),
-        },
-    ))
-}
-
-/// The frames a screen's next picture is made from, with what identifies
-/// them.
-fn display_worker_frame_source(
-    target: &DisplayTarget,
-    lane_frame: &Arc<DisplayZoneFrame>,
-    lane_identity: DisplaySourceIdentity,
-    backdrop_frame: Option<&Arc<DisplayZoneFrame>>,
-) -> Option<(DisplayWorkerFrameSource, StableDisplayFrameSourceIdentity)> {
     match &target.canvas_source {
         // A backdrop lane's frame says what it is: a zone canvas with its
         // viewport for the worker to crop, or a finished picture.
         DisplayCanvasSource::Backdrop => Some(match lane_frame.as_ref() {
             DisplayZoneFrame::Backdrop(backdrop) => (
-                DisplayWorkerFrameSource::Backdrop {
-                    frame: Arc::new(backdrop.frame.clone()),
-                    viewport: backdrop.viewport,
+                DisplayWorkerFrameSet {
+                    source: DisplayWorkerFrameSource::Backdrop {
+                        frame: Arc::new(backdrop.frame.clone()),
+                        viewport: backdrop.viewport,
+                        cropped: backdrop.cropped,
+                    },
                 },
-                StableDisplayFrameSourceIdentity::Backdrop {
-                    frame: lane_identity,
-                    viewport: display_viewport_signature(&backdrop.viewport),
+                StableDisplayFrameSetIdentity {
+                    source: StableDisplayFrameSourceIdentity::Backdrop {
+                        frame: lane_identity,
+                        viewport: display_viewport_signature(&backdrop.viewport),
+                        cropped: backdrop.cropped,
+                    },
                 },
             ),
             DisplayZoneFrame::Canvas(_) | DisplayZoneFrame::Yuv420(_) => (
-                DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
-                StableDisplayFrameSourceIdentity::Direct(lane_identity),
+                DisplayWorkerFrameSet {
+                    source: DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
+                },
+                StableDisplayFrameSetIdentity {
+                    source: StableDisplayFrameSourceIdentity::Direct(lane_identity),
+                },
             ),
         }),
         DisplayCanvasSource::ZoneDirect { .. } => {
             if target.finalized {
                 return Some((
-                    DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
-                    StableDisplayFrameSourceIdentity::Direct(lane_identity),
+                    DisplayWorkerFrameSet {
+                        source: DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
+                    },
+                    StableDisplayFrameSetIdentity {
+                        source: StableDisplayFrameSourceIdentity::Direct(lane_identity),
+                    },
                 ));
             }
             // A face the render thread did not finalize arrives at panel
@@ -586,6 +560,7 @@ fn display_worker_frame_source(
                 DisplayZoneFrame::Canvas(_) | DisplayZoneFrame::Yuv420(_) => None,
             });
             let viewport = backdrop.map_or(target.mount_viewport, |backdrop| backdrop.viewport);
+            let backdrop_cropped = backdrop.is_some_and(|backdrop| backdrop.cropped);
             let blended = target
                 .blends_with_effect()
                 .then_some(backdrop)
@@ -598,19 +573,25 @@ fn display_worker_frame_source(
                 .map(|(identity, frame)| (Some(identity), Some(frame)))
                 .unwrap_or((None, None));
             Some((
-                DisplayWorkerFrameSource::Face {
-                    backdrop_frame,
-                    face_frame: Arc::new(face_canvas_frame.clone()),
-                    viewport,
-                    blend_mode: target.face_blend_mode(),
-                    opacity: target.face_opacity(),
+                DisplayWorkerFrameSet {
+                    source: DisplayWorkerFrameSource::Face {
+                        backdrop_frame,
+                        backdrop_cropped,
+                        face_frame: Arc::new(face_canvas_frame.clone()),
+                        viewport,
+                        blend_mode: target.face_blend_mode(),
+                        opacity: target.face_opacity(),
+                    },
                 },
-                StableDisplayFrameSourceIdentity::Face {
-                    backdrop_frame: backdrop_identity,
-                    face_frame: lane_identity,
-                    viewport: display_viewport_signature(&viewport),
-                    blend_mode: target.face_blend_mode(),
-                    opacity_bits: target.face_opacity().to_bits(),
+                StableDisplayFrameSetIdentity {
+                    source: StableDisplayFrameSourceIdentity::Face {
+                        backdrop_frame: backdrop_identity,
+                        backdrop_cropped,
+                        face_frame: lane_identity,
+                        viewport: display_viewport_signature(&viewport),
+                        blend_mode: target.face_blend_mode(),
+                        opacity_bits: target.face_opacity().to_bits(),
+                    },
                 },
             ))
         }
@@ -637,21 +618,11 @@ fn sync_output_demand_hold(
     }
 }
 
-/// What each screen last showed, for its worker to fade from.
-type FadeMemories = HashMap<DisplayWorkerKey, Arc<StdMutex<ScreenFadeMemory>>>;
-
 async fn reconcile_display_workers(
     state: &DisplayOutputState,
     workers: &mut HashMap<DisplayWorkerKey, DisplayWorkerHandle>,
-    fade_memories: &mut FadeMemories,
     targets: &[Arc<DisplayTarget>],
 ) {
-    // A screen keeps its memory for as long as display output routes it,
-    // so one that swaps a face for a backdrop mid-transition, and so swaps
-    // lanes and workers, still has its last picture to fade from.
-    let (_, routed) = state.event_bus.screen_backdrop_routes_snapshot();
-    fade_memories.retain(|(_, device_id), _| routed.contains_key(device_id));
-
     let expected_keys = targets
         .iter()
         .map(|target| target.worker_key.clone())
@@ -688,7 +659,6 @@ async fn reconcile_display_workers(
 
         match output_lane {
             Some(output_lane) => {
-                let fade_memory = Arc::clone(fade_memories.entry(key.clone()).or_default());
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
@@ -697,7 +667,6 @@ async fn reconcile_display_workers(
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,
                         Arc::clone(&state.display_frames),
-                        fade_memory,
                     ),
                 );
             }
@@ -1086,43 +1055,6 @@ mod tests {
 
     use super::*;
 
-    /// The frame set of a screen while no scene transition runs.
-    fn build_settled_frame_set(
-        target: &DisplayTarget,
-        lane_frame: Option<&Arc<DisplayZoneFrame>>,
-        backdrop_frame: Option<&Arc<DisplayZoneFrame>>,
-    ) -> Option<(DisplayWorkerFrameSet, StableDisplayFrameSetIdentity)> {
-        build_display_worker_frame_set(target, lane_frame, backdrop_frame, None)
-    }
-
-    /// A scene transition fades every picture that shows a backdrop, and
-    /// each step of it is a new picture over the same frames. A face that
-    /// replaces its backdrop shows nothing of the scene and does not fade.
-    #[test]
-    fn a_scene_transition_fades_the_screens_that_show_a_backdrop() {
-        let frame = zone_canvas_frame(1);
-        let fade = |weight| Some(ScreenFade { epoch: 3, weight });
-        let build = |target: &DisplayTarget, fade| {
-            build_display_worker_frame_set(target, Some(&frame), None, fade)
-                .expect("the screen should build a frame set")
-        };
-
-        for fading in [backdrop_target(), display_target(BlendMode::Alpha)] {
-            let (frames, early) = build(&fading, fade(0.25));
-            assert_eq!(frames.fade, fade(0.25));
-            let (_, late) = build(&fading, fade(0.5));
-            assert_ne!(early, late, "a fade step is a new picture");
-            let (frames, settled) = build(&fading, None);
-            assert_eq!(frames.fade, None);
-            assert_ne!(late, settled);
-        }
-
-        let replacing = display_target(BlendMode::Replace);
-        let (frames, fading) = build(&replacing, fade(0.25));
-        assert_eq!(frames.fade, None);
-        assert_eq!(fading, build(&replacing, None).1);
-    }
-
     fn zone_canvas_frame(frame_number: u32) -> Arc<DisplayZoneFrame> {
         Arc::new(DisplayZoneFrame::Canvas(CanvasFrame::from_owned_canvas(
             Canvas::new(2, 2),
@@ -1193,6 +1125,7 @@ mod tests {
                     frame_number,
                 ),
                 viewport,
+                cropped: false,
             },
         ))
     }
@@ -1294,7 +1227,7 @@ mod tests {
         let target = backdrop_target();
         let frame = zone_canvas_frame(1);
 
-        let (frames, identity) = build_settled_frame_set(&target, Some(&frame), None)
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&frame), None)
             .expect("a finalized backdrop should build a frame set");
 
         let DisplayWorkerFrameSource::Direct(published) = frames.source else {
@@ -1317,12 +1250,13 @@ mod tests {
         let target = backdrop_target();
         let frame = zone_backdrop_frame(1, placed_viewport());
 
-        let (frames, identity) = build_settled_frame_set(&target, Some(&frame), None)
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&frame), None)
             .expect("a zone canvas backdrop should build a frame set");
 
         let DisplayWorkerFrameSource::Backdrop {
             frame: published,
             viewport,
+            cropped,
         } = frames.source
         else {
             panic!("a zone canvas backdrop should use the backdrop frame source");
@@ -1332,6 +1266,7 @@ mod tests {
             stable_display_zone_source_identity(frame.as_ref())
         );
         assert_eq!(viewport, placed_viewport());
+        assert!(!cropped);
 
         let DisplayZoneFrame::Backdrop(backdrop) = frame.as_ref() else {
             unreachable!("the helper builds a backdrop frame");
@@ -1340,17 +1275,20 @@ mod tests {
             hypercolor_core::bus::DisplayBackdropFrame {
                 frame: backdrop.frame.clone(),
                 viewport: default_display_viewport(),
+                cropped: false,
             },
         ));
-        let (_, moved_identity) = build_settled_frame_set(&target, Some(&moved), None)
+        let (_, moved_identity) = build_display_worker_frame_set(&target, Some(&moved), None)
             .expect("the moved backdrop should build a frame set");
         assert_ne!(identity, moved_identity);
     }
 
     #[test]
     fn a_screen_waits_for_its_lane_to_publish() {
-        assert!(build_settled_frame_set(&backdrop_target(), None, None).is_none());
-        assert!(build_settled_frame_set(&display_target(BlendMode::Alpha), None, None).is_none());
+        assert!(build_display_worker_frame_set(&backdrop_target(), None, None).is_none());
+        assert!(
+            build_display_worker_frame_set(&display_target(BlendMode::Alpha), None, None).is_none()
+        );
     }
 
     #[test]
@@ -1360,7 +1298,7 @@ mod tests {
         let backdrop_frame = zone_canvas_frame(2);
 
         let (frames, identity) =
-            build_settled_frame_set(&target, Some(&face_frame), Some(&backdrop_frame))
+            build_display_worker_frame_set(&target, Some(&face_frame), Some(&backdrop_frame))
                 .expect("direct face should not require a backdrop frame");
 
         let DisplayWorkerFrameSource::Face {
@@ -1407,7 +1345,7 @@ mod tests {
         let face_frame = zone_canvas_frame(2);
 
         let (frames, identity) =
-            build_settled_frame_set(&target, Some(&face_frame), Some(&backdrop_frame))
+            build_display_worker_frame_set(&target, Some(&face_frame), Some(&backdrop_frame))
                 .expect("blended face should build when backdrop and face are available");
 
         let DisplayWorkerFrameSource::Face {
@@ -1416,6 +1354,7 @@ mod tests {
             viewport,
             blend_mode,
             opacity,
+            ..
         } = frames.source
         else {
             panic!("blended display face should use the unified face frame source");
@@ -1452,7 +1391,7 @@ mod tests {
         let target = display_target(BlendMode::Alpha);
         let face_frame = zone_canvas_frame(1);
 
-        let (frames, identity) = build_settled_frame_set(&target, Some(&face_frame), None)
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&face_frame), None)
             .expect("blended face should not wait for a backdrop frame");
 
         let DisplayWorkerFrameSource::Face {
@@ -1493,7 +1432,7 @@ mod tests {
         target.finalized = true;
         let face_frame = zone_canvas_frame(1);
 
-        let (frames, identity) = build_settled_frame_set(&target, Some(&face_frame), None)
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&face_frame), None)
             .expect("finalized face should not require a backdrop frame");
 
         let DisplayWorkerFrameSource::Direct(published_face) = frames.source else {

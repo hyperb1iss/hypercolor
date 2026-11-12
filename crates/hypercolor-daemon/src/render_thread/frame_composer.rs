@@ -27,6 +27,7 @@ use super::render_zones::{
 };
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
+use super::screen_fade::{ScreenTransition, begin_screen_fades};
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest, SparkleFlinger};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::performance::FullFrameCopyMetrics;
@@ -164,6 +165,9 @@ fn shared_composed_frame(
 
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
+        // First of all: the screens take their fade bases from the frame
+        // before, and the interruption handoff below releases part of it.
+        self.begin_screen_fades();
         self.interrupted_transition_base = self.capture_interrupted_transition_base();
         let observed_invalidation_epoch = self.inputs.screen_invalidation_epoch;
         if synchronize_screen_invalidation_epoch(
@@ -183,6 +187,22 @@ impl ComposeContext<'_> {
             .composition_planner
             .observe_composed_frame(&self.scene_snapshot.scene_runtime, composed_frame);
         result
+    }
+
+    fn begin_screen_fades(&mut self) {
+        let transition = ScreenTransition::of(&self.scene_snapshot.scene_runtime);
+        #[cfg(feature = "wgpu")]
+        let black = ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
+            self.state.canvas_dims.width(),
+            self.state.canvas_dims.height(),
+            [0, 0, 0],
+        ));
+        begin_screen_fades(
+            &mut self.compose,
+            transition,
+            #[cfg(feature = "wgpu")]
+            &black,
+        );
     }
 
     fn capture_interrupted_transition_base(&mut self) -> Option<(ProducerFrame, bool)> {
@@ -702,6 +722,7 @@ impl ComposeContext<'_> {
             })
             .collect::<Vec<_>>();
         let faced = faced_screens(&scene_runtime.resolved_zones, active_display_zone_ids);
+        let fade = ScreenTransition::of(scene_runtime).map(|transition| transition.weight);
         let context = DisplayLaneContext {
             elapsed_ms: self.scene_snapshot.elapsed_ms,
             dependency_key,
@@ -716,12 +737,19 @@ impl ComposeContext<'_> {
                 zone_revisions: &zone_revisions,
                 black: &black,
             },
+            fade,
         };
-        DisplayLaneMaterializer::new(&mut self.compose, context).materialize(
+        let lanes = DisplayLaneMaterializer::new(&mut self.compose, context).materialize(
             active_display_zone_ids,
             &faced,
             display_zone_frames,
-        )
+        );
+        self.compose.render_zone_runtime.screen_fades.note_frame(
+            screens,
+            zone_frames.is_empty(),
+            fade,
+        );
+        lanes
     }
 
     fn publish_effect_error(&mut self, error: &anyhow::Error) {

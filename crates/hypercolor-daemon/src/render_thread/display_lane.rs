@@ -22,6 +22,7 @@ use super::render_zones::{
     DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdrop, ZoneContentRevision,
 };
 use super::scene_dependency::SceneDependencyKey;
+use super::sparkleflinger::DisplayFinalizeFade;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::{
     DisplayFinalizeCacheKey, DisplayFinalizeDispatch, DisplayFinalizeFrame, DisplayFinalizeParams,
@@ -149,7 +150,7 @@ impl<'a> ScreenBackdrops<'a> {
     /// It is always the zone's own frame, a scene transition included: the
     /// composed scene crossfade is one flattened picture, and a screen that
     /// read it would show whichever zone was painted last over its box.
-    /// Screens fade on their own panels instead (Spec 95 §5.10).
+    /// Each screen fades its own backdrop instead (Spec 95 §5.10).
     fn zone_frame(&self, zone_id: ZoneId) -> Option<&'a ProducerFrame> {
         self.zone_frames
             .iter()
@@ -186,6 +187,10 @@ pub(super) struct DisplayLaneContext<'a> {
     pub(super) target_fps: &'a HashMap<ZoneId, u32>,
     pub(super) routes: DisplayLaneRoutes<'a>,
     pub(super) backdrops: ScreenBackdrops<'a>,
+    /// How far the scene transition in progress has faded the incoming
+    /// scene in, or `None` when no transition runs. A screen with a base
+    /// shows its backdrop mixed over it at this weight.
+    pub(super) fade: Option<f32>,
 }
 
 /// Every display lane's frame this pass, with the lanes that stay live.
@@ -248,8 +253,20 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 .map(screen_backdrop_lane_id),
         );
         #[cfg(feature = "wgpu")]
-        self.compose
-            .discard_display_finalizations_except(&active_lane_ids);
+        if self.context.fade.is_some() {
+            // The bases a fade mixes over live on routes of their own.
+            let mut cached = active_lane_ids.clone();
+            cached.extend(
+                self.compose
+                    .render_zone_runtime
+                    .screen_fades
+                    .base_route_ids(),
+            );
+            self.compose.discard_display_finalizations_except(&cached);
+        } else {
+            self.compose
+                .discard_display_finalizations_except(&active_lane_ids);
+        }
         self.compose
             .render_zone_runtime
             .retain_backdrop_frames_for(&backdrop_devices);
@@ -363,10 +380,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         // A face that replaces its backdrop never shows it, so it is
         // finalized over black instead of reading the zone's frame.
         let backdrops = self.context.backdrops;
-        let backdrop = if display_target.blends_with_effect() {
-            backdrops.frame_for_screen(display_target.device_id)
+        let (backdrop, fade) = if display_target.blends_with_effect() {
+            (
+                backdrops.frame_for_screen(display_target.device_id),
+                display_route.and_then(|route| self.finalize_fade(route)),
+            )
         } else {
-            backdrops.black
+            (backdrops.black, None)
         };
         if let Some(finalized) = self.finalize_display_zone_canvas(
             zone_id,
@@ -375,6 +395,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             &display_target,
             display_route,
             None,
+            fade,
         ) {
             return Some(DisplayZoneCanvasFrame {
                 frame: finalized.frame,
@@ -399,9 +420,32 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         })
     }
 
+    /// The fade a finalize pass for `route`'s screen runs this frame: the
+    /// transition's weight over the screen's base, when it has one for the
+    /// panel the route draws.
+    fn finalize_fade(&self, route: &DisplayZoneOutputRoute) -> Option<DisplayFinalizeFade> {
+        #[cfg(feature = "wgpu")]
+        {
+            let weight = self.context.fade?;
+            self.compose.render_zone_runtime.screen_fades.finalize_fade(
+                route.device_id,
+                route.width,
+                route.height,
+                weight,
+            )
+        }
+        #[cfg(not(feature = "wgpu"))]
+        {
+            let _ = route;
+            None
+        }
+    }
+
     /// Materialize the backdrop lane of a placed screen: its backdrop
     /// finalized for the panel where the compositor finalizes, and otherwise
-    /// the owning zone's frame for the screen's worker to crop.
+    /// the owning zone's frame for the screen's worker to crop. While a
+    /// scene transition runs, a screen with a base shows its backdrop part
+    /// way in over the one it showed before.
     fn materialize_backdrop_lane(
         &mut self,
         screen: &PlacedScreen,
@@ -411,8 +455,25 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         let lane_id = screen_backdrop_lane_id(device_id);
         let backdrops = self.context.backdrops;
         let backdrop = backdrops.zone_frame(screen.zone_id);
-        // A zone that renders nothing has no content to hold a picture by.
-        let content = backdrop.and_then(|_| backdrops.zone_revision(screen.zone_id));
+        let (width, height) = (screen.output.width, screen.output.height);
+        let finalize_fade = if finalizes {
+            self.finalize_fade(&screen.output)
+        } else {
+            None
+        };
+        let pixel_fade = self.context.fade.filter(|_| {
+            !finalizes
+                && self
+                    .compose
+                    .render_zone_runtime
+                    .screen_fades
+                    .fades_pixels(device_id, width, height)
+        });
+        // A zone that renders nothing has no content to hold a picture by,
+        // and a fading picture is a new one at every step.
+        let content = backdrop
+            .filter(|_| finalize_fade.is_none() && pixel_fade.is_none())
+            .and_then(|_| backdrops.zone_revision(screen.zone_id));
         let retained = self
             .compose
             .render_zone_runtime
@@ -422,20 +483,41 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 frame.display_target.finalized == finalizes
             });
         if !finalizes {
-            // The worker paces its own encodes, so only a picture that has
-            // not changed is held here.
-            if let Some(RetainedBackdrop::Unchanged(frame)) = retained {
-                return Some(frame);
-            }
-            // The viewport travels with the canvas it applies to, so the
-            // worker never crops one scene's canvas through another's box.
-            let surface = self.cpu_surface(backdrop.unwrap_or(backdrops.black).clone())?;
-            let frame = DisplayZoneCanvasFrame {
-                frame: DisplayZoneFrame::Backdrop(DisplayBackdropFrame {
-                    frame: hypercolor_core::bus::CanvasFrame::from_surface(surface),
-                    viewport: screen.output.viewport,
-                }),
-                display_target: backdrop_lane_target(device_id, false),
+            let frame = match (pixel_fade, retained) {
+                // The worker paces its own encodes, so outside a fade only
+                // a picture that has not changed is held here.
+                (None, Some(RetainedBackdrop::Unchanged(frame)))
+                // A fade is mixed here, at the screen's own cadence.
+                | (
+                    Some(_),
+                    Some(RetainedBackdrop::Unchanged(frame) | RetainedBackdrop::Held(frame)),
+                ) => return Some(frame),
+                (fade, _) => {
+                    let surface = self.cpu_surface(backdrop.unwrap_or(backdrops.black).clone())?;
+                    let incoming = hypercolor_core::bus::CanvasFrame::from_surface(surface);
+                    let mixed = fade.and_then(|weight| {
+                        self.compose.render_zone_runtime.screen_fades.mix_pixels(
+                            device_id,
+                            &incoming,
+                            &screen.output.viewport,
+                            width,
+                            height,
+                            weight,
+                        )
+                    });
+                    // The viewport travels with the canvas it applies to,
+                    // so the worker never crops one scene's canvas through
+                    // another's box. A mixed backdrop is cropped already.
+                    let cropped = mixed.is_some();
+                    DisplayZoneCanvasFrame {
+                        frame: DisplayZoneFrame::Backdrop(DisplayBackdropFrame {
+                            frame: mixed.unwrap_or(incoming),
+                            viewport: screen.output.viewport,
+                            cropped,
+                        }),
+                        display_target: backdrop_lane_target(device_id, false),
+                    }
+                }
             };
             self.compose.render_zone_runtime.retain_backdrop_frame(
                 self.context.elapsed_ms,
@@ -445,16 +527,17 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             );
             return Some(frame);
         }
-        let Some(backdrop) = backdrop else {
+        if backdrop.is_none() && finalize_fade.is_none() {
             // Black needs no finalize pass, and a render loop that is about
             // to idle would not come back to collect one. It is the same
-            // picture at any size, so the worker fits it to the panel.
+            // picture at any size, so the worker fits it to the panel. A
+            // screen fading to black gets here once its fade is over.
             self.discard_pending_display_finalize_work(lane_id);
             return Some(DisplayZoneCanvasFrame {
                 frame: DisplayZoneFrame::from_surface(self.cpu_surface(backdrops.black.clone())?),
                 display_target: backdrop_lane_target(device_id, true),
             });
-        };
+        }
 
         match retained {
             Some(RetainedBackdrop::Unchanged(frame)) => {
@@ -469,11 +552,12 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
 
         let finalized = self.finalize_display_zone_canvas(
             lane_id,
-            backdrop,
+            backdrop.unwrap_or(backdrops.black),
             None,
             &backdrop_finalize_target(device_id),
             Some(&screen.output),
             content,
+            finalize_fade,
         );
         let Some(finalized) = finalized else {
             let retained = self
@@ -529,6 +613,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         display_target: &DisplayFaceTarget,
         display_route: Option<&DisplayZoneOutputRoute>,
         content: Option<ZoneContentRevision>,
+        fade: Option<DisplayFinalizeFade>,
     ) -> Option<FinalizedDisplayFrame> {
         let Some(display_route) =
             display_route.filter(|route| route.device_id == display_target.device_id)
@@ -543,6 +628,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             display_target,
             display_route,
             content,
+            fade,
         )
     }
 
@@ -555,7 +641,9 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
         content: Option<ZoneContentRevision>,
+        fade: Option<DisplayFinalizeFade>,
     ) -> Option<FinalizedDisplayFrame> {
+        let _ = fade;
         let _ = content;
         let _ = zone_id;
         let _ = backdrop_frame;
@@ -572,7 +660,8 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
 
     /// Finalize a display lane's frame: `face_frame` over `backdrop_frame`
     /// seen through the route's viewport, or the backdrop alone when the
-    /// lane has no face. `content` is what a lane with no face shows.
+    /// lane has no face. `content` is what a lane with no face shows, and
+    /// `fade` mixes the backdrop over the screen's base under the face.
     #[cfg(feature = "wgpu")]
     fn finalize_display_zone_canvas_with_route(
         &mut self,
@@ -582,6 +671,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
         content: Option<ZoneContentRevision>,
+        fade: Option<DisplayFinalizeFade>,
     ) -> Option<FinalizedDisplayFrame> {
         let params = DisplayFinalizeParams {
             cache_key: DisplayFinalizeCacheKey {
@@ -603,6 +693,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             viewport_edge_behavior: display_route.viewport.edge_behavior,
             blend_mode: display_target.blend_mode,
             opacity: display_target.opacity,
+            fade,
         };
 
         let completed =
@@ -867,6 +958,8 @@ mod tests {
     #[cfg(feature = "wgpu")]
     use crate::render_thread::scene_dependency::SceneDependencyKey;
     #[cfg(feature = "wgpu")]
+    use crate::render_thread::screen_fade::{ScreenTransition, begin_screen_fades};
+    #[cfg(feature = "wgpu")]
     use crate::render_thread::sparkleflinger::{
         DisplayFinalizeDispatch, DisplayFinalizeFrame, SparkleFlinger,
     };
@@ -1095,6 +1188,126 @@ mod tests {
             right[2] > 24 && right[1] > 24 && right[0] == 0,
             "the right face should sit over its blue zone: {right:?}"
         );
+    }
+
+    /// A screen fades its backdrop in over the one it showed when the
+    /// transition began, in the finalize pass itself: the lane's frame is
+    /// the finished mix. A screen whose panel changes shape part way has no
+    /// base for the new panel and cuts to the incoming backdrop.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn gpu_backdrop_fades_in_over_its_base_and_cuts_when_its_panel_changes() {
+        let Some(mut harness) = DisplayLaneHarness::with_gpu_display() else {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "GPU display finalization test was required but no GPU compositor started"
+            );
+            return;
+        };
+        let zone = ZoneId::new();
+        let screen = DeviceId::new();
+        let lane = screen_backdrop_lane_id(screen);
+        let screens = HashMap::from([(screen, placed_screen(screen, zone, 15))]);
+        let red = [(zone, surface_frame([255, 0, 0]))];
+        let shows = |lanes: &MaterializedDisplayLanes| {
+            lane_frame(lanes, lane).map(|frame| first_pixel(&frame.frame))
+        };
+
+        // The frame before the transition rendered no zone: black.
+        harness.materialize(100, &screens, &[], Vec::new());
+        harness.transition(Some((1, 0.5)));
+        let half = harness.materialize_until(&screens, &red, Vec::new, |lanes| {
+            shows(lanes).is_some_and(|pixel| pixel[0] >= 100)
+        });
+        let pixel = shows(&half).expect("the fading backdrop");
+        assert!(
+            (120..=136).contains(&pixel[0]) && pixel[1] == 0 && pixel[2] == 0,
+            "half way in from black, red should be at half: {pixel:?}"
+        );
+
+        // Same transition, further along.
+        harness.transition(Some((1, 1.0)));
+        let full = harness.materialize_until(&screens, &red, Vec::new, |lanes| {
+            shows(lanes).is_some_and(|pixel| pixel[0] >= 250)
+        });
+        assert_eq!(shows(&full), Some([255, 0, 0, 255]));
+
+        // The panel turns on its side while the fade is still at half.
+        harness.transition(Some((1, 0.5)));
+        let mut turned = placed_screen(screen, zone, 15);
+        (turned.output.width, turned.output.height) = (4, 1);
+        let screens = HashMap::from([(screen, turned)]);
+        let cut = harness.materialize_until(&screens, &red, Vec::new, |lanes| {
+            lane_frame(lanes, lane).is_some_and(|frame| frame.frame.width() == 4)
+        });
+        assert_eq!(
+            shows(&cut),
+            Some([255, 0, 0, 255]),
+            "a panel with no base for its new shape should cut to the incoming backdrop"
+        );
+    }
+
+    /// Where the display workers finish frames, the render thread mixes
+    /// the fade itself and hands the worker the finished backdrop, cropped.
+    /// A transition that interrupts another starts from that mix, and a
+    /// screen whose panel changes shape cuts.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn cpu_backdrop_fades_from_its_last_picture_and_cuts_when_its_panel_changes() {
+        let mut harness = DisplayLaneHarness::new();
+        let zone = ZoneId::new();
+        let screen = DeviceId::new();
+        let lane = screen_backdrop_lane_id(screen);
+        let screens = HashMap::from([(screen, placed_screen(screen, zone, 15))]);
+        let backdrop = |lanes: &MaterializedDisplayLanes| {
+            let frame = lane_frame(lanes, lane).expect("the screen's backdrop lane");
+            let DisplayZoneFrame::Backdrop(backdrop) = &frame.frame else {
+                panic!("a compositor that does not finalize publishes a backdrop to crop");
+            };
+            (
+                backdrop.cropped,
+                first_pixel(&frame.frame),
+                backdrop.frame.width,
+            )
+        };
+
+        let red = [(zone, solid_frame([255, 0, 0]))];
+        let settled = harness.materialize(100, &screens, &red, Vec::new());
+        assert_eq!(backdrop(&settled), (false, [255, 0, 0, 255], 2));
+
+        harness.transition(Some((1, 0.5)));
+        let blue = [(zone, solid_frame([0, 0, 255]))];
+        let half = harness.materialize(10_000, &screens, &blue, Vec::new());
+        assert_eq!(
+            backdrop(&half),
+            (true, [128, 0, 128, 255], 2),
+            "half way from red to blue, mixed and cropped for the panel"
+        );
+
+        // A second transition begins on the mix the panel was showing.
+        harness.transition(Some((2, 0.0)));
+        let green = [(zone, solid_frame([0, 255, 0]))];
+        let interrupted = harness.materialize(20_000, &screens, &green, Vec::new());
+        assert_eq!(backdrop(&interrupted), (true, [128, 0, 128, 255], 2));
+        harness.transition(Some((2, 0.5)));
+        let onward = harness.materialize(30_000, &screens, &green, Vec::new());
+        assert_eq!(backdrop(&onward), (true, [64, 128, 64, 255], 2));
+
+        // The panel turns on its side: no base for the new shape.
+        let mut turned = placed_screen(screen, zone, 15);
+        (turned.output.width, turned.output.height) = (4, 1);
+        let screens = HashMap::from([(screen, turned)]);
+        let cut = harness.materialize(40_000, &screens, &green, Vec::new());
+        assert_eq!(
+            backdrop(&cut),
+            (false, [0, 255, 0, 255], 2),
+            "a panel with no base for its new shape gets the incoming canvas to crop"
+        );
+
+        // The transition ends: the worker crops again.
+        harness.transition(None);
+        let ended = harness.materialize(50_000, &screens, &green, Vec::new());
+        assert_eq!(backdrop(&ended), (false, [0, 255, 0, 255], 2));
     }
 
     /// A zone whose content stands is finalized for its screen once, however
@@ -1330,6 +1543,7 @@ mod tests {
                 zone_revisions: &[],
                 black: &black,
             },
+            fade: None,
         };
         let fresh_frame = PendingDisplayZoneFrame {
             frame: ProducerFrame::Canvas(color_canvas([0, 255, 0])),
@@ -1814,6 +2028,7 @@ mod tests {
                 zone_revisions: &[],
                 black: &black,
             },
+            fade: None,
         };
         let face_frame = PendingDisplayZoneFrame {
             frame: ProducerFrame::Canvas(color_canvas(rgb)),
@@ -1883,6 +2098,8 @@ mod tests {
         /// Revisions a test sets itself, whatever frame the zone hands over.
         pinned_revisions: HashMap<ZoneId, ZoneContentRevision>,
         next_revision: u64,
+        /// The weight of the scene transition the next frames render in.
+        fade: Option<f32>,
     }
 
     #[cfg(feature = "wgpu")]
@@ -1901,6 +2118,7 @@ mod tests {
                 zone_revisions: HashMap::new(),
                 pinned_revisions: HashMap::new(),
                 next_revision: 0,
+                fade: None,
             }
         }
 
@@ -1975,13 +2193,32 @@ mod tests {
                     zone_revisions: &zone_revisions,
                     black: &black,
                 },
+                fade: self.fade,
             };
+            let lanes = {
+                let mut compose = self.compose_runtime();
+                DisplayLaneMaterializer::new(&mut compose, context).materialize(
+                    &active_zone_ids,
+                    &faced,
+                    faces,
+                )
+            };
+            let fade = self.fade;
+            self.render_zone_runtime
+                .screen_fades
+                .note_frame(placed, zone_frames.is_empty(), fade);
+            lanes
+        }
+
+        /// Begin, step or end the scene transition the next frames render
+        /// in: its epoch and how far it has come.
+        fn transition(&mut self, transition: Option<(u64, f32)>) {
+            self.fade = transition.map(|(_, weight)| weight);
+            let black = black_frame();
+            let transition =
+                transition.map(|(epoch, weight)| ScreenTransition::for_test(epoch, weight));
             let mut compose = self.compose_runtime();
-            DisplayLaneMaterializer::new(&mut compose, context).materialize(
-                &active_zone_ids,
-                &faced,
-                faces,
-            )
+            begin_screen_fades(&mut compose, transition, &black);
         }
 
         /// Materialize frames a cadence interval apart until `done`, the way

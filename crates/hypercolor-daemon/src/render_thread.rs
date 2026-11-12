@@ -50,6 +50,7 @@ mod scene_dependency;
 mod scene_snapshot;
 mod scene_state;
 mod screen_canvas;
+mod screen_fade;
 #[cfg(feature = "wgpu")]
 mod screen_parity_diagnostics;
 #[doc(hidden)]

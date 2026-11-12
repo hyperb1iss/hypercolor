@@ -41,6 +41,7 @@ pub(crate) async fn maybe_idle_throttle(
     screen_capture_active: bool,
     throttle: &mut ThrottleState,
     screens: ScreenPlacementRevision,
+    screens_fading: bool,
 ) -> IdleGate {
     let should_idle_throttle =
         frame_policy.should_idle_throttle(effect_running, screen_capture_active);
@@ -54,7 +55,9 @@ pub(crate) async fn maybe_idle_throttle(
         return IdleGate::Render;
     }
 
-    if !throttle.idle_black_pushed(screens) {
+    // A screen fading to black through a scene transition is mixed frame
+    // by frame, so the loop keeps composing until its fade is done.
+    if screens_fading || !throttle.idle_black_pushed(screens) {
         debug!(
             "No active effect or capture input; layout changes render black until an effect or input source starts"
         );

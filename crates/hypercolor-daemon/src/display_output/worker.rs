@@ -1,6 +1,6 @@
 //! Per-device display worker event loop.
 
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::anyhow;
@@ -8,13 +8,15 @@ use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
-use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, ScreenFade};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame};
 use hypercolor_core::device::DisplayOutputLane;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat, OwnedDisplayFramePayload};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
-    DisplayEncodeState, ScreenFadeMemory, display_brightness_factor, encode_display_frame,
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame,
+    encode_cropped_backdrop_frame, encode_face_backdrop_blend, encode_finalized_canvas_frame,
+    encode_finalized_yuv420_frame,
 };
 use super::render::display_viewport_signature;
 use super::{
@@ -114,10 +116,9 @@ struct DisplayFrameInputState {
     source: CapturedDisplayFrameSource,
     brightness_factor: u16,
     geometry: DisplayGeometry,
-    viewport: Option<DisplayViewportSignature>,
-    /// The fade step the frame was mixed at. A fade moves the picture even
-    /// while its frames stand still.
-    fade: Option<(u64, u32)>,
+    /// The viewport the worker applies, and whether the backdrop under it
+    /// arrived already cropped.
+    viewport: Option<(DisplayViewportSignature, bool)>,
 }
 
 impl CapturedDisplayFrameSource {
@@ -186,7 +187,6 @@ impl DisplayFrameInputState {
             && self.brightness_factor == display_brightness_factor(target.brightness)
             && self.geometry == target.geometry
             && self.viewport == source_viewport_signature(&frames.source)
-            && self.fade == fade_step(frames.fade)
     }
 
     fn capture(frames: &DisplayWorkerFrameSet, target: &DisplayTarget) -> Self {
@@ -195,30 +195,30 @@ impl DisplayFrameInputState {
             brightness_factor: display_brightness_factor(target.brightness),
             geometry: target.geometry,
             viewport: source_viewport_signature(&frames.source),
-            fade: fade_step(frames.fade),
         }
     }
 }
 
-/// A fade as a comparable step: its epoch and exact weight.
-pub(super) fn fade_step(fade: Option<ScreenFade>) -> Option<(u64, u32)> {
-    fade.map(|fade| (fade.epoch, fade.weight.to_bits()))
-}
-
-/// The viewport the worker applies to a frame, when it applies one. A frame
+/// The viewport the worker applies to a frame, when it applies one, with
+/// whether the backdrop it applies to arrived already cropped. A frame
 /// finalized for the panel has had its viewport applied already.
 fn source_viewport_signature(
     source: &DisplayWorkerFrameSource,
-) -> Option<DisplayViewportSignature> {
+) -> Option<(DisplayViewportSignature, bool)> {
     match source {
-        DisplayWorkerFrameSource::Backdrop { viewport, .. }
-        | DisplayWorkerFrameSource::Face { viewport, .. } => {
-            Some(display_viewport_signature(viewport))
-        }
+        DisplayWorkerFrameSource::Backdrop {
+            viewport, cropped, ..
+        } => Some((display_viewport_signature(viewport), *cropped)),
+        DisplayWorkerFrameSource::Face {
+            viewport,
+            backdrop_cropped,
+            ..
+        } => Some((display_viewport_signature(viewport), *backdrop_cropped)),
         DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
-            DisplayZoneFrame::Backdrop(backdrop) => {
-                Some(display_viewport_signature(&backdrop.viewport))
-            }
+            DisplayZoneFrame::Backdrop(backdrop) => Some((
+                display_viewport_signature(&backdrop.viewport),
+                backdrop.cropped,
+            )),
             DisplayZoneFrame::Canvas(_) | DisplayZoneFrame::Yuv420(_) => None,
         },
     }
@@ -359,7 +359,6 @@ impl DisplayWorkerHandle {
         power_state: watch::Receiver<OutputPowerState>,
         static_hold_refresh_interval: Duration,
         display_frames: Arc<RwLock<DisplayFrameRuntime>>,
-        fade_memory: Arc<StdMutex<ScreenFadeMemory>>,
     ) -> Self {
         let (tx, rx) = watch::channel(None::<DisplayWorkerFrameSet>);
         let worker_backend_id = target.backend_id.clone();
@@ -374,7 +373,6 @@ impl DisplayWorkerHandle {
             power_state,
             static_hold_refresh_interval,
             display_frames,
-            fade_memory,
         ));
 
         Self {
@@ -428,7 +426,6 @@ async fn run_display_worker(
     mut power_state: watch::Receiver<OutputPowerState>,
     static_hold_refresh_interval: Duration,
     display_frames: Arc<RwLock<DisplayFrameRuntime>>,
-    fade_memory: Arc<StdMutex<ScreenFadeMemory>>,
 ) {
     let target_fps = target.target_fps;
     let send_interval = target_interval_for_fps(target_fps);
@@ -614,36 +611,25 @@ async fn run_display_worker(
         }
 
         let encode_source = frames.source.clone();
-        let fade = frames.fade;
         let geometry = target.geometry;
         let brightness = target.brightness;
         let frame_format = target.frame_format;
         let include_preview_jpeg = target.frame_format == DisplayFrameFormat::Jpeg
             || display_frames.read().await.has_subscriber(device_id);
         let encode_started = Instant::now();
-        let encode_memory = Arc::clone(&fade_memory);
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
-            // A worker that panicked mid-encode leaves a picture no worse
-            // than any other to fade from.
-            let mut memory = encode_memory
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let encoded = encode_display_frame(
-                &encode_source,
-                fade,
+            let encoded = encode_source_frame(
+                encode_source,
                 &geometry,
                 brightness,
                 frame_format,
                 include_preview_jpeg,
                 &mut encode_state,
-                &mut memory,
             );
-            drop(memory);
             (encode_state, encoded)
         })
         .await;
-
         let encoded = match encode_result {
             Ok((returned_state, Ok(encoded))) => {
                 encode_state = returned_state;
@@ -742,6 +728,89 @@ async fn run_display_worker(
         if let Some(interval) = send_interval {
             next_send_at = advance_deadline(next_send_at, interval, Instant::now());
         }
+    }
+}
+
+/// Encode what a lane handed over, each kind of source by its own path.
+fn encode_source_frame(
+    source: DisplayWorkerFrameSource,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> anyhow::Result<super::encode::EncodedDisplayFrame> {
+    match source {
+        DisplayWorkerFrameSource::Backdrop {
+            frame,
+            viewport,
+            cropped,
+        } => {
+            if cropped {
+                encode_cropped_backdrop_frame(
+                    frame.as_ref(),
+                    geometry,
+                    brightness,
+                    frame_format,
+                    include_preview_jpeg,
+                    encode_state,
+                )
+            } else {
+                encode_canvas_frame(
+                    frame.as_ref(),
+                    &viewport,
+                    geometry,
+                    brightness,
+                    frame_format,
+                    include_preview_jpeg,
+                    encode_state,
+                )
+            }
+        }
+        DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
+            DisplayZoneFrame::Canvas(frame) => encode_finalized_canvas_frame(
+                frame,
+                geometry,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+            DisplayZoneFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
+                frame,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+            DisplayZoneFrame::Backdrop(backdrop) => encode_canvas_frame(
+                &backdrop.frame,
+                &backdrop.viewport,
+                geometry,
+                brightness,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+        },
+        DisplayWorkerFrameSource::Face {
+            backdrop_frame,
+            backdrop_cropped,
+            face_frame,
+            viewport,
+            blend_mode,
+            opacity,
+        } => encode_face_backdrop_blend(
+            backdrop_frame.as_deref(),
+            backdrop_cropped,
+            face_frame.as_ref(),
+            &viewport,
+            geometry,
+            brightness,
+            blend_mode,
+            opacity,
+            frame_format,
+            include_preview_jpeg,
+            encode_state,
+        ),
     }
 }
 

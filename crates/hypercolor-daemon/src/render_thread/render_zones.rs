@@ -98,6 +98,8 @@ pub(crate) struct ZoneRuntime {
     retained_direct_zone_frames: HashMap<ZoneId, RetainedDirectZoneFrame>,
     retained_materialized_zone_frames: HashMap<ZoneId, RetainedMaterializedZoneFrame>,
     retained_backdrop_frames: HashMap<DeviceId, RetainedBackdropFrame>,
+    /// Each screen's fade through the scene transition in progress.
+    pub(crate) screen_fades: super::screen_fade::ScreenFades,
     effect_registry_snapshot: Option<Arc<EffectRegistry>>,
     static_layer_surface_cache: StaticLayerSurfaceCache,
     scene_surface_pool: Option<RenderSurfacePool>,
@@ -233,6 +235,7 @@ impl ZoneRuntime {
             retained_direct_zone_frames: HashMap::new(),
             retained_materialized_zone_frames: HashMap::new(),
             retained_backdrop_frames: HashMap::new(),
+            screen_fades: super::screen_fade::ScreenFades::default(),
             effect_registry_snapshot: None,
             static_layer_surface_cache: StaticLayerSurfaceCache::default(),
             // 8 slots absorbs typical downstream fan-out (watch channel +

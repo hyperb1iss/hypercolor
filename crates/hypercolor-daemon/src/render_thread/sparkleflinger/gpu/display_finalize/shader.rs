@@ -13,6 +13,7 @@ pub(super) fn create_display_finalize_bind_group(
     face: &wgpu::TextureView,
     output: &wgpu::TextureView,
     output_yuv: &wgpu::Buffer,
+    fade_base: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("SparkleFlinger GPU display finalize bind group"),
@@ -38,6 +39,10 @@ pub(super) fn create_display_finalize_bind_group(
                 binding: 4,
                 resource: output_yuv.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(fade_base),
+            },
         ],
     })
 }
@@ -47,10 +52,14 @@ pub(super) fn create_display_finalize_bind_group(
 /// Without a face the backdrop is bound in the face slot, and the pass
 /// composes it in `Alpha` mode at zero opacity, which leaves the backdrop
 /// as it is whatever blend the caller's parameters name.
+///
+/// `fade` is the fade the pass can actually run: the caller drops one whose
+/// base is gone, and the backdrop then shows as it is.
 pub(super) fn encode_display_finalize_params(
     params: &DisplayFinalizeParams,
     scene: &ProducerFrame,
     face: Option<&ProducerFrame>,
+    fade: Option<(DisplayFinalizeFadeFrom, f32)>,
 ) -> [u8; DISPLAY_FINALIZE_PARAM_BYTES] {
     let mut bytes = [0u8; DISPLAY_FINALIZE_PARAM_BYTES];
     let circular = u32::from(params.circular);
@@ -89,7 +98,24 @@ pub(super) fn encode_display_finalize_params(
     bytes[92..96].copy_from_slice(&yuv_layout.u_plane_len.to_le_bytes());
     bytes[40..44]
         .copy_from_slice(&display_fade_falloff(params.viewport_edge_behavior).to_le_bytes());
+    if let Some((from, weight)) = fade {
+        let weight = if weight.is_finite() {
+            weight.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        bytes[96..100].copy_from_slice(&weight.to_le_bytes());
+        bytes[100..104].copy_from_slice(&(from as u32).to_le_bytes());
+    }
     bytes
+}
+
+/// What a fading backdrop fades in over, as the shader numbers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub(super) enum DisplayFinalizeFadeFrom {
+    Texture = 1,
+    Black = 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

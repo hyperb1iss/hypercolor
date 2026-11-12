@@ -247,6 +247,16 @@ impl ZoneRuntime {
         );
     }
 
+    /// Every screen's retained backdrop frame, with the screen as it was
+    /// placed when the frame was made.
+    pub(crate) fn retained_backdrops(
+        &self,
+    ) -> impl Iterator<Item = (&PlacedScreen, &DisplayZoneCanvasFrame)> {
+        self.retained_backdrop_frames
+            .values()
+            .map(|retained| (&retained.screen, &retained.frame))
+    }
+
     /// Forget the backdrop frames of screens that no longer show one.
     pub(crate) fn retain_backdrop_frames_for(&mut self, device_ids: &[DeviceId]) {
         self.retained_backdrop_frames

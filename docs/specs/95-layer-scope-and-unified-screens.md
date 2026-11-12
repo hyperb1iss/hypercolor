@@ -979,30 +979,47 @@ frame is drawn in the zone's layout.
 **Scene transitions.** A screen never reads the composed scene crossfade. That
 crossfade is one flattened picture, so a screen that read it would show
 whichever zone was painted last over its box for the length of the transition
-and snap back to its own zone at the end. Each screen crossfades on its own
-panel instead, the way LEDs blend in LED space (Spec 86 §4.1): from the picture
-the panel showed when the transition began to the picture the incoming scene
-gives it, by the transition's eased progress.
+and snap back to its own zone at the end. Each screen crossfades its own
+backdrop instead, on the render thread, the way the composed scene and the
+LEDs do (Spec 86 §4.1): from a frozen base to the incoming backdrop by the
+transition's eased progress.
 
-- The render thread publishes the transition's epoch and eased progress ahead
-  of the incoming scene's display frames. It keeps publishing while the loop
-  idles, so a fade into a scene that renders nothing still runs to its end.
-- The display worker does the mixing. It alone knows what its panel last
-  showed, so it holds that picture when a new epoch arrives and mixes each
-  incoming picture with it in panel space. The outgoing picture outlives a
-  worker restarted because the screen gained or lost a face with the scene.
-- Black is an end of the fade like any other picture. A screen whose zone
-  renders nothing in the incoming scene fades to black; the frame that says
-  "black" is the incoming endpoint, not a cut.
-- A transition that interrupts another starts from the mix on the panel.
-- A face that replaces its backdrop shows nothing of the scene and does not
-  fade. A face that blends with its backdrop fades as part of its screen's
-  picture: the panel picture crossfades whole, face included.
-- A lone zone at the scene extent is not a special case. Its screens read the
-  zone's own frame like every other screen's, never the composed crossfade,
-  so one mechanism fades every screen and none fades twice.
-- The mix is linear in the panel's encoded bytes at the screen's own cadence.
-  A transition's color interpolation mode applies to LEDs only.
+- **The base** is the backdrop the screen showed when the transition began,
+  kept per device as a picture in panel space, before any face and before the
+  panel's brightness and mask. It is taken once, when a transition's key first
+  appears, from what the frame before left behind: on the GPU by one
+  backdrop-only pass from the zone frames that frame retained, kept on the GPU
+  and never read back; on the CPU backend by cropping the backdrop the screen's
+  lane last published. Outside a transition nothing is taken, held or drawn.
+- **The published frame is the finished picture.** While the transition runs,
+  the incoming backdrop is mixed over the base, the face is laid over the mix,
+  and brightness and mask come last. On the GPU the finalize pass does all of
+  it. On the CPU backend the render thread mixes the two crops and hands the
+  display worker a backdrop marked as cropped. The worker encodes what it is
+  handed and keeps no history, and nothing about a transition is published
+  apart from the frames.
+- **Faces.** A face that blends with its backdrop keeps its own pixels through
+  the transition while the backdrop under it moves. A face that replaces its
+  backdrop shows nothing of the scene and does not fade. A screen that gains or
+  loses a face with the scene still fades its backdrop: the base belongs to the
+  device, not to the lane.
+- **Black and no base.** A screen whose zone renders nothing in the incoming
+  scene fades to black, and one whose zone rendered nothing before fades in
+  from black. A screen with no base cuts to the incoming picture: one the
+  outgoing scene did not place, or one whose panel changed shape since the base
+  was taken.
+- **Interruption.** A transition that interrupts another starts from the mix
+  that was on the panel: the new base is the last incoming backdrop over the
+  old base, at the weight the old transition had reached. A base is a picture
+  and not the outgoing zone's frame and viewport for this reason.
+- **Cadence.** A fading screen is finalized at its own cadence cap, as it is
+  outside a transition. The loop keeps composing while a screen fades into a
+  scene that renders nothing, and idles once the fade is over.
+- **No special cases.** A lone zone at the scene extent fades like any other
+  screen's zone: its screens read the zone's own frame, never the composed
+  crossfade, so none fades twice.
+- The mix is linear in the backdrop's encoded bytes. A transition's color
+  interpolation mode applies to LEDs only.
 
 This changes the display lane, the display output targets, and the workers. It
 ships first, as W1, on zone frames: it fixes overlapping screens across zones

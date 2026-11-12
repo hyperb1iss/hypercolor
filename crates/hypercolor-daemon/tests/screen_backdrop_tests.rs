@@ -1318,51 +1318,52 @@ async fn gpu_screens_hold_their_cadence() {
     screens_hold_their_cadence(RenderAccelerationMode::Gpu).await;
 }
 
-/// Switching between two scenes that light a screen the same way never
-/// shows the screen black. A screen's zone is found in the scene its frame
-/// renders, so no frame is resolved against another scene's zones.
+/// Switching between two scenes that light a screen never shows the screen
+/// black. A screen's zone is found in the scene its frame renders, so no
+/// frame is resolved against another scene's zones. Each switch is
+/// acknowledged by a frame of the scene switched to before the next one, so
+/// a screen that stopped updating fails here instead of passing unseen.
 async fn scene_switch_never_shows_a_lit_screen_black(mode: RenderAccelerationMode) {
     let mut rig = Rig::new(mode);
     let screen = rig.add_screen("lit").await;
-    let scene = |name: &str| {
-        test_scene(
-            name,
-            vec![scene_zone(
-                "Red",
-                ZoneRole::Primary,
-                vec![rig.effects.solid(RED)],
-                vec![
-                    strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
-                    screen.output((0.5, 0.5), (0.4, 0.4)),
-                ],
-            )],
-            0,
-        )
-    };
-    let (first, second) = (scene("First"), scene("Second"));
+    let red = lit_scene(&rig.effects, &screen, "Red", RED, 0, false);
+    let green = lit_scene(&rig.effects, &screen, "Green", GREEN, 0, false);
 
-    let running = rig.run_scene(first.clone()).await;
+    let running = rig.run_scene(red.clone()).await;
     rig.writes
-        .wait_for(screen.device_id, "its red zone", |panel| {
+        .wait_for(screen.device_id, "red", |panel| {
             near(panel.center(), [255, 0, 0])
         })
         .await;
     let seen = rig.writes.of(screen.device_id).len();
-    for round in 0..24 {
-        rig.activate(if round % 2 == 0 { &second } else { &first })
+    for _ in 0..10 {
+        rig.activate(&green).await;
+        rig.writes
+            .wait_for(screen.device_id, "green", |panel| {
+                near(panel.center(), [0, 255, 0])
+            })
             .await;
-        tokio::time::sleep(Duration::from_millis(45)).await;
+        rig.activate(&red).await;
+        rig.writes
+            .wait_for(screen.device_id, "red", |panel| {
+                near(panel.center(), [255, 0, 0])
+            })
+            .await;
     }
-    tokio::time::sleep(Duration::from_millis(150)).await;
     running.stop().await;
 
-    for write in rig.writes.of(screen.device_id).iter().skip(seen) {
-        assert!(
-            near(Panel(&write.data).center(), [255, 0, 0]),
-            "a scene switch showed the screen {:?}",
-            Panel(&write.data).center()
-        );
-    }
+    let shown = centers_since(&rig.writes, screen.device_id, seen);
+    assert!(
+        shown.len() >= 20,
+        "ten round trips sent {} frames",
+        shown.len()
+    );
+    assert!(
+        shown
+            .iter()
+            .all(|center| near(*center, [255, 0, 0]) || near(*center, [0, 255, 0])),
+        "a scene switch showed the screen something that is neither scene: {shown:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1420,73 +1421,94 @@ async fn gpu_unplaced_screen_is_not_driven() {
     unplaced_screen_is_not_driven(RenderAccelerationMode::Gpu).await;
 }
 
-/// Two screens whose boxes overlap in two zones keep showing their own zone
-/// while one scene fades into another with the same arrangement. Each
-/// screen's backdrop crossfades on its own, so the fade never passes through
-/// a picture of the other zone.
+/// Two screens whose boxes overlap in two zones each fade between their own
+/// zone's pictures while one scene fades into another with the same
+/// arrangement. The red zone's screen goes to green and the blue zone's to
+/// white, so the first never has any blue and the second never loses any:
+/// a frame that read the other zone, or one flattened picture of both,
+/// breaks one of the two. Each fade is seen part way and seen to finish.
 async fn overlapping_screens_keep_their_zones_through_a_transition(mode: RenderAccelerationMode) {
     let mut rig = Rig::new(mode);
-    let red_screen = rig.add_screen("red").await;
-    let blue_screen = rig.add_screen("blue").await;
-    let scene = |name: &str, transition_ms: u64| {
+    let warm_screen = rig.add_screen("warm").await;
+    let cool_screen = rig.add_screen("cool").await;
+    let scene = |name: &str, warm: [f32; 4], cool: [f32; 4], transition_ms: u64| {
         test_scene(
             name,
             vec![
                 scene_zone(
-                    "Red",
+                    "Warm",
                     ZoneRole::Primary,
-                    vec![rig.effects.solid(RED)],
+                    vec![rig.effects.solid(warm)],
                     vec![
-                        strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
-                        red_screen.output((0.5, 0.5), (0.4, 0.4)),
+                        strip_output("strip:warm", (0.5, 0.1), (0.8, 0.1)),
+                        warm_screen.output((0.5, 0.5), (0.4, 0.4)),
                     ],
                 ),
                 scene_zone(
-                    "Blue",
+                    "Cool",
                     ZoneRole::Custom,
-                    vec![rig.effects.solid(BLUE)],
+                    vec![rig.effects.solid(cool)],
                     vec![
-                        strip_output("strip:blue", (0.5, 0.9), (0.8, 0.1)),
-                        blue_screen.output((0.55, 0.5), (0.4, 0.4)),
+                        strip_output("strip:cool", (0.5, 0.9), (0.8, 0.1)),
+                        cool_screen.output((0.55, 0.5), (0.4, 0.4)),
                     ],
                 ),
             ],
             transition_ms,
         )
     };
-    let (first, second) = (scene("First", 0), scene("Second", 700));
+    let first = scene("First", RED, BLUE, 0);
+    let second = scene("Second", GREEN, WHITE, 2500);
 
     let running = rig.run_scene(first).await;
     rig.writes
-        .wait_for(red_screen.device_id, "its red zone", |panel| {
+        .wait_for(warm_screen.device_id, "its red zone", |panel| {
             near(panel.center(), [255, 0, 0])
         })
         .await;
     rig.writes
-        .wait_for(blue_screen.device_id, "its blue zone", |panel| {
+        .wait_for(cool_screen.device_id, "its blue zone", |panel| {
             near(panel.center(), [0, 0, 255])
         })
         .await;
-    let red_seen = rig.writes.of(red_screen.device_id).len();
-    let blue_seen = rig.writes.of(blue_screen.device_id).len();
+    let warm_seen = rig.writes.of(warm_screen.device_id).len();
+    let cool_seen = rig.writes.of(cool_screen.device_id).len();
     rig.activate(&second).await;
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    rig.writes
+        .wait_for(warm_screen.device_id, "red part way to green", |panel| {
+            let [r, g, _] = panel.center();
+            (50..=205).contains(&r) && (50..=205).contains(&g)
+        })
+        .await;
+    rig.writes
+        .wait_for(cool_screen.device_id, "blue part way to white", |panel| {
+            let [r, g, _] = panel.center();
+            (50..=205).contains(&r) && (50..=205).contains(&g)
+        })
+        .await;
+    rig.writes
+        .wait_for(warm_screen.device_id, "its green zone", |panel| {
+            near(panel.center(), [0, 255, 0])
+        })
+        .await;
+    rig.writes
+        .wait_for(cool_screen.device_id, "its white zone", |panel| {
+            near(panel.center(), [255, 255, 255])
+        })
+        .await;
     running.stop().await;
 
-    for write in rig.writes.of(red_screen.device_id).iter().skip(red_seen) {
-        assert!(
-            near(Panel(&write.data).center(), [255, 0, 0]),
-            "the red zone's panel showed {:?} during the transition",
-            Panel(&write.data).center()
-        );
-    }
-    for write in rig.writes.of(blue_screen.device_id).iter().skip(blue_seen) {
-        assert!(
-            near(Panel(&write.data).center(), [0, 0, 255]),
-            "the blue zone's panel showed {:?} during the transition",
-            Panel(&write.data).center()
-        );
-    }
+    let warm = centers_since(&rig.writes, warm_screen.device_id, warm_seen);
+    assert!(
+        warm.iter().all(|[_, _, b]| *b <= 6),
+        "the warm zone's panel showed blue it never had: {warm:?}"
+    );
+    let cool = centers_since(&rig.writes, cool_screen.device_id, cool_seen);
+    assert!(
+        cool.iter()
+            .all(|[r, g, b]| *b >= 249 && r.abs_diff(*g) <= 6),
+        "the cool zone's panel left the line from blue to white: {cool:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1769,6 +1791,332 @@ async fn cpu_stopped_output_takes_a_placed_screen_dark() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gpu_stopped_output_takes_a_placed_screen_dark() {
     stopped_output_takes_a_placed_screen_dark(RenderAccelerationMode::Gpu).await;
+}
+
+// ── Transitions: what a screen shows while one runs ──────────────────────
+
+/// A scene whose one zone fills with `color` and places `screen` in the
+/// middle, with a half-strength green face over it when `faced`.
+fn lit_scene(
+    effects: &Effects,
+    screen: &Screen,
+    name: &str,
+    color: [f32; 4],
+    transition_ms: u64,
+    faced: bool,
+) -> Scene {
+    let mut zones = vec![scene_zone(
+        "Lit",
+        ZoneRole::Primary,
+        vec![effects.solid(color)],
+        vec![
+            strip_output("strip:lit", (0.5, 0.1), (0.8, 0.1)),
+            screen.output((0.5, 0.5), (0.4, 0.4)),
+        ],
+    )];
+    if faced {
+        zones.push(blending_face_zone(screen, vec![effects.solid(GREEN)]));
+    }
+    test_scene(name, zones, transition_ms)
+}
+
+/// Every frame `device_id` has been sent since `seen`, as panel centers.
+fn centers_since(writes: &PanelWrites, device_id: DeviceId, seen: usize) -> Vec<[u8; 3]> {
+    writes
+        .of(device_id)
+        .iter()
+        .skip(seen)
+        .map(|write| Panel(&write.data).center())
+        .collect()
+}
+
+/// Part way from red to blue: a real mix, neither end.
+fn between_red_and_blue(center: [u8; 3]) -> bool {
+    let [r, g, b] = center;
+    (70..=185).contains(&r) && (70..=185).contains(&b) && g <= 6
+}
+
+/// Stopping output part way through a transition takes the screen black and
+/// leaves it black. Nothing of the fade outlives the frame that stops it.
+async fn stopping_output_mid_transition_ends_on_black(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("stopped-mid-fade").await;
+    let red = lit_scene(&rig.effects, &screen, "Red", RED, 0, false);
+    let blue = lit_scene(&rig.effects, &screen, "Blue", BLUE, 4000, false);
+
+    let running = rig.run_scene(red).await;
+    rig.writes
+        .wait_for(screen.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    rig.activate(&blue).await;
+    rig.writes
+        .wait_for(screen.device_id, "a mix of red and blue", |panel| {
+            between_red_and_blue(panel.center())
+        })
+        .await;
+    rig.power.send_modify(|power| {
+        power.output_override = hypercolor_daemon::output_power::OutputOverride::Stopped;
+    });
+    rig.writes
+        .wait_for(screen.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    let dark_from = rig.writes.of(screen.device_id).len() - 1;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    running.stop().await;
+
+    let after = centers_since(&rig.writes, screen.device_id, dark_from);
+    assert!(
+        after.iter().all(|center| near(*center, [0, 0, 0])),
+        "a stopped screen lit up again: {after:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_stopping_output_mid_transition_ends_on_black() {
+    stopping_output_mid_transition_ends_on_black(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_stopping_output_mid_transition_ends_on_black() {
+    stopping_output_mid_transition_ends_on_black(RenderAccelerationMode::Gpu).await;
+}
+
+/// A transition cut short by a scene that takes over at once never shows
+/// the picture it was heading for. Red was fading to blue; green replaces
+/// both, and no frame is ever all blue.
+async fn cancelled_transition_never_shows_its_destination(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("cancelled").await;
+    let red = lit_scene(&rig.effects, &screen, "Red", RED, 0, false);
+    let blue = lit_scene(&rig.effects, &screen, "Blue", BLUE, 4000, false);
+    let green = lit_scene(&rig.effects, &screen, "Green", GREEN, 0, false);
+
+    let running = rig.run_scene(red).await;
+    rig.writes
+        .wait_for(screen.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    for round in 0..6 {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.activate(&blue).await;
+        rig.writes
+            .wait_for(screen.device_id, "a mix of red and blue", |panel| {
+                between_red_and_blue(panel.center())
+            })
+            .await;
+        rig.activate(&green).await;
+        rig.writes
+            .wait_for(screen.device_id, "green", |panel| {
+                near(panel.center(), [0, 255, 0])
+            })
+            .await;
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let shown = centers_since(&rig.writes, screen.device_id, seen);
+        assert!(
+            shown.iter().all(|[r, _, b]| !(*b >= 215 && *r <= 40)),
+            "round {round}: the cancelled blue scene was shown whole: {shown:?}"
+        );
+        // Back to red, at once, for the next round.
+        let red_again = lit_scene(&rig.effects, &screen, "Red again", RED, 0, false);
+        rig.activate(&red_again).await;
+        rig.writes
+            .wait_for(screen.device_id, "red", |panel| {
+                near(panel.center(), [255, 0, 0])
+            })
+            .await;
+    }
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_cancelled_transition_never_shows_its_destination() {
+    cancelled_transition_never_shows_its_destination(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_cancelled_transition_never_shows_its_destination() {
+    cancelled_transition_never_shows_its_destination(RenderAccelerationMode::Gpu).await;
+}
+
+/// A transition that interrupts another starts from the mix that was on the
+/// panel. Red was half way to blue when green began to fade in: the screen
+/// goes from purple to green, and never back through red or on to blue.
+async fn interrupting_transition_starts_from_the_mix(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("interrupted").await;
+    let red = lit_scene(&rig.effects, &screen, "Red", RED, 0, false);
+    let blue = lit_scene(&rig.effects, &screen, "Blue", BLUE, 4000, false);
+    let green = lit_scene(&rig.effects, &screen, "Green", GREEN, 1500, false);
+
+    let running = rig.run_scene(red).await;
+    rig.writes
+        .wait_for(screen.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    rig.activate(&blue).await;
+    let mix = rig
+        .writes
+        .wait_for(screen.device_id, "a mix of red and blue", |panel| {
+            between_red_and_blue(panel.center())
+        })
+        .await;
+    let [mix_r, _, mix_b] = Panel(&mix.data).center();
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.activate(&green).await;
+    rig.writes
+        .wait_for(screen.device_id, "green", |panel| {
+            near(panel.center(), [0, 255, 0])
+        })
+        .await;
+    running.stop().await;
+
+    let shown = centers_since(&rig.writes, screen.device_id, seen);
+    // The blue fade may land a frame or two more before green takes over,
+    // so the mix can drift a little past where it was seen.
+    let (most_red, most_blue) = (mix_r.saturating_add(12), mix_b.saturating_add(60));
+    assert!(
+        shown
+            .iter()
+            .all(|[r, _, b]| *r <= most_red && *b <= most_blue),
+        "the second fade left the mix of {:?} it began on: {shown:?}",
+        Panel(&mix.data).center()
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|[r, g, b]| *r >= 25 && *b >= 25 && (40..=215).contains(g)),
+        "no frame mixed green into the mix it began on: {shown:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_interrupting_transition_starts_from_the_mix() {
+    interrupting_transition_starts_from_the_mix(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_interrupting_transition_starts_from_the_mix() {
+    interrupting_transition_starts_from_the_mix(RenderAccelerationMode::Gpu).await;
+}
+
+/// A blending face keeps its own pixels through a transition while the
+/// backdrop under it moves. The face is green at half strength over red and
+/// then over blue, neither of which has any green: the panel's green is the
+/// face alone, and it does not move.
+async fn blending_face_stays_sharp_through_a_transition(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("faced-fade").await;
+    let red = lit_scene(&rig.effects, &screen, "Red", RED, 0, true);
+    let blue = lit_scene(&rig.effects, &screen, "Blue", BLUE, 1500, true);
+
+    let running = rig.run_scene(red).await;
+    let settled = rig
+        .writes
+        .wait_for(screen.device_id, "the face over red", |panel| {
+            let [r, g, b] = panel.center();
+            r >= 100 && g >= 100 && b <= 6
+        })
+        .await;
+    let [_, face_green, _] = Panel(&settled.data).center();
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.activate(&blue).await;
+    rig.writes
+        .wait_for(screen.device_id, "the face over blue", |panel| {
+            let [r, g, b] = panel.center();
+            r <= 6 && g >= 100 && b >= 100
+        })
+        .await;
+    running.stop().await;
+
+    let shown = centers_since(&rig.writes, screen.device_id, seen);
+    assert!(
+        shown.iter().all(|[_, g, _]| g.abs_diff(face_green) <= 6),
+        "the face's green moved from {face_green} during the transition: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|[r, _, b]| *r >= 25 && *b >= 25),
+        "the backdrop under the face cut from red to blue: {shown:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_blending_face_stays_sharp_through_a_transition() {
+    blending_face_stays_sharp_through_a_transition(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_blending_face_stays_sharp_through_a_transition() {
+    blending_face_stays_sharp_through_a_transition(RenderAccelerationMode::Gpu).await;
+}
+
+/// A screen that gains a face with the scene, and one that loses it, still
+/// fades its backdrop from the outgoing picture. The face itself arrives
+/// and leaves at once; the red under it becomes blue gradually.
+async fn screen_changing_its_face_still_fades_its_backdrop(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("face-change").await;
+    let bare_red = lit_scene(&rig.effects, &screen, "Bare red", RED, 1500, false);
+    let faced_blue = lit_scene(&rig.effects, &screen, "Faced blue", BLUE, 1500, true);
+
+    let running = rig.run_scene(bare_red.clone()).await;
+    rig.writes
+        .wait_for(screen.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+
+    // Gains a face: green appears over a backdrop still part red.
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.activate(&faced_blue).await;
+    rig.writes
+        .wait_for(screen.device_id, "the face over blue", |panel| {
+            let [r, g, b] = panel.center();
+            r <= 6 && g >= 100 && b >= 100
+        })
+        .await;
+    let gaining = centers_since(&rig.writes, screen.device_id, seen);
+    assert!(
+        gaining
+            .iter()
+            .any(|[r, g, b]| *g >= 100 && *r >= 20 && *b >= 20),
+        "the backdrop cut to blue when the face arrived: {gaining:?}"
+    );
+
+    // Loses it: the face is gone and the backdrop is part blue, part red.
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.activate(&bare_red).await;
+    rig.writes
+        .wait_for(screen.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    running.stop().await;
+    let losing = centers_since(&rig.writes, screen.device_id, seen);
+    assert!(
+        losing.iter().any(|center| between_red_and_blue(*center)),
+        "the backdrop cut to red when the face left: {losing:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_screen_changing_its_face_still_fades_its_backdrop() {
+    screen_changing_its_face_still_fades_its_backdrop(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_screen_changing_its_face_still_fades_its_backdrop() {
+    screen_changing_its_face_still_fades_its_backdrop(RenderAccelerationMode::Gpu).await;
 }
 
 // ── Viewports: the owning zone against the spatial service ────────────────
