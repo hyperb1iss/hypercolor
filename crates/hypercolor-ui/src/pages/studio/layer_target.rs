@@ -494,6 +494,19 @@ pub(super) fn TargetEditorHost() -> impl IntoView {
         }
     });
 
+    // Escape drops the draft wherever focus is, in the popover or behind
+    // it. A sheet closes itself on the key and reports back.
+    let keydown = window_event_listener(leptos::ev::keydown, move |ev| {
+        if ev.key() == "Escape"
+            && targets.editor.with_untracked(Option::is_some)
+            && !phone.get_untracked()
+        {
+            ev.prevent_default();
+            targets.close_editor(studio, false);
+        }
+    });
+    on_cleanup(move || keydown.remove());
+
     let footer = move || {
         view! {
             <div class="flex items-center justify-between gap-2 border-t border-edge-subtle/60 px-2 py-2">
@@ -584,11 +597,6 @@ pub(super) fn TargetEditorHost() -> impl IntoView {
                                 }
                                 on:keydown=move |ev: web_sys::KeyboardEvent| {
                                     match ev.key().as_str() {
-                                        "Escape" => {
-                                            ev.prevent_default();
-                                            ev.stop_propagation();
-                                            targets.close_editor(studio, false);
-                                        }
                                         "ArrowDown" | "ArrowUp" | "Home" | "End" => {
                                             ev.prevent_default();
                                             move_focus(panel_ref, "[data-target-item]", &ev.key());

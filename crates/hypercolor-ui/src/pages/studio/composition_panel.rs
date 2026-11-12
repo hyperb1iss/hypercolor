@@ -122,14 +122,16 @@ pub fn CompositionPanel(
     let layer_targets = studio.targets.host(studio);
 
     // Escape closes the panel while it is open, unless a text field owns
-    // the key (a rename in the rail cancels with Escape too) or a pick on
-    // the canvas does, which ends first. The handle is removed with the
-    // page so the listener never outlives its signals.
+    // the key (a rename in the rail cancels with Escape too) or a target
+    // is being chosen, in its editor or on the canvas, which ends first.
+    // The handle is removed with the page so the listener never outlives
+    // its signals.
     let keydown = window_event_listener(ev::keydown, move |event| {
         if open.get_untracked()
             && event.key() == "Escape"
             && !event.default_prevented()
             && !target_is_text_entry(event.target())
+            && studio.targets.editor.with_untracked(Option::is_none)
             && studio.targets.pick.with_untracked(Option::is_none)
         {
             close();
