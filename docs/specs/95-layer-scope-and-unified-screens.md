@@ -676,10 +676,10 @@ it. The plan-building tail runs once per class:
   common case, a scoped overlay on top) starts from a copy of the base class's
   texture and adds one pass per extra layer.
 - Any other class composes its full stack from the shared producer frames.
-- A class whose bottom layer is scoped starts from the opaque black frame the
-  projection already uses (`render_zones/render_pass.rs:130-138`), so the
-  forced `Replace` on the first layer never clears the canvas outside the
-  layer's frame.
+- A class whose bottom layer is scoped composes over the opaque black frame
+  the projection already uses (`render_zones/render_pass.rs:130-138`), and the
+  layer keeps the blend mode and opacity it asks for there. An unscoped bottom
+  layer still has its blend forced to `Replace`.
 
 Each class has its own composition key and skip (Spec 86 §2.1). A pending
 layer is skipped for the classes that use it, exactly as the loop skips it
@@ -697,11 +697,17 @@ index-aligned. The cached-result digest covers every class texture.
 **Fast paths.** The lone-zone path (`scene_assembly.rs:186-263`) and the
 single-effect passthrough (`render_zones/frame_helpers.rs:82`) apply only when
 the zone has one class. A zone with more takes the per-zone path, and reconcile
-admits its class textures even when it is the only zone.
+admits its class textures even when it is the only zone. A lone zone at the
+scene's extent keeps its picture when it does: its base class frame is the
+ground of the scene canvas, in place of black, and each output's box is then
+drawn from its class (§5.9).
 
-**Transitions.** Spec 86 §4.1 blends in LED space when either scene has more
-than one scene-contributing zone. The test becomes "more than one sampling
-source", counting classes.
+**Transitions.** Spec 86 §4.1 blends in LED space when either scene is sampled
+per zone. A zone with more than one class is sampled per class, so it is on
+that path in both directions with no further test. A fade out of per-zone LEDs
+into a single-zone scene samples the incoming zone's own frame and blends that.
+When the incoming frame is on the CPU its colors are in hand, and the sampling
+set resolves with no GPU dispatch, on either compositor backend.
 
 ### 5.5 Framing: one mapping from a layer's source to the zone
 
@@ -715,6 +721,15 @@ the *frame* of its scope, not the zone canvas.
   normalized canvas units, of their placed rectangles, so the layer is
   continuous across them.
 - The layer's own `transform` (`layer.rs:330-338`) applies inside the frame.
+- Framing never decides whether a layer renders. Dormancy is membership alone
+  (R3): a layer whose scope names an output of the zone is framed, whatever
+  that output's geometry. An output with no area takes no part in the frame
+  while another named output has some. When none has, the frame is formed from
+  the collapsed outputs themselves, each given one pixel of the zone's long
+  side along an axis it has no extent on, so a strip with no thickness is
+  framed along its own line and a point at its centre. Geometry that is not
+  finite forms no frame at all, and the source then fills the zone canvas
+  while still reaching only the outputs its scope names.
 
 Why framing: the owner's example is a ripple on a keyboard. Keystrike places
 each key press by its QWERTY cell as a fraction of the whole canvas
@@ -727,15 +742,13 @@ keyboard" and for a face on a panel.
 `CompositionTransform` is an anchor, a per-axis scale, and one rotation, all
 applied in target pixels (`sparkleflinger/mod.rs:99-106`,
 `blend.wgsl:203-210`). A frame is placed by an output placement, which rotates
-in normalized units (`sampler/mod.rs:72-84`). Three things do not fit:
+in normalized units (`sampler/mod.rs:72-84`). Two things do not fit:
 
 1. On a canvas that is not square, a rotation in normalized units is a
    rotation plus a shear in pixels. One rotation angle cannot express it.
 2. A framed layer with its own rotation composes two rotations with a
    non-uniform scale between them. That product is a general affine, not an
    anchor, a scale, and an angle.
-3. The frame is also a clip: a layer scaled up inside its frame must not draw
-   outside it.
 
 **The mapping.** One value describes where every source pixel of a layer lands
 on its zone. Spaces: source pixels *s*; frame units *f* in the unit square;
@@ -757,7 +770,22 @@ normalized canvas units *n*, the space placements live in; zone pixels *z*.
 
 The frame's pixel size (*wf*, *hf*) is the length of the frame's two edge
 vectors after step 4. The product of the four steps is one 2 by 3 affine from
-source pixels to zone pixels, and it carries the shear from item 1.
+source pixels to zone pixels, and it carries the shear from item 1. The
+placement holds it as two affines, zone pixels to frame units and frame units
+to source pixels, because the frame's edge is applied between them.
+
+**The frame's edge.** A frame places a layer. It does not clip it on LED
+output. A matrix or a strip puts its first and last LEDs on the border of its
+placed rectangle, and the sampler reads the pixel at `n * (W - 1)` where
+composition puts the frame's edge at `n * W`. A border LED therefore lands up
+to half a pixel outside its own frame, bilinear sampling reads a pixel further,
+and area sampling reads its whole radius further. Cut at the frame, those LEDs
+would read the layer beneath. So a scoped layer's edge runs on past its frame
+(`FrameEdge::Extend`): frame units clamp before the source lookup, and a pixel
+outside the frame shows what the nearest point of the frame's edge shows.
+Nothing else reads those pixels, because each class is sampled with only its
+own outputs. The clip exists as `FrameEdge::Clip`, used where a class frame is
+drawn into an output's box in a picture (§5.9).
 
 **Where it lives.** A new `hypercolor-core/src/spatial/layer_placement.rs`,
 beside the placement math it reuses, because the daemon's compositor and the
@@ -767,19 +795,22 @@ core's input mapping both consume it:
 /// Where one layer's source lands on its zone's canvas.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerPlacement {
-    /// Zone pixels to source pixels, row-major 2 by 3.
-    pub zone_to_source: [f32; 6],
     /// Zone pixels to frame units, row-major 2 by 3. A zone pixel is inside
     /// the frame when both results are within 0 and 1.
     pub zone_to_frame: [f32; 6],
+    /// Frame units to source pixels, row-major 2 by 3.
+    pub frame_to_source: [f32; 6],
     /// The source rectangle the fit mode shows, in source pixels.
     pub source_crop: [f32; 4],
     pub repeat: SourceRepeat,
     pub source_size: [u32; 2],
+    /// What shows beyond the frame: its edge run on, or nothing.
+    pub edge: FrameEdge,
 }
 
 impl LayerPlacement {
-    /// `None` when the frame or the transform is degenerate.
+    /// A layer's source framed and placed, its edge running on. `None` when
+    /// the frame or the transform is degenerate.
     pub fn new(
         frame: &LayerFrame,
         transform: LayerTransform,
@@ -787,8 +818,18 @@ impl LayerPlacement {
         zone_size: (u32, u32),
     ) -> Option<Self>;
 
-    /// The source point a zone pixel shows, or `None` when the pixel is
-    /// outside the frame or the placed source.
+    /// A picture of the whole canvas seen through `frame` and clipped to
+    /// it: each target pixel inside the frame shows the source at its own
+    /// normalized position.
+    pub fn window(
+        frame: &LayerFrame,
+        source_size: (u32, u32),
+        target_size: (u32, u32),
+    ) -> Option<Self>;
+
+    /// The source point a zone pixel shows, or `None` where the layer shows
+    /// nothing: outside a clipped frame, or where the placed source does not
+    /// reach.
     pub fn source_point(&self, zone_px: [f32; 2]) -> Option<[f32; 2]>;
 }
 ```
@@ -797,19 +838,21 @@ impl LayerPlacement {
 `transform` (`sparkleflinger/mod.rs:193-201`). Three consumers use the one
 value, and none re-derives it:
 
-- **CPU composition** gains a sampler branch in `sparkleflinger/transform.rs`
-  that walks zone pixels through `zone_to_source`, clipped by `zone_to_frame`.
-- **GPU composition** gains the same two affines and the crop in
-  `ComposeParams` (`blend.wgsl:1-8`), with a flag that selects them over the
-  anchor, scale, and rotation path.
+- **CPU composition** has a sampler branch in `sparkleflinger/transform.rs`
+  that walks zone pixels through `zone_to_frame`, the edge rule, and
+  `frame_to_source`.
+- **GPU composition** carries the same two affines and the crop in
+  `ComposeParams` (`blend.wgsl:1-17`), with a value that selects them over
+  the anchor, scale, and rotation path and says how the edge behaves.
 - **Input** maps a touch to a zone pixel and then through `source_point`
   (§5.6).
 
-**Blend modes at the frame's edge.** Outside the frame, the destination passes
-through for every mode. `Replace` today writes the source everywhere, and
-outside a placed source that is transparent black (`blend.wgsl:366`), so a
-framed `Replace` composes as alpha with the source treated as opaque inside
-the frame.
+**Blend modes and placement.** Outside a clipped frame the destination passes
+through for every mode. `Replace` on an unplaced layer writes the source
+everywhere, and a placed source does not reach everywhere, so a placed
+`Replace` composes as alpha with the source treated as opaque wherever the
+placement draws: black where the placed source does not reach, and nothing at
+all outside a clipped frame.
 
 **Unscoped layers do not change.** They keep composing through the existing
 fields, which is what lets §8's "one class is identical to today" test hold.
@@ -848,8 +891,8 @@ Verified today:
 - A touch on a device the layout does not place carries no canvas point, which
   Touch Ripple skips (`sdk/src/effects/touch-ripple/main.ts:150-152`).
 
-Proposed: the canvas point an effect receives is the point of **its own
-source** that shows under the finger.
+The canvas point an effect receives is the point of **its own source** that
+shows under the finger.
 
 1. The zone's `DeviceSurfaceMap` resolves the touch to a normalized canvas
    point, as today, and also reports which output it resolved through.
@@ -859,10 +902,14 @@ source** that shows under the finger.
    `LayerPlacement::source_point`. `None` (the finger is outside the placed
    source) means no canvas point.
 
-`TouchCanvas` (`payload.rs:147-153`) gains the placement and the scope beside
-the surface map. Because composition draws through the same `LayerPlacement`,
-the point the effect is told about and the point the LED samples are the same
-by construction, including the layer's own anchor, scale, rotation, and fit.
+The surface map carries the layer's view as one value.
+`DeviceSurfaceMap::for_layer` returns the zone's map with the layer's
+placement and scope attached, each surface records the output it belongs to,
+and `segment_source_position` resolves a touch to the layer's own source point
+or to nothing. `TouchCanvas` (`payload.rs:147-153`) keeps the one map it had.
+Because composition draws through the same `LayerPlacement`, the point the
+effect is told about and the point the LED samples are the same by
+construction, including the layer's own anchor, scale, rotation, and fit.
 
 Results, with no change to any effect:
 
@@ -903,20 +950,26 @@ Per scene on the GPU backend. "Class" means a class beyond the base.
 | Sampling | One compute pass per class in the existing dispatch | Same encoder, submit, and readback |
 | Area tables | One summed-area scan per class texture whose outputs use area sampling | The scan runs per pass today (`gpu_sampling.rs:1308-1320`) |
 | Scene projection | One projection layer per output, every frame, for any scene with more than one sampling source | A one-zone scene with a class leaves the lone-zone path and starts paying this (`scene_assembly.rs:91-94`; Spec 86 §11.3) |
-| Zone preview | One projection composite at the zone extent per frame the preview is due | Only while a subscriber selects that zone |
+| Zone preview | One retained RGBA texture at the zone extent, and one composite of the base class and at most one box per output per frame the preview is due | Only for a zone with more than one class, and only while a subscriber selects that zone |
 | Input | One `LayerPlacement` and one scope set per interactive scoped layer | Rebuilt when the layout or the layer changes |
 
 The class count is the number of distinct effective stacks, at most the number
 of outputs plus one, and in practice two or three. There is no product cap.
-Frame metrics gain `scope_class_count`; `gpu_sampling_passes` already counts
-the passes.
+The daemon's frame metrics and the frame log carry `scope_class_count`, and
+`gpu_sampling_passes` already counts the passes. No wire type carries the
+class count yet.
 
 **Admission.** Class resources go through the paths zone resources use today,
 and fail the same way:
 
-- Class textures are admitted with the zone textures, and a refused admission
-  takes the existing projected-resource fallback
-  (`sparkleflinger/gpu/projected.rs:100-125`).
+- Class textures are admitted with the zone textures. When the GPU refuses
+  them, a zone with classes composes each class, and its preview, on the CPU
+  from CPU layer frames, each into pixels of its own. It does not take the
+  projected-resource fallback (`sparkleflinger/gpu/projected.rs:100-125`):
+  that fallback reads back through a latch keyed by size alone, and two
+  classes of one size would be handed each other's pixels. When a layer frame
+  is a GPU texture there is no way to a CPU canvas that keeps classes apart,
+  and the zone fails through the render-failure surface.
 - A canvas resize prepares and commits class textures, framed render extents,
   class sampling plans, placements, and retained composition identities in the
   existing two-step resize (`pipeline_runtime.rs:2256-2275`), so a resize never
@@ -941,15 +994,21 @@ for people, built from class textures with an explicit overlap order:
   takes the output's class frame instead. Each box then shows what its LEDs
   show, in the existing order: LED outputs in zone order, then screens
   (`projection.rs:63-88`). Where boxes overlap, the later one wins, in the
-  picture only.
+  picture only. A lone zone with more than one class lays its base class under
+  the boxes (§5.4).
 - **Zone preview.** Studio's per-zone preview (Spec 86 §5.2) for a zone with
-  more than one class is the base class texture with each other output's box
-  drawn from its class texture, composed with the same projection layers at
-  the zone's extent, only while a subscriber selects that zone.
+  more than one class has no single frame that is its picture, so one is
+  composed at the zone's extent: the base class, then every output's box from
+  its own class in the scene canvas's order, LED outputs and then screens, the
+  later box winning. An output of the base class takes its turn like any
+  other, and paints again only where it follows a scoped box it overlaps. The
+  picture is kept in a texture of its own, made only while a subscriber selects
+  that zone, and first shown one frame after the subscription.
 
-Both paths place a rotated box with the pixel-space rotation of §5.1 on the GPU
-and with normalized units on the CPU. That difference exists today and is a
-preview-fidelity matter for Spec 86 phase 2, not LED truth.
+Both pictures place a box through `LayerPlacement::window`, on both backends.
+The box is turned in normalized units, as the sampler turns the output, so on a
+canvas that is not square it is a parallelogram in pixels, and it sits where
+the output's LEDs are. The CPU raster steps the same affine across its rows.
 
 ### 5.10 Screen backdrops
 
@@ -1082,70 +1141,16 @@ on its own, and scope classes then only swap the frame it reads.
 
 ### 5.11 As built in W2
 
-Sections 5.4 to 5.10 are the design as proposed. Where a point below differs
-from them, the point below is what the code does.
+What W2 measured, and the limits it ships with.
 
-**A frame places a layer. It clips only in pictures.** §5.5 makes the frame a
-clip. On LED output that costs a device its edge LEDs. A matrix or a strip
-puts its first and last LEDs on the border of its placed rectangle, and the
-sampler reads the pixel at `n * (W - 1)` where composition puts the frame's
-edge at `n * W`. A border LED therefore lands up to half a pixel outside a
-frame cut at its edge, bilinear sampling reads a pixel further, and area
-sampling reads its whole radius further. Those LEDs read the layer beneath.
-So a scoped layer's edge runs on past its frame (`FrameEdge::Extend`): frame
-units clamp before the source lookup, and the source's edge texels continue
-outward. Nothing else reads them, because each class is sampled with only its
-own outputs. The clip survives as `FrameEdge::Clip`, used where a class frame
-is drawn into an output's box in the scene canvas and the zone picture.
-`LayerPlacement` carries `zone_to_frame` and `frame_to_source` in place of
-`zone_to_source`, since the clamp sits between the two, and an `edge`.
-
-**A scoped bottom layer keeps its own blend.** It composes over the opaque
-black base in the mode it asks for. An unscoped bottom layer still has its
-blend forced to `Replace`.
-
-**Touch carries the layer view in the surface map.** `TouchCanvas` gained no
-fields. `DeviceSurfaceMap::for_layer` returns the zone's map with the layer's
-placement and scope attached, each surface records its output id, and
-`segment_source_position` resolves a touch to the layer's own source point or
-to nothing. An unscoped layer with a transform gets a whole-zone placement
-through the same call.
-
-**A lone zone with classes keeps its picture.** It leaves the lone-zone path,
-as §5.4 says. Its base class frame is the ground of the scene canvas, in
-place of black, and each output's box is then drawn from its class.
-
-**The zone picture is a retained texture.** A zone with more than one class
-has no single frame that is its preview, so one is composed at the zone's
-extent while a subscriber selects that zone, and for no other zone. It costs
-one retained texture per such zone, which the table in §5.8 does not list, and
-it arrives one frame after the subscription.
-
-**Off the resident path a zone with classes composes on the CPU, or fails.**
-When the GPU cannot keep class textures resident, the zone composes each class
-on the CPU from CPU layer frames. When a layer frame is a GPU texture the zone
-fails through the render-failure surface instead. The projected-resource
-fallback §5.8 names reads back through a latch keyed by size alone, and two
-classes of one size would be handed each other's pixels.
-
-**Transitions.** A zone with classes is sampled per class, so the existing
-per-zone test already counts it. Leaving one for a single-zone scene exposed a
-fault the CPU compositor had for multi-zone scenes too: the incoming zone was
-sampled on the CPU and then discarded, so the outgoing LEDs were held for the
-whole fade. A sampling set whose colors are all in hand now resolves without a
-GPU dispatch.
-
-**Metrics.** `scope_class_count` is in the daemon's frame metrics and the
-frame log. No wire type carries it yet.
-
-**Spike: placement.** `layer_placement_tests` holds the property test: over
+**Placement.** `layer_placement_tests` holds the property test: over
 random frames, canvas aspects and layer transforms, a source point survives
 the trip to the canvas and back, and a touch resolves to the source point its
 LED samples. In the daemon,
 `random_placements_draw_where_the_placement_says_on_both_compositors` holds
 the GPU and CPU compositors to the same placements.
 
-**Spike: effects at framed extents.** The nine interactive and audio effects
+**Effects at framed extents.** The nine interactive and audio effects
 (Audio Pulse, Frequency Cascade, Keystrike, Touch Ripple, Cymatics,
 Hyperbloom, Iris, Spectral Fire, Shockwave) were rendered through
 `ServoRenderer` at 640 by 64, 64 by 640 and 640 by 640 with synthetic audio,
@@ -1158,7 +1163,7 @@ slice of its scene; Iris is dim at 64 by 640. The capture harness needs a
 running daemon and a request type that carries scope, so the renderer was
 driven directly.
 
-**Spike: class cost.** Measured through the render-zone pass in a test
+**Class cost.** Measured through the render-zone pass in a test
 harness, not on a running daemon: the benchmark drives scenes over REST, and
 no request type carries scope in W2. One 640 by 480 scene of 62 outputs and
 2,537 LEDs shaped like the evidence rig's, every layer handed a fresh frame
