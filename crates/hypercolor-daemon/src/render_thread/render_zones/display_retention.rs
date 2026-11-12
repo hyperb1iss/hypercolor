@@ -1,15 +1,29 @@
 use std::collections::HashMap;
 
 use hypercolor_core::bus::DisplayZoneOutputRoute;
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 
 use super::ZoneRuntime;
 use super::model::{
-    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedDirectZoneFrame,
-    RetainedMaterializedZoneFrame,
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdropFrame,
+    RetainedDirectZoneFrame, RetainedMaterializedZoneFrame, ZoneContent, ZoneContentKey,
+    ZoneContentRevision,
 };
 use super::zone_state::zone_publishes_direct_canvas;
+use crate::render_thread::display_lane::PlacedScreen;
+use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
+
+/// Why a screen's retained backdrop frame still stands.
+#[derive(Clone)]
+pub(crate) enum RetainedBackdrop {
+    /// The screen's zone shows what it showed when the frame was made, so
+    /// making it again would produce the same picture.
+    Unchanged(DisplayZoneCanvasFrame),
+    /// The backdrop moved on, but the screen's next frame is not due yet.
+    Held(DisplayZoneCanvasFrame),
+}
 
 impl ZoneRuntime {
     pub(super) fn reuse_retained_direct_zone_frame(
@@ -131,6 +145,149 @@ impl ZoneRuntime {
         }
 
         Some(retained.frame.clone())
+    }
+
+    /// Begin a pass over the scene's zones. A zone's content revision is
+    /// known only for the pass that last rendered it.
+    pub(super) fn begin_zone_content_pass(&mut self) {
+        self.content_pass = self.content_pass.wrapping_add(1);
+    }
+
+    /// Record what a zone's frame of this pass was made from. `None` is
+    /// content that cannot be told from the last frame's, which counts as
+    /// new.
+    pub(super) fn note_zone_content(&mut self, zone_id: ZoneId, key: Option<ZoneContentKey>) {
+        let pass = self.content_pass;
+        let unchanged = key.is_some()
+            && self
+                .zone_content
+                .get(&zone_id)
+                .is_some_and(|content| content.key == key);
+        if unchanged {
+            if let Some(content) = self.zone_content.get_mut(&zone_id) {
+                content.pass = pass;
+            }
+            return;
+        }
+        self.next_content_revision = self.next_content_revision.wrapping_add(1);
+        self.zone_content.insert(
+            zone_id,
+            ZoneContent {
+                key,
+                revision: ZoneContentRevision(self.next_content_revision),
+                pass,
+            },
+        );
+    }
+
+    /// The revision of the content `zone_id` rendered in the scene pass in
+    /// progress, or `None` when the pass did not say what its frame was
+    /// made from.
+    fn zone_content_revision(&self, zone_id: ZoneId) -> Option<ZoneContentRevision> {
+        self.zone_content
+            .get(&zone_id)
+            .filter(|content| content.pass == self.content_pass)
+            .map(|content| content.revision)
+    }
+
+    /// The revisions of the zone frames a scene pass just rendered, to
+    /// travel with them. Read only by the pass that rendered `frames`: the
+    /// runtime's own record moves on with the next pass, a failed one
+    /// included, and would then describe frames nobody was handed.
+    pub(super) fn zone_revisions_of(
+        &self,
+        frames: &[(ZoneId, ProducerFrame)],
+    ) -> Vec<(ZoneId, ZoneContentRevision)> {
+        frames
+            .iter()
+            .filter_map(|(zone_id, _)| Some((*zone_id, self.zone_content_revision(*zone_id)?)))
+            .collect()
+    }
+
+    /// The screen's retained backdrop frame, while it still stands in for
+    /// `backdrop` on the screen as it is placed now.
+    pub(crate) fn reuse_retained_backdrop_frame(
+        &self,
+        elapsed_ms: u64,
+        screen: &PlacedScreen,
+        content: Option<ZoneContentRevision>,
+    ) -> Option<RetainedBackdrop> {
+        let retained = self.retained_backdrop_frames.get(&screen.device_id)?;
+        if retained.screen != *screen {
+            return None;
+        }
+        if content.is_some() && retained.content == content {
+            return Some(RetainedBackdrop::Unchanged(retained.frame.clone()));
+        }
+        retained
+            .cadence
+            .is_some_and(|cadence| cadence.holds_at(elapsed_ms, screen.target_fps))
+            .then(|| RetainedBackdrop::Held(retained.frame.clone()))
+    }
+
+    /// The screen's latest backdrop frame as it is placed now, whatever its
+    /// age: what the screen keeps showing while its next frame is made.
+    pub(crate) fn reuse_latest_backdrop_frame(
+        &self,
+        screen: &PlacedScreen,
+    ) -> Option<DisplayZoneCanvasFrame> {
+        let retained = self.retained_backdrop_frames.get(&screen.device_id)?;
+        (retained.screen == *screen).then(|| retained.frame.clone())
+    }
+
+    pub(crate) fn retain_backdrop_frame(
+        &mut self,
+        elapsed_ms: u64,
+        screen: &PlacedScreen,
+        content: Option<ZoneContentRevision>,
+        frame: &DisplayZoneCanvasFrame,
+    ) {
+        let previous = self
+            .retained_backdrop_frames
+            .get(&screen.device_id)
+            .filter(|retained| retained.screen == *screen)
+            .and_then(|retained| retained.cadence);
+        self.retained_backdrop_frames.insert(
+            screen.device_id,
+            RetainedBackdropFrame {
+                frame: frame.clone(),
+                cadence: DisplayFrameCadence::after_render(
+                    previous,
+                    elapsed_ms,
+                    Some(screen.target_fps),
+                ),
+                screen: screen.clone(),
+                content,
+            },
+        );
+    }
+
+    /// Every screen's retained backdrop frame, with the screen as it was
+    /// placed when the frame was made.
+    pub(crate) fn retained_backdrops(
+        &self,
+    ) -> impl Iterator<Item = (&PlacedScreen, &DisplayZoneCanvasFrame)> {
+        self.retained_backdrop_frames
+            .values()
+            .map(|retained| (&retained.screen, &retained.frame))
+    }
+
+    /// Output went off, and every placed screen shows `color`. No fade and
+    /// no backdrop from before is what a screen shows any more, so none of
+    /// them is kept for the frames after output is back to start from.
+    pub(crate) fn retire_screens_for_off_output(
+        &mut self,
+        screens: Vec<PlacedScreen>,
+        color: [u8; 3],
+    ) {
+        self.screen_fades.retire_for_off_output(screens, color);
+        self.retained_backdrop_frames.clear();
+    }
+
+    /// Forget the backdrop frames of screens that no longer show one.
+    pub(crate) fn retain_backdrop_frames_for(&mut self, device_ids: &[DeviceId]) {
+        self.retained_backdrop_frames
+            .retain(|device_id, _| device_ids.contains(device_id));
     }
 
     pub(crate) fn retain_materialized_zone_frame(

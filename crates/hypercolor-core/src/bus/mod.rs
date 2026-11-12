@@ -22,7 +22,7 @@ mod filter;
 pub use demand::{ArmedOutputDemand, OutputDemandHold, OutputDemandSignal};
 pub use filter::{EventFilter, FilteredEventReceiver};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -502,10 +502,30 @@ impl DisplayYuv420Frame {
     }
 }
 
+/// A backdrop the display worker finishes for its screen: the canvas of the
+/// zone that places the screen, with that zone's viewport for it.
+///
+/// The viewport travels with the pixels it applies to, so a worker never
+/// crops one scene's canvas through another scene's placement.
+#[derive(Clone, Debug)]
+pub struct DisplayBackdropFrame {
+    pub frame: CanvasFrame,
+    pub viewport: DisplayZoneViewport,
+    /// Whether `frame` is already the screen's crop: the picture the
+    /// viewport would cut from the zone's canvas, made by the render thread
+    /// while it mixes two of them through a scene transition. The worker
+    /// fits it to the panel as it is, and the viewport still says how a
+    /// face over it turns.
+    pub cropped: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum DisplayZoneFrame {
     Canvas(CanvasFrame),
     Yuv420(DisplayYuv420Frame),
+    /// A zone canvas for the display worker to crop, where the render
+    /// thread's compositor does not finalize display frames itself.
+    Backdrop(DisplayBackdropFrame),
 }
 
 impl DisplayZoneFrame {
@@ -524,6 +544,7 @@ impl DisplayZoneFrame {
         match self {
             Self::Canvas(frame) => frame.width,
             Self::Yuv420(frame) => frame.width,
+            Self::Backdrop(backdrop) => backdrop.frame.width,
         }
     }
 
@@ -532,6 +553,7 @@ impl DisplayZoneFrame {
         match self {
             Self::Canvas(frame) => frame.height,
             Self::Yuv420(frame) => frame.height,
+            Self::Backdrop(backdrop) => backdrop.frame.height,
         }
     }
 
@@ -540,6 +562,7 @@ impl DisplayZoneFrame {
         match self {
             Self::Canvas(frame) => frame.rgba_bytes(),
             Self::Yuv420(_) => &[],
+            Self::Backdrop(backdrop) => backdrop.frame.rgba_bytes(),
         }
     }
 
@@ -554,6 +577,16 @@ impl DisplayZoneFrame {
             Self::Yuv420(frame) => {
                 Self::Yuv420(frame.with_frame_metadata(frame_number, timestamp_ms))
             }
+            Self::Backdrop(backdrop) => Self::Backdrop(DisplayBackdropFrame {
+                frame: CanvasFrame::from_surface(
+                    backdrop
+                        .frame
+                        .surface()
+                        .with_frame_metadata(frame_number, timestamp_ms),
+                ),
+                viewport: backdrop.viewport,
+                cropped: backdrop.cropped,
+            }),
         }
     }
 }
@@ -608,6 +641,55 @@ impl From<&DisplayFaceTarget> for DisplayZoneTarget {
     }
 }
 
+/// One screen the display output thread drives, authored by that thread.
+///
+/// A screen's backdrop is the frame of the zone that places it, seen through
+/// that zone's placement of the screen (Spec 95 §5.10). The render thread
+/// finds that zone in the scene it is rendering, from the layout ids named
+/// here, so the placement always belongs to the frame it is applied to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScreenBackdropRoute {
+    /// The layout device ids whose outputs belong to the screen's device.
+    pub layout_device_ids: Vec<String>,
+    /// Whether the device also drives LEDs.
+    pub has_led_segments: bool,
+    /// The screen's surface. Its viewport is the one a screen no zone
+    /// places shows a face through: the whole canvas, turned the way the
+    /// panel is mounted.
+    pub output: DisplayZoneOutputRoute,
+    /// Frame rate cap for the screen while it shows its backdrop alone.
+    pub target_fps: u32,
+}
+
+/// The screens the render thread makes a display lane for, worked out from
+/// one publication of the screen set.
+///
+/// Display output holds render demand for a previewed screen whose lane has
+/// not arrived, and the render thread is the only one who knows whether one
+/// will: a screen no zone places and no live face is shown on gets none.
+/// This is its answer, so the hold can end when the answer is no.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenLanePlan {
+    /// The revision of the screen set the render thread read.
+    pub routes_revision: u64,
+    /// The screens it makes a lane for.
+    pub screens: Arc<HashSet<DeviceId>>,
+}
+
+/// The display lane id of a screen's backdrop.
+///
+/// A screen without a face has no display zone, so its backdrop travels the
+/// per-zone display channels under an id derived from the screen's device.
+/// The id is stable for the device and distinct from every scene zone's.
+#[must_use]
+pub fn screen_backdrop_lane_id(device_id: DeviceId) -> ZoneId {
+    const NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0x7363_7265_656e_2d62_6163_6b64_726f_7073);
+    ZoneId(uuid::Uuid::new_v5(
+        &NAMESPACE,
+        device_id.as_uuid().as_bytes(),
+    ))
+}
+
 #[derive(Debug, Default)]
 struct DisplayZoneTargetRegistry {
     revision: u64,
@@ -618,6 +700,18 @@ struct DisplayZoneTargetRegistry {
 struct DisplayZoneOutputRouteRegistry {
     revision: u64,
     routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
+}
+
+#[derive(Debug, Default)]
+struct ScreenBackdropRouteRegistry {
+    revision: u64,
+    routes: Arc<HashMap<DeviceId, ScreenBackdropRoute>>,
+}
+
+#[derive(Debug, Default)]
+struct ScreenLanePlanRegistry {
+    revision: u64,
+    plan: Option<ScreenLanePlan>,
 }
 
 /// Immutable counters for one latest-value bus lane.
@@ -855,6 +949,12 @@ pub struct HypercolorBus {
     /// Display-output-authored final display surface metadata keyed by zone id.
     display_zone_output_routes: Arc<Mutex<DisplayZoneOutputRouteRegistry>>,
 
+    /// Display-output-authored set of the screens it drives.
+    screen_backdrop_routes: Arc<Mutex<ScreenBackdropRouteRegistry>>,
+
+    /// Render-thread-authored answer to that set: the screens with a lane.
+    screen_lane_plan: Arc<Mutex<ScreenLanePlanRegistry>>,
+
     /// Notified when output demand appears or observable state changes.
     output_demand: Arc<OutputDemandSignal>,
 
@@ -887,6 +987,8 @@ impl HypercolorBus {
             display_zone_output_routes: Arc::new(Mutex::new(
                 DisplayZoneOutputRouteRegistry::default(),
             )),
+            screen_backdrop_routes: Arc::new(Mutex::new(ScreenBackdropRouteRegistry::default())),
+            screen_lane_plan: Arc::new(Mutex::new(ScreenLanePlanRegistry::default())),
             output_demand,
             clock,
         }
@@ -1350,6 +1452,88 @@ impl HypercolorBus {
         if routes.routes.remove(&id).is_some() {
             routes.revision = routes.revision.saturating_add(1);
         }
+    }
+
+    /// Replace the set of screens the display output thread drives.
+    ///
+    /// The display output thread owns this set and publishes it whole, so a
+    /// screen that goes away drops out with the next publication. An
+    /// unchanged set keeps its revision.
+    pub fn replace_screen_backdrop_routes(&self, routes: HashMap<DeviceId, ScreenBackdropRoute>) {
+        let mut registry = self
+            .screen_backdrop_routes
+            .lock()
+            .expect("screen backdrop route registry should not be poisoned");
+        if *registry.routes != routes {
+            registry.routes = Arc::new(routes);
+            registry.revision = registry.revision.saturating_add(1);
+        }
+    }
+
+    /// The revision of the screen set, without the set.
+    #[must_use]
+    pub fn screen_backdrop_routes_revision(&self) -> u64 {
+        self.screen_backdrop_routes
+            .lock()
+            .expect("screen backdrop route registry should not be poisoned")
+            .revision
+    }
+
+    /// Snapshot every screen the display output thread drives.
+    #[must_use]
+    pub fn screen_backdrop_routes_snapshot(
+        &self,
+    ) -> (u64, Arc<HashMap<DeviceId, ScreenBackdropRoute>>) {
+        let registry = self
+            .screen_backdrop_routes
+            .lock()
+            .expect("screen backdrop route registry should not be poisoned");
+        (registry.revision, Arc::clone(&registry.routes))
+    }
+
+    /// Publish the screens the render thread makes a lane for, out of the
+    /// screen set at `routes_revision`.
+    ///
+    /// The render thread gives this answer every time it places the
+    /// screens. One that says what the last one said keeps its revision
+    /// and allocates nothing.
+    pub fn publish_screen_lane_plan(
+        &self,
+        routes_revision: u64,
+        screens: impl Iterator<Item = DeviceId> + Clone,
+    ) {
+        let mut registry = self
+            .screen_lane_plan
+            .lock()
+            .expect("screen lane plan registry should not be poisoned");
+        let unchanged = registry.plan.as_ref().is_some_and(|plan| {
+            plan.routes_revision == routes_revision
+                && screens
+                    .clone()
+                    .all(|device_id| plan.screens.contains(&device_id))
+                && plan
+                    .screens
+                    .iter()
+                    .all(|planned| screens.clone().any(|device_id| device_id == *planned))
+        });
+        if !unchanged {
+            registry.plan = Some(ScreenLanePlan {
+                routes_revision,
+                screens: Arc::new(screens.collect()),
+            });
+            registry.revision = registry.revision.saturating_add(1);
+        }
+    }
+
+    /// The render thread's latest answer and the answer's own revision.
+    /// `None` until the render thread has placed any set of screens.
+    #[must_use]
+    pub fn screen_lane_plan_snapshot(&self) -> (u64, Option<ScreenLanePlan>) {
+        let registry = self
+            .screen_lane_plan
+            .lock()
+            .expect("screen lane plan registry should not be poisoned");
+        (registry.revision, registry.plan.clone())
     }
 
     /// Remove the render-thread-authored display-face route for a zone.

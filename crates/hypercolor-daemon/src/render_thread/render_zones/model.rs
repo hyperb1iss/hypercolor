@@ -17,8 +17,9 @@ use hypercolor_types::net::NetStats;
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 
+use super::super::display_lane::PlacedScreen;
 use super::super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
-use super::super::producer_queue::ProducerFrame;
+use super::super::producer_queue::{ProducerFrame, ProducerFrameIdentity};
 use super::super::scene_dependency::SceneDependencyKey;
 use super::super::sparkleflinger::{CompositionLayer, CompositionLayerIdentity};
 use super::display_retention::DisplayFrameCadence;
@@ -56,8 +57,17 @@ pub(crate) struct DisplayZoneCanvasFrame {
 
 pub(crate) struct ZoneResult {
     pub scene_frame: ProducerFrame,
+    /// The zone whose own frame is the scene frame: a lone scene zone at the
+    /// scene extent. `None` when the scene frame is a picture of several
+    /// zones, which no zone's screens or LEDs read as their own.
+    pub scene_frame_zone: Option<ZoneId>,
     pub display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     pub zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    /// The content revision of each zone canvas that says what it was made
+    /// from. It belongs to these frames: a result retained and handed out
+    /// again keeps the revisions its frames were rendered with, whatever
+    /// the zones have rendered, or failed to render, since.
+    pub zone_revisions: Vec<(ZoneId, ZoneContentRevision)>,
     pub active_display_zone_ids: Vec<ZoneId>,
     pub led_sampling_strategy: LedSamplingStrategy,
     pub producer_full_frame_copy: FullFrameCopyMetrics,
@@ -152,6 +162,7 @@ impl ZoneFrameRequirements {
 
 /// The pixel-free description of the layers whose composition a zone's held
 /// frame shows.
+#[derive(Clone, PartialEq)]
 pub(super) struct ZoneCompositionIdentity {
     width: u32,
     height: u32,
@@ -182,6 +193,32 @@ impl ZoneCompositionIdentity {
                 .zip(layers)
                 .all(|(stored, layer)| layer.identity().is_some_and(|current| current == *stored))
     }
+}
+
+/// What a zone's frame shows, told without its pixels.
+#[derive(Clone, PartialEq)]
+pub(super) enum ZoneContentKey {
+    /// The layers composed into the frame.
+    Layers(ZoneCompositionIdentity),
+    /// The one layer frame passed through as the zone's own.
+    Frame(ProducerFrameIdentity),
+}
+
+/// A count that moves whenever a zone's frame may show something new.
+///
+/// A zone's frame is copied, snapshotted and re-composed on its way out, so
+/// its identity changes on ticks where its pixels do not. The revision
+/// follows what the frame was made from instead: it holds while a zone's
+/// layers are the ones that drew its last frame, and moves when they change
+/// or cannot be told apart. A screen holds its picture by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ZoneContentRevision(pub(crate) u64);
+
+/// The content a zone last rendered, and the scene pass that rendered it.
+pub(super) struct ZoneContent {
+    pub(super) key: Option<ZoneContentKey>,
+    pub(super) revision: ZoneContentRevision,
+    pub(super) pass: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,9 +417,11 @@ pub(crate) struct ZoneEffectError {
 pub(super) struct RetainedRenderZoneFrame {
     pub(super) dependency_key: SceneDependencyKey,
     pub(super) scene_frame: ProducerFrame,
+    pub(super) scene_frame_zone: Option<ZoneId>,
     pub(super) display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     pub(super) active_display_zone_ids: Vec<ZoneId>,
     pub(super) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    pub(super) zone_revisions: Vec<(ZoneId, ZoneContentRevision)>,
     pub(super) led_sampling_strategy: RetainedLedSamplingStrategy,
     pub(super) logical_layer_count: u32,
 }
@@ -402,6 +441,16 @@ pub(super) struct RetainedMaterializedZoneFrame {
     pub(super) display_target: DisplayFaceTarget,
     pub(super) display_route: DisplayZoneOutputRoute,
     pub(super) empty_direct_shell: bool,
+}
+
+/// The last frame finalized for a screen that shows its backdrop alone.
+pub(super) struct RetainedBackdropFrame {
+    pub(super) frame: DisplayZoneCanvasFrame,
+    pub(super) cadence: Option<DisplayFrameCadence>,
+    /// The screen as the scene placed it when `frame` was finalized.
+    pub(super) screen: PlacedScreen,
+    /// What the screen's zone showed when `frame` was made from it.
+    pub(super) content: Option<ZoneContentRevision>,
 }
 
 pub(super) struct CachedMediaProducer {

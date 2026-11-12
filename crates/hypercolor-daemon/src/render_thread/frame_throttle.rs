@@ -8,11 +8,13 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
+use super::display_lane::static_backdrop_lanes;
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ThrottleFrameMetricsInput, build_throttle_frame_metrics};
 use super::frame_policy::{FrameExecution, FramePolicy};
 use super::pipeline_runtime::{
-    OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ThrottleState,
+    OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ScreenPlacementRevision,
+    ThrottleState,
 };
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
@@ -25,7 +27,8 @@ pub(crate) enum IdleGate {
     /// Nothing renders, and the loop idles after this frame unless it held
     /// the previous frame's outputs, in which case the next frame enters
     /// again. Nothing publishes once the loop idles, so these frames'
-    /// previews cannot wait for the cadence.
+    /// previews cannot wait for the cadence. An idle loop enters again when
+    /// the screens it has to show black on change.
     EnterIdle,
     /// The loop is idle, and the frame ends here.
     Throttled(FrameExecution),
@@ -37,6 +40,8 @@ pub(crate) async fn maybe_idle_throttle(
     effect_running: bool,
     screen_capture_active: bool,
     throttle: &mut ThrottleState,
+    screens: ScreenPlacementRevision,
+    screens_fading: bool,
 ) -> IdleGate {
     let should_idle_throttle =
         frame_policy.should_idle_throttle(effect_running, screen_capture_active);
@@ -50,7 +55,9 @@ pub(crate) async fn maybe_idle_throttle(
         return IdleGate::Render;
     }
 
-    if !throttle.idle_black_pushed() {
+    // A screen fading to black through a scene transition is mixed frame
+    // by frame, so the loop keeps composing until its fade is done.
+    if screens_fading || !throttle.idle_black_pushed(screens) {
         debug!(
             "No active effect or capture input; layout changes render black until an effect or input source starts"
         );
@@ -76,9 +83,10 @@ pub(crate) async fn maybe_sleep_throttle(
     output_artifacts: &mut OutputArtifactsState,
     throttle: &mut ThrottleState,
     publication_cadence: &mut PublicationCadenceState,
+    screens: ScreenPlacementRevision,
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
-    if throttle.sleep_black_pushed() {
+    if throttle.sleep_black_pushed(screens) {
         let mut render_loop = state.render_loop.write().await;
         return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
@@ -99,6 +107,14 @@ pub(crate) async fn maybe_sleep_throttle(
         // The sleep renders nothing after this frame, so the scene previews
         // take it now rather than when their cadence next comes due.
         publication_cadence.make_scene_previews_due();
+        // No scene composes here, so this frame carries the screens' black
+        // itself. Publishing no lanes would drop them and leave each placed
+        // screen on its last picture.
+        let dark_lanes = static_backdrop_lanes(
+            &state.event_bus,
+            &scene_snapshot.scene_runtime.resolved_zones,
+            &surface,
+        );
         let publish_stats = publish_frame_updates(
             state,
             publication_cadence,
@@ -114,9 +130,9 @@ pub(crate) async fn maybe_sleep_throttle(
                     screen_capture_active: false,
                 },
                 scene_id: scene_snapshot.scene_runtime.active_scene_id,
-                display_zone_frames: &[],
+                display_zone_frames: &dark_lanes.frames,
                 zone_canvases: &[],
-                active_display_zone_ids: &[],
+                active_display_zone_ids: &dark_lanes.active_lane_ids,
                 frame_number: frame_num_u32,
                 elapsed_ms: scene_snapshot.elapsed_ms,
                 reuse_existing_frame: false,
@@ -142,7 +158,7 @@ pub(crate) async fn maybe_sleep_throttle(
             publish_us,
             "published cleared frame/canvas for release sleep"
         );
-        throttle.note_sleep_frame_published();
+        throttle.note_sleep_frame_published(screens);
         let mut render_loop = state.render_loop.write().await;
         return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
@@ -257,7 +273,7 @@ pub(crate) async fn maybe_sleep_throttle(
         performance.record_frame(&frame_metrics);
     }
 
-    throttle.note_sleep_frame_published();
+    throttle.note_sleep_frame_published(screens);
     let mut render_loop = state.render_loop.write().await;
     Some(frame_policy.sleep_throttle_execution(&mut render_loop))
 }

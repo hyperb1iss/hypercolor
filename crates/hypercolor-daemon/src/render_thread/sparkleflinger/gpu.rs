@@ -94,7 +94,7 @@ const COMPOSE_WORKGROUP_WIDTH: u32 = 8;
 const COMPOSE_WORKGROUP_HEIGHT: u32 = 8;
 const COMPOSE_PARAM_BYTES: usize = 96;
 const SOURCE_COPY_PARAM_BYTES: usize = 16;
-const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
+const DISPLAY_FINALIZE_PARAM_BYTES: usize = 112;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 // A render owns the previous retained generation until the replacement frame

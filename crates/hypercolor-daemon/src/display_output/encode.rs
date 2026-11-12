@@ -34,6 +34,40 @@ pub(super) struct EncodedDisplayFrame {
     pub preview_jpeg: Option<Vec<u8>>,
 }
 
+/// Crops zone canvases to a panel the way a display worker does, for the
+/// render thread. While a scene transition runs it mixes two such crops
+/// itself and hands the worker the finished backdrop, so both have to come
+/// out of the one crop the worker would have made.
+pub(crate) struct PanelCropper {
+    state: DisplayEncodeState,
+}
+
+impl PanelCropper {
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self {
+            state: DisplayEncodeState::new()?,
+        })
+    }
+
+    /// `source` through `viewport` at `width` by `height`, as RGBA, before
+    /// the panel's brightness and mask.
+    pub(crate) fn crop(
+        &mut self,
+        source: &CanvasFrame,
+        viewport: &DisplayViewport,
+        width: u32,
+        height: u32,
+    ) -> Result<&[u8]> {
+        let geometry = DisplayGeometry {
+            width,
+            height,
+            circular: false,
+        };
+        render_canvas_frame_rgba(source, viewport, &geometry, &mut self.state, false)?;
+        Ok(&self.state.rgba_buffer)
+    }
+}
+
 pub(super) struct DisplayEncodeState {
     pub rgb_buffer: Vec<u8>,
     pub rgba_buffer: Vec<u8>,
@@ -156,8 +190,33 @@ pub(super) fn encode_canvas_frame(
     }
 }
 
-pub(super) fn encode_face_scene_blend(
-    scene_source: Option<&CanvasFrame>,
+/// Encode a backdrop the render thread already cropped to the screen: fitted
+/// to the panel as it is, then dimmed and masked like any other backdrop.
+pub(super) fn encode_cropped_backdrop_frame(
+    source: &CanvasFrame,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    render_direct_canvas_frame_rgba(source, geometry, 0.0, encode_state, false)?;
+    encode_prepared_rgba_frame(
+        geometry,
+        brightness,
+        frame_format,
+        include_preview_jpeg,
+        encode_state,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a face blend reads both sources, the viewport and the output format together"
+)]
+pub(super) fn encode_face_backdrop_blend(
+    backdrop_source: Option<&CanvasFrame>,
+    backdrop_cropped: bool,
     face_source: &CanvasFrame,
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
@@ -168,8 +227,12 @@ pub(super) fn encode_face_scene_blend(
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
-    if let Some(scene_source) = scene_source {
-        render_canvas_frame_rgba(scene_source, viewport, geometry, encode_state, false)?;
+    if let Some(backdrop_source) = backdrop_source {
+        if backdrop_cropped {
+            render_direct_canvas_frame_rgba(backdrop_source, geometry, 0.0, encode_state, false)?;
+        } else {
+            render_canvas_frame_rgba(backdrop_source, viewport, geometry, encode_state, false)?;
+        }
     } else {
         prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
     }
@@ -190,15 +253,17 @@ pub(super) fn encode_face_scene_blend(
     )
 }
 
+/// Encode a frame the render thread finalized for this display. The
+/// finalize pass already turned it with the screen's viewport, so it is not
+/// turned again here; a frame of another size is fitted to the panel.
 pub(super) fn encode_finalized_canvas_frame(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
-    rotation: f32,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
-    render_direct_canvas_frame_rgba(source, geometry, rotation, encode_state, false)?;
+    render_direct_canvas_frame_rgba(source, geometry, 0.0, encode_state, false)?;
     finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
@@ -219,6 +284,18 @@ pub(super) fn encode_finalized_yuv420_frame(
         data: encode_yuv420_to_jpeg(source, encode_state)?,
         preview_jpeg: None,
     })
+}
+
+/// Encode a black frame for the panel: what a screen at zero brightness
+/// shows, whatever its lane holds.
+pub(super) fn encode_black_frame(
+    geometry: &DisplayGeometry,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    prepare_black_frame(geometry, &mut encode_state.rgb_buffer);
+    finish_rgb_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
 fn render_canvas_frame_rgba(
@@ -814,8 +891,9 @@ mod tests {
         let frame =
             CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
 
-        let encoded = encode_face_scene_blend(
+        let encoded = encode_face_backdrop_blend(
             None,
+            false,
             &frame,
             &default_viewport(),
             &test_geometry(),
@@ -847,8 +925,9 @@ mod tests {
             ..default_viewport()
         };
 
-        let encoded = encode_face_scene_blend(
+        let encoded = encode_face_backdrop_blend(
             None,
+            false,
             &frame,
             &viewport,
             &test_geometry(),
@@ -866,11 +945,20 @@ mod tests {
             [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
             8,
         );
+    }
+
+    /// A frame the render thread finalized was turned with the screen's
+    /// viewport by the finalize pass. Turning it again here would put an
+    /// upside-down panel's picture back the wrong way up.
+    #[test]
+    fn finalized_frame_encode_does_not_turn_the_frame_again() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let frame =
+            CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
 
         let encoded = encode_finalized_canvas_frame(
             &frame,
             &test_geometry(),
-            std::f32::consts::PI,
             DisplayFrameFormat::Rgb,
             false,
             &mut state,
@@ -878,7 +966,7 @@ mod tests {
         .expect("canvas encode should succeed");
         assert_rgb_corners_close(
             rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
-            [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
+            [RED_RGB, GREEN_RGB, BLUE_RGB, YELLOW_RGB],
             8,
         );
     }
@@ -889,8 +977,9 @@ mod tests {
         let frame =
             CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
 
-        let encoded = encode_face_scene_blend(
+        let encoded = encode_face_backdrop_blend(
             None,
+            false,
             &frame,
             &default_viewport(),
             &test_geometry(),

@@ -14,8 +14,9 @@ use hypercolor_types::device::{DeviceId, DisplayFrameFormat, OwnedDisplayFramePa
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
-    DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_face_scene_blend,
-    encode_finalized_canvas_frame, encode_finalized_yuv420_frame,
+    DisplayEncodeState, display_brightness_factor, encode_canvas_frame,
+    encode_cropped_backdrop_frame, encode_face_backdrop_blend, encode_finalized_canvas_frame,
+    encode_finalized_yuv420_frame,
 };
 use super::render::display_viewport_signature;
 use super::{
@@ -100,10 +101,10 @@ struct CapturedDisplaySource {
 
 #[derive(Clone)]
 enum CapturedDisplayFrameSource {
-    Scene(CapturedDisplaySource),
+    Backdrop(CapturedDisplaySource),
     Direct(CapturedDisplaySource),
     Face {
-        scene_source: Option<CapturedDisplaySource>,
+        backdrop_source: Option<CapturedDisplaySource>,
         face_source: CapturedDisplaySource,
         blend_mode: hypercolor_types::layer::BlendMode,
         opacity_bits: u32,
@@ -115,13 +116,15 @@ struct DisplayFrameInputState {
     source: CapturedDisplayFrameSource,
     brightness_factor: u16,
     geometry: DisplayGeometry,
-    viewport: DisplayViewportSignature,
+    /// The viewport the worker applies, and whether the backdrop under it
+    /// arrived already cropped.
+    viewport: Option<(DisplayViewportSignature, bool)>,
 }
 
 impl CapturedDisplayFrameSource {
     fn matches(&self, source: &DisplayWorkerFrameSource) -> bool {
         match (self, source) {
-            (Self::Scene(captured), DisplayWorkerFrameSource::Scene(frame)) => {
+            (Self::Backdrop(captured), DisplayWorkerFrameSource::Backdrop { frame, .. }) => {
                 display_source_matches(Some(captured), Some(frame))
             }
             (Self::Direct(captured), DisplayWorkerFrameSource::Direct(frame)) => {
@@ -129,19 +132,20 @@ impl CapturedDisplayFrameSource {
             }
             (
                 Self::Face {
-                    scene_source,
+                    backdrop_source,
                     face_source,
                     blend_mode,
                     opacity_bits,
                 },
                 DisplayWorkerFrameSource::Face {
-                    scene_frame,
+                    backdrop_frame,
                     face_frame,
                     blend_mode: current_blend_mode,
                     opacity,
+                    ..
                 },
             ) => {
-                display_source_matches(scene_source.as_ref(), scene_frame.as_ref())
+                display_source_matches(backdrop_source.as_ref(), backdrop_frame.as_ref())
                     && display_source_matches(Some(face_source), Some(face_frame))
                     && blend_mode == current_blend_mode
                     && *opacity_bits == opacity.to_bits()
@@ -152,21 +156,22 @@ impl CapturedDisplayFrameSource {
 
     fn capture(source: &DisplayWorkerFrameSource) -> Self {
         match source {
-            DisplayWorkerFrameSource::Scene(frame) => Self::Scene(
+            DisplayWorkerFrameSource::Backdrop { frame, .. } => Self::Backdrop(
                 capture_display_source(Some(frame))
-                    .expect("display worker should only capture a valid scene frame"),
+                    .expect("display worker should only capture a valid backdrop frame"),
             ),
             DisplayWorkerFrameSource::Direct(frame) => Self::Direct(
                 capture_display_zone_source(Some(frame))
                     .expect("display worker should only capture a valid direct frame"),
             ),
             DisplayWorkerFrameSource::Face {
-                scene_frame,
+                backdrop_frame,
                 face_frame,
                 blend_mode,
                 opacity,
+                ..
             } => Self::Face {
-                scene_source: capture_display_source(scene_frame.as_ref()),
+                backdrop_source: capture_display_source(backdrop_frame.as_ref()),
                 face_source: capture_display_source(Some(face_frame))
                     .expect("display worker should only capture a valid face frame"),
                 blend_mode: *blend_mode,
@@ -181,7 +186,7 @@ impl DisplayFrameInputState {
         self.source.matches(&frames.source)
             && self.brightness_factor == display_brightness_factor(target.brightness)
             && self.geometry == target.geometry
-            && self.viewport == display_viewport_signature(&target.viewport)
+            && self.viewport == source_viewport_signature(&frames.source)
     }
 
     fn capture(frames: &DisplayWorkerFrameSet, target: &DisplayTarget) -> Self {
@@ -189,8 +194,33 @@ impl DisplayFrameInputState {
             source: CapturedDisplayFrameSource::capture(&frames.source),
             brightness_factor: display_brightness_factor(target.brightness),
             geometry: target.geometry,
-            viewport: display_viewport_signature(&target.viewport),
+            viewport: source_viewport_signature(&frames.source),
         }
+    }
+}
+
+/// The viewport the worker applies to a frame, when it applies one, with
+/// whether the backdrop it applies to arrived already cropped. A frame
+/// finalized for the panel has had its viewport applied already.
+fn source_viewport_signature(
+    source: &DisplayWorkerFrameSource,
+) -> Option<(DisplayViewportSignature, bool)> {
+    match source {
+        DisplayWorkerFrameSource::Backdrop {
+            viewport, cropped, ..
+        } => Some((display_viewport_signature(viewport), *cropped)),
+        DisplayWorkerFrameSource::Face {
+            viewport,
+            backdrop_cropped,
+            ..
+        } => Some((display_viewport_signature(viewport), *backdrop_cropped)),
+        DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
+            DisplayZoneFrame::Backdrop(backdrop) => Some((
+                display_viewport_signature(&backdrop.viewport),
+                backdrop.cropped,
+            )),
+            DisplayZoneFrame::Canvas(_) | DisplayZoneFrame::Yuv420(_) => None,
+        },
     }
 }
 
@@ -259,6 +289,7 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
 fn display_zone_source_identity(source: &DisplayZoneFrame) -> DisplaySourceIdentity {
     match source {
         DisplayZoneFrame::Canvas(source) => display_source_identity(source),
+        DisplayZoneFrame::Backdrop(source) => display_source_identity(&source.frame),
         DisplayZoneFrame::Yuv420(source) => DisplaySourceIdentity::Yuv420 {
             storage: source.storage_identity(),
             width: source.width,
@@ -287,6 +318,9 @@ fn display_zone_source_content_matches(
 ) -> bool {
     match source {
         DisplayZoneFrame::Canvas(source) => display_source_content_matches(captured, source),
+        DisplayZoneFrame::Backdrop(source) => {
+            display_source_content_matches(captured, &source.frame)
+        }
         DisplayZoneFrame::Yuv420(_) => false,
     }
 }
@@ -309,6 +343,7 @@ fn display_source_content_hash(source: &CanvasFrame) -> u64 {
 fn display_zone_source_content_hash(source: &DisplayZoneFrame) -> u64 {
     match source {
         DisplayZoneFrame::Canvas(source) => display_source_content_hash(source),
+        DisplayZoneFrame::Backdrop(source) => display_source_content_hash(&source.frame),
         DisplayZoneFrame::Yuv420(source) => source.storage_identity().id,
     }
 }
@@ -417,6 +452,9 @@ async fn run_display_worker(
     let mut delivered_frame_number = 0_u64;
     let mut last_delivered_payload = None::<Arc<OwnedDisplayFramePayload>>;
     let mut last_delivered_preview_jpeg = None::<Arc<Vec<u8>>>;
+    // Whether a screen at zero brightness has been sent its black frame.
+    // Until it has, nothing is skipped: the panel may still be lit.
+    let mut dark_delivered = false;
 
     'worker: loop {
         if pending.is_none() {
@@ -523,7 +561,7 @@ async fn run_display_worker(
         let input_matches = last_delivered_input
             .as_ref()
             .is_some_and(|previous| previous.matches(&frames, &target));
-        if zero_brightness_output && !force_send && last_delivered_payload.is_some() {
+        if zero_brightness_output && !force_send && dark_delivered {
             trace!(
                 device = %target.name,
                 backend_id = %backend_key,
@@ -533,7 +571,7 @@ async fn run_display_worker(
             );
             continue;
         }
-        if input_matches && !force_send {
+        if input_matches && !force_send && (!zero_brightness_output || dark_delivered) {
             trace!(
                 device = %target.name,
                 backend_id = %backend_key,
@@ -545,6 +583,7 @@ async fn run_display_worker(
         }
         if force_send
             && (input_matches || zero_brightness_output)
+            && (!zero_brightness_output || dark_delivered)
             && let Some(payload) = last_delivered_payload.as_ref()
         {
             if let Some(preview_jpeg) =
@@ -576,7 +615,6 @@ async fn run_display_worker(
         }
 
         let encode_source = frames.source.clone();
-        let viewport = target.viewport;
         let geometry = target.geometry;
         let brightness = target.brightness;
         let frame_format = target.frame_format;
@@ -585,54 +623,30 @@ async fn run_display_worker(
         let encode_started = Instant::now();
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
-            let encoded = match encode_source {
-                DisplayWorkerFrameSource::Scene(scene_source) => encode_canvas_frame(
-                    scene_source.as_ref(),
-                    &viewport,
+            // A frame finalized for the panel carries the brightness it was
+            // finalized at, and a lane can still hold one from before the
+            // panel was turned down. At zero brightness the answer is black
+            // whatever arrived.
+            let encoded = if zero_brightness_output {
+                super::encode::encode_black_frame(
+                    &geometry,
+                    frame_format,
+                    include_preview_jpeg,
+                    &mut encode_state,
+                )
+            } else {
+                encode_source_frame(
+                    encode_source,
                     &geometry,
                     brightness,
                     frame_format,
                     include_preview_jpeg,
                     &mut encode_state,
-                ),
-                DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
-                    DisplayZoneFrame::Canvas(frame) => encode_finalized_canvas_frame(
-                        frame,
-                        &geometry,
-                        viewport.rotation,
-                        frame_format,
-                        include_preview_jpeg,
-                        &mut encode_state,
-                    ),
-                    DisplayZoneFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
-                        frame,
-                        frame_format,
-                        include_preview_jpeg,
-                        &mut encode_state,
-                    ),
-                },
-                DisplayWorkerFrameSource::Face {
-                    scene_frame,
-                    face_frame,
-                    blend_mode,
-                    opacity,
-                } => encode_face_scene_blend(
-                    scene_frame.as_deref(),
-                    face_frame.as_ref(),
-                    &viewport,
-                    &geometry,
-                    brightness,
-                    blend_mode,
-                    opacity,
-                    frame_format,
-                    include_preview_jpeg,
-                    &mut encode_state,
-                ),
+                )
             };
             (encode_state, encoded)
         })
         .await;
-
         let encoded = match encode_result {
             Ok((returned_state, Ok(encoded))) => {
                 encode_state = returned_state;
@@ -710,6 +724,7 @@ async fn run_display_worker(
             continue;
         }
         record_display_write_success(&display_frames).await;
+        dark_delivered = zero_brightness_output;
         last_delivered_input = Some(DisplayFrameInputState::capture(&frames, &target));
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
@@ -731,6 +746,89 @@ async fn run_display_worker(
         if let Some(interval) = send_interval {
             next_send_at = advance_deadline(next_send_at, interval, Instant::now());
         }
+    }
+}
+
+/// Encode what a lane handed over, each kind of source by its own path.
+fn encode_source_frame(
+    source: DisplayWorkerFrameSource,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> anyhow::Result<super::encode::EncodedDisplayFrame> {
+    match source {
+        DisplayWorkerFrameSource::Backdrop {
+            frame,
+            viewport,
+            cropped,
+        } => {
+            if cropped {
+                encode_cropped_backdrop_frame(
+                    frame.as_ref(),
+                    geometry,
+                    brightness,
+                    frame_format,
+                    include_preview_jpeg,
+                    encode_state,
+                )
+            } else {
+                encode_canvas_frame(
+                    frame.as_ref(),
+                    &viewport,
+                    geometry,
+                    brightness,
+                    frame_format,
+                    include_preview_jpeg,
+                    encode_state,
+                )
+            }
+        }
+        DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
+            DisplayZoneFrame::Canvas(frame) => encode_finalized_canvas_frame(
+                frame,
+                geometry,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+            DisplayZoneFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
+                frame,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+            DisplayZoneFrame::Backdrop(backdrop) => encode_canvas_frame(
+                &backdrop.frame,
+                &backdrop.viewport,
+                geometry,
+                brightness,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+        },
+        DisplayWorkerFrameSource::Face {
+            backdrop_frame,
+            backdrop_cropped,
+            face_frame,
+            viewport,
+            blend_mode,
+            opacity,
+        } => encode_face_backdrop_blend(
+            backdrop_frame.as_deref(),
+            backdrop_cropped,
+            face_frame.as_ref(),
+            &viewport,
+            geometry,
+            brightness,
+            blend_mode,
+            opacity,
+            frame_format,
+            include_preview_jpeg,
+            encode_state,
+        ),
     }
 }
 

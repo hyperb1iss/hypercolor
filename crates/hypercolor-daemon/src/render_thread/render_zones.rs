@@ -47,6 +47,7 @@ use super::sparkleflinger::{CompositionPlan, PreviewSurfaceRequest};
 #[cfg(test)]
 use crate::performance::FullFrameCopyMetrics;
 use device_surfaces::DeviceSurfaceCache;
+pub(crate) use display_retention::RetainedBackdrop;
 use frame_helpers::StaticLayerSurfaceCache;
 #[cfg(all(test, feature = "wgpu"))]
 use frame_helpers::media_mime_prefers_gpu_texture;
@@ -56,9 +57,10 @@ use frame_helpers::passthrough_effect_layer;
 use frame_helpers::surface_backed_frame;
 #[cfg(test)]
 use frame_helpers::{color_fill_frame, transparent_black_frame};
+pub(crate) use model::ZoneContentRevision;
 use model::{
-    CachedMediaProducer, RetainedDirectZoneFrame, RetainedMaterializedZoneFrame,
-    RetainedRenderZoneFrame,
+    CachedMediaProducer, RetainedBackdropFrame, RetainedDirectZoneFrame,
+    RetainedMaterializedZoneFrame, RetainedRenderZoneFrame,
 };
 pub(crate) use model::{
     DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RenderSceneContext, ZoneEffectError,
@@ -95,6 +97,9 @@ pub(crate) struct ZoneRuntime {
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     retained_direct_zone_frames: HashMap<ZoneId, RetainedDirectZoneFrame>,
     retained_materialized_zone_frames: HashMap<ZoneId, RetainedMaterializedZoneFrame>,
+    retained_backdrop_frames: HashMap<DeviceId, RetainedBackdropFrame>,
+    /// Each screen's fade through the scene transition in progress.
+    pub(crate) screen_fades: super::screen_fade::ScreenFades,
     effect_registry_snapshot: Option<Arc<EffectRegistry>>,
     static_layer_surface_cache: StaticLayerSurfaceCache,
     scene_surface_pool: Option<RenderSurfacePool>,
@@ -109,6 +114,12 @@ pub(crate) struct ZoneRuntime {
     /// Zones in the current scene pass whose layers matched their held
     /// frame's composition, so they reused it without composing.
     composition_skips: u32,
+    /// What each zone last rendered, for the screens that hold a picture
+    /// of it.
+    zone_content: HashMap<ZoneId, model::ZoneContent>,
+    /// The scene pass in progress, or the last one that ran.
+    content_pass: u64,
+    next_content_revision: u64,
     #[cfg(all(test, feature = "wgpu"))]
     projected_scene_layer_allocation_count: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
@@ -223,6 +234,8 @@ impl ZoneRuntime {
             direct_surface_pools: HashMap::new(),
             retained_direct_zone_frames: HashMap::new(),
             retained_materialized_zone_frames: HashMap::new(),
+            retained_backdrop_frames: HashMap::new(),
+            screen_fades: super::screen_fade::ScreenFades::default(),
             effect_registry_snapshot: None,
             static_layer_surface_cache: StaticLayerSurfaceCache::default(),
             // 8 slots absorbs typical downstream fan-out (watch channel +
@@ -240,6 +253,9 @@ impl ZoneRuntime {
             last_zone_frames: HashMap::new(),
             zone_composition_identities: HashMap::new(),
             composition_skips: 0,
+            zone_content: HashMap::new(),
+            content_pass: 0,
+            next_content_revision: 0,
             zone_sampling_scratch: Vec::new(),
             last_effect_error: None,
             recovered_effect_error: None,

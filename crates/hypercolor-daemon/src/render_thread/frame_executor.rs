@@ -11,6 +11,7 @@ use hypercolor_types::event::FrameTiming;
 use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
 use hypercolor_types::session::OffOutputBehavior;
 
+use super::display_lane::{place_screens, static_backdrop_lanes};
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
@@ -24,7 +25,7 @@ use super::output_gate::{GateDecision, ProducerSignature};
 use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
     FrameLoopState, OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
-    PreparedLayoutActivation, RenderCaches, SceneSnapshotState,
+    PreparedLayoutActivation, RenderCaches, SceneSnapshotState, ScreenPlacementRevision,
 };
 use super::scene_snapshot::{
     FrameSceneSnapshot, apply_zone_layout_previews, build_frame_scene_snapshot,
@@ -39,7 +40,7 @@ use super::zone_previews::{
 };
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
-use crate::output_power::OutputOverride;
+use crate::output_power::{OutputOverride, OutputPowerState};
 use crate::performance::OutputFrameSourceKind;
 use crate::scene_transactions::{
     LayoutActivationDecision, LayoutPublicationMode, LayoutTransactionRejection, SceneTransaction,
@@ -410,9 +411,15 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
+    // Read before the frame that covers them is made: a screen that
+    // arrives while it is made is a change the next poll still sees.
+    let mut placed_screens = screen_placement_revision(state, &scene_snapshot);
     if output_power.sleeping() {
+        if !frame_loop.throttle.sleep_black_pushed(placed_screens) {
+            retire_screens_for_off_output(state, &scene_snapshot, render, output_power);
+        }
         if output_power.effective_off_output_behavior() == OffOutputBehavior::Static
-            && !frame_loop.throttle.sleep_black_pushed()
+            && !frame_loop.throttle.sleep_black_pushed(placed_screens)
         {
             force_static_sleep_snapshot(
                 state,
@@ -421,7 +428,9 @@ pub(crate) async fn execute_frame(
                 None,
             )
             .await;
-            frame_loop.throttle.note_sleep_frame_published();
+            frame_loop
+                .throttle
+                .note_sleep_frame_published(placed_screens);
             render.sparkleflinger.end_gpu_frame();
             let mut render_loop = state.render_loop.write().await;
             return runtime
@@ -440,6 +449,7 @@ pub(crate) async fn execute_frame(
             &mut render.output_artifacts,
             &mut frame_loop.throttle,
             &mut frame_loop.publication_cadence,
+            placed_screens,
         )
         .await
         {
@@ -458,6 +468,7 @@ pub(crate) async fn execute_frame(
     )
     .await
     {
+        placed_screens = screen_placement_revision(state, &scene_snapshot);
         let refreshed_demand = scene_snapshot.effect_demand;
         publish_input_demands(
             frame_loop,
@@ -479,6 +490,8 @@ pub(crate) async fn execute_frame(
         scene_snapshot.effect_demand.effect_running || frame_loop.has_active_input_demand(),
         scene_snapshot.effect_demand.screen_capture_active,
         &mut frame_loop.throttle,
+        placed_screens,
+        render.render_zone_runtime.screen_fades.in_progress(),
     )
     .await
     {
@@ -657,7 +670,10 @@ pub(crate) async fn execute_frame(
                 Some(&mut *manager),
             )
             .await;
-            frame_loop.throttle.note_sleep_frame_published();
+            retire_screens_for_off_output(state, &scene_snapshot, render, latest_output_power);
+            frame_loop
+                .throttle
+                .note_sleep_frame_published(placed_screens);
             render.sparkleflinger.end_gpu_frame();
             let mut render_loop = state.render_loop.write().await;
             return runtime
@@ -881,7 +897,10 @@ pub(crate) async fn execute_frame(
             None,
         )
         .await;
-        frame_loop.throttle.note_sleep_frame_published();
+        retire_screens_for_off_output(state, &scene_snapshot, render, latest_output_power);
+        frame_loop
+            .throttle
+            .note_sleep_frame_published(placed_screens);
         let mut render_loop = state.render_loop.write().await;
         return runtime
             .frame_policy
@@ -996,7 +1015,9 @@ pub(crate) async fn execute_frame(
         scene_snapshot.effect_demand.screen_capture_active,
         reuses_published_frame,
     ) {
-        frame_loop.throttle.note_idle_frame_without_effect();
+        frame_loop
+            .throttle
+            .note_idle_frame_without_effect(placed_screens);
     }
 
     FrameExecution {
@@ -1069,6 +1090,47 @@ fn publish_input_demands(
     );
 }
 
+/// What decides which screens a frame that composes no scene has to cover.
+fn screen_placement_revision(
+    state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
+) -> ScreenPlacementRevision {
+    ScreenPlacementRevision {
+        routes: state.event_bus.screen_backdrop_routes_revision(),
+        zones: scene_snapshot.scene_runtime.resolved_zones_revision,
+    }
+}
+
+/// Output is going off: every placed screen is about to show the off
+/// color, whatever it was fading through.
+///
+/// The frames that take output off compose no scene, so the screens' fades
+/// would otherwise sit where they stopped, bases held, until output came
+/// back and a transition begun in the dark picked them up as its own
+/// history. They are retired here instead, with the display finalize
+/// routes they and the lanes held on the GPU.
+fn retire_screens_for_off_output(
+    state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
+    render: &mut RenderCaches,
+    output_power: OutputPowerState,
+) {
+    // Released output goes black; held output shows its static color.
+    let color = match output_power.effective_off_output_behavior() {
+        OffOutputBehavior::Release => [0, 0, 0],
+        OffOutputBehavior::Static => output_power.effective_off_output_color(),
+    };
+    let (_, screen_routes) = state.event_bus.screen_backdrop_routes_snapshot();
+    let screens = place_screens(&screen_routes, &scene_snapshot.scene_runtime.resolved_zones);
+    render
+        .render_zone_runtime
+        .retire_screens_for_off_output(screens, color);
+    #[cfg(feature = "wgpu")]
+    render
+        .compose_runtime()
+        .discard_display_finalizations_except(&[]);
+}
+
 fn should_record_idle_black_frame(
     effect_running: bool,
     screen_capture_active: bool,
@@ -1123,6 +1185,30 @@ async fn force_static_sleep_snapshot(
             .event_bus
             .zone_canvas_sender(zone_id)
             .send_replace(zone_frame.clone());
+    }
+    // A placed screen with no lane yet, one that connected while output
+    // was off, gets its backdrop lane here. Nothing else publishes lanes
+    // until output is back.
+    let placed = static_backdrop_lanes(
+        &state.event_bus,
+        &scene_snapshot.scene_runtime.resolved_zones,
+        canvas_frame.surface(),
+    );
+    for (lane_id, frame) in placed.frames {
+        let device_id = frame.display_target.device_id;
+        if display_zone_targets
+            .values()
+            .any(|target| target.device_id == device_id)
+        {
+            continue;
+        }
+        state
+            .event_bus
+            .upsert_display_zone_target(lane_id, frame.display_target);
+        state
+            .event_bus
+            .zone_canvas_sender(lane_id)
+            .send_replace(frame.frame);
     }
     state
         .event_bus

@@ -8,7 +8,9 @@ use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::scene::ZoneId;
 
-use super::super::super::{DisplayFinalizeCacheKey, DisplayFinalizeParams};
+use super::super::super::{
+    DisplayFinalizeCacheKey, DisplayFinalizeFadeBase, DisplayFinalizeParams,
+};
 use super::super::admission::AdmissionRetry;
 use super::super::readback::copy_mapped_range_into_surface;
 use super::super::source::{GpuSourceFrame, gpu_source_frame, prepare_display_source_texture};
@@ -27,7 +29,9 @@ use super::readback::{
     begin_display_finalize_readback, finish_yuv420_display_readback,
     poll_display_finalize_readback_ready,
 };
-use super::shader::{create_display_finalize_bind_group, encode_display_finalize_params};
+use super::shader::{
+    DisplayFinalizeFadeFrom, create_display_finalize_bind_group, encode_display_finalize_params,
+};
 use super::{
     DisplayFinalizeRoute, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFormat,
     GpuDisplayFinalizeFrame, GpuDisplayFinalizeSurfaceSet, PendingGpuDisplayFinalize,
@@ -43,6 +47,24 @@ impl GpuSparkleFlinger {
         params: DisplayFinalizeParams,
     ) -> Result<Option<PublishedSurface>> {
         let pending = match self.begin_finalize_display_face(scene, face, params)? {
+            GpuDisplayFinalizeDispatch::Pending(pending) => pending,
+            GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                return Ok(None);
+            }
+        };
+        match self.finish_pending_display_finalization_blocking(pending)? {
+            Some(GpuDisplayFinalizeFrame::Rgba(surface)) => Ok(Some(surface)),
+            Some(GpuDisplayFinalizeFrame::Yuv420(_)) | None => Ok(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finalize_display_backdrop(
+        &mut self,
+        backdrop: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<Option<PublishedSurface>> {
+        let pending = match self.begin_finalize_display_backdrop(backdrop, params)? {
             GpuDisplayFinalizeDispatch::Pending(pending) => pending,
             GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
                 return Ok(None);
@@ -79,7 +101,7 @@ impl GpuSparkleFlinger {
         face: &ProducerFrame,
         params: DisplayFinalizeParams,
     ) -> Result<GpuDisplayFinalizeDispatch> {
-        self.begin_display_finalize(scene, face, params, GpuDisplayFinalizeFormat::Rgba)
+        self.begin_display_finalize(scene, Some(face), params, GpuDisplayFinalizeFormat::Rgba)
     }
 
     pub(crate) fn begin_finalize_display_face_yuv420(
@@ -88,13 +110,34 @@ impl GpuSparkleFlinger {
         face: &ProducerFrame,
         params: DisplayFinalizeParams,
     ) -> Result<GpuDisplayFinalizeDispatch> {
-        self.begin_display_finalize(scene, face, params, GpuDisplayFinalizeFormat::Yuv420)
+        self.begin_display_finalize(scene, Some(face), params, GpuDisplayFinalizeFormat::Yuv420)
     }
 
+    /// Finalize a screen's backdrop alone, for a screen that shows no face:
+    /// the backdrop through its viewport, then mask, brightness, and format.
+    pub(crate) fn begin_finalize_display_backdrop(
+        &mut self,
+        backdrop: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<GpuDisplayFinalizeDispatch> {
+        self.begin_display_finalize(backdrop, None, params, GpuDisplayFinalizeFormat::Rgba)
+    }
+
+    pub(crate) fn begin_finalize_display_backdrop_yuv420(
+        &mut self,
+        backdrop: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<GpuDisplayFinalizeDispatch> {
+        self.begin_display_finalize(backdrop, None, params, GpuDisplayFinalizeFormat::Yuv420)
+    }
+
+    /// `face` is `None` for a screen that shows its backdrop alone. The pass
+    /// still binds a face texture, so the backdrop stands in for it and the
+    /// encoded parameters give it no weight.
     fn begin_display_finalize(
         &mut self,
         scene: &ProducerFrame,
-        face: &ProducerFrame,
+        face: Option<&ProducerFrame>,
         params: DisplayFinalizeParams,
         format: GpuDisplayFinalizeFormat,
     ) -> Result<GpuDisplayFinalizeDispatch> {
@@ -102,8 +145,7 @@ impl GpuSparkleFlinger {
             || params.height == 0
             || scene.width() == 0
             || scene.height() == 0
-            || face.width() == 0
-            || face.height() == 0
+            || face.is_some_and(|face| face.width() == 0 || face.height() == 0)
         {
             return Ok(GpuDisplayFinalizeDispatch::Unsupported);
         }
@@ -115,6 +157,27 @@ impl GpuSparkleFlinger {
             // The route's surfaces are waiting out a failed admission.
             return Ok(GpuDisplayFinalizeDispatch::Saturated);
         }
+        // What the backdrop fades in over, resolved before this route's
+        // surfaces are borrowed: a base is another route's output.
+        let fade = params.fade.and_then(|fade| match fade.base {
+            DisplayFinalizeFadeBase::Black => {
+                Some((DisplayFinalizeFadeFrom::Black, None, fade.weight))
+            }
+            DisplayFinalizeFadeBase::Route(base) => {
+                let fits = base != params.cache_key
+                    && (base.width, base.height) == (params.width, params.height);
+                let surfaces = self
+                    .display_finalize_surfaces
+                    .get_mut(&base)
+                    .and_then(DisplayFinalizeRoute::surfaces_mut)
+                    .filter(|_| fits)?;
+                Some((
+                    DisplayFinalizeFadeFrom::Texture,
+                    Some(surfaces.output.view.clone()),
+                    fade.weight,
+                ))
+            }
+        });
         let admission_clock = self.admission_clock;
         let device = &self.device;
         let queue = &self.queue;
@@ -163,33 +226,35 @@ impl GpuSparkleFlinger {
                 return Err(error);
             }
         }
-        let face_gpu = gpu_source_frame(face);
-        let face_prepared = prepare_display_source_texture(
-            device,
-            queue,
-            pipeline,
-            &mut encoder,
-            &mut surfaces.face_source,
-            &mut surfaces.face_source_retry,
-            admission_clock,
-            &mut surfaces.pending_upload_buffers,
-            face,
-            face_gpu.as_ref(),
-            "SparkleFlinger Display Face Source",
-            &mut native_screen_leases,
-            #[cfg(test)]
-            &mut surfaces.face_upload_count,
-        );
-        match face_prepared {
-            Ok(true) => {}
-            Ok(false) => {
-                // The source texture is waiting out a failed admission.
-                surfaces.abandon_dispatch(readback_slot);
-                return Ok(GpuDisplayFinalizeDispatch::Saturated);
-            }
-            Err(error) => {
-                surfaces.abandon_dispatch(readback_slot);
-                return Err(error);
+        let face_gpu = face.and_then(gpu_source_frame);
+        if let Some(face) = face {
+            let face_prepared = prepare_display_source_texture(
+                device,
+                queue,
+                pipeline,
+                &mut encoder,
+                &mut surfaces.face_source,
+                &mut surfaces.face_source_retry,
+                admission_clock,
+                &mut surfaces.pending_upload_buffers,
+                face,
+                face_gpu.as_ref(),
+                "SparkleFlinger Display Face Source",
+                &mut native_screen_leases,
+                #[cfg(test)]
+                &mut surfaces.face_upload_count,
+            );
+            match face_prepared {
+                Ok(true) => {}
+                Ok(false) => {
+                    // The source texture is waiting out a failed admission.
+                    surfaces.abandon_dispatch(readback_slot);
+                    return Ok(GpuDisplayFinalizeDispatch::Saturated);
+                }
+                Err(error) => {
+                    surfaces.abandon_dispatch(readback_slot);
+                    return Err(error);
+                }
             }
         }
 
@@ -215,18 +280,22 @@ impl GpuSparkleFlinger {
                     .texture
                     .view
             });
-        let face_view = face_gpu
-            .as_ref()
-            .filter(|frame| !frame.needs_display_source_copy())
-            .map(GpuSourceFrame::view)
-            .unwrap_or_else(|| {
-                &surfaces
-                    .face_source
-                    .as_ref()
-                    .expect("uploaded face source should exist")
-                    .texture
-                    .view
-            });
+        let face_view = if face.is_some() {
+            face_gpu
+                .as_ref()
+                .filter(|frame| !frame.needs_display_source_copy())
+                .map(GpuSourceFrame::view)
+                .unwrap_or_else(|| {
+                    &surfaces
+                        .face_source
+                        .as_ref()
+                        .expect("uploaded face source should exist")
+                        .texture
+                        .view
+                })
+        } else {
+            scene_view
+        };
         let bind_group = create_display_finalize_bind_group(
             device,
             pipeline,
@@ -234,13 +303,23 @@ impl GpuSparkleFlinger {
             face_view,
             &surfaces.output.view,
             &surfaces.yuv_output,
+            // A pass that fades over no texture never reads the slot, so
+            // the backdrop stands in for it.
+            fade.as_ref()
+                .and_then(|(_, base, _)| base.as_ref())
+                .unwrap_or(scene_view),
         );
         let params_write = pipeline.display_finalize_params.write(
             device,
             queue,
             &mut encoder,
             &mut surfaces.pending_upload_buffers,
-            &encode_display_finalize_params(&params, scene, face),
+            &encode_display_finalize_params(
+                &params,
+                scene,
+                face,
+                fade.as_ref().map(|(from, _, weight)| (*from, *weight)),
+            ),
         );
         let params_offset = match params_write {
             Ok(write) => write.offset,

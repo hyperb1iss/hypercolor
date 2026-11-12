@@ -1,9 +1,13 @@
 use hypercolor_types::event::ZoneColors;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::scene::ZoneId;
 
 use super::ZoneRuntime;
 use super::model::{RetainedRenderZoneFrame, ZoneResult};
 use crate::performance::FullFrameCopyMetrics;
 use crate::render_thread::frame_sampling::LedSamplingStrategy;
+#[cfg(feature = "wgpu")]
+use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
 impl ZoneRuntime {
@@ -18,6 +22,37 @@ impl ZoneRuntime {
         }
 
         Some(zone_result_from_retained(retained))
+    }
+
+    /// The zone frames of the last scene pass that rendered, while they are
+    /// still retained: what each zone showed in the frame before this one.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn retained_zone_frames(&self) -> Option<&[(ZoneId, ProducerFrame)]> {
+        self.retained_frame
+            .as_ref()
+            .map(|retained| retained.zone_canvases.as_slice())
+    }
+
+    /// Stand in for a scene pass that rendered `zone_frames`, for a test of
+    /// what the frame after it reads back.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn retain_zone_frames_for_test(&mut self, zone_frames: &[(ZoneId, ProducerFrame)]) {
+        use crate::render_thread::frame_sampling::RetainedLedSamplingStrategy;
+
+        self.retained_frame = Some(RetainedRenderZoneFrame {
+            dependency_key: SceneDependencyKey::default(),
+            scene_frame: ProducerFrame::Canvas(hypercolor_types::canvas::Canvas::new(1, 1)),
+            scene_frame_zone: None,
+            display_zone_frames: Vec::new(),
+            active_display_zone_ids: Vec::new(),
+            zone_canvases: zone_frames.to_vec(),
+            zone_revisions: Vec::new(),
+            led_sampling_strategy: RetainedLedSamplingStrategy::PreSampled {
+                layout: std::sync::Arc::clone(&self.combined_led_layout),
+                zones: std::sync::Arc::from(Vec::new()),
+            },
+            logical_layer_count: 0,
+        });
     }
 
     pub(super) fn reuse_last_good_scene(&self) -> Option<ZoneResult> {
@@ -37,9 +72,11 @@ impl ZoneRuntime {
         self.retained_frame = Some(RetainedRenderZoneFrame {
             dependency_key,
             scene_frame: result.scene_frame.clone(),
+            scene_frame_zone: result.scene_frame_zone,
             display_zone_frames: result.display_zone_frames.clone(),
             active_display_zone_ids: result.active_display_zone_ids.clone(),
             zone_canvases: result.zone_canvases.clone(),
+            zone_revisions: result.zone_revisions.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones, recycled),
             logical_layer_count: result.logical_layer_count,
         });
@@ -49,8 +86,10 @@ impl ZoneRuntime {
 fn zone_result_from_retained(retained: &RetainedRenderZoneFrame) -> ZoneResult {
     ZoneResult {
         scene_frame: retained.scene_frame.clone(),
+        scene_frame_zone: retained.scene_frame_zone,
         display_zone_frames: retained.display_zone_frames.clone(),
         zone_canvases: retained.zone_canvases.clone(),
+        zone_revisions: retained.zone_revisions.clone(),
         active_display_zone_ids: retained.active_display_zone_ids.clone(),
         led_sampling_strategy: LedSamplingStrategy::from_retained(&retained.led_sampling_strategy),
         producer_full_frame_copy: FullFrameCopyMetrics::default(),

@@ -168,6 +168,11 @@ impl PreviewScene {
                 ProducerFrame::GpuTexture(frame),
             );
         }
+        self.try_render().expect("GPU scene should render")
+    }
+
+    /// Render one frame from the layer frames already injected.
+    fn try_render(&mut self) -> anyhow::Result<ZoneResult> {
         let mut zone_colors = Vec::new();
         let result = render_scene_for_test_with_screen_and_sparkleflinger(
             &mut self.runtime,
@@ -179,8 +184,7 @@ impl PreviewScene {
             &mut zone_colors,
             None,
             &mut self.sparkleflinger,
-        )
-        .expect("GPU scene should render");
+        );
         self.rendered_frames += 1;
         result
     }
@@ -422,6 +426,70 @@ fn memberless_zone_previews_its_own_layers() {
     assert_eq!(leds[0].zone_id, "case_leds");
     assert_quadrant_preview(&previews, scene.zone(0), CASE_SMALL);
     assert_solid_preview(&previews, scene.zone(1), CASE_SMALL, YELLOW);
+}
+
+/// A zone's content revision belongs to the frames it was rendered with.
+/// When a later scene pass fails after the zone drew something new, the
+/// scene falls back to the frames it kept, and they come back with the
+/// revision they were rendered at: a screen that holds its backdrop by
+/// revision would otherwise file the old picture under the new revision
+/// and keep it once the scene recovers.
+#[test]
+fn retained_zone_frames_keep_the_revisions_they_were_rendered_with() {
+    let Some(mut scene) = PreviewScene::single_zone() else {
+        return;
+    };
+    let zone_id = scene.zone(0).id;
+    let revision_of = |result: &ZoneResult| {
+        result
+            .zone_revisions
+            .iter()
+            .find_map(|(id, revision)| (*id == zone_id).then_some(*revision))
+            .expect("a rendered zone says what its frame was made from")
+    };
+
+    let rendered = revision_of(&scene.render());
+
+    // The zone draws a new frame, and then the scene fails.
+    scene
+        .runtime
+        .fail_scene_renders_with_effect_error_for_test(Some(ZoneEffectError {
+            effect_id: "solid_color".into(),
+            effect_name: "Solid Color".into(),
+            zone_id,
+            zone_name: "Primary".into(),
+            error: "renderer lost its device".into(),
+        }));
+    scene.sources[0].fill = LayerFill::Solid(BLUE);
+    for source in &scene.sources {
+        let canvas = paint(source.fill, source.width, source.height);
+        let frame = scene
+            .sparkleflinger
+            .upload_media_canvas_frame(MediaTextureSourceKey::for_test(source.source_key), &canvas)
+            .expect("GPU layer frame should upload");
+        scene
+            .runtime
+            .inject_effect_layer_frame_for_test(source.layer_id, ProducerFrame::GpuTexture(frame));
+    }
+    assert!(
+        scene.try_render().is_err(),
+        "the armed failure should fail the pass"
+    );
+    let kept = scene
+        .runtime
+        .reuse_last_good_scene()
+        .expect("the frames of the pass before stay retained");
+    assert_eq!(
+        revision_of(&kept),
+        rendered,
+        "the retained frames should keep the revision they were rendered with"
+    );
+
+    // Once the scene recovers, the new picture has a revision of its own.
+    scene
+        .runtime
+        .fail_scene_renders_with_effect_error_for_test(None);
+    assert_ne!(revision_of(&scene.render()), rendered);
 }
 
 #[test]

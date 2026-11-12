@@ -237,10 +237,8 @@ impl DaemonState {
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
-            spatial_engine: self.spatial_engine.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
-            preview_runtime: Arc::clone(&self.preview_runtime),
             power_state: self.output_power.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
             display_frames: Arc::clone(&self.display_frames),

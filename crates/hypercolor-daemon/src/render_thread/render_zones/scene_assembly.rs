@@ -38,6 +38,7 @@ impl ZoneRuntime {
             !self.needs_reconcile(context.dependency_key),
             "render-zone resources were not admitted before scene rendering"
         );
+        self.begin_zone_content_pass();
         #[cfg(all(test, feature = "wgpu"))]
         if std::mem::take(&mut self.fail_next_scene_render) {
             anyhow::bail!("injected scene render failure");
@@ -149,7 +150,9 @@ impl ZoneRuntime {
             .into_parts_for_zone_order(context.zones);
         let result = ZoneResult {
             scene_frame,
+            scene_frame_zone: None,
             display_zone_frames: rendered_parts.display_zone_frames,
+            zone_revisions: self.zone_revisions_of(&rendered_parts.zone_canvases),
             zone_canvases: rendered_parts.zone_canvases,
             active_display_zone_ids: rendered_parts.active_display_zone_ids,
             led_sampling_strategy,
@@ -249,7 +252,9 @@ impl ZoneRuntime {
         let rendered_parts = rendered_zones.rendered_zones.into_parts();
         Ok(Some(ZoneResult {
             scene_frame,
+            scene_frame_zone: Some(scene_zone.id),
             display_zone_frames: rendered_parts.display_zone_frames,
+            zone_revisions: self.zone_revisions_of(&rendered_parts.zone_canvases),
             zone_canvases: rendered_parts.zone_canvases,
             active_display_zone_ids: rendered_parts.active_display_zone_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),

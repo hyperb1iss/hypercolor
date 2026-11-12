@@ -5,6 +5,9 @@ struct DisplayFinalizeParams {
     viewport_position_size: vec4<f32>,
     viewport_rotation_scale: vec4<f32>,
     yuv_layout: vec4<u32>,
+    // x: how far the backdrop has faded in, as f32 bits. y: what it fades
+    // in over (FADE_*).
+    fade: vec4<u32>,
 };
 
 @group(0) @binding(0)
@@ -21,6 +24,15 @@ var<uniform> params: DisplayFinalizeParams;
 
 @group(0) @binding(4)
 var<storage, read_write> output_yuv: array<atomic<u32>>;
+
+// The backdrop a screen showed when a scene transition began, already in
+// panel space. Read only while `params.fade.y` is FADE_FROM_TEXTURE.
+@group(0) @binding(5)
+var base_texture: texture_2d<f32>;
+
+const FADE_NONE: u32 = 0u;
+const FADE_FROM_TEXTURE: u32 = 1u;
+const FADE_FROM_BLACK: u32 = 2u;
 
 const MODE_REPLACE: u32 = 0u;
 const MODE_ALPHA: u32 = 1u;
@@ -351,7 +363,17 @@ fn display_srgba8_at(pixel: vec2<u32>, output_width: u32, output_height: u32) ->
         EDGE_CLAMP,
         0.0,
     );
-    let scene_linear = decode_srgb(vec4<f32>(scene_srgba.rgb, 1.0));
+    // A scene transition fades the backdrop in over the one the screen
+    // showed before, under the face: the face stays as sharp as it is.
+    var backdrop_srgb = scene_srgba.rgb;
+    if (params.fade.y != FADE_NONE) {
+        var base_srgb = vec3<f32>(0.0);
+        if (params.fade.y == FADE_FROM_TEXTURE) {
+            base_srgb = textureLoad(base_texture, vec2<i32>(i32(pixel.x), i32(pixel.y)), 0).rgb;
+        }
+        backdrop_srgb = mix(base_srgb, backdrop_srgb, bitcast<f32>(params.fade.x));
+    }
+    let scene_linear = decode_srgb(vec4<f32>(backdrop_srgb, 1.0));
     let face_linear = decode_srgb(face_srgba);
     let mode = params.output_size_flags_mode.w;
     let color = compose_display(scene_linear, face_linear, mode, opacity);

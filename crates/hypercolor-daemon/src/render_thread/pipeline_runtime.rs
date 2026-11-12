@@ -57,6 +57,8 @@ use super::input_publication::{
     InputPublicationDemandRegistration, InputPublicationReader, OwnedInputPublicationDemand,
 };
 use super::producer_queue::ProducerQueue;
+#[cfg(feature = "wgpu")]
+use super::render_zones::ZoneContentRevision;
 use super::render_zones::{
     PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
 };
@@ -64,6 +66,8 @@ use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{EffectDemand, FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
 use super::screen_canvas::ScreenZonesSnapshot;
+#[cfg(feature = "wgpu")]
+use super::screen_fade::ScreenFadeStep;
 #[cfg(feature = "wgpu")]
 use super::screen_parity_diagnostics::ScreenParityDiagnosticMailbox;
 #[cfg(feature = "wgpu")]
@@ -1271,40 +1275,57 @@ impl PublicationCadenceState {
     }
 }
 
+/// What decides which screens an idle frame hands a backdrop: the screens
+/// display output drives, and the zones that place them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScreenPlacementRevision {
+    pub(crate) routes: u64,
+    pub(crate) zones: u64,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ThrottleState {
-    pub(crate) idle_black_pushed: bool,
-    pub(crate) sleep_black_pushed: bool,
+    /// The screens the idle frame was published for. The loop publishes
+    /// nothing while it idles, so a screen that connects, or that a scene
+    /// edit places, after that frame would wait for a backdrop until
+    /// something rendered again.
+    idle_black_pushed_for: Option<ScreenPlacementRevision>,
+    /// The screens the frame that took output off was published for. A
+    /// screen that connects while output is off needs its dark lane too.
+    sleep_black_pushed_for: Option<ScreenPlacementRevision>,
 }
 
 impl ThrottleState {
     pub(crate) fn reset_for_canvas_resize(&mut self) {
-        self.idle_black_pushed = false;
-        self.sleep_black_pushed = false;
+        self.idle_black_pushed_for = None;
+        self.sleep_black_pushed_for = None;
     }
 
     pub(crate) fn note_effect_running(&mut self) {
-        self.idle_black_pushed = false;
+        self.idle_black_pushed_for = None;
     }
 
-    pub(crate) fn idle_black_pushed(&self) -> bool {
-        self.idle_black_pushed
+    /// Whether the idle frame is out, and still covers `screens`.
+    pub(crate) fn idle_black_pushed(&self, screens: ScreenPlacementRevision) -> bool {
+        self.idle_black_pushed_for == Some(screens)
     }
 
-    pub(crate) fn note_idle_frame_without_effect(&mut self) {
-        self.idle_black_pushed = true;
+    pub(crate) fn note_idle_frame_without_effect(&mut self, screens: ScreenPlacementRevision) {
+        self.idle_black_pushed_for = Some(screens);
     }
 
     pub(crate) fn clear_sleep(&mut self) {
-        self.sleep_black_pushed = false;
+        self.sleep_black_pushed_for = None;
     }
 
-    pub(crate) fn sleep_black_pushed(&self) -> bool {
-        self.sleep_black_pushed
+    /// Whether the frame that took output off is out, and still covers
+    /// `screens`.
+    pub(crate) fn sleep_black_pushed(&self, screens: ScreenPlacementRevision) -> bool {
+        self.sleep_black_pushed_for == Some(screens)
     }
 
-    pub(crate) fn note_sleep_frame_published(&mut self) {
-        self.sleep_black_pushed = true;
+    pub(crate) fn note_sleep_frame_published(&mut self, screens: ScreenPlacementRevision) {
+        self.sleep_black_pushed_for = Some(screens);
     }
 }
 
@@ -1752,6 +1773,11 @@ pub(crate) struct PendingDisplayFinalizeWork {
     pub(crate) display_target: DisplayFaceTarget,
     pub(crate) display_route: DisplayZoneOutputRoute,
     pub(crate) frame_format: DisplayFrameFormat,
+    /// What the lane's zone showed when this finalization was dispatched,
+    /// for a lane that shows a zone's frame alone.
+    pub(crate) content: Option<ZoneContentRevision>,
+    /// The step of its screen's fade this finalization draws, if any.
+    pub(crate) fade: Option<ScreenFadeStep>,
     pub(crate) pending: PendingDisplayFinalization,
 }
 
@@ -1775,6 +1801,9 @@ impl PendingDisplayFinalizeWork {
 #[derive(Default)]
 pub(crate) struct DisplayFinalizeRuntime {
     pending: HashMap<ZoneId, PendingDisplayFinalizeWork>,
+    /// Finalize passes submitted to the GPU, each with its readback.
+    #[cfg(test)]
+    dispatches: u64,
 }
 
 #[cfg(feature = "wgpu")]
@@ -1797,6 +1826,16 @@ impl DisplayFinalizeRuntime {
         self.pending.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn note_dispatch(&mut self) {
+        self.dispatches += 1;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_count(&self) -> u64 {
+        self.dispatches
+    }
+
     pub(crate) fn take_inactive(
         &mut self,
         active_zone_ids: &[ZoneId],
@@ -1817,16 +1856,10 @@ impl DisplayFinalizeRuntime {
 
 impl ComposeRuntime<'_> {
     /// The scene renders no zones: release their resources and forget any
-    /// effect error, which no longer describes a running effect.
+    /// effect error, which no longer describes a running effect. Display
+    /// finalizations are left to the display lanes materialized next, which
+    /// retire every lane but the screens' backdrops.
     pub(crate) fn clear_inactive_zones(&mut self) {
-        #[cfg(feature = "wgpu")]
-        for pending in self.display_finalize_runtime.drain() {
-            self.display_sparkleflinger
-                .discard_pending_display_finalization(pending.pending);
-        }
-        #[cfg(feature = "wgpu")]
-        self.display_sparkleflinger
-            .retain_display_finalize_zones(&[]);
         self.render_zone_runtime.clear_inactive_zones();
         self.render_zone_runtime.forget_effect_error();
         self.effect_delta_clock.clear();
