@@ -143,6 +143,9 @@ pub struct StudioContext {
     /// must outlive the DOM that renders it; one shared slot also means
     /// opening a menu closes the previous one.
     pub rail_disclosure: RwSignal<Option<String>>,
+    /// Device cards whose folded output list is open, by the list's
+    /// element id. Kept here for the same reason as `rail_disclosure`.
+    pub open_output_lists: RwSignal<HashSet<String>>,
     /// An in-flight zone rename: `(zone id, draft text)`. Lives here so a
     /// tab strip rebuild mid-typing does not eat the field or the text.
     pub zone_rename_draft: RwSignal<Option<(String, String)>>,
@@ -537,6 +540,7 @@ fn StudioWorkspace() -> impl IntoView {
         }
     });
     let rail_disclosure = RwSignal::new(None::<String>);
+    let open_output_lists = RwSignal::new(HashSet::<String>::new());
     let zone_rename_draft = RwSignal::new(None::<(String, String)>);
     let pointer_output_id = RwSignal::new(None::<String>);
 
@@ -582,6 +586,7 @@ fn StudioWorkspace() -> impl IntoView {
         screen_labels,
         render_canvas_size,
         rail_disclosure,
+        open_output_lists,
         zone_rename_draft,
         pane_expanded,
         pane_auto_expanded,

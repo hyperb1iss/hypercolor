@@ -9,7 +9,7 @@
 //! `leptos` so the contract is exercised from
 //! `tests/studio_pane_model_tests.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hypercolor_types::scene::{UnassignedBehavior, ZoneId, ZoneRole};
 
@@ -284,4 +284,38 @@ pub fn unassigned_policy_options(zone_names: &[(String, String)]) -> Vec<(String
             .map(|(id, name)| (format!("fallback:{id}"), format!("Follow {name}"))),
     );
     options
+}
+
+/// A placed card with more outputs than this folds its list, so one
+/// device with a row per panel does not bury the rest of the zone.
+pub const FOLD_OUTPUTS_ABOVE: usize = 8;
+
+/// Whether a device card's output list starts folded behind a toggle. An
+/// unassigned device always folds: its channels matter once it is placed.
+#[must_use]
+pub fn output_list_folds(placed: bool, outputs: usize) -> bool {
+    !placed || outputs > FOLD_OUTPUTS_ABOVE
+}
+
+/// The fold toggle's text: an unassigned device has channels to claim, a
+/// placed one has outputs on the canvas.
+#[must_use]
+pub fn fold_label(placed: bool, count: usize) -> String {
+    if placed {
+        format!("{count} outputs")
+    } else {
+        format!("{count} channels")
+    }
+}
+
+/// Whether a selection picks out part of a device: at least one of its
+/// outputs, and not all of them. Selecting the whole card selects every
+/// output, which says nothing about one row.
+#[must_use]
+pub fn selects_part_of(device_outputs: &[String], selected: &HashSet<String>) -> bool {
+    let hits = device_outputs
+        .iter()
+        .filter(|id| selected.contains(*id))
+        .count();
+    hits > 0 && hits < device_outputs.len()
 }

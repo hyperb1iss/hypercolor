@@ -351,6 +351,7 @@ fn ActiveZoneSection(
                                     device=summary_for(&devices, &entry.row)
                                     select=zone_id.clone()
                                     elsewhere=elsewhere
+                                    searching=searching.get()
                                 />
                             }
                         })
@@ -702,6 +703,7 @@ fn UnassignedSection(
                                         device=Some(device)
                                         select=target.clone()
                                         mode=CardMode::Unassigned
+                                        searching=searching.get()
                                     />
                                 }
                                     .into_any(),
