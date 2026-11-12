@@ -252,7 +252,20 @@ impl LayerTargets {
                 self.open_editor(studio, subject, &element);
             }),
             add_requests: self.add_requests.into(),
-            added: Callback::new(move |()| self.chosen.set(None)),
+            added: Callback::new(move |target: Target| {
+                self.chosen.set(None);
+                // The outputs the new layer plays on become the selection,
+                // so it arrives in front whichever way its target was
+                // chosen. A whole-zone layer is in front of every selection.
+                let outputs = target.ids();
+                if !outputs.is_empty()
+                    && studio
+                        .selected_output_ids
+                        .with_untracked(|selected| *selected != outputs)
+                {
+                    studio.selected_output_ids.set(outputs);
+                }
+            }),
             replaced: Callback::new(move |(zone_id, old, new): (String, _, _)| {
                 studio.history.layer_replaced(&zone_id, old, new);
             }),

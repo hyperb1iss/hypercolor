@@ -91,8 +91,8 @@ pub struct LayerTargetHost {
     pub edit: Callback<(TargetSubject, web_sys::Element)>,
     /// Moves each time the host asks for the Add layer picker.
     pub add_requests: Signal<u64>,
-    /// A layer was added with [`Self::add_target`].
-    pub added: Callback<()>,
+    /// A layer was added, applying to this target.
+    pub added: Callback<Target>,
     /// A replace minted a new id: `(zone id, old, new)`.
     pub replaced: Callback<(String, SceneLayerId, SceneLayerId)>,
 }
@@ -310,11 +310,13 @@ pub fn LayerPanel(
             .then(|| add_target.get_untracked())
             .flatten();
         let mut added_to = None;
+        let mut added_target = Target::WholeZone;
         if let Some((mut target, outputs)) = target {
             target.drop_missing(&outputs);
             if target.is_complete() && !target.is_whole_zone() {
                 added_to = Some(draft_words(&target, &outputs));
                 request.scope = target.scope();
+                added_target = target;
             }
         }
         let host = target_host.get_untracked();
@@ -344,7 +346,7 @@ pub fn LayerPanel(
             if applied > 0
                 && let Some(host) = host
             {
-                host.added.run(());
+                host.added.run(added_target);
             }
             if failed == 0 {
                 toasts::toast_success(&match (applied, added_to) {
