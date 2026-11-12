@@ -10,7 +10,6 @@
 
 pub mod surface;
 
-use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
@@ -100,7 +99,10 @@ impl ZonesContext {
     }
 }
 
-fn effect_target_in_scene(
+/// The layer a write to `effect_id` in the zone `zone_id` addresses (the
+/// primary zone for `None`), with the fence of the scene it was read in.
+#[must_use]
+pub fn effect_target_in_scene(
     scene: &api::SceneDocument,
     effect_id: &str,
     zone_id: Option<&str>,
@@ -121,15 +123,7 @@ fn effect_target_in_scene(
                     .find(|zone| zone.role != ZoneRole::Display)
             }),
     }?;
-    let layer = zone.layers.iter().rev().find(|layer| {
-        let LayerSource::Effect {
-            effect_id: current, ..
-        } = &layer.source
-        else {
-            return false;
-        };
-        current.to_string() == effect_id
-    })?;
+    let layer = api::zone_layer_playing(&zone.layers, effect_id)?;
     Some((
         api::EffectLayerTarget {
             effect_id: effect_id.to_owned(),

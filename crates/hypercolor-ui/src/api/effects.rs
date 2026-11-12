@@ -360,21 +360,14 @@ fn effect_target_from_apply(
     effect_target_from_zone(effect_id, &response.zone)
 }
 
-fn effect_target_from_zone(effect_id: &str, zone: &ZoneResource) -> ApiResult<EffectLayerTarget> {
-    let layer = zone
-        .layers
-        .iter()
-        .rev()
-        .find(|layer| {
-            matches!(
-                &layer.source,
-                LayerSource::Effect { effect_id: current, .. }
-                    if current.to_string() == effect_id
-            )
-        })
-        .ok_or_else(|| {
-            ApiError::Parse("Effect apply response did not contain the created layer".to_owned())
-        })?;
+/// The layer of `zone` a write answered with it left playing `effect_id`.
+pub fn effect_target_from_zone(
+    effect_id: &str,
+    zone: &ZoneResource,
+) -> ApiResult<EffectLayerTarget> {
+    let layer = super::zone_layer_playing(&zone.layers, effect_id).ok_or_else(|| {
+        ApiError::Parse("Effect apply response did not contain the created layer".to_owned())
+    })?;
     Ok(EffectLayerTarget {
         effect_id: effect_id.to_owned(),
         zone_id: zone.id.to_string(),

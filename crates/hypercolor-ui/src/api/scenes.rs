@@ -67,11 +67,30 @@ pub fn zone_effect(zone: &ZoneResource) -> Option<ZoneEffectRef<'_>> {
 /// The layer [`zone_effect`] reads.
 #[must_use]
 pub fn zone_effect_layer(layers: &[SceneLayer]) -> Option<&SceneLayer> {
+    whole_zone_first(layers, |_| true)
+}
+
+/// The layer of a zone's stack that plays `effect_id` as the zone's
+/// effect, by the rule of [`zone_effect`]: the topmost whole-zone layer
+/// running it, and only when none does, the topmost layer running it at
+/// all. Everything that turns "this effect in this zone" into a layer to
+/// write to resolves here, so a copy of the effect limited to some outputs
+/// is never written in place of the layer the zone is known by.
+#[must_use]
+pub fn zone_layer_playing<'a>(layers: &'a [SceneLayer], effect_id: &str) -> Option<&'a SceneLayer> {
+    whole_zone_first(layers, |current| current.to_string() == effect_id)
+}
+
+/// The topmost whole-zone effect layer whose effect `wanted` accepts, else
+/// the topmost effect layer it accepts.
+fn whole_zone_first(
+    layers: &[SceneLayer],
+    wanted: impl Fn(&EffectId) -> bool,
+) -> Option<&SceneLayer> {
     let effects = || {
-        layers
-            .iter()
-            .rev()
-            .filter(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+        layers.iter().rev().filter(|layer| {
+            matches!(&layer.source, LayerSource::Effect { effect_id, .. } if wanted(effect_id))
+        })
     };
     effects()
         .find(|layer| layer.scope.is_none())
