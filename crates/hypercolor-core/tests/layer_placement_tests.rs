@@ -512,6 +512,65 @@ fn a_scope_keeps_only_the_outputs_the_zone_places() {
     assert_eq!(dormant.render_extent(ZONE), None);
 }
 
+/// Dormancy is membership alone. A scope that names an output with no area
+/// still frames its layer: on the outputs that have area when any does, and
+/// otherwise on the collapsed outputs themselves, a pixel wide wherever
+/// they have no extent.
+#[test]
+fn a_scope_naming_an_output_with_no_area_still_frames_its_layer() {
+    let pixel = 1.0 / 640.0;
+    let dot = output("dot", (0.3, 0.6), (0.0, 0.0), 0.0);
+    let line = output("line", (0.5, 0.5), (0.5, 0.0), FRAC_PI_4);
+    let keyboard = output("keyboard", (0.5, 0.5), (0.5, 0.2), 0.0);
+    let mut unplaceable = output("unplaceable", (0.5, 0.5), (0.5, 0.5), 0.0);
+    unplaceable.scale = f32::INFINITY;
+    let zone = zone(layout(ZONE, vec![dot, line, keyboard.clone(), unplaceable]));
+    let framing = |ids: &[&str]| LayerFraming::of(&zone, &layer(Some(scope(ids))));
+
+    let point = framing(&["dot"]);
+    assert!(!point.is_dormant());
+    let frame = point.frame().expect("a point still has a frame");
+    assert_eq!(frame.center, NormalizedPosition::new(0.3, 0.6));
+    assert_eq!(frame.extent, NormalizedPosition::new(pixel, pixel));
+    let source = point.render_extent(ZONE).expect("a point still renders");
+    let placement = LayerPlacement::new(&frame, LayerTransform::default(), source, ZONE)
+        .expect("a point still places its source");
+    // Every LED of the point samples its centre, which shows the centre of
+    // the source.
+    #[allow(clippy::cast_precision_loss)]
+    let source_centre = [source.0 as f32 * 0.5, source.1 as f32 * 0.5];
+    assert_near(
+        placement
+            .source_point([0.3 * 640.0, 0.6 * 480.0])
+            .expect("the centre shows the source"),
+        source_centre,
+        1.0e-2,
+        "point centre",
+    );
+
+    // A strip with no thickness is framed along its own line.
+    let strip = framing(&["line"])
+        .frame()
+        .expect("a line still has a frame");
+    assert_eq!(strip.extent, NormalizedPosition::new(0.5, pixel));
+    assert!((strip.rotation - FRAC_PI_4).abs() < f32::EPSILON);
+    assert_eq!(framing(&["line"]).render_extent(ZONE), Some((640, 16)));
+
+    // Beside an output that has area, a collapsed one does not move the
+    // frame.
+    assert_eq!(
+        framing(&["dot", "keyboard", "line"]),
+        LayerFraming::Framed(LayerFrame::of_output(&keyboard).expect("placed output"))
+    );
+
+    // Nothing to form a frame from: the source fills the zone canvas.
+    assert_eq!(
+        framing(&["unplaceable"]),
+        LayerFraming::Framed(LayerFrame::ZONE)
+    );
+    assert!(framing(&["gone"]).is_dormant());
+}
+
 #[test]
 fn a_framed_layer_renders_at_its_frames_aspect_on_the_zones_long_side() {
     let extent = |size: (f32, f32), rotation: f32, zone: (u32, u32)| {

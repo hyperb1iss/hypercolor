@@ -70,10 +70,43 @@ impl LayerFrame {
 
     /// The frame of the outputs of `zone` that `scope` names: the one
     /// output's own rectangle, or the axis-aligned bounding box of several.
-    /// `None` when the scope names no output the zone places.
+    ///
+    /// Outputs with no area take no part while another named output has
+    /// some. When none has, the frame is formed from the collapsed outputs
+    /// themselves, each given one pixel of the zone's long side along an
+    /// axis it has no extent on: a strip with no thickness is framed along
+    /// its own line and a point at its centre. `None` when the scope names
+    /// no output of the zone, or none whose geometry is finite.
     #[must_use]
     pub fn of_scope(zone: &Zone, scope: &LayerScope) -> Option<Self> {
-        let mut frames = zone.scoped_outputs(scope).filter_map(Self::of_output);
+        Self::enclosing(zone.scoped_outputs(scope).filter_map(Self::of_output)).or_else(|| {
+            let long_side = zone.layout.canvas_width.max(zone.layout.canvas_height);
+            let pixel = 1.0 / to_f32(long_side.max(1));
+            Self::enclosing(
+                zone.scoped_outputs(scope)
+                    .filter_map(|output| Self::of_collapsed_output(output, pixel)),
+            )
+        })
+    }
+
+    /// The placed rectangle of an output with no area along an axis, with
+    /// `floor` of extent wherever it has none. `None` when its geometry is
+    /// not finite.
+    fn of_collapsed_output(output: &Output, floor: f32) -> Option<Self> {
+        let extent = [output.size.x * output.scale, output.size.y * output.scale];
+        if !extent.iter().all(|side| side.is_finite()) {
+            return None;
+        }
+        let frame = Self {
+            center: output.position,
+            extent: NormalizedPosition::new(extent[0].max(floor), extent[1].max(floor)),
+            rotation: output.rotation,
+        };
+        frame.is_placeable().then_some(frame)
+    }
+
+    /// One frame as it is, or the axis-aligned bounding box of several.
+    fn enclosing(mut frames: impl Iterator<Item = Self>) -> Option<Self> {
         let first = frames.next()?;
         let Some(second) = frames.next() else {
             return Some(first);
@@ -194,18 +227,26 @@ pub enum LayerFraming {
     Zone,
     /// The source fills the frame of the outputs its scope names.
     Framed(LayerFrame),
-    /// The scope names no output the zone places, so the layer renders
+    /// No id in the scope names an output of the zone, so the layer renders
     /// nothing. A scope is never widened to the zone.
     Dormant,
 }
 
 impl LayerFraming {
     /// The framing `zone` gives `layer`.
+    ///
+    /// Dormancy is membership alone: a layer whose scope names an output of
+    /// the zone is framed, whatever that output's geometry. When no named
+    /// output can form a frame the source fills the zone canvas, and still
+    /// reaches only the outputs its scope names.
     #[must_use]
     pub fn of(zone: &Zone, layer: &SceneLayer) -> Self {
         match &layer.scope {
             None => Self::Zone,
-            Some(scope) => LayerFrame::of_scope(zone, scope).map_or(Self::Dormant, Self::Framed),
+            Some(_) if zone.layer_is_dormant(layer) => Self::Dormant,
+            Some(scope) => {
+                Self::Framed(LayerFrame::of_scope(zone, scope).unwrap_or(LayerFrame::ZONE))
+            }
         }
     }
 

@@ -508,6 +508,43 @@ fn a_dormant_layer_costs_nothing_and_reaches_no_output() {
     assert!(classes.framing(2).is_dormant());
 }
 
+/// An output that exists with no area is still an output: a layer scoped to
+/// it reaches its LEDs. Only a scope that names no output at all is
+/// dormant.
+#[test]
+fn a_layer_scoped_to_an_output_with_no_area_still_reaches_it() {
+    for backend in BACKENDS {
+        let Some(mut rig) = Rig::new(backend) else {
+            continue;
+        };
+        let base = color_fill_layer(BLUE);
+        let overlay = scoped(color_fill_layer(MAGENTA), &["dot"]);
+        let scene = zone(
+            (96, 64),
+            vec![
+                matrix("dot", (0.5, 0.5), (0.0, 0.0), (2, 2)),
+                matrix("case", (0.5, 0.5), (0.8, 0.8), (3, 3)),
+            ],
+            vec![base, overlay],
+        );
+
+        let result = rig.render(std::slice::from_ref(&scene), 1);
+        assert_eq!(result.scope_class_count, 2, "{backend:?}");
+        let leds = rig.leds(&result);
+
+        assert_eq!(
+            leds_of(&leds, "dot"),
+            Some(vec![rgb(MAGENTA); 4]),
+            "{backend:?}: the collapsed output should show its layer"
+        );
+        assert_eq!(
+            leds_of(&leds, "case"),
+            Some(vec![rgb(BLUE); 9]),
+            "{backend:?}: the unscoped output should not change"
+        );
+    }
+}
+
 // ── Which layers an output shows ─────────────────────────────────────────
 
 /// Two outputs whose boxes overlap, and a layer scoped to one of them: the
