@@ -37,7 +37,7 @@ use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
 use super::move_menu::{MoveMenuAnchor, is_menu_key};
 use super::moves::{light_segment_count, perform, zone_name_in};
-use super::pane_model::elsewhere_label;
+use super::pane_model::{elsewhere_label, fold_label, output_list_folds, selects_part_of};
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
 
 /// Element id of a device card's body, keyed by the zone it speaks for
@@ -122,6 +122,10 @@ pub fn StudioDeviceCard(
     /// Other zones holding the rest of a split device's outputs.
     #[prop(optional)]
     elsewhere: Vec<Elsewhere>,
+    /// Whether a search is filtering the pane. A search can match one of
+    /// the device's outputs, so a folded list opens while it runs.
+    #[prop(optional)]
+    searching: bool,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let drag = expect_context::<DragController>();
@@ -280,8 +284,28 @@ pub fn StudioDeviceCard(
         })
         .collect();
     let show_components = total_components > 1;
-    let channels_open = RwSignal::new(mode == CardMode::Placed);
     let channels_id = format!("studio-channels-{zone_key}-{row_device_id}");
+    // A placed card lists its outputs unless there are many; an Unassigned
+    // card folds them until asked. The pane rebuilds its cards on scene
+    // events, so what the user opened is remembered on the page.
+    let folds = output_list_folds(placed, component_rows.len());
+    let fold_key = StoredValue::new(channels_id.clone());
+    let channels_open = Signal::derive(move || {
+        !folds
+            || searching
+            || studio
+                .open_output_lists
+                .with(|open| fold_key.with_value(|key| open.contains(key)))
+    });
+    let toggle_channels = move || {
+        studio.open_output_lists.update(|open| {
+            fold_key.with_value(|key| {
+                if !open.remove(key) {
+                    open.insert(key.clone());
+                }
+            });
+        });
+    };
 
     // What the card moves as a whole, then each channel it lists, for the
     // drag and its "Move to" menu.
@@ -378,6 +402,23 @@ pub fn StudioDeviceCard(
     let enter_outputs = device_output_ids.clone();
     let sel_check_ids = device_output_ids.clone();
     release_hover_on_unmount(studio, device_output_ids.clone());
+    // Picking one output on the canvas opens the folded list it sits in,
+    // so the row that lights up is on screen.
+    if folds && placed {
+        let outputs = device_output_ids.clone();
+        Effect::new(move |_| {
+            let picked = studio
+                .selected_output_ids
+                .with(|selected| selects_part_of(&outputs, selected));
+            if picked {
+                studio.open_output_lists.update(|open| {
+                    fold_key.with_value(|key| {
+                        open.insert(key.clone());
+                    });
+                });
+            }
+        });
+    }
     let is_card_selected = Signal::derive(move || {
         !sel_check_ids.is_empty()
             && studio
@@ -568,9 +609,7 @@ pub fn StudioDeviceCard(
                     let scene_key = scene_key.clone();
                     let channel_count = component_rows.len();
                     view! {
-                        // An Unassigned card folds its channels away until
-                        // asked; they matter once the device is in a zone.
-                        {(mode == CardMode::Unassigned)
+                        {folds
                             .then(|| {
                                 view! {
                                     <button
@@ -579,7 +618,7 @@ pub fn StudioDeviceCard(
                                         style=list_style.clone()
                                         aria-expanded=move || channels_open.get().to_string()
                                         aria-controls=channels_id.clone()
-                                        on:click=move |_| channels_open.update(|open| *open = !*open)
+                                        on:click=move |_| toggle_channels()
                                     >
                                         <Icon
                                             icon=LuChevronRight
@@ -589,7 +628,7 @@ pub fn StudioDeviceCard(
                                             class="transition-transform duration-200"
                                             class=("rotate-90", move || channels_open.get())
                                         />
-                                        {format!("{channel_count} channels")}
+                                        {fold_label(placed, channel_count)}
                                     </button>
                                 }
                             })}
