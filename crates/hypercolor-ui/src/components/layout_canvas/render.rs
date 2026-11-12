@@ -34,6 +34,8 @@ pub(super) struct ZoneRenderData {
     pub(super) primary_rgb: String,
     pub(super) secondary_rgb: String,
     pub(super) name: String,
+    /// The name the callout shows: the rail's short one when it has one.
+    pub(super) callout_name: String,
     /// The line under the name: LED count, or resolution for a display.
     pub(super) detail: String,
     pub(super) shape: Option<ZoneShape>,
