@@ -202,6 +202,12 @@ pub struct ReplaceZoneRequest {
     pub layout: Option<ZoneLayoutResource>,
     #[serde(default)]
     pub layers: Vec<ReplaceSceneLayerRequest>,
+    /// Echo of a screen view's origin. A zone that carries it, or whose id
+    /// is a screen's view id, is a view and not stored content: the
+    /// replacement skips it, and the screen's layers are taken from the
+    /// zone that places the screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_of: Option<crate::api::scene::ZoneViewOf>,
 }
 
 /// One layer of a zone in a whole-scene replacement.
@@ -301,6 +307,7 @@ impl From<&crate::api::scene::ZoneResource> for ReplaceZoneRequest {
                 .iter()
                 .map(ReplaceSceneLayerRequest::from)
                 .collect(),
+            view_of: zone.view_of.clone(),
         }
     }
 }

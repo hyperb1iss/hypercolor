@@ -1139,6 +1139,20 @@ impl SceneContext {
         &self.layout_runtime
     }
 
+    /// The canvas a zone created on behalf of a screen is born with.
+    pub(crate) fn render_canvas_size(&self) -> (u32, u32) {
+        self.layout.render_canvas_size()
+    }
+
+    /// Every registered screen, read fresh from the device registry.
+    pub(crate) async fn known_screen_surfaces(
+        &self,
+    ) -> hypercolor_core::scene::screens::ScreenSurfaces {
+        self.layout
+            .known_screen_surfaces(&self.layout_runtime)
+            .await
+    }
+
     /// Resolve the current media producer policy and asset vocabulary.
     pub async fn media_admission_context(&self) -> MediaAdmissionContext {
         let asset_mime_types = {

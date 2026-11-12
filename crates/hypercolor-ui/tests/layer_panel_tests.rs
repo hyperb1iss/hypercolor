@@ -530,6 +530,7 @@ fn zone_resource(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource
         members: Vec::new(),
         layout: None,
         layers: Vec::new(),
+        view_of: None,
     }
 }
 

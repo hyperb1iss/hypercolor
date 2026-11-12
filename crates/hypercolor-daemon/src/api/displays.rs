@@ -9,8 +9,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::displays::{
-    DeleteDisplayFaceResponse, DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery,
-    DisplayListResponse, DisplaySummary, SetDisplayFaceRequest,
+    DeleteDisplayFaceResponse, DisplayFaceRendering, DisplayFaceResponse, DisplayFaceScope,
+    DisplayFaceScopeQuery, DisplayListResponse, DisplaySummary, SetDisplayFaceRequest,
     UpdateDisplayFaceCompositionRequest,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
@@ -25,7 +25,7 @@ use crate::api::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::display::{
-    SetDefaultDisplayFace, display_face_layout, display_surface_info, normalize_display_face_target,
+    SetDefaultDisplayFace, display_surface_info, normalize_display_face_target,
 };
 use crate::domain::{DomainError, ResourceKind};
 
@@ -189,17 +189,6 @@ pub async fn set_display_face(
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return DomainError::not_found(ResourceKind::Device, &device).into_response();
-    };
-    let Some(surface) = display_surface_info(&tracked.info) else {
-        return DomainError::validation(format!(
-            "Device does not support display faces: {}",
-            tracked.info.name
-        ))
-        .into_response();
-    };
-
     let Some(effect) = state
         .domains
         .effects
@@ -246,19 +235,16 @@ pub async fn set_display_face(
             },
             scene_assigned: written.scene_assigned,
             scene_id: written.scene_id.to_string(),
+            rendering: Some(rendering(&state, device_id).await),
         });
     }
-
-    let default_assigned = state.domains.display.has_default_face(device_id).await;
 
     let written = match crate::domain::display::set_display_face(
         &state.domains.effects,
         crate::domain::display::SetDisplayFace {
             device_id,
-            device_name: tracked.info.name.clone(),
             effect: effect.clone(),
             controls: body.controls,
-            layout: display_face_layout(device_id, tracked.info.name.as_str(), surface),
             target: display_target,
         },
     )
@@ -268,8 +254,9 @@ pub async fn set_display_face(
         Err(error) => return error.into_response(),
     };
 
+    let layers = state.domains.display.face_layers(device_id).await;
     envelope::ok(DisplayFaceResponse {
-        default_assigned,
+        default_assigned: layers.default_assigned,
         device_id: device_id.to_string(),
         effect: effect.into_metadata(),
         zone: if composition_explicit {
@@ -280,6 +267,7 @@ pub async fn set_display_face(
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: written.scene_id.to_string(),
+        rendering: Some(layers.rendering()),
     })
 }
 
@@ -316,15 +304,15 @@ pub async fn patch_display_face_composition(
         };
     }
 
-    let (zone, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
-        Ok(response) => (response.zone, response.effect),
+    let effect = match current_display_face_assignment(state.as_ref(), device_id).await {
+        Ok(response) => response.effect,
         Err(error) => return error.into_response(),
     };
 
     let written = match crate::domain::display::patch_display_composition(
         &state.domains.scene,
         crate::domain::display::PatchDisplayComposition {
-            zone_id: zone.id,
+            device_id,
             blend_mode: body.blend_mode,
             opacity: body.opacity,
         },
@@ -339,14 +327,16 @@ pub async fn patch_display_face_composition(
         Err(error) => return error.into_response(),
     };
 
+    let layers = state.domains.display.face_layers(device_id).await;
     envelope::ok(DisplayFaceResponse {
-        default_assigned: state.domains.display.has_default_face(device_id).await,
+        default_assigned: layers.default_assigned,
         device_id: device_id.to_string(),
         effect,
         zone: written.zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: written.scene_id.to_string(),
+        rendering: Some(layers.rendering()),
     })
 }
 
@@ -389,27 +379,19 @@ pub async fn delete_display_face(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return DomainError::not_found(ResourceKind::Device, &device).into_response();
     };
-    let Some(surface) = display_surface_info(&tracked.info) else {
+    if display_surface_info(&tracked.info).is_none() {
         return DomainError::validation(format!(
             "Device does not support display faces: {}",
             tracked.info.name
         ))
         .into_response();
-    };
+    }
 
-    let cleared = match crate::domain::display::clear_display_face(
-        &state.domains.scene,
-        crate::domain::display::ClearDisplayFace {
-            device_id,
-            device_name: tracked.info.name.clone(),
-            layout: display_face_layout(device_id, tracked.info.name.as_str(), surface),
-        },
-    )
-    .await
-    {
-        Ok(cleared) => cleared,
-        Err(error) => return error.into_response(),
-    };
+    let cleared =
+        match crate::domain::display::clear_display_face(&state.domains.scene, device_id).await {
+            Ok(cleared) => cleared,
+            Err(error) => return error.into_response(),
+        };
 
     envelope::ok(DeleteDisplayFaceResponse {
         device_id: device_id.to_string(),
@@ -468,15 +450,14 @@ pub async fn patch_display_face_controls(
         };
     }
 
-    let zone = match current_display_face_assignment(state.as_ref(), device_id).await {
-        Ok(response) => response.zone,
-        Err(error) => return error.into_response(),
-    };
+    if let Err(error) = current_display_face_assignment(state.as_ref(), device_id).await {
+        return error.into_response();
+    }
 
     let written = match crate::domain::display::patch_display_face_controls(
         &state.domains.effects,
         crate::domain::display::PatchDisplayFaceControls {
-            zone_id: zone.id,
+            device_id,
             controls: requested_controls,
         },
     )
@@ -490,14 +471,16 @@ pub async fn patch_display_face_controls(
         Err(error) => return error.into_response(),
     };
 
+    let layers = state.domains.display.face_layers(device_id).await;
     envelope::ok(DisplayFaceResponse {
-        default_assigned: state.domains.display.has_default_face(device_id).await,
+        default_assigned: layers.default_assigned,
         device_id: device_id.to_string(),
         effect: written.effect,
         zone: written.written.zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: written.written.scene_id.to_string(),
+        rendering: Some(layers.rendering()),
     })
 }
 
@@ -613,6 +596,19 @@ async fn orphaned_default_face_id(
         .then_some(device_id)
 }
 
+/// What a display's panel is showing over its backdrop.
+async fn rendering(state: &AppState, device_id: DeviceId) -> DisplayFaceRendering {
+    state
+        .domains
+        .display
+        .face_layers(device_id)
+        .await
+        .rendering()
+}
+
+/// The active scene's assignment for a screen: the effect of its lowest
+/// face layer, and the screen's view, or its stored display zone while
+/// one exists.
 async fn current_display_face_assignment(
     state: &AppState,
     device_id: DeviceId,
@@ -622,7 +618,11 @@ async fn current_display_face_assignment(
         let Some(active_scene) = scene_manager.active_scene() else {
             return Err(DomainError::not_found(ResourceKind::Scene, "active"));
         };
-        let Some(zone) = active_scene.display_zone_for(device_id).cloned() else {
+        let zone = scene_manager
+            .screen_view(&active_scene.id, device_id)
+            .map(|view| view.zone)
+            .or_else(|| active_scene.display_zone_for(device_id).cloned());
+        let Some(zone) = zone else {
             return Err(DomainError::not_found(
                 ResourceKind::Zone,
                 format!("display-face:{device_id}"),
@@ -641,16 +641,17 @@ async fn current_display_face_assignment(
         return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
     };
 
-    let default_assigned = state.domains.display.has_default_face(device_id).await;
+    let layers = state.domains.display.face_layers(device_id).await;
 
     Ok(DisplayFaceResponse {
-        default_assigned,
+        default_assigned: layers.default_assigned,
         device_id: device_id.to_string(),
         effect,
         zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: scene_id.to_string(),
+        rendering: Some(layers.rendering()),
     })
 }
 
@@ -695,6 +696,7 @@ async fn current_default_face_assignment(
         live_scope: DisplayFaceScope::Default,
         scene_assigned: false,
         scene_id,
+        rendering: Some(rendering(state, device_id).await),
     })
 }
 

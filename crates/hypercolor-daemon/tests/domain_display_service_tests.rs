@@ -13,7 +13,10 @@ use std::time::SystemTime;
 
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+    DeviceOrigin, DeviceTopologyHint, DisplayFrameFormat, SegmentInfo,
+};
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
     EffectSource, EffectState,
@@ -27,13 +30,20 @@ use hypercolor_types::scene::{
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
+use hypercolor_core::scene::screens::{ScreenStack, ScreenSurface, ScreenSurfaces};
+use hypercolor_core::spatial::DISPLAY_ZONE_NAME;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::display::{
-    ClearDisplayFace, PatchDisplayComposition, PatchDisplayFaceControls, SetDisplayFace,
-    clear_display_face, patch_display_composition, patch_display_face_controls,
-    prune_display_zones_for_device, remove_default_display_overlay, set_default_display_overlay,
-    set_display_face, sync_display_surfaces,
+    PatchDisplayComposition, PatchDisplayFaceControls, SetDisplayFace, clear_display_face,
+    patch_display_composition, patch_display_face_controls, prune_display_zones_for_device,
+    remove_default_display_overlay, set_default_display_overlay, set_display_face,
+    sync_screen_surfaces,
 };
+use hypercolor_daemon::domain::scene::commit_scene;
+use hypercolor_types::event::LayerStackChangeKind;
+use hypercolor_types::layer::LayerScope;
+use hypercolor_types::scene::Zone;
+use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output};
 
 // ── Harness ──────────────────────────────────────────────────────────────
 
@@ -138,7 +148,6 @@ async fn assign_command(
 ) -> SetDisplayFace {
     SetDisplayFace {
         device_id,
-        device_name: "Kraken".to_owned(),
         effect: state
             .domains
             .effects
@@ -146,7 +155,6 @@ async fn assign_command(
             .await
             .expect("registered effect should resolve"),
         controls: HashMap::new(),
-        layout: face_layout(device_id),
         target: DisplayFaceTarget {
             blend_mode: BlendMode::Alpha,
             device_id,
@@ -189,16 +197,165 @@ fn drain_events(
     seen
 }
 
-// ── Scene layer ──────────────────────────────────────────────────────────
+// ── Screens ──────────────────────────────────────────────────────────────
+
+const LAYOUT_ID: &str = "usb:kraken";
+const SCREEN: &str = "usb:kraken-display";
+
+fn screen_output(id: &str, layout_id: &str) -> Output {
+    Output {
+        id: id.to_owned(),
+        name: "Kraken LCD".to_owned(),
+        device_id: layout_id.to_owned(),
+        zone_name: Some(DISPLAY_ZONE_NAME.to_owned()),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(0.2, 0.2),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+fn surface(device_id: DeviceId) -> ScreenSurfaces {
+    ScreenSurfaces::from([(
+        LAYOUT_ID.to_owned(),
+        ScreenSurface {
+            device_id,
+            connected: true,
+            name: "Kraken".to_owned(),
+            width: 480,
+            height: 480,
+            output: Some(screen_output(SCREEN, LAYOUT_ID)),
+        },
+    )])
+}
+
+/// Register a display the way discovery does, tell the scene manager, and
+/// optionally make its screen an output of the primary zone. Returns the
+/// device and the id of its screen output.
+async fn connect_screen(state: &AppState, name: &str, placed: bool) -> (DeviceId, String) {
+    let device_id = DeviceId::new();
+    let mut info = DeviceInfo {
+        id: device_id,
+        name: name.to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("lianli", "Lian Li"),
+        model: None,
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("lianli", "usb", ConnectionType::Usb),
+        segments: vec![SegmentInfo {
+            name: DISPLAY_ZONE_NAME.to_owned(),
+            led_count: 0,
+            topology: DeviceTopologyHint::Display {
+                width: 480,
+                height: 480,
+                circular: true,
+                format: DisplayFrameFormat::Jpeg,
+            },
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    info.sync_display_capabilities();
+    let _ = state.device_registry.add(info).await;
+    state.domains.display.sync_connected_surfaces().await;
+    let screen = state
+        .scene_manager
+        .snapshot()
+        .await
+        .screen_surfaces()
+        .values()
+        .find(|surface| surface.device_id == device_id)
+        .and_then(|surface| surface.output.as_ref())
+        .map(|output| output.id.clone())
+        .expect("a registered display offers a screen output");
+    if placed {
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .place_screen(SceneId::DEFAULT, device_id, (640, 480))
+            .expect("the screen should be placed");
+        commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("the screen should commit");
+    }
+    (device_id, screen)
+}
+
+/// A stored display zone, the spelling builds before screen layers wrote.
+fn legacy_zone(device_id: DeviceId, effect_id: EffectId) -> Zone {
+    let mut zone = overlay_zone(device_id, effect_id);
+    zone.display_target = Some(DisplayFaceTarget {
+        device_id,
+        blend_mode: BlendMode::Screen,
+        opacity: 0.5,
+    });
+    zone
+}
+
+async fn store_zone(state: &AppState, zone: Zone) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut scene = mutation
+        .scenes()
+        .active_scene()
+        .cloned()
+        .expect("active scene");
+    scene.zones.push(zone);
+    mutation.update_scene(scene).expect("store the zone");
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("the zone should commit");
+}
+
+async fn active_scene(state: &AppState) -> Scene {
+    state
+        .scene_manager
+        .snapshot()
+        .await
+        .active_scene()
+        .cloned()
+        .expect("active scene")
+}
+
+/// The layers scoped to the screen in the zone that places it.
+async fn screen_layers(state: &AppState, screen: &str) -> Vec<SceneLayer> {
+    active_scene(state)
+        .await
+        .primary_zone()
+        .map(|zone| {
+            zone.layers
+                .iter()
+                .filter(|layer| {
+                    layer
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.contains(screen))
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 #[tokio::test]
-async fn set_display_face_creates_the_zone_then_updates_it() {
+async fn setting_a_face_writes_one_screen_layer_and_answers_with_the_view() {
     let (state, _tempdir) = isolated_state();
-    let device_id = DeviceId::new();
     let first = face_effect("clock");
     let second = face_effect("weather");
     insert_effect(&state, &first).await;
     insert_effect(&state, &second).await;
+    let (device_id, screen) = connect_screen(&state, "Kraken", true).await;
     let mut events = state.event_bus.subscribe_all();
 
     let created = set_display_face(
@@ -207,9 +364,44 @@ async fn set_display_face_creates_the_zone_then_updates_it() {
     )
     .await
     .expect("the face should be assigned");
+
     assert_eq!(created.change, ZoneChangeKind::Created);
-    assert_eq!(created.zone.effect_ids().next(), Some(first.id));
     assert_eq!(created.zone.role, ZoneRole::Display);
+    assert_eq!(created.zone.effect_ids().next(), Some(first.id));
+    assert!(
+        created
+            .zone
+            .layers
+            .iter()
+            .all(|layer| layer.scope.is_none()),
+        "a view lists its layers without their scope"
+    );
+    let scene = active_scene(&state).await;
+    assert!(
+        scene.display_zone_for(device_id).is_none(),
+        "no display zone is written into the scene"
+    );
+    let primary = scene.primary_zone().expect("primary zone");
+    assert_eq!(created.owner, Some((primary.id, screen.clone())));
+    let layers = screen_layers(&state, &screen).await;
+    assert_eq!(layers.len(), 1);
+    assert_eq!(
+        layers[0].scope,
+        Some(LayerScope {
+            outputs: vec![screen.clone()]
+        })
+    );
+    let seen = drain_events(&mut events);
+    assert!(seen.iter().any(|event| matches!(
+        event,
+        HypercolorEvent::ZoneChanged { zone_id, role: ZoneRole::Display, .. }
+            if *zone_id == created.zone.id
+    )));
+    assert!(seen.iter().any(|event| matches!(
+        event,
+        HypercolorEvent::LayerStackChanged { zone_id, kind: LayerStackChangeKind::Updated, .. }
+            if *zone_id == primary.id
+    )));
 
     let updated = set_display_face(
         &state.domains.effects,
@@ -217,59 +409,193 @@ async fn set_display_face_creates_the_zone_then_updates_it() {
     )
     .await
     .expect("the face should be replaced");
-    assert_eq!(updated.change, ZoneChangeKind::Updated);
-    assert_eq!(updated.zone.effect_ids().next(), Some(second.id));
-    assert_eq!(updated.zone.id, created.zone.id, "the zone is reused");
 
-    let seen = drain_events(&mut events);
-    let kinds = seen
-        .iter()
-        .filter_map(|event| match event {
-            HypercolorEvent::ZoneChanged { kind, .. } => Some(*kind),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    assert_eq!(updated.change, ZoneChangeKind::Updated);
     assert_eq!(
-        kinds,
-        vec![ZoneChangeKind::Created, ZoneChangeKind::Updated],
-        "both transports announce the same two changes: {seen:?}"
+        updated.zone.id, created.zone.id,
+        "a screen's view id is stable"
     );
+    let layers = screen_layers(&state, &screen).await;
+    assert_eq!(layers.len(), 1, "the stack becomes the one new layer");
+    assert!(matches!(
+        layers[0].source,
+        LayerSource::Effect { effect_id, .. } if effect_id == second.id
+    ));
 }
 
-/// The upsert seeds the target as Replace, which would black out the
-/// effect beneath the face. The caller's composition has to survive.
 #[tokio::test]
-async fn set_display_face_applies_the_requested_composition() {
+async fn setting_a_face_places_a_screen_no_zone_places() {
+    let (state, _tempdir) = isolated_state();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+    let (device_id, screen) = connect_screen(&state, "Kraken", false).await;
+
+    let written = set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect("the face should be assigned");
+
+    let scene = active_scene(&state).await;
+    let primary = scene.primary_zone().expect("primary zone");
+    assert!(
+        primary
+            .layout
+            .zones
+            .iter()
+            .any(|output| output.id == screen),
+        "the screen joins the primary zone"
+    );
+    assert_eq!(written.owner, Some((primary.id, screen.clone())));
+    assert_eq!(screen_layers(&state, &screen).await.len(), 1);
+}
+
+#[tokio::test]
+async fn setting_a_face_on_a_display_the_rig_does_not_know_is_refused() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
+    let revision = state.scene_manager.revision();
 
+    let refused = set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect_err("a display that is not registered has no screen to place");
+
+    assert!(matches!(
+        refused,
+        hypercolor_daemon::domain::DomainError::Conflict { .. }
+    ));
+    assert_eq!(state.scene_manager.revision(), revision);
+}
+
+#[tokio::test]
+async fn setting_a_face_applies_the_composition_to_the_layer_and_the_view() {
+    let (state, _tempdir) = isolated_state();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+    let (device_id, screen) = connect_screen(&state, "Kraken", true).await;
     let mut command = assign_command(&state, device_id, &effect).await;
-    command.target = DisplayFaceTarget {
-        blend_mode: BlendMode::Alpha,
-        device_id,
-        opacity: 0.4,
-    };
+    command.target.blend_mode = BlendMode::Screen;
+    command.target.opacity = 0.4;
+
     let written = set_display_face(&state.domains.effects, command)
         .await
         .expect("the face should be assigned");
 
-    let target = written
-        .zone
-        .display_target
-        .expect("a display zone carries a target");
-    assert_eq!(target.blend_mode, BlendMode::Alpha);
+    let target = written.zone.display_target.expect("view target");
+    assert_eq!(target.blend_mode, BlendMode::Screen);
     assert!((target.opacity - 0.4).abs() < f32::EPSILON);
+    let layer = &screen_layers(&state, &screen).await[0];
+    assert_eq!(layer.blend, BlendMode::Screen);
+    assert!((layer.opacity - 0.4).abs() < f32::EPSILON);
+}
+
+#[tokio::test]
+async fn setting_a_face_replaces_a_stored_display_zone_in_the_same_commit() {
+    let (state, _tempdir) = isolated_state();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+    let (device_id, screen) = connect_screen(&state, "Kraken", true).await;
+    // A first layer that is not opaque keeps the zone from converting.
+    let mut zone = legacy_zone(device_id, effect.id);
+    zone.layers[0].opacity = 0.5;
+    store_zone(&state, zone).await;
+    assert!(
+        active_scene(&state)
+            .await
+            .display_zone_for(device_id)
+            .is_some()
+    );
+
+    set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect("the face should be assigned");
+
+    assert!(
+        active_scene(&state)
+            .await
+            .display_zone_for(device_id)
+            .is_none()
+    );
+    assert_eq!(screen_layers(&state, &screen).await.len(), 1);
+}
+
+#[tokio::test]
+async fn setting_the_same_face_again_carries_its_input_bindings() {
+    let (state, _tempdir) = isolated_state();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+    let (device_id, screen) = connect_screen(&state, "Kraken", true).await;
+    set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect("the face should be assigned");
+    let layer = screen_layers(&state, &screen).await.remove(0);
+    let mut bound = layer.clone();
+    if let LayerSource::Effect {
+        control_bindings, ..
+    } = &mut bound.source
+    {
+        control_bindings.insert(
+            "speed".to_owned(),
+            hypercolor_types::effect::ControlBinding {
+                sensor: "cpu".to_owned(),
+                sensor_min: 0.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 1.0,
+                deadband: 0.0,
+                smoothing: 0.0,
+            },
+        );
+    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let owner = mutation
+        .scenes()
+        .active_scene()
+        .and_then(Scene::primary_zone)
+        .map(|zone| zone.id)
+        .expect("primary zone");
+    mutation
+        .replace_layer(SceneId::DEFAULT, owner, layer.id, bound)
+        .expect("bind the face");
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("binding should commit");
+
+    set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect("the same face is assigned again");
+
+    let LayerSource::Effect {
+        control_bindings, ..
+    } = &screen_layers(&state, &screen).await[0].source
+    else {
+        panic!("the face is an effect layer");
+    };
+    assert!(control_bindings.contains_key("speed"));
 }
 
 #[tokio::test]
 async fn set_display_face_rejects_controls_inside_the_domain() {
     let (state, _tempdir) = isolated_state();
-    let device_id = DeviceId::new();
     let mut effect = face_effect("clock");
     effect.controls.push(numeric_control("accent"));
     insert_effect(&state, &effect).await;
+    let (device_id, screen) = connect_screen(&state, "Kraken", true).await;
     let mut command = assign_command(&state, device_id, &effect).await;
     command
         .controls
@@ -282,220 +608,261 @@ async fn set_display_face_rejects_controls_inside_the_domain() {
 
     assert!(error.to_string().contains("control values were rejected"));
     assert_eq!(state.domains.scene.revision(), before);
+    assert!(screen_layers(&state, &screen).await.is_empty());
 }
 
 #[tokio::test]
-async fn clear_display_face_keeps_the_zone_and_drops_the_effect() {
+async fn clearing_a_face_removes_the_screens_own_layers_and_leaves_shared_ones() {
     let (state, _tempdir) = isolated_state();
-    let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    let created = set_display_face(
-        &state.domains.effects,
-        assign_command(&state, device_id, &effect).await,
-    )
-    .await
-    .expect("the face should be assigned");
+    // Two screens in one zone, one layer scoped to both, one to the first.
+    let (device_id, screen) = connect_screen(&state, "Kraken", true).await;
+    let (_, other_screen) = connect_screen(&state, "Other", true).await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let owner = mutation
+        .scenes()
+        .active_scene()
+        .and_then(Scene::primary_zone)
+        .map(|zone| zone.id)
+        .expect("primary zone");
+    let scoped = |outputs: &[&str]| {
+        let mut layer = SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect.id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        layer.scope = Some(LayerScope {
+            outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+        });
+        layer
+    };
+    let shared = scoped(&[screen.as_str(), other_screen.as_str()]);
+    let shared_id = shared.id;
+    for layer in [shared, scoped(&[screen.as_str()])] {
+        mutation
+            .insert_layer(SceneId::DEFAULT, owner, layer, None, None)
+            .expect("screen layer");
+    }
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("seed commit");
 
-    let cleared = clear_display_face(
-        &state.domains.scene,
-        ClearDisplayFace {
-            device_id,
-            device_name: "Kraken".to_owned(),
-            layout: face_layout(device_id),
-        },
-    )
-    .await
-    .expect("the face should be cleared");
+    let cleared = clear_display_face(&state.domains.scene, device_id)
+        .await
+        .expect("the stack should clear");
 
-    assert_eq!(cleared.zone.id, created.zone.id);
-    assert!(cleared.zone.effect_ids().next().is_none());
-    assert_eq!(cleared.change, ZoneChangeKind::Updated);
+    let view = cleared.view.expect("a connected screen keeps its view");
+    assert!(view.zone.layers.is_empty(), "the view is now empty");
+    let scene = active_scene(&state).await;
+    let primary = scene.primary_zone().expect("primary zone");
+    assert_eq!(primary.layers.len(), 1, "the shared layer stays");
+    assert_eq!(primary.layers[0].id, shared_id);
+    assert_eq!(
+        primary.layers[0].scope,
+        Some(LayerScope {
+            outputs: vec![other_screen.clone()]
+        }),
+        "this screen left the shared layer's scope"
+    );
 }
 
 #[tokio::test]
 async fn display_face_mutations_conflict_on_a_snapshot_locked_scene() {
     let (state, _tempdir) = isolated_state();
-    let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-
-    let mut scene = named_scene("frozen");
-    scene.mutation_mode = SceneMutationMode::Snapshot;
-    let scene_id = scene.id;
+    let (device_id, _) = connect_screen(&state, "Kraken", true).await;
+    let mut locked = named_scene("Locked");
+    locked.mutation_mode = SceneMutationMode::Snapshot;
+    let locked_id = locked.id;
     let mut mutation = state.scene_manager.begin_mutation().await;
-    mutation
-        .create_scene(scene)
-        .expect("scene should be created");
+    mutation.create_scene(locked).expect("create locked scene");
     mutation
         .activate(
-            scene_id,
+            locked_id,
             None,
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
-        .expect("scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .expect("activate locked scene");
+    commit_scene(&state.domains.scene, mutation)
         .await
-        .expect("scene should commit");
+        .expect("activation should commit");
 
-    let error = set_display_face(
+    let refused = set_display_face(
         &state.domains.effects,
         assign_command(&state, device_id, &effect).await,
     )
+    .await;
+    assert!(matches!(
+        refused,
+        Err(hypercolor_daemon::domain::DomainError::Conflict { .. })
+    ));
+    assert!(matches!(
+        clear_display_face(&state.domains.scene, device_id).await,
+        Err(hypercolor_daemon::domain::DomainError::Conflict { .. })
+    ));
+}
+
+#[tokio::test]
+async fn patching_composition_and_controls_reports_a_screen_with_no_stack() {
+    let (state, _tempdir) = isolated_state();
+    let (device_id, _) = connect_screen(&state, "Kraken", true).await;
+
+    let composition = patch_display_composition(
+        &state.domains.scene,
+        PatchDisplayComposition {
+            device_id,
+            blend_mode: Some(BlendMode::Screen),
+            opacity: None,
+        },
+    )
     .await
-    .expect_err("a snapshot scene refuses runtime rewriting");
-    assert!(
-        matches!(
-            error,
-            hypercolor_daemon::domain::DomainError::Conflict { .. }
-        ),
-        "expected Conflict, got {error:?}"
-    );
+    .expect("the patch runs");
+    assert!(composition.is_none());
+
+    let controls = patch_display_face_controls(
+        &state.domains.effects,
+        PatchDisplayFaceControls {
+            device_id,
+            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]),
+        },
+    )
+    .await
+    .expect("the patch runs");
+    assert!(controls.is_none());
 }
 
 #[tokio::test]
-async fn patching_composition_and_controls_reports_a_missing_zone() {
+async fn patching_composition_and_controls_edits_the_screens_layer() {
     let (state, _tempdir) = isolated_state();
-
-    assert!(
-        patch_display_composition(
-            &state.domains.scene,
-            PatchDisplayComposition {
-                zone_id: ZoneId::new(),
-                blend_mode: Some(BlendMode::Replace),
-                opacity: None,
-            },
-        )
-        .await
-        .expect("a missing zone is a not-found, not a failure")
-        .is_none()
-    );
-
-    assert!(
-        patch_display_face_controls(
-            &state.domains.effects,
-            PatchDisplayFaceControls {
-                zone_id: ZoneId::new(),
-                controls: HashMap::from([("accent".to_owned(), ControlValue::Float(0.5))]),
-            },
-        )
-        .await
-        .expect("a missing zone is a not-found, not a failure")
-        .is_none()
-    );
-}
-
-#[tokio::test]
-async fn patch_display_face_controls_merges_onto_the_zone() {
-    let (state, _tempdir) = isolated_state();
-    let device_id = DeviceId::new();
     let mut effect = face_effect("clock");
-    effect.controls.push(numeric_control("accent"));
+    effect.controls = vec![numeric_control("speed")];
     insert_effect(&state, &effect).await;
-    let created = set_display_face(
+    let (device_id, screen) = connect_screen(&state, "Kraken", true).await;
+    set_display_face(
         &state.domains.effects,
         assign_command(&state, device_id, &effect).await,
     )
     .await
     .expect("the face should be assigned");
 
-    let before = state.domains.scene.revision();
-    let error = patch_display_face_controls(
-        &state.domains.effects,
-        PatchDisplayFaceControls {
-            zone_id: created.zone.id,
-            controls: HashMap::from([("accent".to_owned(), ControlValue::Bool(true))]),
+    let composed = patch_display_composition(
+        &state.domains.scene,
+        PatchDisplayComposition {
+            device_id,
+            blend_mode: Some(BlendMode::Add),
+            opacity: Some(0.25),
         },
     )
     .await
-    .expect_err("face control patches cannot bypass effect admission");
-    assert!(error.to_string().contains("control values were rejected"));
-    assert_eq!(state.domains.scene.revision(), before);
+    .expect("the patch runs")
+    .expect("the screen has a stack");
+    let target = composed.zone.display_target.expect("view target");
+    assert_eq!(target.blend_mode, BlendMode::Add);
+    assert!((target.opacity - 0.25).abs() < f32::EPSILON);
 
-    let written = patch_display_face_controls(
+    let patched = patch_display_face_controls(
         &state.domains.effects,
         PatchDisplayFaceControls {
-            zone_id: created.zone.id,
-            controls: HashMap::from([("accent".to_owned(), ControlValue::Float(0.5))]),
+            device_id,
+            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(0.75))]),
         },
     )
     .await
-    .expect("the patch should not fail")
-    .expect("the zone exists");
-
+    .expect("the patch runs")
+    .expect("the screen has one face");
     assert_eq!(
-        zone_controls(&written.written.zone).and_then(|controls| controls.get("accent")),
-        Some(&ControlValue::Float(0.5))
+        zone_controls(&patched.written.zone).and_then(|controls| controls.get("speed")),
+        Some(&ControlValue::Float(0.75))
     );
-    assert_eq!(written.written.change, ZoneChangeKind::ControlsPatched);
+    let layer = &screen_layers(&state, &screen).await[0];
+    assert_eq!(layer.blend, BlendMode::Add);
+    assert!(matches!(
+        &layer.source,
+        LayerSource::Effect { controls, .. }
+            if controls.get("speed") == Some(&ControlValue::Float(0.75))
+    ));
 }
 
-// ── Surface sync and pruning ─────────────────────────────────────────────
-
-/// Surface sync runs on startup, device connection, and scene activation,
-/// so a snapshot scene must make it a no-op rather than an error.
 #[tokio::test]
-async fn sync_display_surfaces_skips_a_snapshot_locked_scene() {
+async fn syncing_screens_converts_a_stored_display_zone_once() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+    store_zone(&state, legacy_zone(device_id, effect.id)).await;
+    // The screen's surface is not known yet, so nothing can convert.
+    let stack = state
+        .scene_manager
+        .snapshot()
+        .await
+        .active_screen_stack(device_id)
+        .is_some_and(|stack| matches!(stack, ScreenStack::Legacy(_)));
+    assert!(stack);
 
-    let mut scene = named_scene("frozen");
-    scene.mutation_mode = SceneMutationMode::Snapshot;
-    let scene_id = scene.id;
+    assert!(
+        sync_screen_surfaces(&state.domains.scene, surface(device_id))
+            .await
+            .expect("the sync should commit")
+    );
+
+    let scene = active_scene(&state).await;
+    assert!(scene.display_zone_for(device_id).is_none());
+    let layers = screen_layers(&state, SCREEN).await;
+    assert_eq!(layers.len(), 1);
+    assert_eq!(
+        layers[0].blend,
+        BlendMode::Screen,
+        "the target moved onto the layer"
+    );
+    assert!((layers[0].opacity - 0.5).abs() < f32::EPSILON);
+
+    let revision = state.scene_manager.revision();
+    assert!(
+        !sync_screen_surfaces(&state.domains.scene, surface(device_id))
+            .await
+            .expect("the second sync runs"),
+        "a second sync changes nothing"
+    );
+    assert_eq!(state.scene_manager.revision(), revision);
+}
+
+#[tokio::test]
+async fn syncing_screens_leaves_a_snapshot_locked_scene_as_stored() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = DeviceId::new();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+    let mut locked = named_scene("Locked");
+    locked.mutation_mode = SceneMutationMode::Snapshot;
+    locked.zones = vec![legacy_zone(device_id, effect.id)];
+    let locked_id = locked.id;
     let mut mutation = state.scene_manager.begin_mutation().await;
     mutation
-        .create_scene(scene)
-        .expect("scene should be created");
+        .create_scene(locked.clone())
+        .expect("create locked scene");
     mutation
         .activate(
-            scene_id,
+            locked_id,
             None,
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
-        .expect("scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .expect("activate locked scene");
+    commit_scene(&state.domains.scene, mutation)
         .await
-        .expect("scene should commit");
+        .expect("activation should commit");
 
-    let changed = sync_display_surfaces(
-        &state.domains.scene,
-        vec![(device_id, "Kraken".to_owned(), face_layout(device_id))],
-    )
-    .await
-    .expect("surface sync should not fail on a locked scene");
-    assert!(!changed);
-}
+    sync_screen_surfaces(&state.domains.scene, surface(device_id))
+        .await
+        .expect("the sync should commit");
 
-#[tokio::test]
-async fn sync_display_surfaces_reports_whether_anything_moved() {
-    let (state, _tempdir) = isolated_state();
-    let device_id = DeviceId::new();
-    let displays = vec![(device_id, "Kraken".to_owned(), face_layout(device_id))];
-    let mut events = state.event_bus.subscribe_all();
-
-    assert!(
-        sync_display_surfaces(&state.domains.scene, displays.clone())
-            .await
-            .expect("the first sync installs a surface"),
-        "installing a surface is a change"
-    );
-    assert!(
-        !sync_display_surfaces(&state.domains.scene, displays)
-            .await
-            .expect("the second sync is idempotent"),
-        "an unchanged surface must not commit"
-    );
-    let kinds = drain_events(&mut events)
-        .into_iter()
-        .filter_map(|event| match event {
-            HypercolorEvent::ZoneChanged { kind, .. } => Some(kind),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
     assert_eq!(
-        kinds,
-        vec![ZoneChangeKind::Created],
-        "surface materialization is created once, then idempotent"
+        active_scene(&state).await.zones,
+        locked.zones,
+        "a locked scene keeps its display zone"
     );
 }
 
@@ -505,12 +872,7 @@ async fn prune_display_zones_removes_both_layers_for_a_deleted_device() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    set_display_face(
-        &state.domains.effects,
-        assign_command(&state, device_id, &effect).await,
-    )
-    .await
-    .expect("the face should be assigned");
+    store_zone(&state, legacy_zone(device_id, effect.id)).await;
     set_default_display_overlay(
         &state.domains.scene,
         device_id,

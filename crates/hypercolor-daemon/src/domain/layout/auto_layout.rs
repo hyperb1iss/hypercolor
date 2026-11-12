@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use hypercolor_core::spatial::generate_positions;
+use hypercolor_core::spatial::{DISPLAY_ZONE_NAME, generate_positions};
 use hypercolor_types::attachment::channel_name_matches_slot_alias;
 use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint, SegmentPlacement};
 use hypercolor_types::scene::{Zone, ZoneRole};
@@ -250,6 +250,55 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
     }
 
     repaired
+}
+
+/// Build the output a zone places a device's screen with.
+///
+/// Automatic layout leaves screens off the canvas, so nothing mints this
+/// box until a face is written for a screen no zone places. It sits at
+/// the canvas center with the panel's shape.
+#[must_use]
+pub(super) fn screen_output_for_device(
+    layout_device_id: &str,
+    device_info: &DeviceInfo,
+    canvas: (u32, u32),
+) -> Option<Output> {
+    const WIDTH: f32 = 0.18;
+    let surface = device_info.display_surface()?;
+    let pixels = |value: u32| f32::from(u16::try_from(value.max(1)).unwrap_or(u16::MAX));
+    let canvas_aspect = pixels(canvas.0) / pixels(canvas.1);
+    let panel_aspect = pixels(surface.width) / pixels(surface.height);
+    let height = (WIDTH * canvas_aspect / panel_aspect).clamp(0.04, 0.9);
+    Some(Output {
+        id: format!(
+            "auto-{}-{}",
+            sanitize_auto_layout_component(layout_device_id),
+            sanitize_auto_layout_component(DISPLAY_ZONE_NAME)
+        ),
+        name: device_info.name.clone(),
+        device_id: layout_device_id.to_owned(),
+        zone_name: Some(DISPLAY_ZONE_NAME.to_owned()),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(WIDTH, height),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Matrix {
+            width: surface.width,
+            height: surface.height,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: Some(SamplingMode::Bilinear),
+        edge_behavior: Some(EdgeBehavior::Clamp),
+        shape: Some(ZoneShape::Rectangle),
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    })
 }
 
 fn auto_layout_slot_center(slot_index: usize) -> NormalizedPosition {

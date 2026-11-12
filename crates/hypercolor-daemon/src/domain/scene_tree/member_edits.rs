@@ -18,7 +18,7 @@ use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 use super::{
     AssignMembersRequest, DomainError, DomainErrorDetails, Output, OutputPlacement, ResourceKind,
     Scene, SceneTreeContext, ZoneRole, active_scene, check_scene_fence, ensure_live_zone_mutable,
-    member_placement, mint_missing_outputs, reconcile_member_exclusions, scene_document,
+    live_scene_document, member_placement, mint_missing_outputs, reconcile_member_exclusions,
     zone_layout_error,
 };
 
@@ -67,8 +67,9 @@ pub async fn edit_members(
         request.changes = assignment_changes(&previous, &assignment, minted)?;
         if request.changes.is_empty() {
             return Ok(EditMembersResponse {
-                document: scene_document(
+                document: live_scene_document(
                     &previous,
+                    &mutation.scenes().screen_views(&previous.id),
                     mutation.base_revision(),
                     ctx.scene.run_epoch(),
                 ),
@@ -240,6 +241,7 @@ pub async fn edit_members(
             change.after = find_state(&committed, &after.output.id);
         }
     }
+    let views = mutation.scenes().screen_views(&committed.id);
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
     ctx.layout
@@ -247,7 +249,7 @@ pub async fn edit_members(
         .await;
     reconcile_member_exclusions(ctx, scene_id, &previous.zones).await;
     Ok(EditMembersResponse {
-        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
+        document: live_scene_document(&committed, &views, commit.revision(), ctx.scene.run_epoch()),
         changes,
         layer_moves,
     })

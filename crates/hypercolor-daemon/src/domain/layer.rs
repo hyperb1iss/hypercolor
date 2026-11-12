@@ -27,13 +27,18 @@ use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
 use crate::domain::effect::EffectContext;
 use crate::domain::scene::SceneMutation;
+use crate::domain::screen;
 use crate::domain::{DomainError, ResourceKind};
 
 /// The outcome of a layer-stack mutation.
 #[derive(Debug)]
 pub struct LayerStackWritten {
-    /// The zone changed by the mutation.
+    /// The zone changed by the mutation. For a write addressed to a
+    /// screen's view, the view.
     pub zone: Zone,
+    /// For a view, the zone that places the screen and the screen's
+    /// output in it.
+    pub view_of: Option<(ZoneId, String)>,
     /// The commit receipt.
     pub commit: SceneCommit,
 }
@@ -62,6 +67,17 @@ pub async fn insert_layer(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a layer")?;
     crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
+    if let Some(view) = screen::view_target(&mutation, zone_id) {
+        view.create_layer(&mut mutation, layer, ctx.render_canvas_size())?;
+        if let Some(media_admission) = media_admission {
+            let scene = mutation
+                .scenes()
+                .get(&scene_id)
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
+            media_admission.validate(scene)?;
+        }
+        return finish_view(ctx, mutation, view).await;
+    }
     crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, None) {
         Ok(zone) => zone,
@@ -91,6 +107,10 @@ pub async fn remove_layer(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("deleting a layer")?;
     crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
+    if let Some(view) = screen::view_target(&mutation, zone_id) {
+        view.delete_layer(&mut mutation, layer_id)?;
+        return finish_view(ctx, mutation, view).await;
+    }
     crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, None) {
         Ok(zone) => zone,
@@ -113,6 +133,10 @@ pub async fn reorder_layers(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("reordering layers")?;
     crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
+    if let Some(view) = screen::view_target(&mutation, zone_id) {
+        view.reorder_layers(&mut mutation, &layer_ids)?;
+        return finish_view(ctx, mutation, view).await;
+    }
     crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, None) {
         Ok(zone) => zone,
@@ -166,5 +190,34 @@ async fn finish(
     let commit = ctx.commit(mutation).await?;
     ctx.save_runtime_session().await;
 
-    Ok(Ok(LayerStackWritten { zone, commit }))
+    Ok(Ok(LayerStackWritten {
+        zone,
+        view_of: None,
+        commit,
+    }))
+}
+
+/// Commit a write addressed to a screen's view and answer with the view.
+async fn finish_view(
+    ctx: &SceneContext,
+    mutation: SceneMutation,
+    view: screen::ViewTarget,
+) -> Result<LayerResult, DomainError> {
+    let written = view.view(&mutation)?;
+    let commit = ctx.commit(mutation).await?;
+    ctx.save_runtime_session().await;
+
+    Ok(Ok(LayerStackWritten {
+        zone: written.zone,
+        view_of: written.owner,
+        commit,
+    }))
+}
+
+impl LayerStackWritten {
+    /// The written zone as the wire resource.
+    #[must_use]
+    pub fn resource(&self) -> hypercolor_types::api::scene::ZoneResource {
+        crate::domain::scene_tree::screen_zone_resource(&self.zone, self.view_of.as_ref())
+    }
 }

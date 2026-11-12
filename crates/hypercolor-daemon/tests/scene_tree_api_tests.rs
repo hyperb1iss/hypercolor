@@ -40,6 +40,46 @@ use serde_json::json;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// Store a display zone the way builds before screen layers wrote one, so
+/// a test can start from the legacy spelling of a screen's stack.
+fn store_legacy_display_zone(
+    mutation: &mut hypercolor_daemon::domain::scene::SceneMutation,
+    device_name: &str,
+    effect: &hypercolor_types::effect::EffectMetadata,
+    controls: std::collections::HashMap<String, hypercolor_types::control::ControlValue>,
+    layout: hypercolor_types::spatial::SpatialLayout,
+    target: hypercolor_types::scene::DisplayFaceTarget,
+) -> Result<hypercolor_types::scene::Zone, hypercolor_daemon::domain::DomainError> {
+    let mut scene = mutation
+        .scenes()
+        .active_scene()
+        .cloned()
+        .expect("a scene is always active");
+    let zone = hypercolor_types::scene::Zone {
+        id: hypercolor_types::scene::ZoneId::new(),
+        name: format!("{device_name} Face"),
+        description: None,
+        layers: vec![hypercolor_types::layer::SceneLayer::from_effect(
+            hypercolor_types::layer::SceneLayerId::new(),
+            effect.id,
+            controls,
+            std::collections::HashMap::new(),
+            None,
+        )],
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(target),
+        role: hypercolor_types::scene::ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    };
+    scene.zones.push(zone.clone());
+    mutation.update_scene(scene)?;
+    Ok(zone)
+}
+
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
@@ -260,17 +300,16 @@ async fn seed_display_zone(state: &Arc<AppState>, effect_id: EffectId) -> ZoneId
         .expect("seeded effect");
     let device_id = hypercolor_types::device::DeviceId::new();
     let mut mutation = state.scene_manager.begin_mutation().await;
-    let zone_id = mutation
-        .upsert_display_zone(
-            device_id,
-            "Panel",
-            &metadata,
-            HashMap::new(),
-            sample_layout(vec![sample_output("out-face", None)]),
-            hypercolor_types::scene::DisplayFaceTarget::new(device_id),
-        )
-        .expect("face assigns")
-        .id;
+    let zone_id = store_legacy_display_zone(
+        &mut mutation,
+        "Panel",
+        &metadata,
+        HashMap::new(),
+        sample_layout(vec![sample_output("out-face", None)]),
+        hypercolor_types::scene::DisplayFaceTarget::new(device_id),
+    )
+    .expect("face assigns")
+    .id;
     hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("face should commit");
@@ -1607,17 +1646,16 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
             .expect("seeded effect");
         let device_id = hypercolor_types::device::DeviceId::new();
         let mut mutation = state.scene_manager.begin_mutation().await;
-        let zone_id = mutation
-            .upsert_display_zone(
-                device_id,
-                "Panel",
-                &metadata,
-                HashMap::<String, ControlValue>::new(),
-                sample_layout(vec![sample_output("out-face", None)]),
-                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
-            )
-            .expect("face assigns")
-            .id;
+        let zone_id = store_legacy_display_zone(
+            &mut mutation,
+            "Panel",
+            &metadata,
+            HashMap::<String, ControlValue>::new(),
+            sample_layout(vec![sample_output("out-face", None)]),
+            hypercolor_types::scene::DisplayFaceTarget::new(device_id),
+        )
+        .expect("face assigns")
+        .id;
         hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("face should commit");

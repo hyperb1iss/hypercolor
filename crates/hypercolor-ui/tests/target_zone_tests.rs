@@ -169,6 +169,7 @@ fn zone_resource(id: ZoneId, devices: &[&str]) -> ZoneResource {
             .collect(),
         layout: None,
         layers: Vec::new(),
+        view_of: None,
     }
 }
 

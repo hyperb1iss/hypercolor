@@ -77,7 +77,7 @@ pub(super) fn build_add_layer() -> ToolDefinition {
     ToolDefinition {
         name: "add_layer".into(),
         title: "Add Effect Layer".into(),
-        description: "Stack one effect on top of a zone's layers without replacing anything. Name outputs to limit the layer to part of the zone, such as one keyboard, and omit them to cover the whole zone. The effect, zone, and output selectors accept an ID, an exact name, or a unique name substring.".into(),
+        description: "Stack one effect on top of a zone's layers without replacing anything. Name outputs to limit the layer to part of the zone, such as one keyboard, and omit them to cover the whole zone. A display face is accepted when every output named is a screen. The effect, zone, and output selectors accept an ID, an exact name, or a unique name substring.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -265,15 +265,6 @@ pub(super) async fn handle_add_layer_with_state(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect".into()))?;
     let effect = resolve_effect_selector(state, "effect", query).await?;
-    if effect.category == EffectCategory::Display {
-        return Err(ToolError::InvalidParam {
-            param: "effect".into(),
-            reason: format!(
-                "effect '{}' is a display face and must be assigned to a display device, not stacked on a lighting zone",
-                effect.name
-            ),
-        });
-    }
     let controls = admitted_controls(params, &effect)?;
     let blend = match params.get("blend") {
         Some(value) => decode_argument::<BlendMode>("blend", value)?,
@@ -316,6 +307,29 @@ pub(super) async fn handle_add_layer_with_state(
         Some(queries) => Some(resolve_scope(state, &zone, queries).await?),
         None => None,
     };
+    // A face is a layer scoped to screens. Anywhere else it would be drawn
+    // into the lighting canvas, which is the mistake `set_effect` refuses.
+    if effect.category == EffectCategory::Display {
+        let screens_only = scope.as_ref().is_some_and(|scope| {
+            !scope.outputs.is_empty()
+                && scope.outputs.iter().all(|id| {
+                    zone.members.iter().any(|member| {
+                        member.id.0 == *id
+                            && member.segment.as_deref()
+                                == Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME)
+                    })
+                })
+        });
+        if !screens_only {
+            return Err(ToolError::InvalidParam {
+                param: "effect".into(),
+                reason: format!(
+                    "effect '{}' is a display face; name the screens it shows on in `outputs`, or use set_display_face",
+                    effect.name
+                ),
+            });
+        }
+    }
 
     let mut layer = SceneLayer::from_effect(
         SceneLayerId::new(),
@@ -356,7 +370,7 @@ pub(super) async fn handle_add_layer_with_state(
     .await?
     .map_err(|refusal| crate::domain::scene_tree::layer_error(refusal, zone_id, None))?;
 
-    serialize_result(crate::domain::scene_tree::zone_resource(&written.zone))
+    serialize_result(written.resource())
 }
 
 pub(super) async fn handle_list_effects_with_state(

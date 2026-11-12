@@ -92,6 +92,46 @@ use hypercolor_types::spatial::{
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
+/// Store a display zone the way builds before screen layers wrote one, so
+/// a test can start from the legacy spelling of a screen's stack.
+fn store_legacy_display_zone(
+    mutation: &mut hypercolor_daemon::domain::scene::SceneMutation,
+    device_name: &str,
+    effect: &hypercolor_types::effect::EffectMetadata,
+    controls: std::collections::HashMap<String, hypercolor_types::control::ControlValue>,
+    layout: hypercolor_types::spatial::SpatialLayout,
+    target: hypercolor_types::scene::DisplayFaceTarget,
+) -> Result<hypercolor_types::scene::Zone, hypercolor_daemon::domain::DomainError> {
+    let mut scene = mutation
+        .scenes()
+        .active_scene()
+        .cloned()
+        .expect("a scene is always active");
+    let zone = hypercolor_types::scene::Zone {
+        id: hypercolor_types::scene::ZoneId::new(),
+        name: format!("{device_name} Face"),
+        description: None,
+        layers: vec![hypercolor_types::layer::SceneLayer::from_effect(
+            hypercolor_types::layer::SceneLayerId::new(),
+            effect.id,
+            controls,
+            std::collections::HashMap::new(),
+            None,
+        )],
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(target),
+        role: hypercolor_types::scene::ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    };
+    scene.zones.push(zone.clone());
+    mutation.update_scene(scene)?;
+    Ok(zone)
+}
+
 static COVER_DATA_DIR_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
 fn zone_effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
@@ -12096,12 +12136,13 @@ async fn patch_face_controls_updates_display_zone() {
     );
 
     let manager = state.scene_manager.snapshot().await;
+    let scene_id = *manager.active_scene_id().expect("a scene is active");
     let display_zone = manager
-        .active_scene()
-        .and_then(|scene| scene.display_zone_for(display_id))
+        .screen_view(&scene_id, display_id)
+        .map(|view| view.zone)
         .expect("display face should remain assigned");
     assert_eq!(
-        zone_effect_controls(display_zone).and_then(|controls| controls.get("label")),
+        zone_effect_controls(&display_zone).and_then(|controls| controls.get("label")),
         Some(&ControlValue::Text("gpu".to_owned()))
     );
 }
@@ -12220,9 +12261,10 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     );
 
     let manager = state.scene_manager.snapshot().await;
+    let scene_id = *manager.active_scene_id().expect("a scene is active");
     let zone = manager
-        .active_scene()
-        .and_then(|scene| scene.display_zone_for(display_id))
+        .screen_view(&scene_id, display_id)
+        .map(|view| view.zone)
         .expect("display face should remain assigned");
     let target = zone
         .display_target
@@ -12301,9 +12343,10 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
     );
 
     let manager = state.scene_manager.snapshot().await;
+    let scene_id = *manager.active_scene_id().expect("a scene is active");
     let zone = manager
-        .active_scene()
-        .and_then(|scene| scene.display_zone_for(display_id))
+        .screen_view(&scene_id, display_id)
+        .map(|view| view.zone)
         .expect("display face should remain assigned");
     let target = zone
         .display_target
@@ -13205,26 +13248,25 @@ async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
     {
         let mut mutation = state.scene_manager.begin_mutation().await;
-        mutation
-            .upsert_display_zone(
-                display_id,
-                "Pump LCD",
-                &face,
-                HashMap::new(),
-                SpatialLayout {
-                    id: "default-display-layout".to_owned(),
-                    name: "Default Display Layout".to_owned(),
-                    description: None,
-                    canvas_width: 320,
-                    canvas_height: 320,
-                    zones: Vec::new(),
-                    default_sampling_mode: SamplingMode::Bilinear,
-                    default_edge_behavior: EdgeBehavior::Clamp,
-                    version: 1,
-                },
-                hypercolor_types::scene::DisplayFaceTarget::new(display_id),
-            )
-            .expect("default scene face should be assigned");
+        store_legacy_display_zone(
+            &mut mutation,
+            "Pump LCD",
+            &face,
+            HashMap::new(),
+            SpatialLayout {
+                id: "default-display-layout".to_owned(),
+                name: "Default Display Layout".to_owned(),
+                description: None,
+                canvas_width: 320,
+                canvas_height: 320,
+                zones: Vec::new(),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                version: 1,
+            },
+            hypercolor_types::scene::DisplayFaceTarget::new(display_id),
+        )
+        .expect("default scene face should be assigned");
         hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("default scene face should commit");

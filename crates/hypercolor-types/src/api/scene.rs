@@ -242,6 +242,23 @@ pub struct ZoneResource {
     /// The authored bottom-to-top layer stack. Layers are the real,
     /// addressable unit: clients patch the layer id they read here.
     pub layers: Vec<SceneLayer>,
+    /// Present on a `display` zone that is a view of a screen: the zone
+    /// that places the screen and the screen's membership in it. The
+    /// view's layers are that zone's layers scoped to the screen. Absent
+    /// on every other zone, on a stored display zone, and on the view of a
+    /// screen no zone places.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_of: Option<ZoneViewOf>,
+}
+
+/// Where a screen's view comes from: the zone that places the screen and
+/// the screen's membership in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct ZoneViewOf {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
+    pub zone: ZoneId,
+    pub member: ZoneMemberId,
 }
 
 /// The zone-scoped layout on the wire — the same shape written by

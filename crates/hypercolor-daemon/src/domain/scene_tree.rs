@@ -21,13 +21,14 @@ use std::collections::HashMap;
 
 use hypercolor_types::api::scene::{
     AssignMembersRequest, MemberPlacement, SceneDocument, SceneFence, ZoneLayoutResource,
-    ZoneMember, ZoneMemberId, ZoneResource,
+    ZoneMember, ZoneMemberId, ZoneResource, ZoneViewOf,
 };
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
+use hypercolor_core::scene::screens::ScreenView;
 use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, first_lighting_effect, primary_zone_follows_active_layout,
 };
@@ -38,6 +39,7 @@ use crate::domain::effect::EffectContext;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::scene::{LayoutSceneReceipt, SceneMutation};
+use crate::domain::screen;
 use crate::domain::{DomainError, DomainErrorDetails, MutationContext, ResourceKind};
 
 mod member_edits;
@@ -88,7 +90,14 @@ pub async fn read_document(ctx: &SceneTreeContext) -> Result<SceneDocument, Doma
         .read_with_revision(|manager, revision| {
             manager
                 .active_scene()
-                .map(|scene| scene_document(scene, revision, run_epoch))
+                .map(|scene| {
+                    live_scene_document(
+                        scene,
+                        &manager.screen_views(&scene.id),
+                        revision,
+                        run_epoch,
+                    )
+                })
                 .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))
         })
         .await
@@ -114,10 +123,55 @@ pub async fn read_zone(
                 .zones
                 .iter()
                 .find(|zone| zone.id == zone_id)
-                .map(|zone| (zone_resource(zone), revision))
+                .map(zone_resource)
+                .or_else(|| {
+                    let device_id = manager.screen_of_view(&scene.id, zone_id)?;
+                    let view = manager.screen_view(&scene.id, device_id)?;
+                    Some(screen_zone_resource(&view.zone, view.owner.as_ref()))
+                })
+                .map(|zone| (zone, revision))
                 .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
         })
         .await
+}
+
+/// Project the live scene onto the wire document: the scene's own zones,
+/// then one `Display` view per connected screen the scene stores no
+/// display zone for, so a screen stays listed whether or not it has
+/// layers.
+#[must_use]
+pub fn live_scene_document(
+    scene: &Scene,
+    views: &[ScreenView],
+    revision: u64,
+    run_epoch: &str,
+) -> SceneDocument {
+    let mut document = scene_document(scene, revision, run_epoch);
+    document.zones.extend(
+        views
+            .iter()
+            .map(|view| screen_zone_resource(&view.zone, view.owner.as_ref())),
+    );
+    document
+}
+
+/// The active scene of a candidate with its screens' views: what a tree
+/// mutation answers with.
+struct LiveTree {
+    scene: Scene,
+    views: Vec<ScreenView>,
+}
+
+impl LiveTree {
+    fn of(mutation: &SceneMutation) -> Result<Self, DomainError> {
+        let scene = active_scene(mutation)?;
+        let views = mutation.scenes().screen_views(&scene.id);
+        Ok(Self { scene, views })
+    }
+
+    fn document(&self, revision: u64, run_epoch: &str) -> SceneDocument {
+        live_scene_document(&self.scene, &self.views, revision, run_epoch)
+    }
 }
 
 /// Project a scene plus the commit generation it stands at, and the run
@@ -162,6 +216,21 @@ pub fn zone_resource(zone: &Zone) -> ZoneResource {
         members: zone.layout.zones.iter().map(zone_member).collect(),
         layout: zone_layout_resource(zone),
         layers: zone.layers.clone(),
+        view_of: None,
+    }
+}
+
+/// Project a screen's view, or its stored display zone, onto the wire
+/// resource. `owner` is the zone that places the screen and the screen's
+/// output in it, which a view names in `view_of`.
+#[must_use]
+pub fn screen_zone_resource(zone: &Zone, owner: Option<&(ZoneId, String)>) -> ZoneResource {
+    ZoneResource {
+        view_of: owner.map(|(zone, member)| ZoneViewOf {
+            zone: *zone,
+            member: ZoneMemberId(member.clone()),
+        }),
+        ..zone_resource(zone)
     }
 }
 
@@ -393,11 +462,11 @@ pub async fn patch_scene(
     // The commit installs exactly this candidate, so the reply is the
     // state this write produced at the revision it produced, whatever
     // commits after it.
-    let committed = active_scene(&mutation)?;
+    let committed = LiveTree::of(&mutation)?;
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
     Ok(TreeWritten {
-        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
+        document: committed.document(commit.revision(), ctx.scene.run_epoch()),
         commit,
     })
 }
@@ -433,12 +502,14 @@ pub async fn clear_scene(
     let targets: Vec<ZoneId> = match command.zone {
         Some(zone_id) => {
             let scene = active_scene(&mutation)?;
-            let zone = scene
+            let role = scene
                 .zones
                 .iter()
                 .find(|zone| zone.id == zone_id)
+                .map(|zone| zone.role)
+                .or_else(|| screen::view_target(&mutation, zone_id).map(|_| ZoneRole::Display))
                 .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
-            if zone.role == ZoneRole::Display {
+            if role == ZoneRole::Display {
                 return Err(DomainError::validation(
                     "display zones carry a face, which is cleared through \
                      DELETE /displays/{id}/face",
@@ -478,7 +549,7 @@ pub async fn clear_scene(
         );
     }
 
-    let committed = active_scene(&mutation)?;
+    let committed = LiveTree::of(&mutation)?;
     let commit = ctx.scene.commit(mutation).await?;
     if command.zone.is_none() {
         ctx.output.quiesce_after_effect_stop().await;
@@ -486,7 +557,7 @@ pub async fn clear_scene(
     ctx.scene.save_runtime_session().await;
 
     Ok(TreeWritten {
-        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
+        document: committed.document(commit.revision(), ctx.scene.run_epoch()),
         commit,
     })
 }
@@ -515,6 +586,15 @@ pub async fn replace_layer(
     let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_fence(&mutation, command.fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("replacing a layer")?;
+    if let Some(view) = screen::view_target(&mutation, command.zone_id) {
+        // A view's target is fixed: the replacement stays on this screen
+        // whatever the request says about scope.
+        view.replace_layer(&mut mutation, command.layer_id, command.layer)?;
+        if let Some(media_admission) = media_admission {
+            media_admission.validate(&active_scene(&mutation)?)?;
+        }
+        return finish_view_mutation(ctx, mutation, view).await;
+    }
     ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
 
     let replaced_scope = mutation
@@ -571,20 +651,27 @@ pub async fn patch_layer_controls(
         let mut mutation = ctx.scene.begin_mutation().await;
         check_scene_fence(&mutation, command.fence.as_ref())?;
         let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
-        ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
-        let normalized = normalize_against_layer(
-            ctx,
-            &mutation,
-            command.zone_id,
-            command.layer_id,
-            command.values.clone(),
-        )
-        .await?;
+        // A patch through a screen's view lands on that screen's own copy
+        // of the layer, in the zone that places the screen.
+        let view = screen::view_target(&mutation, command.zone_id);
+        let (zone_id, layer_id) = if let Some(view) = view {
+            view.own_layer(
+                &mut mutation,
+                command.layer_id,
+                hypercolor_types::event::LayerStackChangeKind::ControlsPatched,
+            )?
+        } else {
+            ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
+            (command.zone_id, command.layer_id)
+        };
+        let normalized =
+            normalize_against_layer(ctx, &mutation, zone_id, layer_id, command.values.clone())
+                .await?;
         let zone = mutation
             .patch_layer_controls_and_bindings(
                 scene_id,
-                command.zone_id,
-                command.layer_id,
+                zone_id,
+                layer_id,
                 normalized.values,
                 &command.clear_bindings,
                 None,
@@ -593,7 +680,11 @@ pub async fn patch_layer_controls(
             )
             .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
 
-        match finish_layer_mutation(ctx, mutation, zone).await {
+        let finished = match view {
+            Some(view) => finish_view_mutation(ctx, mutation, view).await,
+            None => finish_layer_mutation(ctx, mutation, zone).await,
+        };
+        match finished {
             Err(error) if scene_commit_was_superseded(&error) => {}
             outcome => return outcome,
         }
@@ -897,6 +988,22 @@ async fn finish_layer_mutation(
     })
 }
 
+/// Commit a write addressed to a screen's view and answer with the view.
+async fn finish_view_mutation(
+    ctx: &SceneTreeContext,
+    mutation: SceneMutation,
+    view: screen::ViewTarget,
+) -> Result<ZoneWritten, DomainError> {
+    let written = view.view(&mutation)?;
+    let commit = ctx.scene.commit(mutation).await?;
+    ctx.scene.save_runtime_session().await;
+    Ok(ZoneWritten {
+        zone: screen_zone_resource(&written.zone, written.owner.as_ref()),
+        revision: commit.revision(),
+        commit,
+    })
+}
+
 fn active_scene(mutation: &SceneMutation) -> Result<Scene, DomainError> {
     mutation
         .scenes()
@@ -909,12 +1016,14 @@ pub(crate) fn ensure_live_zone_mutable(
     mutation: &SceneMutation,
     zone_id: ZoneId,
 ) -> Result<(), DomainError> {
-    let zone = mutation
+    let role = mutation
         .scenes()
         .active_scene()
         .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+        .map(|zone| zone.role)
+        .or_else(|| screen::view_target(mutation, zone_id).map(|_| ZoneRole::Display))
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
-    if zone.role == ZoneRole::Display {
+    if role == ZoneRole::Display {
         return Err(DomainError::validation(
             "display zones are managed through the display face API",
         ));

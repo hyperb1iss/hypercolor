@@ -102,6 +102,7 @@ fn zone_resource_with_outputs(outputs: Vec<Output>) -> ZoneResource {
         members,
         layout: Some(ZoneLayoutResource { placements }),
         layers: Vec::new(),
+        view_of: None,
     }
 }
 

@@ -55,6 +55,7 @@ fn zone(name: &str, role: ZoneRole, members: &[(&str, Option<&str>, u32)]) -> Zo
         members,
         layout: Some(ZoneLayoutResource { placements }),
         layers: Vec::new(),
+        view_of: None,
     }
 }
 

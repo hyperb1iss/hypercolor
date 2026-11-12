@@ -1017,18 +1017,8 @@ async fn display_assignment_resolved_before_migration_is_rejected() {
         &fixture.state.domains.effects,
         crate::domain::display::SetDisplayFace {
             device_id: fixture.device_id,
-            device_name: "Race Display".to_owned(),
             effect: resolved,
             controls: HashMap::new(),
-            layout: crate::domain::display::display_face_layout(
-                fixture.device_id,
-                "Race Display",
-                crate::domain::display::DisplaySurfaceInfo {
-                    width: 320,
-                    height: 320,
-                    circular: false,
-                },
-            ),
             target: DisplayFaceTarget::new(fixture.device_id),
         },
     )

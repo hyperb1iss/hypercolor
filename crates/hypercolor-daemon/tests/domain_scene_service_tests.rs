@@ -743,7 +743,7 @@ async fn activation_persists_zones_after_auto_layout_convergence() {
 }
 
 #[tokio::test]
-async fn activation_hydrates_only_existing_connected_display_zones() {
+async fn activation_sizes_a_stored_display_zone_without_rewriting_a_snapshot() {
     for selected in [false, true] {
         let (state, _tempdir) = isolated_state();
         let assigned_device = DeviceId::new();
@@ -790,7 +790,7 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
                 },
             )
             .await
-            .expect("selected context hydrates connected display geometry");
+            .expect("selected context should activate");
         } else {
             activate_scene(
                 &state.domains.scene_library,
@@ -800,22 +800,130 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
                 },
             )
             .await
-            .expect("snapshot activation should hydrate derived geometry");
+            .expect("snapshot activation should succeed");
         }
 
         let manager = state.scene_manager.snapshot().await;
         let active = manager.active_scene().expect("scene should be active");
-        let assigned = active
+        let stored = active
             .display_zone_for(assigned_device)
-            .expect("assigned display zone should remain");
-        assert_eq!(assigned.layout.canvas_width, 320);
-        assert_eq!(assigned.layout.canvas_height, 200);
+            .expect("a snapshot keeps its display zone");
+        assert_eq!(
+            (stored.layout.canvas_width, stored.layout.canvas_height),
+            (1, 1),
+            "the panel size is not written into the scene"
+        );
         assert!(active.display_zone_for(unassigned_device).is_none());
+        let rendered = manager
+            .resolved_zones()
+            .iter()
+            .find(|zone| zone.id == stored.id)
+            .cloned()
+            .expect("the stored zone reaches the render list");
+        assert_eq!(
+            (rendered.layout.canvas_width, rendered.layout.canvas_height),
+            (320, 200),
+            "it renders at the panel the surface table knows"
+        );
     }
 }
 
 #[tokio::test]
-async fn reconnect_hydrates_an_active_snapshot_without_adding_surfaces() {
+async fn activation_converts_a_live_scenes_display_zones_and_saves_the_result() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = DeviceId::new();
+    state
+        .device_registry
+        .add(display_device_info(device_id, 320, 200))
+        .await;
+    assert!(
+        state
+            .device_registry
+            .set_state(&device_id, DeviceState::Connected)
+            .await
+    );
+    let mut stored = imported_display_zone(device_id);
+    stored.layers.push(SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::new(Uuid::now_v7()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    ));
+    let face_id = stored.layers[0].id;
+    let mut scene = named_scene("upgraded");
+    scene.zones.push(stored);
+    let scene_id = scene.id;
+    seed_scene(&state, scene).await;
+    assert!(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&scene_id)
+            .is_some_and(|scene| scene.display_zone_for(device_id).is_some()),
+        "a stored scene is left as written until it is activated"
+    );
+
+    for _ in 0..2 {
+        activate_scene(
+            &state.domains.scene_library,
+            ActivateScene {
+                scene_id,
+                transition_ms: None,
+            },
+        )
+        .await
+        .expect("the scene should activate");
+
+        let manager = state.scene_manager.snapshot().await;
+        let active = manager.active_scene().expect("scene should be active");
+        assert!(active.display_zone_for(device_id).is_none());
+        let owner = active
+            .primary_zone()
+            .expect("a scene with no LED zone gets a primary zone for the screen");
+        assert_eq!(owner.layers.len(), 1, "a second activation adds nothing");
+        assert_eq!(owner.layers[0].id, face_id, "the face keeps its layer id");
+        let scope = owner.layers[0].scope.as_ref().expect("a screen layer");
+        assert_eq!(scope.outputs.len(), 1);
+        assert!(
+            owner
+                .layout
+                .zones
+                .iter()
+                .any(|output| output.id == scope.outputs[0]),
+            "the zone places the screen the face is scoped to"
+        );
+        let rendered = manager
+            .resolved_zones()
+            .iter()
+            .find(|zone| zone.display_target.is_some())
+            .cloned()
+            .expect("the screen's stack reaches the render list");
+        assert_eq!(rendered.layers[0].id, face_id);
+        assert_eq!(
+            (rendered.layout.canvas_width, rendered.layout.canvas_height),
+            (320, 200)
+        );
+    }
+
+    let durable = scene_store::load(&state.data_dir.join("scenes.json"))
+        .expect("durable scene store should load");
+    let saved = durable
+        .list()
+        .find(|scene| scene.id == scene_id)
+        .expect("the activated scene is saved");
+    assert!(
+        saved
+            .zones
+            .iter()
+            .all(|zone| zone.role != ZoneRole::Display),
+        "the converted scene is what the store holds"
+    );
+}
+
+#[tokio::test]
+async fn reconnect_sizes_an_active_snapshots_display_zone_and_adds_nothing() {
     let (state, _tempdir) = isolated_state();
     let assigned_device = DeviceId::new();
     let unassigned_device = DeviceId::new();
@@ -843,19 +951,32 @@ async fn reconnect_hydrates_an_active_snapshot_without_adding_surfaces() {
     let active = manager
         .active_scene()
         .expect("snapshot should remain active");
-    let assigned = active
+    let stored = active
         .display_zone_for(assigned_device)
-        .expect("the authored display surface should remain");
-    assert_eq!(assigned.layout.canvas_width, 320);
-    assert_eq!(assigned.layout.canvas_height, 200);
+        .expect("the authored display zone should remain");
+    assert_eq!(
+        (stored.layout.canvas_width, stored.layout.canvas_height),
+        (1, 1),
+        "a snapshot is left as it was captured"
+    );
     assert!(
         active.display_zone_for(unassigned_device).is_none(),
         "reconnect must not add authored content to a snapshot"
     );
+    let rendered = manager
+        .resolved_zones()
+        .iter()
+        .find(|zone| zone.id == stored.id)
+        .cloned()
+        .expect("the stored zone reaches the render list");
+    assert_eq!(
+        (rendered.layout.canvas_width, rendered.layout.canvas_height),
+        (320, 200)
+    );
 }
 
 #[tokio::test]
-async fn connected_displays_get_editable_surfaces_across_scene_switches() {
+async fn connected_screens_are_listed_as_views_across_scene_switches() {
     let (state, _tempdir) = isolated_state();
     let connected_device = DeviceId::new();
     let known_device = DeviceId::new();
@@ -878,8 +999,20 @@ async fn connected_displays_get_editable_surfaces_across_scene_switches() {
         let active = manager
             .active_scene()
             .expect("default scene should be active");
-        assert!(active.display_zone_for(connected_device).is_some());
-        assert!(active.display_zone_for(known_device).is_none());
+        assert!(
+            active
+                .zones
+                .iter()
+                .all(|zone| zone.role != ZoneRole::Display),
+            "no display zone is written into the scene"
+        );
+        let views = manager.screen_views(&active.id);
+        assert_eq!(
+            views.len(),
+            1,
+            "a screen that is away and empty is not listed"
+        );
+        assert_eq!(views[0].device_id, connected_device);
     }
 
     let effect_id = EffectId::new(Uuid::now_v7());
@@ -905,15 +1038,21 @@ async fn connected_displays_get_editable_surfaces_across_scene_switches() {
         },
     )
     .await
-    .expect("scene activation should install connected display surfaces");
+    .expect("scene activation should succeed");
 
     let manager = state.scene_manager.snapshot().await;
     let active = manager
         .active_scene()
         .expect("display scene should be active");
-    let screen = active
-        .display_zone_for(connected_device)
-        .expect("connected display should have an editable screen surface");
+    assert!(active.display_zone_for(connected_device).is_none());
+    let views = manager.screen_views(&scene_id);
+    assert_eq!(views.len(), 1);
+    let screen = &views[0].zone;
+    assert_eq!(
+        screen.id,
+        hypercolor_core::scene::screens::screen_zone_id(scene_id, connected_device),
+        "each scene has its own view of the screen"
+    );
     assert_eq!(screen.role, ZoneRole::Display);
     assert_eq!(
         screen
@@ -923,7 +1062,11 @@ async fn connected_displays_get_editable_surfaces_across_scene_switches() {
         Some(connected_device)
     );
     assert!(screen.layers.is_empty());
-    assert!(active.display_zone_for(known_device).is_none());
+    assert!(
+        manager
+            .screen_view(&scene_id, known_device)
+            .is_some_and(|view| view.zone.layers.is_empty())
+    );
     let primary = active
         .zones
         .iter()

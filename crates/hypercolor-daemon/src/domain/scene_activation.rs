@@ -105,7 +105,7 @@ pub async fn activate_selected_fields(
     let media = ctx.scene.media_admission_context().await;
     let display = ctx
         .layout
-        .connected_display_surface_layouts(ctx.scene.layout_runtime())
+        .known_screen_surfaces(ctx.scene.layout_runtime())
         .await;
     let _activation = if command.context.is_some() {
         Some(ctx.layout.acquire_scene_activation_guard().await)
@@ -139,14 +139,14 @@ pub async fn activate_selected_fields(
         if let Some(message) = admission.rejection_message() {
             return Err(DomainError::validation(message.to_owned()));
         }
-        mutation.hydrate_existing_display_surfaces(expected.scene.id, &display)?;
+        mutation.set_screen_surfaces(display);
         mutation.activate(
             expected.scene.id,
             Some(transition),
             SceneChangeReason::UserActivate,
         )?;
-        mutation.sync_active_display_surfaces(&display);
         mutation.realign_primary_layout(&ctx.layout.current());
+        mutation.convert_legacy_display_zones(expected.scene.id, ctx.layout.render_canvas_size());
         let admitted = mutation
             .scenes()
             .get(&expected.scene.id)
