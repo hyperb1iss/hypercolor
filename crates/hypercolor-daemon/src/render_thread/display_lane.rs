@@ -2204,9 +2204,11 @@ mod tests {
                 )
             };
             let fade = self.fade;
-            self.render_zone_runtime
-                .screen_fades
-                .note_frame(placed, zone_frames.is_empty(), fade);
+            self.render_zone_runtime.screen_fades.note_frame(
+                placed,
+                zone_frames.is_empty().then_some([0, 0, 0]),
+                fade,
+            );
             lanes
         }
 
@@ -2214,11 +2216,10 @@ mod tests {
         /// in: its epoch and how far it has come.
         fn transition(&mut self, transition: Option<(u64, f32)>) {
             self.fade = transition.map(|(_, weight)| weight);
-            let black = black_frame();
             let transition =
                 transition.map(|(epoch, weight)| ScreenTransition::for_test(epoch, weight));
             let mut compose = self.compose_runtime();
-            begin_screen_fades(&mut compose, transition, &black);
+            begin_screen_fades(&mut compose, transition);
         }
 
         /// Materialize frames a cadence interval apart until `done`, the way

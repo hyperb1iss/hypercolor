@@ -114,8 +114,10 @@ pub(crate) struct ScreenFades {
     bases: HashMap<DeviceId, ScreenFadeBase>,
     /// The screens of the last frame, as its scene placed them.
     last_screens: Vec<PlacedScreen>,
-    /// Whether the last frame rendered no zone, so every screen was black.
-    last_dark: bool,
+    /// The one color every placed screen showed in the last frame, when it
+    /// showed no zone: black for a scene that rendered nothing, the off
+    /// color while output was off.
+    last_flat: Option<[u8; 3]>,
     cropper: Option<PanelCropper>,
 }
 
@@ -125,14 +127,25 @@ impl ScreenFades {
     pub(super) fn note_frame(
         &mut self,
         screens: Vec<PlacedScreen>,
-        dark: bool,
+        flat: Option<[u8; 3]>,
         weight: Option<f32>,
     ) {
         self.last_screens = screens;
-        self.last_dark = dark;
+        self.last_flat = flat;
         if let Some(weight) = weight {
             self.weight = weight;
         }
+    }
+
+    /// Output went off: every placed screen shows `color` now, whatever it
+    /// was fading through. The fades are over, their bases go, and a
+    /// transition that begins before output is back starts from `color`.
+    pub(super) fn retire_for_off_output(&mut self, screens: Vec<PlacedScreen>, color: [u8; 3]) {
+        self.transition = None;
+        self.bases.clear();
+        self.weight = 0.0;
+        self.last_screens = screens;
+        self.last_flat = Some(color);
     }
 
     /// Whether any screen is part way through a fade.
@@ -248,7 +261,6 @@ impl ScreenFades {
 pub(super) fn begin_screen_fades(
     compose: &mut ComposeRuntime<'_>,
     transition: Option<ScreenTransition>,
-    #[cfg(feature = "wgpu")] black: &ProducerFrame,
 ) {
     let key = transition.map(|transition| transition.key);
     if compose.render_zone_runtime.screen_fades.transition == key {
@@ -280,7 +292,7 @@ pub(super) fn begin_screen_fades(
             let previous = interrupted_weight
                 .zip(fades.base(screen.device_id, width, height))
                 .map(|(weight, base)| (weight, &base.picture));
-            if let Some(picture) = base_on_gpu(compose, screen, fades.last_dark, previous, black) {
+            if let Some(picture) = base_on_gpu(compose, screen, fades.last_flat, previous) {
                 bases.insert(
                     screen.device_id,
                     ScreenFadeBase {
@@ -331,15 +343,31 @@ pub(super) fn begin_screen_fades(
                 );
             }
         }
+        // A screen with no backdrop retained showed the frame's one color,
+        // if the frame had one: the off color of output that was off.
+        if let Some([r, g, b]) = fades.last_flat {
+            for screen in &fades.last_screens {
+                let (width, height) = (screen.output.width, screen.output.height);
+                bases.entry(screen.device_id).or_insert_with(|| {
+                    let mut flat = Canvas::new(width, height);
+                    flat.fill(hypercolor_types::canvas::Rgba::new(r, g, b, 255));
+                    ScreenFadeBase {
+                        width,
+                        height,
+                        picture: FadePicture::Pixels(CanvasFrame::from_owned_canvas(flat, 0, 0)),
+                    }
+                });
+            }
+        }
     }
     fades.bases = bases;
     fades.weight = 0.0;
     compose.render_zone_runtime.screen_fades = fades;
 }
 
-/// Take a screen's base on the GPU: the backdrop its zone gave it in the
-/// last frame, drawn once to panel space, over the base of the transition
-/// this one interrupts if there was one.
+/// Take a screen's base on the GPU: the backdrop it showed in the last
+/// frame, drawn once to panel space, over the base of the transition this
+/// one interrupts if there was one.
 ///
 /// The picture is the output of a backdrop-only finalize pass on a route of
 /// its own, kept on the GPU and never read back. A screen has two such
@@ -348,23 +376,31 @@ pub(super) fn begin_screen_fades(
 fn base_on_gpu(
     compose: &mut ComposeRuntime<'_>,
     screen: &PlacedScreen,
-    last_dark: bool,
+    last_flat: Option<[u8; 3]>,
     previous: Option<(f32, &FadePicture)>,
-    black: &ProducerFrame,
 ) -> Option<FadePicture> {
-    // What the screen's zone showed in the last frame: its frame, or
-    // nothing when the zone, or the whole scene, rendered nothing. A frame
-    // nobody kept is not known to be black, and gives no base.
-    let outgoing = if last_dark {
-        None
-    } else {
-        compose
+    let (width, height) = (screen.output.width, screen.output.height);
+    // What the screen showed in the last frame: the frame's one color when
+    // it had one, else its zone's frame, or nothing when the zone rendered
+    // nothing. A frame nobody kept is not known to be black, and gives no
+    // base.
+    let flat;
+    let outgoing = match last_flat {
+        Some([0, 0, 0]) => None,
+        Some(color) => {
+            flat = ProducerFrame::Surface(
+                compose
+                    .output_artifacts
+                    .static_surface(width, height, color),
+            );
+            Some(&flat)
+        }
+        None => compose
             .render_zone_runtime
             .retained_zone_frames()?
             .iter()
-            .find_map(|(zone_id, frame)| (*zone_id == screen.zone_id).then_some(frame))
+            .find_map(|(zone_id, frame)| (*zone_id == screen.zone_id).then_some(frame)),
     };
-    let (width, height) = (screen.output.width, screen.output.height);
     let (slot, fade) = match previous {
         None => (0, None),
         Some((_, FadePicture::Pixels(_))) => return None,
@@ -411,9 +447,20 @@ fn base_on_gpu(
         opacity: 0.0,
         fade,
     };
+    let black;
+    let source = if let Some(frame) = outgoing {
+        frame
+    } else {
+        black = ProducerFrame::Surface(compose.output_artifacts.static_surface(
+            width,
+            height,
+            [0, 0, 0],
+        ));
+        &black
+    };
     match compose
         .display_sparkleflinger
-        .begin_finalize_display_backdrop(outgoing.unwrap_or(black), params)
+        .begin_finalize_display_backdrop(source, params)
     {
         Ok(DisplayFinalizeDispatch::Pending(pending)) => {
             // The picture stays on the GPU; nothing waits for its readback.
@@ -502,7 +549,7 @@ mod tests {
     use hypercolor_types::device::DeviceId;
     use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
-    use super::{FadePicture, ScreenFadeBase, ScreenFades, mix_rgba};
+    use super::{FadePicture, ScreenFadeBase, ScreenFades, ScreenTransition, mix_rgba};
 
     fn solid(width: u32, height: u32, rgb: [u8; 3]) -> CanvasFrame {
         let mut canvas = Canvas::new(width, height);
@@ -563,6 +610,37 @@ mod tests {
             assert!(fades.finalize_fade(screen, 4, 2, 0.5).is_some());
             assert!(fades.finalize_fade(screen, 2, 4, 0.5).is_none());
         }
+    }
+
+    /// Output going off ends every fade. No base is left to hold a route on
+    /// the GPU or to hand the next transition as its history, and what the
+    /// screens show is the color output went off to.
+    #[test]
+    fn output_going_off_leaves_no_fade_behind() {
+        let screen = DeviceId::new();
+        let mut fades = ScreenFades {
+            transition: Some(ScreenTransition::for_test(1, 0.5).key),
+            weight: 0.5,
+            ..ScreenFades::default()
+        };
+        fades.bases.insert(
+            screen,
+            ScreenFadeBase {
+                width: 4,
+                height: 2,
+                picture: FadePicture::Pixels(solid(4, 2, [255, 0, 0])),
+            },
+        );
+        assert!(fades.in_progress());
+
+        fades.retire_for_off_output(Vec::new(), [0, 0, 0]);
+
+        assert!(!fades.in_progress());
+        assert!(!fades.fades_pixels(screen, 4, 2));
+        assert_eq!(fades.transition, None);
+        assert_eq!(fades.last_flat, Some([0, 0, 0]));
+        #[cfg(feature = "wgpu")]
+        assert_eq!(fades.base_route_ids().count(), 0);
     }
 
     #[test]

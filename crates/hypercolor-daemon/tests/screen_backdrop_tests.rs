@@ -2295,6 +2295,103 @@ async fn gpu_previewed_simulator_wakes_a_parked_render_loop() {
     previewed_simulator_wakes_a_parked_render_loop(RenderAccelerationMode::Gpu).await;
 }
 
+/// Output that goes off takes every fade with it. Red was fading to blue
+/// when output went off; that fade ran out unseen, and green began to fade
+/// in while the screen was still dark. When output comes back the screen
+/// fades in from the dark it was showing, with none of the red and blue it
+/// showed before.
+async fn transition_begun_while_output_was_off_fades_in_from_dark(
+    mode: RenderAccelerationMode,
+    off: hypercolor_daemon::output_power::OutputOverride,
+) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("slept").await;
+    let red = lit_scene(&rig.effects, &screen, "Red", RED, 0, false);
+    let blue = lit_scene(&rig.effects, &screen, "Blue", BLUE, 800, false);
+    let green = lit_scene(&rig.effects, &screen, "Green", GREEN, 4000, false);
+
+    let running = rig.run_scene(red).await;
+    rig.writes
+        .wait_for(screen.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    rig.activate(&blue).await;
+    rig.writes
+        .wait_for(screen.device_id, "a mix of red and blue", |panel| {
+            between_red_and_blue(panel.center())
+        })
+        .await;
+    rig.power.send_modify(|power| power.output_override = off);
+    rig.writes
+        .wait_for(screen.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    // The fade to blue runs out while output is off.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    rig.activate(&green).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.power.send_modify(|power| {
+        power.output_override = hypercolor_daemon::output_power::OutputOverride::None;
+    });
+    rig.writes
+        .wait_for(screen.device_id, "green", |panel| {
+            near(panel.center(), [0, 255, 0])
+        })
+        .await;
+    running.stop().await;
+
+    let shown = centers_since(&rig.writes, screen.device_id, seen);
+    assert!(
+        shown.iter().all(|[r, _, b]| *r <= 12 && *b <= 12),
+        "the screen came back with what it showed before output went off: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|[_, g, _]| (20..=215).contains(g)),
+        "the screen cut to green instead of fading in from dark: {shown:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_transition_begun_while_output_was_paused_fades_in_from_dark() {
+    transition_begun_while_output_was_off_fades_in_from_dark(
+        RenderAccelerationMode::Cpu,
+        hypercolor_daemon::output_power::OutputOverride::Paused,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_transition_begun_while_output_was_stopped_fades_in_from_dark() {
+    transition_begun_while_output_was_off_fades_in_from_dark(
+        RenderAccelerationMode::Cpu,
+        hypercolor_daemon::output_power::OutputOverride::Stopped,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_transition_begun_while_output_was_paused_fades_in_from_dark() {
+    transition_begun_while_output_was_off_fades_in_from_dark(
+        RenderAccelerationMode::Gpu,
+        hypercolor_daemon::output_power::OutputOverride::Paused,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_transition_begun_while_output_was_stopped_fades_in_from_dark() {
+    transition_begun_while_output_was_off_fades_in_from_dark(
+        RenderAccelerationMode::Gpu,
+        hypercolor_daemon::output_power::OutputOverride::Stopped,
+    )
+    .await;
+}
+
 // ── Viewports: the owning zone against the spatial service ────────────────
 
 /// The layout ids a physical device goes by, the way the display output

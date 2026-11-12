@@ -272,6 +272,18 @@ impl ZoneRuntime {
             .map(|retained| (&retained.screen, &retained.frame))
     }
 
+    /// Output went off, and every placed screen shows `color`. No fade and
+    /// no backdrop from before is what a screen shows any more, so none of
+    /// them is kept for the frames after output is back to start from.
+    pub(crate) fn retire_screens_for_off_output(
+        &mut self,
+        screens: Vec<PlacedScreen>,
+        color: [u8; 3],
+    ) {
+        self.screen_fades.retire_for_off_output(screens, color);
+        self.retained_backdrop_frames.clear();
+    }
+
     /// Forget the backdrop frames of screens that no longer show one.
     pub(crate) fn retain_backdrop_frames_for(&mut self, device_ids: &[DeviceId]) {
         self.retained_backdrop_frames

@@ -192,18 +192,7 @@ impl ComposeContext<'_> {
 
     fn begin_screen_fades(&mut self) {
         let transition = ScreenTransition::of(&self.scene_snapshot.scene_runtime);
-        #[cfg(feature = "wgpu")]
-        let black = ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
-            self.state.canvas_dims.width(),
-            self.state.canvas_dims.height(),
-            [0, 0, 0],
-        ));
-        begin_screen_fades(
-            &mut self.compose,
-            transition,
-            #[cfg(feature = "wgpu")]
-            &black,
-        );
+        begin_screen_fades(&mut self.compose, transition);
     }
 
     fn capture_interrupted_transition_base(&mut self) -> Option<(ProducerFrame, bool)> {
@@ -740,7 +729,8 @@ impl ComposeContext<'_> {
         );
         self.compose.render_zone_runtime.screen_fades.note_frame(
             screens,
-            zone_frames.is_empty(),
+            // A frame with no zone frames gives every placed screen black.
+            zone_frames.is_empty().then_some([0, 0, 0]),
             fade,
         );
         lanes
