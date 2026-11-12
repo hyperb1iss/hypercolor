@@ -105,8 +105,20 @@ left untouched either way. The floor only moves at a major release.
 
 ## Backups
 
-A backup manifest declares its own schema. Schema 1 is the first, written since
-v0.9.0. Every 1.x build reads every backup schema from 1 through the one it
-writes, upgrading an older manifest in memory before restoring it, so a backup
-taken on any 1.x release restores on every later one. A backup from a newer
-Hypercolor is refused with a message to upgrade, and nothing is applied.
+A backup manifest declares its own schema. Every 1.x build reads every backup
+schema from 1 through the one it writes, upgrading an older manifest in memory
+before restoring it, so a backup taken on any 1.x release restores on every
+later one. A backup from a newer Hypercolor is refused with a message to
+upgrade, and nothing is applied.
+
+| Backup schema | Written by | What changed |
+| --- | --- | --- |
+| 1 | v0.9.0 | The first schema. |
+| 2 | Releases after v0.9.0 | Nothing in the manifest's shape. A scene layer may now be limited to some of its zone's outputs, and a release that reads only schema 1 would restore such a layer onto the whole zone, so the number moved to make that release refuse the backup instead. |
+
+The scene library and the saved session crossed the same boundary in the same
+release, for the same reason. A release after v0.9.0 reads the scenes and the
+session v0.9.0 wrote and upgrades both files the first time it starts. After
+that, v0.9.0 does not start on the same data directory: it refuses the
+upgraded scene library and leaves the file untouched. To return to v0.9.0,
+restore the data directory, or a backup, taken before the upgrade.
