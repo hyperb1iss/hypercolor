@@ -1143,6 +1143,12 @@ on its own, and scope classes then only swap the frame it reads.
 
 What W2 measured, and the limits it ships with.
 
+**Builds without `wgpu`.** In a build without the `wgpu` feature, which no
+release artifact is and only CI's CPU test and smoke lanes use, a fade out of a
+scene sampled per zone or per class into a single-zone scene samples the
+flattened crossfade, so an output outside a scope can pass through a scoped
+layer's color on the way.
+
 **Placement.** `layer_placement_tests` holds the property test: over
 random frames, canvas aspects and layer transforms, a source point survives
 the trip to the canvas and back, and a touch resolves to the source point its
