@@ -11,7 +11,7 @@ use uuid::Uuid;
 fn backup() -> PortableBackupV1 {
     PortableBackupV1 {
         tui_preferences: None,
-        schema_version: 1,
+        schema_version: hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION,
         setup: PortableSetupV1::new(
             Uuid::now_v7(),
             "Desk".into(),
@@ -213,7 +213,8 @@ fn archive_rejects_links_truncation_appended_payload_and_wrong_version() {
         .is_err()
     );
     let mut unsupported = manifest;
-    unsupported.schema_version = 2;
+    unsupported.schema_version =
+        hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION + 1;
     assert!(write_archive(Vec::new(), &unsupported, &blobs).is_err());
 }
 

@@ -112,7 +112,7 @@ async fn manual_import_survives_first_cloud_association_export() {
     desired.name = "Studio".into();
     let backup = PortableBackupV1 {
         tui_preferences: None,
-        schema_version: 1,
+        schema_version: hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION,
         setup: desired,
         preferences: None,
         favorites: Vec::new(),

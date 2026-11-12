@@ -7,7 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
 /// The backup manifest schema this build writes.
-pub const PORTABLE_BACKUP_SCHEMA_VERSION: u32 = 1;
+///
+/// Schema 2 has the shape of schema 1. The number moved when scene layers
+/// gained an output scope: a build that reads only schema 1 would decode a
+/// scoped layer, drop the scope it does not know, and restore the layer
+/// onto its whole zone. Refusing the manifest by version prevents that.
+pub const PORTABLE_BACKUP_SCHEMA_VERSION: u32 = 2;
 
 /// The oldest backup manifest schema this build reads.
 ///
@@ -25,7 +30,25 @@ type ManifestUpgrade = fn(&mut serde_json::Value) -> Result<(), PortableSetupErr
 /// array length is tied to the two constants, so bumping the written schema
 /// without adding its upgrade does not compile.
 const MANIFEST_UPGRADES: [ManifestUpgrade;
-    (PORTABLE_BACKUP_SCHEMA_VERSION - OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION) as usize] = [];
+    (PORTABLE_BACKUP_SCHEMA_VERSION - OLDEST_PORTABLE_BACKUP_SCHEMA_VERSION) as usize] =
+    [upgrade_v1_to_v2];
+
+/// Schema 1 to 2 changes the version and nothing else: every schema 1
+/// manifest is a valid schema 2 manifest whose layers have no scope.
+fn upgrade_v1_to_v2(manifest: &mut serde_json::Value) -> Result<(), PortableSetupError> {
+    set_schema_version(manifest, 2)
+}
+
+fn set_schema_version(
+    manifest: &mut serde_json::Value,
+    schema: u32,
+) -> Result<(), PortableSetupError> {
+    let document = manifest
+        .as_object_mut()
+        .ok_or_else(|| invalid("schema_version", "a backup manifest must be a JSON object"))?;
+    document.insert("schema_version".to_owned(), schema.into());
+    Ok(())
+}
 
 /// Why a backup manifest could not be decoded.
 #[derive(Debug, thiserror::Error)]

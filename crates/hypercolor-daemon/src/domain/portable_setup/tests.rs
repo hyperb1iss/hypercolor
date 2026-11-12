@@ -376,7 +376,7 @@ async fn manual_backup_restores_preferences_and_favorites_under_one_receipt() {
         },
     );
     let backup = PortableBackupV1 {
-        schema_version: 1,
+        schema_version: hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION,
         setup,
         preferences: Some(PortablePreferences::from_config(&portable_config)),
         tui_preferences: None,
