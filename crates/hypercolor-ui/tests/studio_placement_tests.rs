@@ -411,7 +411,7 @@ fn a_turned_ring_centers_by_the_circle_it_draws() {
 fn fit_frames_the_shown_boxes_and_carries_the_rest_along() {
     let mut outputs = vec![
         output("shown", "case", "A", 0.2, 0.2, 0.1, 0.1),
-        // A channel the canvas does not draw, far from the shown box.
+        // An output hidden from the canvas, far from the shown box.
         output("raw", "hub", "B", 0.9, 0.9, 0.1, 0.1),
     ];
     assert!(fit_outputs(&mut outputs, CANVAS, |output| output.id == "shown"));
