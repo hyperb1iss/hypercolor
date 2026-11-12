@@ -646,6 +646,103 @@ async fn failed_scene_switch_never_resumes_the_previous_scene() {
     );
 }
 
+/// A still scene asks the display compositor for each screen's backdrop
+/// once, over real frames.
+///
+/// Nothing here is supplied by the test but the scene and the screen: the
+/// zone runtime renders the zone every frame and says what its frame was
+/// made from, and the composer holds the screen's picture by that. However
+/// many frames pass, one finalize pass and one readback are dispatched and
+/// one frame reaches the screen's lane. Counting what a panel is sent would
+/// miss a pass whose picture the display worker recognises and drops.
+#[tokio::test]
+async fn still_scene_finalizes_its_screen_once_over_real_frames() {
+    const FRAMES: u32 = 150;
+    let screen = DeviceId::new();
+    let mut zone = sample_zone(CANVAS.0, CANVAS.1);
+    zone.name = "Still".into();
+    make_color_fill_zone(&mut zone);
+    let mut screen_box = point_zone_at("screen-box", 0.5, 0.5);
+    screen_box.device_id = "screen".into();
+    screen_box.zone_name = Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned());
+    zone.layout = zone_layout(vec![point_zone("zone_still"), screen_box]);
+    let mut scene = make_scene("Still");
+    scene.zones = vec![zone];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    scene.transition.duration_ms = 0;
+    let scene_id = scene.id;
+    let Some(mut pipeline) = SteppedPipeline::start(
+        RenderAccelerationMode::Gpu,
+        vec![scene],
+        scene_id,
+        BackendManager::new(),
+    )
+    .await
+    else {
+        return;
+    };
+    pipeline
+        .state
+        .event_bus
+        .replace_screen_backdrop_routes(HashMap::from([(
+            screen,
+            hypercolor_core::bus::ScreenBackdropRoute {
+                layout_device_ids: vec!["screen".to_owned()],
+                has_led_segments: false,
+                output: hypercolor_core::bus::DisplayZoneOutputRoute {
+                    device_id: screen,
+                    width: 16,
+                    height: 16,
+                    circular: false,
+                    brightness: 1.0,
+                    frame_format: hypercolor_types::device::DisplayFrameFormat::Rgb,
+                    viewport: hypercolor_core::bus::DisplayZoneViewport {
+                        position: NormalizedPosition::new(0.5, 0.5),
+                        size: NormalizedPosition::new(1.0, 1.0),
+                        rotation: 0.0,
+                        scale: 1.0,
+                        edge_behavior: EdgeBehavior::Clamp,
+                    },
+                },
+                target_fps: 30,
+            },
+        )]));
+    let lane = hypercolor_core::bus::screen_backdrop_lane_id(screen);
+    let mut lane_rx = pipeline
+        .state
+        .event_bus
+        .zone_canvas_sender(lane)
+        .subscribe();
+
+    let mut published = 0;
+    for _ in 0..FRAMES {
+        pipeline.frame().await;
+        if lane_rx.has_changed().unwrap_or(false) {
+            let frame = lane_rx.borrow_and_update();
+            assert_eq!(
+                frame.rgba_bytes().get(..3),
+                Some([255, 0, 0].as_slice()),
+                "the screen's backdrop should be the zone's red"
+            );
+            published += 1;
+        }
+    }
+
+    assert_eq!(
+        pipeline
+            .runtime
+            .render
+            .display_finalize_runtime
+            .dispatch_count(),
+        1,
+        "{FRAMES} frames of a still scene should finalize its screen once"
+    );
+    assert_eq!(
+        published, 1,
+        "{FRAMES} frames of a still scene should publish its screen's backdrop once"
+    );
+}
+
 /// Count the `LayerHealthChanged` events published since the last drain.
 fn drain_layer_health_events(
     events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
