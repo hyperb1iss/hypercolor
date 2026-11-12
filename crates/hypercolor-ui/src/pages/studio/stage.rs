@@ -21,8 +21,10 @@ use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::layout_builder::{LayoutEditorContext, LayoutWorkspace, ZoneCanvasActions};
 use crate::components::mounting_select::MountingSelect;
+use crate::components::preview_box::contained_width;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::display_preview_state::use_display_preview_subscription;
+use crate::display_rotation::{mounted_footprint, mounted_preview};
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 use crate::ws::messages::zone_has_degraded_layer;
@@ -30,6 +32,9 @@ use crate::ws::messages::zone_has_degraded_layer;
 use super::composition_panel::{COMPOSITION_PANEL_ID, COMPOSITION_TRIGGER_ID};
 use super::surface::{Surface, SurfaceKind, layer_label, now_playing, surfaces_from_zones};
 use super::{StudioContext, hidden_outputs_storage_key};
+
+/// The longer side of a Screen's face preview on the Stage, in CSS pixels.
+const SCREEN_PREVIEW_EXTENT: f64 = 520.0;
 
 /// Preview FPS ceiling for a Light Stage — the canvas is always live, so
 /// it reserves the same headroom the retired `/layout` page did.
@@ -260,11 +265,24 @@ pub fn Stage() -> impl IntoView {
                                             "rounded-xl"
                                         };
                                         let container_class = format!(
-                                            "w-full max-w-[520px] overflow-hidden border \
+                                            "w-full overflow-hidden border \
                                              border-edge-subtle/70 bg-black edge-glow-accent \
                                              {shape}",
                                         );
+                                        // The preview is bounded on its longer side, so a
+                                        // panel standing on its end is no taller than a
+                                        // square one.
+                                        let max_width = contained_width(
+                                            mounted_footprint(
+                                                display.width,
+                                                display.height,
+                                                display.rotation,
+                                            ),
+                                            SCREEN_PREVIEW_EXTENT,
+                                            SCREEN_PREVIEW_EXTENT,
+                                        );
                                         view! {
+                                            <div class="w-full" style=format!("max-width: {max_width:.0}px;")>
                                             <DisplayPreviewSurface
                                                 frame=screen_frame
                                                 fallback_route=api::display_preview_route(
@@ -272,12 +290,18 @@ pub fn Stage() -> impl IntoView {
                                                     None,
                                                 )
                                                 aspect_ratio=aspect
+                                                mounted=mounted_preview(
+                                                    display.width,
+                                                    display.height,
+                                                    display.rotation,
+                                                )
                                                 aria_label=format!(
                                                     "Studio stage preview of {}",
                                                     display.name,
                                                 )
                                                 container_class=container_class
                                             />
+                                            </div>
                                         }
                                             .into_any()
                                     }}

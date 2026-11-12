@@ -10,6 +10,7 @@ use crate::api;
 use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
+use crate::display_rotation::mounted_preview;
 use crate::icons::*;
 use crate::label_utils::natural_cmp;
 
@@ -171,6 +172,7 @@ fn ScreenCard(surface: Surface, label: String) -> impl IntoView {
                                 Some(generation.get()),
                             )
                             aspect_ratio=format!("{} / {}", display.width.max(1), display.height.max(1))
+                            mounted=mounted_preview(display.width, display.height, display.rotation)
                             aria_label=aria_label.clone()
                             container_class=format!("w-full overflow-hidden border border-edge-subtle/60 bg-black {shape}")
                         />
