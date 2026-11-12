@@ -26,7 +26,6 @@ use hypercolor_leptos_ext::raf::Scheduler;
 use crate::api;
 use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
-use crate::components::device_card::{DeviceClass, classify_device};
 use crate::compound_selection::{self, CompoundDepth};
 use crate::render_canvas;
 use leptos_use_element_size::{UseElementSizeReturn, use_element_size};
@@ -77,33 +76,17 @@ fn paint_order(
     )
 }
 
-/// Whether the canvas draws an output. A raw channel of a generic
-/// controller stays out of the layout until a component is attached to
-/// it, while fixed devices (keyboards, AIOs) always draw because their
-/// LEDs mean something without one.
-pub(crate) fn draws_output(zone: &Output, devices: &[api::DeviceSummary]) -> bool {
-    zone.attachment.is_some()
-        || !devices
-            .iter()
-            .find(|device| device.layout_device_id == zone.device_id)
-            .is_some_and(|device| classify_device(device) == DeviceClass::Controller)
-}
-
-/// What a box shows: its geometry style, accent, and identity. `None` for
-/// an output the canvas does not draw.
+/// What a box shows: its geometry style, accent, and identity.
 fn zone_render_data(
     zone: &Output,
     canvas_aspect: f32,
     devices: &[api::DeviceSummary],
     attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
-) -> Option<ZoneRenderData> {
-    if !draws_output(zone, devices) {
-        return None;
-    }
+) -> ZoneRenderData {
     let rotation = zone.rotation.to_degrees();
     let (primary, secondary) = device_accent_colors(&zone.device_id);
     let display = layout_utils::effective_zone_display(zone, devices, attachment_profiles);
-    Some(ZoneRenderData {
+    ZoneRenderData {
         position_style: zone_position_style(zone),
         label_style: upright_label_style(rotation),
         label_below: labels::callout_below(zone, canvas_aspect),
@@ -116,7 +99,7 @@ fn zone_render_data(
         ),
         shape: zone.shape.clone(),
         polygon_points: polygons::svg_points(zone.shape.as_ref()),
-    })
+    }
 }
 
 /// Lets the page around the canvas take a box drag that leaves it. While a
@@ -331,9 +314,16 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 l.zones
                                     .iter()
                                     .filter(|zone| !suppressed.contains(&zone.id))
-                                    .filter_map(|zone| {
-                                        zone_render_data(zone, aspect, devices, attachment_profiles)
-                                            .map(|data| (zone.id.clone(), data))
+                                    .map(|zone| {
+                                        (
+                                            zone.id.clone(),
+                                            zone_render_data(
+                                                zone,
+                                                aspect,
+                                                devices,
+                                                attachment_profiles,
+                                            ),
+                                        )
                                     })
                                     .collect()
                             })
