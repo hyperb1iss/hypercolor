@@ -207,7 +207,9 @@ pub struct ReplaceZoneRequest {
 /// One layer of a zone in a whole-scene replacement.
 ///
 /// A layer that carries an `id` replaces the stored layer with that id;
-/// one without is new.
+/// one without is new. `scope` has three states: leaving it out keeps the
+/// stored layer's scope, `null` applies the layer to its whole zone, and
+/// a value sets it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
