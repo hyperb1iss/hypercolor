@@ -1243,24 +1243,27 @@ fn clearing_a_zone_removes_scoped_lighting_and_keeps_screen_only_layers() {
 }
 
 #[test]
-fn clearing_keeps_a_screen_layer_that_also_names_a_dormant_output() {
+fn clearing_removes_a_screen_layer_that_also_names_a_dormant_output() {
     let mut rig = rig();
-    let face = rig.add(rig.main, &[SCREEN, STRIP]);
+    rig.add(rig.main, &[SCREEN, STRIP]);
     rig.manager
         .unassign_output(&SCENE, STRIP)
         .expect("unassign the strip");
 
     rig.manager.clear_zone_effect(rig.main).expect("clear");
 
-    assert_eq!(
-        rig.stack(rig.main),
-        vec![face],
-        "every output the layer still reaches is a screen"
+    assert!(
+        rig.stack(rig.main).is_empty(),
+        "a scope that names a strip is lighting, and re-adding the strip must not light it"
     );
+    rig.manager
+        .assign_output_to_zone(&SCENE, rig.main, output(STRIP), OutputPlacement::AutoGrid)
+        .expect("assign the strip again");
+    assert!(rig.stack(rig.main).is_empty());
 }
 
 #[test]
-fn clearing_removes_a_wholly_dormant_layer() {
+fn clearing_removes_a_face_whose_screen_has_left_the_zone() {
     let mut rig = rig();
     rig.add(rig.main, &[SCREEN]);
     rig.manager
@@ -1271,8 +1274,27 @@ fn clearing_removes_a_wholly_dormant_layer() {
 
     assert!(
         rig.stack(rig.main).is_empty(),
-        "an id that names no output cannot be shown to be a screen"
+        "an id that names no current output cannot be shown to be a screen; \
+         losing such a face to a clear is the accepted cost of one rule"
     );
+}
+
+#[test]
+fn clearing_keeps_a_layer_only_when_every_scope_id_is_a_live_screen() {
+    let mut rig = rig();
+    let mut second_screen = output(SCREEN);
+    second_screen.id = "usb:fan-lcd-display".to_owned();
+    second_screen.device_id = "usb:fan-lcd".to_owned();
+    rig.manager
+        .assign_output_to_zone(&SCENE, rig.main, second_screen, OutputPlacement::AutoGrid)
+        .expect("a second screen");
+    let both = rig.add(rig.main, &[SCREEN, "usb:fan-lcd-display"]);
+    let one = rig.add(rig.main, &[SCREEN]);
+    rig.add(rig.main, &[SCREEN, KEYS]);
+
+    rig.manager.clear_zone_effect(rig.main).expect("clear");
+
+    assert_eq!(rig.stack(rig.main), vec![both, one]);
 }
 
 #[test]

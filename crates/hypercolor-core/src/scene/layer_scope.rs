@@ -62,9 +62,9 @@ pub(super) fn replace_unscoped_layers(zone: &mut Zone, base: SceneLayer) {
     zone.layers = layers;
 }
 
-/// Remove a zone's lighting, keeping the layers scoped only to screens.
-///
-/// Returns whether any layer was removed.
+/// Remove a zone's lighting: every layer goes except those
+/// [`is_screen_only`] proves are faces. Returns whether any layer was
+/// removed.
 pub(super) fn clear_lighting_layers(zone: &mut Zone) -> bool {
     let before = zone.layers.len();
     let Zone { layers, layout, .. } = zone;
@@ -72,20 +72,24 @@ pub(super) fn clear_lighting_layers(zone: &mut Zone) -> bool {
     zone.layers.len() != before
 }
 
-/// Whether a layer reaches screens and nothing else.
+/// Whether every id in a layer's scope is a live output of the zone and a
+/// screen. Anything else is lighting.
 ///
-/// The zone's own layout says which outputs are screens. A scope id that
-/// names no current output cannot be shown to be one, so a layer needs at
-/// least one live screen, and no live LED output, to count.
+/// The zone's own layout says which outputs are screens, so an id that
+/// names no current output cannot be shown to be one. A layer scoped to a
+/// screen and a strip is lighting whether or not the strip is still in the
+/// zone, or re-adding the strip would light it after a stop. The cost is
+/// accepted: a face whose screen has left the zone is removed by a clear.
 fn is_screen_only(outputs: &[Output], layer: &SceneLayer) -> bool {
     let Some(scope) = &layer.scope else {
         return false;
     };
-    let mut live = outputs
-        .iter()
-        .filter(|output| scope.contains(&output.id))
-        .peekable();
-    live.peek().is_some() && live.all(is_display_zone)
+    !scope.outputs.is_empty()
+        && scope.outputs.iter().all(|id| {
+            outputs
+                .iter()
+                .any(|output| output.id == *id && is_display_zone(output))
+        })
 }
 
 /// The effect a stop gesture ends in this zone: the first effect layer

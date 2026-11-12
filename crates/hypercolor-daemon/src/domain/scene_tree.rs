@@ -253,7 +253,8 @@ pub struct PatchScene {
 
 /// Stop the lighting of one non-display zone or every non-display zone.
 ///
-/// A layer scoped only to screens is not lighting and stays.
+/// A layer stays only when every output its scope names is a screen the
+/// zone currently holds; anything else is lighting and is removed.
 #[derive(Debug, Clone, Default)]
 pub struct ClearScene {
     /// Which non-display zone to clear; `None` clears every non-display zone.
@@ -403,9 +404,12 @@ pub async fn patch_scene(
 
 /// Stop one non-display zone's lighting, or every non-display zone's.
 ///
-/// Every layer goes except those scoped only to screens: a face is not
-/// lighting, and it survives the stop gesture the way a display zone's
-/// does. Clearing every non-display zone also quiesces output. Clearing
+/// Every layer goes except those whose scope names only screens the zone
+/// currently holds: a face is not lighting, and it survives the stop
+/// gesture the way a display zone's does. A scope that also names an LED
+/// output, or an output that has left the zone, is lighting; so a face
+/// whose screen has been unassigned is removed with the rest. Clearing
+/// every non-display zone also quiesces output. Clearing
 /// one zone leaves the rest rendering and therefore leaves output alone.
 ///
 /// # Errors

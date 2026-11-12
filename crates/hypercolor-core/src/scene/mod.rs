@@ -1610,9 +1610,11 @@ impl SceneManager {
             .ok_or_else(|| anyhow::anyhow!("zone vanished after effect apply"))
     }
 
-    /// Stop a zone's lighting: remove every layer except those scoped
-    /// only to screens, so a screen's face survives the stop gesture the
-    /// way a display zone's does.
+    /// Stop a zone's lighting: remove every layer except those whose
+    /// scope names only screens the zone currently holds, so a screen's
+    /// face survives the stop gesture the way a display zone's does. A
+    /// scope that also names an LED output, or an output that has left the
+    /// zone, marks the layer as lighting and it is removed.
     pub fn clear_zone_effect(&mut self, zone_id: ZoneId) -> Option<&Zone> {
         let scene = self.active_scene_mut()?;
         let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;

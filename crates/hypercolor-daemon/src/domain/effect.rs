@@ -1129,7 +1129,7 @@ async fn clear_active_scene_effect_zones(
     if cleared_zones.is_empty() {
         return Ok(None);
     }
-    // Clearing keeps layers scoped only to screens. One of those running
+    // Clearing keeps layers scoped only to live screens. One of those running
     // the failed effect is the failure itself, so it goes too.
     for zone in &cleared_zones {
         let failed_layers = zone.layers.iter().filter(|layer| {
