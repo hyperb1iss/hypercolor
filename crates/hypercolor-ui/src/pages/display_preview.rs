@@ -6,6 +6,7 @@ use crate::api;
 use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::display_preview_state::{use_display_face_resource, use_display_preview_subscription};
+use crate::display_rotation::mounted_preview;
 use crate::icons::{LuLayers, LuMonitor};
 use hypercolor_types::scene::ZoneRole;
 
@@ -149,6 +150,11 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                                 frame=preview_frame
                                 fallback_route=fallback_route
                                 aspect_ratio=aspect
+                                mounted=mounted_preview(
+                                    display.width,
+                                    display.height,
+                                    display.rotation,
+                                )
                                 aria_label=alt_text
                                 container_class=container_class
                             />
