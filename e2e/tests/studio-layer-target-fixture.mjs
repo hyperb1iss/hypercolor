@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { expect } from "@playwright/test";
-import { daemonHeaders, getStack, refuseFence, writeFence } from "./helpers.mjs";
+import { daemonError, daemonHeaders, getStack, refuseFence, writeFence } from "./helpers.mjs";
 
 export const ZONE = "11111111-1111-4111-8111-111111111111";
 export const KEYS = "keys-output";
@@ -48,7 +48,9 @@ const layer = (body) => ({
 // Reads other than the scene, the devices, and the layouts reach the real
 // harness daemon, which lists the effects and advertises layer-scope.
 // `olderDaemon` takes that advertisement out of its status, as a daemon
-// from before layers could be limited answers.
+// from before layers could be limited answers, and refuses a layer write
+// that names `scope` at all: that daemon denies fields it does not know,
+// `null` included.
 export async function openLayerTargets(page, { effectId, olderDaemon = false }) {
   const keys = output(KEYS, KEYBOARD, "Keyboard", 0.3);
   const mouse = output(MOUSE, POINTER, "Mouse", 0.7);
@@ -113,6 +115,9 @@ export async function openLayerTargets(page, { effectId, olderDaemon = false }) 
     writes.push(write);
     const refusal = refuseFence(scene, ifMatch);
     if (refusal) return route.fulfill(refusal);
+    if (olderDaemon && body && "scope" in body) {
+      return route.fulfill(daemonError(scene, 422, "validation_error", "unknown field `scope`"));
+    }
     if (path === `/api/v1/scene/zones/${ZONE}/layers` && request.method() === "POST") {
       zone.layers.push(layer(body));
       return settle(route);

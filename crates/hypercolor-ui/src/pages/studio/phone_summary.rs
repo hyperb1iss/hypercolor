@@ -24,7 +24,7 @@ use hypercolor_types::effect::EffectCategory;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use super::layer_target::{LAYER_SCOPE_CAPABILITY, target_outputs_for};
+use super::layer_target::target_outputs_for;
 use super::phone_view::StudioPhoneView;
 use crate::api;
 use crate::app::EffectsContext;
@@ -352,7 +352,7 @@ fn ZoneCard(
     let limited = Memo::new({
         let zone_id = zone.id.clone();
         move |_| {
-            if !caps.has(LAYER_SCOPE_CAPABILITY) {
+            if !caps.has(api::LAYER_SCOPE_CAPABILITY) {
                 return Vec::new();
             }
             let devices = devices.get().and_then(Result::ok).unwrap_or_default();

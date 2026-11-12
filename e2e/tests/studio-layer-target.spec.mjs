@@ -15,6 +15,26 @@ test.beforeAll(async ({ playwright }) => {
 
 const scopes = (fixture) => fixture.zone.layers.map((layer) => layer.scope?.outputs ?? null);
 
+// A dropdown closes when anything under it scrolls or shifts: the panel
+// sliding in, a row's controls arriving after it mounts. The stack settles
+// before one is opened.
+async function stackSettled(page, rows) {
+  await expect(page.locator("[data-layer-row]")).toHaveCount(rows);
+  await expect(page.getByText("Loading controls…", { exact: true })).toHaveCount(0);
+  await page.locator("#studio-composition-panel")
+    .evaluate((panel) => Promise.all(panel.getAnimations({ subtree: true }).map((motion) => motion.finished)));
+  await settle(page);
+}
+
+async function blendOfTopRow(page, name) {
+  const blend = page.locator("[data-layer-row]").first()
+    .getByRole("combobox", { name: "Blend mode", exact: true });
+  await blend.scrollIntoViewIfNeeded();
+  await settle(page);
+  await blend.click();
+  await page.getByRole("option", { name, exact: true }).click();
+}
+
 test("Studio adds a layer to one output from the canvas, retargets it, and undoes that", async ({ page }) => {
   const fixture = await openLayerTargets(page, { effectId: effect.id });
 
@@ -64,30 +84,11 @@ test("Studio adds a layer to one output from the canvas, retargets it, and undoe
 
 test("Studio restates what a layer applies to when another of its settings changes", async ({ page }) => {
   const fixture = await openLayerTargets(page, { effectId: effect.id });
-  const stackSettled = async (rows) => {
-    // A dropdown closes when anything under it scrolls or shifts: the
-    // panel sliding in, a row's controls arriving after it mounts. The
-    // stack settles before one is opened.
-    await expect(page.locator("[data-layer-row]")).toHaveCount(rows);
-    await expect(page.getByText("Loading controls…", { exact: true })).toHaveCount(0);
-    await page.locator("#studio-composition-panel")
-      .evaluate((panel) => Promise.all(panel.getAnimations({ subtree: true }).map((motion) => motion.finished)));
-    await settle(page);
-  };
-  const blendOfTopRow = async (name) => {
-    const blend = page.locator("[data-layer-row]").first()
-      .getByRole("combobox", { name: "Blend mode", exact: true });
-    await blend.scrollIntoViewIfNeeded();
-    await settle(page);
-    await blend.click();
-    await page.getByRole("option", { name, exact: true }).click();
-  };
-
   // A whole-zone layer says so, rather than leaving the key out for the
   // daemon to read as "keep whatever you hold".
   await page.locator("#studio-composition-trigger").click();
-  await stackSettled(1);
-  await blendOfTopRow("Screen");
+  await stackSettled(page, 1);
+  await blendOfTopRow(page, "Screen");
   await expect.poll(() => fixture.zone.layers[0].blend).toBe("screen");
   const whole = fixture.layerWrites().at(-1);
   expect(whole.method).toBe("PUT");
@@ -99,8 +100,8 @@ test("Studio restates what a layer applies to when another of its settings chang
   await page.getByRole("dialog", { name: "Add layer", exact: true })
     .getByRole("button", { name: new RegExp(`^${effect.name}`) }).first().click();
   await expect.poll(() => scopes(fixture)).toEqual([null, [MOUSE]]);
-  await stackSettled(2);
-  await blendOfTopRow("Add");
+  await stackSettled(page, 2);
+  await blendOfTopRow(page, "Add");
   await expect.poll(() => fixture.zone.layers.at(-1).blend).toBe("add");
   const limited = fixture.layerWrites().at(-1);
   expect(limited.method).toBe("PUT");
@@ -129,5 +130,22 @@ test("Studio offers no layer target on a daemon that cannot limit layers", async
   await expect(page.getByRole("button", { name: /applies to/ })).toHaveCount(0);
   await expect(page.locator("[data-studio-showing]")).toHaveCount(0);
   expect(fixture.layerWrites()).toEqual([]);
+
+  // Its layers still edit: the replace leaves out the field that daemon
+  // does not know, rather than naming it as null.
+  await stackSettled(page, 1);
+  await blendOfTopRow(page, "Screen");
+  await expect.poll(() => fixture.zone.layers[0].blend).toBe("screen");
+  const replace = fixture.layerWrites().at(-1);
+  expect(replace.method).toBe("PUT");
+  expect(replace.body).not.toHaveProperty("scope");
+  await expect(page.getByText(/Layer update failed/)).toHaveCount(0);
+
+  // So does adding one, to the whole zone.
+  await page.getByRole("button", { name: "Add layer", exact: true }).click();
+  await page.getByRole("dialog", { name: "Add layer", exact: true })
+    .getByRole("button", { name: new RegExp(`^${effect.name}`) }).first().click();
+  await expect.poll(() => fixture.zone.layers.length).toBe(2);
+  expect(fixture.layerWrites().at(-1).body).not.toHaveProperty("scope");
   expect(fixture.unexpected).toEqual([]);
 });

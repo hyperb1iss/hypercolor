@@ -93,7 +93,10 @@ pub fn restore_layer_requests(
                     Some(LayerScope { outputs })
                 }
             };
-            let mut request = CreateLayerRequest::from(api::update_request_from_layer(layer));
+            let mut request = CreateLayerRequest::from(api::update_request_from_layer(
+                layer,
+                api::ScopeField::Omitted,
+            ));
             request.scope = scope;
             Some(request)
         })

@@ -15,7 +15,7 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use hypercolor_types::control::ControlValue;
-use hypercolor_ui::api::{scope_request, update_request_from_layer};
+use hypercolor_ui::api::{ScopeField, scope_request, update_request_from_layer};
 use hypercolor_ui::components::layer_panel::row::{layer_title, source_meta};
 use hypercolor_ui::components::layer_panel::source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, add_layer_request,
@@ -79,7 +79,7 @@ fn layer_replacement_uses_the_canonical_creation_shape() {
         scope: None,
     };
 
-    let request = hypercolor_ui::api::update_request_from_layer(&layer);
+    let request = update_request_from_layer(&layer, ScopeField::Stated);
     let wire = serde_json::to_value(request).expect("replacement request should serialize");
 
     assert_eq!(wire["name"], "Wash");
@@ -113,19 +113,35 @@ fn scope_of(ids: &[&str]) -> LayerScope {
 }
 
 #[test]
-fn every_replace_restates_the_scope() {
+fn a_replace_restates_the_scope_to_a_daemon_that_limits_layers() {
+    let stated = ScopeField::for_daemon(true);
     let scoped = scoped_layer(Some(&["k70"]));
-    let wire = serde_json::to_value(update_request_from_layer(&scoped))
+    let wire = serde_json::to_value(update_request_from_layer(&scoped, stated))
         .expect("replacement request should serialize");
     assert_eq!(wire["scope"], serde_json::json!({ "outputs": ["k70"] }));
 
     // A whole-zone layer says so, rather than leaving the key out for the
     // daemon to read as "keep whatever scope you hold".
     let whole = scoped_layer(None);
-    let wire = serde_json::to_value(update_request_from_layer(&whole))
+    let wire = serde_json::to_value(update_request_from_layer(&whole, stated))
         .expect("replacement request should serialize");
     assert!(wire.as_object().expect("an object").contains_key("scope"));
     assert_eq!(wire["scope"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_replace_names_no_scope_to_a_daemon_that_cannot_limit_layers() {
+    // That daemon denies a field it does not know, so even `scope: null`
+    // would have the whole replace refused.
+    let omitted = ScopeField::for_daemon(false);
+    assert_eq!(omitted, ScopeField::Omitted);
+    for layer in [scoped_layer(None), scoped_layer(Some(&["k70"]))] {
+        let request = update_request_from_layer(&layer, omitted);
+        assert_eq!(request.scope, None);
+        let wire = serde_json::to_value(request).expect("replacement request should serialize");
+        assert!(!wire.as_object().expect("an object").contains_key("scope"));
+        assert_eq!(wire["opacity"], 0.75);
+    }
 }
 
 #[test]
@@ -134,7 +150,7 @@ fn a_blend_or_opacity_change_carries_the_scope_it_found() {
     scoped.blend = BlendMode::Add;
     scoped.opacity = 0.4;
 
-    let request = update_request_from_layer(&scoped);
+    let request = update_request_from_layer(&scoped, ScopeField::Stated);
 
     assert_eq!(request.blend, Some(BlendMode::Add));
     assert_eq!(request.opacity, Some(0.4));

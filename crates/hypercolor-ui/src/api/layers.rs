@@ -22,15 +22,57 @@ pub struct LayerStackResponse {
 
 pub use hypercolor_types::api::scene::{CreateLayerRequest, ReplaceLayerRequest};
 
+/// The capability a daemon advertises once its layers can be limited to
+/// some of a zone's outputs.
+pub const LAYER_SCOPE_CAPABILITY: &str = "layer-scope";
+
+/// Whether a replace names the layer's scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeField {
+    /// The request states the scope: the layer's outputs, or `null` for
+    /// the whole zone.
+    Stated,
+    /// The request leaves the field out. A daemon from before layers could
+    /// be limited refuses a field it does not know, `null` included.
+    Omitted,
+}
+
+impl ScopeField {
+    /// The field a replace sends a daemon that advertises
+    /// [`LAYER_SCOPE_CAPABILITY`] (`limits_layers`), or does not.
+    #[must_use]
+    pub fn for_daemon(limits_layers: bool) -> Self {
+        if limits_layers {
+            Self::Stated
+        } else {
+            Self::Omitted
+        }
+    }
+
+    /// The request field for a layer that holds `scope`.
+    #[must_use]
+    #[allow(
+        clippy::option_option,
+        reason = "the request field's own tri-state: missing, null, or a scope"
+    )]
+    pub fn of(self, scope: Option<&LayerScope>) -> Option<Option<LayerScope>> {
+        match self {
+            Self::Stated => Some(scope.cloned()),
+            Self::Omitted => None,
+        }
+    }
+}
+
 /// Build a whole-layer replacement request from the fields the canonical
 /// resource accepts. Replacement mints a new layer identity.
 ///
-/// The request always states the layer's scope: its outputs, or `null`
-/// for the whole zone. A replace that left it out would keep whatever
-/// scope the daemon holds, which is the same thing only while nobody else
-/// has changed it.
+/// Toward a daemon that limits layers the request states the layer's
+/// scope ([`ScopeField::Stated`]): a replace that left it out would keep
+/// whatever scope the daemon holds, which is the same thing only while
+/// nobody else has changed it. Toward any other daemon it must leave the
+/// field out ([`ScopeField::Omitted`]), or the replace is refused.
 #[must_use]
-pub fn update_request_from_layer(layer: &SceneLayer) -> ReplaceLayerRequest {
+pub fn update_request_from_layer(layer: &SceneLayer, scope: ScopeField) -> ReplaceLayerRequest {
     ReplaceLayerRequest {
         name: layer.name.clone(),
         source: layer.source.clone(),
@@ -40,17 +82,18 @@ pub fn update_request_from_layer(layer: &SceneLayer) -> ReplaceLayerRequest {
         adjust: Some(layer.adjust),
         bindings: Some(layer.bindings.clone()),
         enabled: Some(layer.enabled),
-        scope: Some(layer.scope.clone()),
+        scope: scope.of(layer.scope.as_ref()),
     }
 }
 
 /// [`update_request_from_layer`] with the layer limited to `scope`, or to
-/// the whole zone for `None`: the request a change of target sends.
+/// the whole zone for `None`: the request a change of target sends. Only a
+/// daemon that limits layers is ever asked for one.
 #[must_use]
 pub fn scope_request(layer: &SceneLayer, scope: Option<LayerScope>) -> ReplaceLayerRequest {
     ReplaceLayerRequest {
         scope: Some(scope),
-        ..update_request_from_layer(layer)
+        ..update_request_from_layer(layer, ScopeField::Stated)
     }
 }
 

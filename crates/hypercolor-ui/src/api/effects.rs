@@ -238,10 +238,12 @@ pub async fn stop_effect() -> ApiResult<()> {
     client::post_json_discard("/api/v1/scene/clear", &ClearSceneRequest::default()).await
 }
 
-/// Reset one observed effect layer to its defaults.
+/// Reset one observed effect layer to its defaults. `scope` says whether
+/// the daemon is one the replace may name the layer's scope to.
 pub async fn reset_effect_controls(
     target: &EffectLayerTarget,
     fence: &client::Fence,
+    scope: super::ScopeField,
 ) -> ApiResult<EffectLayerTarget> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     if client::Fence::of(&scene) != *fence {
@@ -295,14 +297,7 @@ pub async fn reset_effect_controls(
                 control_bindings: control_bindings.clone(),
                 preset_id: None,
             },
-            name: layer.name.clone(),
-            blend: Some(layer.blend),
-            opacity: Some(layer.opacity),
-            transform: Some(layer.transform),
-            adjust: Some(layer.adjust),
-            bindings: Some(layer.bindings.clone()),
-            enabled: Some(layer.enabled),
-            scope: Some(layer.scope.clone()),
+            ..super::update_request_from_layer(layer, scope)
         }),
         Some(fence),
     )

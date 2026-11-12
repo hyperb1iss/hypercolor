@@ -36,10 +36,6 @@ use crate::layout_utils;
 
 use super::StudioContext;
 
-/// The capability a daemon advertises once a layer can be limited to
-/// outputs. Without it Studio shows no target anywhere.
-pub(crate) const LAYER_SCOPE_CAPABILITY: &str = "layer-scope";
-
 /// The viewport width from which the composition panel docks beside the
 /// Stage instead of covering it: Tailwind's `xl`.
 const PANEL_DOCKS_QUERY: &str = "(min-width: 80rem)";
@@ -141,7 +137,7 @@ impl LayerTargets {
     ) -> Self {
         let caps = expect_context::<crate::app::CapabilitiesContext>();
         let devices = expect_context::<crate::app::DevicesContext>().devices_resource;
-        let enabled = Memo::new(move |_| caps.has(LAYER_SCOPE_CAPABILITY));
+        let enabled = Memo::new(move |_| caps.has(api::LAYER_SCOPE_CAPABILITY));
         let open_zone = move || {
             let zone_id = selected_surface_id.get()?;
             active_scene.with(|scene| {

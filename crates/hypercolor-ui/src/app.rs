@@ -157,6 +157,17 @@ impl CapabilitiesContext {
         self.capabilities.with(|set| set.contains(capability))
     }
 
+    /// Whether a layer replace sent now names the layer's scope: only a
+    /// daemon that limits layers knows the field. Read without tracking,
+    /// for the handler that builds the request.
+    #[must_use]
+    pub fn layer_scope_field(&self) -> api::ScopeField {
+        api::ScopeField::for_daemon(
+            self.capabilities
+                .with_untracked(|set| set.contains(api::LAYER_SCOPE_CAPABILITY)),
+        )
+    }
+
     /// Whether every zone-lifecycle capability is live. `+ New zone` and
     /// the zone rows need all three: a user who can create a zone but
     /// cannot render it or move outputs into it has an unusable zone.

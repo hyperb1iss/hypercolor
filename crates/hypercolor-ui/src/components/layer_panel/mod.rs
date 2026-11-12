@@ -45,7 +45,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
-use crate::app::WsContext;
+use crate::app::{CapabilitiesContext, WsContext};
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
@@ -107,6 +107,17 @@ pub struct LayerWrites {
     pub stack: Signal<Vec<SceneLayer>>,
     /// Hears the id a replace minted: `(zone id, old, new)`.
     pub replaced: Callback<(String, SceneLayerId, SceneLayerId)>,
+    /// The daemon's capabilities, which decide whether a replace names the
+    /// layer's scope. A mount with none sends what every daemon takes.
+    pub capabilities: Option<CapabilitiesContext>,
+}
+
+impl LayerWrites {
+    /// Whether a replace sent now names the layer's scope.
+    fn scope_field(&self) -> api::ScopeField {
+        self.capabilities
+            .map_or(api::ScopeField::Omitted, |caps| caps.layer_scope_field())
+    }
 }
 
 /// Layer-stack editor for one zone. See the module docs for the
@@ -372,6 +383,7 @@ pub fn LayerPanel(
                 host.replaced.run(minted);
             }
         }),
+        capabilities: use_context::<CapabilitiesContext>(),
     };
 
     view! {
@@ -539,7 +551,7 @@ fn LayerLoadingSkeleton() -> impl IntoView {
 /// Push a single-field layer update, guarded by the `If-Match` precondition.
 fn update_layer(zone_id: String, layer: SceneLayer, fence: api::Fence, writes: LayerWrites) {
     let layer_id = layer.id.to_string();
-    let request = api::update_request_from_layer(&layer);
+    let request = api::update_request_from_layer(&layer, writes.scope_field());
     let before = writes.stack.get_untracked();
     leptos::task::spawn_local(async move {
         match api::update_layer(&zone_id, &layer_id, &request, Some(&fence)).await {
