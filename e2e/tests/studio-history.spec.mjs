@@ -407,3 +407,22 @@ test("Studio undoing a move to a new zone puts a carried layer back where it was
   expect(fixture.rejected).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test("Studio drops an undo step the daemon refuses and says so", async ({ page }) => {
+  const fixture = await openHistory(page, { placedStand: true });
+  await moveTo(standCard(page), page, "Accent lights");
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: SECOND, id: "stand-output" }]);
+  await expect(fixture.undo).toBeEnabled();
+
+  // The daemon reads the move's undo and will not apply it. A step that
+  // can never apply must not stay to be offered, and refused, again.
+  fixture.refuseNext(422, "validation_error", "layer move index 1 is out of range for a stack of 1, or names a slot twice");
+  await fixture.undo.click();
+  await expect.poll(() => fixture.rejected.length).toBe(1);
+  await expect(page.getByText(/can no longer be undone, so it was removed from history/)).toBeVisible();
+  await expect(fixture.undo).toBeDisabled();
+  await expect(fixture.redo).toBeDisabled();
+  expect(fixture.assigned()).toEqual([{ zone: SECOND, id: "stand-output" }]);
+  expect(fixture.writes.filter((write) => write.path === "/api/v1/scene/members/edit")).toHaveLength(2);
+  expect(fixture.unexpected).toEqual([]);
+});

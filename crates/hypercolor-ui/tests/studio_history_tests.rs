@@ -5,13 +5,15 @@ use hypercolor_types::layer::{
     BlendMode, LayerAdjust, LayerScope, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
+use hypercolor_ui::api::ApiError;
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, Settled, StudioEdit, StudioJournal, carried_announcement, held_document,
-    held_scene, light_neighbor, members_landed, members_replay_request, prepare_members_replay,
-    rename_is_noop, replaced_layer_id, replay_announcement, replay_layer_moves, replayable_scope,
-    resolve_deletion, restore_layer_requests, settles_by_key, zone_patch_before,
+    DeletedZone, Settled, StudioEdit, StudioJournal, carried_announcement, dropped_step_notice,
+    held_document, held_scene, light_neighbor, members_landed, members_replay_request,
+    prepare_members_replay, refuses_step, rename_is_noop, replaced_layer_id, replay_announcement,
+    replay_layer_moves, replayable_scope, resolve_deletion, restore_layer_requests, settles_by_key,
+    zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -1440,4 +1442,104 @@ fn a_layer_carried_into_a_zone_made_for_it_keeps_its_earlier_steps() {
         }
         other => panic!("expected the creation, found {other:?}"),
     }
+}
+
+// ── A replay the scene can no longer take ───────────────────────────────
+
+#[test]
+fn a_destination_slot_that_is_gone_leaves_the_carrying_to_the_daemon() {
+    // The keys went from Case to Keyboard and took Ripples along, from the
+    // slot above Case's base layer. Case's base layer was deleted since,
+    // so the stack Ripples goes back to is empty and has no slot 1.
+    let mut scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+    scene.zones[0].layers.clear();
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+
+    assert_eq!(
+        replay_layer_moves(&scene, &back, &[ripples_carried()], false),
+        None,
+        "a move into a slot the stack no longer has would be refused"
+    );
+
+    // With the base layer still there the slot exists, and the receipt is
+    // replayed as it is.
+    let scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+    assert!(replay_layer_moves(&scene, &back, &[ripples_carried()], false).is_some());
+}
+
+#[test]
+fn a_destination_that_holds_the_layers_id_already_is_left_to_the_daemon() {
+    // Ids are unique within a zone only, and Case has since gained a layer
+    // with the id Ripples carries.
+    let mut scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+    let twin: SceneLayer = serde_json::from_value(stack_layer(RIPPLES, None)).expect("a layer");
+    scene.zones[0].layers.push(twin);
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+
+    assert_eq!(
+        replay_layer_moves(&scene, &back, &[ripples_carried()], false),
+        None
+    );
+}
+
+#[test]
+fn a_scope_the_destination_cannot_hold_is_left_to_the_daemon() {
+    // Glow lit the stand and the keys and narrowed to the stand when the
+    // keys left. Its undo widens it to the keys again, which only fits
+    // while the same undo brings the keys back to Case.
+    let mut scene = carried_scene(&[]);
+    let glow: SceneLayer =
+        serde_json::from_value(stack_layer(GLOW, Some(&["stand"]))).expect("a layer");
+    scene.zones[0].layers.push(glow);
+    let narrowed = LayerMove {
+        layer_id: layer_id(GLOW),
+        from: LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        to: LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        scope_before: scoped(&["keys", "stand"]),
+        scope_after: scoped(&["stand"]),
+    };
+
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+    assert!(replay_layer_moves(&scene, &back, std::slice::from_ref(&narrowed), false).is_some());
+
+    // The same receipt beside changes that bring no keys back would name
+    // an output Case does not hold.
+    assert_eq!(replay_layer_moves(&scene, &[], &[narrowed], false), None);
+}
+
+#[test]
+fn a_refusal_of_the_request_itself_drops_the_step_and_anything_else_keeps_it() {
+    let refused = |status: u16| ApiError::Http {
+        status,
+        code: None,
+        message: Some("no".to_owned()),
+        details: None,
+    };
+    // The daemon read the step and will not apply it to the scene as it
+    // stands. Asking again gets the same answer, so the step goes.
+    for status in [400, 404, 409, 422] {
+        assert!(refuses_step(&refused(status)), "HTTP {status}");
+    }
+    // A stale fence, a daemon in trouble, a lapsed session, or no daemon
+    // at all says nothing about the step: it stays for another try.
+    for status in [401, 403, 408, 412, 429, 500, 503] {
+        assert!(!refuses_step(&refused(status)), "HTTP {status}");
+    }
+    assert!(!refuses_step(&ApiError::Network("offline".to_owned())));
+    assert!(!refuses_step(&ApiError::Parse("garbled".to_owned())));
+
+    assert_eq!(
+        dropped_step_notice(false, "layer move index 1 is out of range (HTTP 422)"),
+        "This change can no longer be undone, so it was removed from history: layer move index 1 is out of range (HTTP 422)"
+    );
+    assert_eq!(
+        dropped_step_notice(true, "the zone is gone"),
+        "This change can no longer be redone, so it was removed from history: the zone is gone"
+    );
 }

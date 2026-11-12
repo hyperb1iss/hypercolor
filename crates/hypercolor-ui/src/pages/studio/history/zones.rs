@@ -16,8 +16,9 @@ use leptos::task::spawn_local;
 use super::super::tab_model::describe_zone_failure;
 use super::held::{HeldWrite, Pending, Resume, Then, Unresolved};
 use super::{
-    Carried, EntryId, Fence, MovePlan, Sent, Settled, StudioEdit, StudioHistory, Written,
-    carried_announcement, edit_members, flip, members_replay_request, written,
+    Carried, EntryId, Fence, MOVED_ON, MovePlan, Sent, Settled, StudioEdit, StudioHistory, Written,
+    assignment_failed, carried_announcement, edit_members, flip, members_replay_request,
+    refuses_step, written,
 };
 use crate::components::layout_builder::keyed::{self, Answer};
 use crate::components::layout_builder::writer;
@@ -284,8 +285,12 @@ enum Wrote {
     Landed,
     /// The scene could not be read, so nothing went out.
     Unread(&'static str),
-    /// The daemon refused it, for this reason.
+    /// It did not go through this time, for this reason: the scene changed
+    /// elsewhere, or the daemon could not answer properly.
     Refused(String),
+    /// The daemon read it and will not apply it to the scene as it stands
+    /// (see [`refuses_step`]), for this reason.
+    Denied(String),
     /// No answer said whether it landed: the fence and key it went out
     /// under, to settle it with.
     Unknown(Fence, String),
@@ -336,6 +341,7 @@ async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRe
         Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
             Wrote::Refused("the scene changed elsewhere".to_owned())
         }
+        Written::Answered(Err(error)) if refuses_step(&error) => Wrote::Denied(error.to_string()),
         Written::Answered(Err(error)) => Wrote::Refused(error.to_string()),
         Written::Unknown(fence, key) => Wrote::Unknown(fence, key),
     }
@@ -360,8 +366,13 @@ enum TakeDown {
     /// The zone and its outputs are gone.
     Deleted,
     /// The zone stays as it was: nothing changed, or what changed was put
-    /// back.
+    /// back. The failure is already reported.
     Kept,
+    /// The zone stays as it was, or is not there at all, and asking again
+    /// gets the same answer: the zone is gone, or the daemon read the
+    /// request and refused it (see [`refuses_step`]). The reason, which
+    /// nobody has been told yet.
+    Refused(String),
     /// The outputs left, but the delete failed and they could not be put
     /// back: the release that stranded them, for the journal to undo.
     Stranded(Vec<MemberEdit>),
@@ -377,6 +388,9 @@ enum Removal {
     Kept(&'static str),
     /// The delete did not go through; trying again may.
     Failed(String),
+    /// The daemon will not delete the zone as the scene stands (see
+    /// [`refuses_step`]); trying again gets the same answer.
+    Refused(String),
     /// No answer came back for the delete, which went out under this fence
     /// and key.
     Unknown(Fence, String),
@@ -559,6 +573,10 @@ impl StudioHistory {
                                     moved = Moved::Landed;
                                 }
                                 Sent::Failed => moved = Moved::Failed,
+                                Sent::Refused(reason) => {
+                                    toasts::toast_error(&assignment_failed(&reason));
+                                    moved = Moved::Failed;
+                                }
                                 Sent::Unknown(unanswered) => {
                                     toasts::toast_info(&format!(
                                         "Created {}, but no answer came back for the move, so it may not have happened. Check the canvas.",
@@ -810,6 +828,9 @@ impl StudioHistory {
                         }
                     }
                     TakeDown::Kept => {}
+                    TakeDown::Refused(reason) => {
+                        toasts::toast_error(&format!("Zone delete failed: {reason}"));
+                    }
                 }
             }
             self.release(generation).await;
@@ -835,8 +856,7 @@ impl StudioHistory {
             .enumerate()
             .find(|(_, zone)| zone.id.to_string() == record.zone_id)
         else {
-            toasts::toast_error("Zone delete failed: the zone no longer exists");
-            return TakeDown::Kept;
+            return TakeDown::Refused("the zone no longer exists".to_owned());
         };
         *record = DeletedZone::of(zone, index, record.token);
         let zone_key = zone.id;
@@ -877,6 +897,9 @@ impl StudioHistory {
                 Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                     toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                     return TakeDown::Kept;
+                }
+                Written::Answered(Err(error)) if refuses_step(&error) => {
+                    return TakeDown::Refused(error.to_string());
                 }
                 Written::Answered(Err(error)) => {
                     toasts::toast_error(&format!("Zone delete failed: {error}"));
@@ -965,6 +988,9 @@ impl StudioHistory {
             return TakeDown::Stranded(release);
         }
         match outcome {
+            Some(Err(error)) if refuses_step(&error) => {
+                return TakeDown::Refused(error.to_string());
+            }
             Some(Err(error)) => toasts::toast_error(&format!("Zone delete failed: {error}")),
             None => toasts::toast_error("Zone delete did not go through"),
             Some(Ok(_)) => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
@@ -1005,6 +1031,10 @@ impl StudioHistory {
             Written::Answered(Ok(api::zones::ZoneOutcome::Applied(zone))) => zone,
             Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                 toasts::toast_error("Scene changed elsewhere; the zone was not restored.");
+                return None;
+            }
+            Written::Answered(Err(error)) if refuses_step(&error) => {
+                self.drop_step(id, false, &error.to_string());
                 return None;
             }
             Written::Answered(Err(error)) => {
@@ -1087,7 +1117,7 @@ impl StudioHistory {
                     }
                     Wrote::Landed => {}
                     Wrote::Unknown(..) => problems.push("its devices may not be back"),
-                    Wrote::Unread(_) | Wrote::Refused(_) => {
+                    Wrote::Unread(_) | Wrote::Refused(_) | Wrote::Denied(_) => {
                         problems.push("its devices could not be put back");
                     }
                 }
@@ -1193,7 +1223,7 @@ impl StudioHistory {
                 Wrote::Unknown(..) => {
                     problems.push("it may have kept its new place at the end of the tabs")
                 }
-                Wrote::Unread(_) | Wrote::Refused(_) => {
+                Wrote::Unread(_) | Wrote::Refused(_) | Wrote::Denied(_) => {
                     problems.push("it kept its new place at the end of the tabs");
                 }
             }
@@ -1307,6 +1337,7 @@ impl StudioHistory {
                             );
                         }
                         TakeDown::Kept => {}
+                        TakeDown::Refused(reason) => self.drop_step(id, redo, &reason),
                     }
                 }
             } else if let Some(zone) = self
@@ -1357,6 +1388,7 @@ impl StudioHistory {
                     Wrote::Refused(reason) => {
                         toasts::toast_error(&format!("History could not be applied: {reason}"));
                     }
+                    Wrote::Denied(reason) => self.drop_step(id, redo, &reason),
                     // Its place keeps the change until the patch settles.
                     Wrote::Unknown(fence, key) => {
                         self.replay_words.try_set_value(None);
@@ -1478,7 +1510,7 @@ impl StudioHistory {
         let Ok(request) =
             members_replay_request(&scene, fill.changes.clone(), &fill.layer_moves, false)
         else {
-            toasts::toast_error("Assignment changed elsewhere; history was not applied");
+            self.drop_step(id, false, MOVED_ON);
             return None;
         };
         match self
@@ -1528,6 +1560,10 @@ impl StudioHistory {
                         fill,
                     })),
                 );
+                None
+            }
+            Sent::Refused(reason) => {
+                self.drop_step(id, false, &reason);
                 None
             }
             Sent::Failed | Sent::Superseded => None,
@@ -1582,6 +1618,10 @@ impl StudioHistory {
                             outcome: Ok(api::zones::ZoneOutcome::Stale { .. }),
                             ..
                         } => Removal::Failed("the scene changed elsewhere".to_owned()),
+                        Answer::Final {
+                            outcome: Err(error),
+                            ..
+                        } if refuses_step(&error) => Removal::Refused(error.to_string()),
                         Answer::Final {
                             outcome: Err(error),
                             ..
@@ -1653,7 +1693,13 @@ impl StudioHistory {
                 toasts::toast_error(&format!("{name} could not be removed: {reason}"));
                 None
             }
-            Removal::Failed(reason) => {
+            // Nothing moved back and the zone cannot go: the creation has
+            // no undo left in it.
+            Removal::Refused(reason) if !moved_out => {
+                self.drop_step(id, false, &reason);
+                None
+            }
+            Removal::Failed(reason) | Removal::Refused(reason) => {
                 toasts::toast_info(&format!(
                     "Moved its devices back, but {name} could not be removed: {reason}"
                 ));
@@ -1698,6 +1744,10 @@ impl StudioHistory {
             Written::Answered(Ok(api::zones::ZoneOutcome::Applied(zone))) => zone,
             Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                 toasts::toast_error("Scene changed elsewhere; history was not applied");
+                return None;
+            }
+            Written::Answered(Err(error)) if refuses_step(&error) => {
+                self.drop_step(id, true, &error.to_string());
                 return None;
             }
             Written::Answered(Err(error)) => {
@@ -1775,6 +1825,10 @@ impl StudioHistory {
                             };
                         }
                         Sent::Failed => {}
+                        Sent::Refused(reason) => toasts::toast_info(&format!(
+                            "Made {} again, but its devices could not move back in: {reason}",
+                            zone.name
+                        )),
                         // The zone is made; its place holds until the move
                         // settles, then keeps what the move moved.
                         Sent::Unknown(pending) => {

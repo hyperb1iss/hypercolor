@@ -585,6 +585,10 @@ enum Sent {
     },
     /// It did not apply; the failure is already reported.
     Failed,
+    /// The daemon read it and refused it as the scene stands (see
+    /// [`refuses_step`]), for this reason. Nothing is reported yet: a new
+    /// edit says it failed, and a replay drops its step.
+    Refused(String),
     /// No answer came back, even under its key: what went out, to hold
     /// until it settles.
     Unknown(Box<held::Pending>),
@@ -1339,16 +1343,13 @@ impl StudioHistory {
             Some((zone.clone(), layer.clone(), scope))
         });
         // A layer that is gone, or whose outputs have all left, has nothing
-        // to put back, and a step that can never apply must not hold up
-        // the ones before it.
+        // to put back.
         let Some((zone, layer, scope)) = found else {
-            self.replay_words.try_set_value(None);
-            self.journal
-                .update(|journal| journal.settle(id, Settled::Gone));
-            toasts::toast_info(&format!(
-                "{name} or its outputs have left this zone, so that change can no longer be {}",
-                if redo { "redone" } else { "undone" }
-            ));
+            self.drop_step(
+                id,
+                redo,
+                &format!("{name} or its outputs have left this zone"),
+            );
             return;
         };
         let Some(generation) = self.begin() else {
@@ -1390,6 +1391,9 @@ impl StudioHistory {
                         "Scene changed elsewhere; history was not applied. Try again.",
                     );
                     self.resync(generation).await;
+                }
+                Err(error) if refuses_step(&error) => {
+                    self.drop_step(id, redo, &error.to_string());
                 }
                 Err(error) => {
                     toasts::toast_error(&format!("History could not be applied: {error}"));
@@ -1508,6 +1512,10 @@ impl StudioHistory {
                     return;
                 }
                 Sent::Failed => None,
+                Sent::Refused(reason) => {
+                    toasts::toast_error(&assignment_failed(&reason));
+                    None
+                }
                 Sent::Unknown(pending) => {
                     self.record_held(scene_id, "the assignment".to_owned(), *pending);
                     None
@@ -1565,6 +1573,9 @@ impl StudioHistory {
         }
         let response = match result {
             Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => response,
+            Written::Answered(Err(error)) if refuses_step(&error) => {
+                return Sent::Refused(error.to_string());
+            }
             Written::Answered(outcome) => {
                 report_failure(&outcome);
                 if matches!(outcome, Ok(api::zones::ZoneOutcome::Stale { .. })) {
@@ -1663,6 +1674,23 @@ impl StudioHistory {
         self.latest.try_set(None);
     }
 
+    /// Take the step at the journal place `id` out of history, saying
+    /// `why`: the scene has changed so that its undo (`redo` false) or redo
+    /// can never apply as recorded. Left in place it would be offered
+    /// again on every Undo and refused again every time, with every step
+    /// before it out of reach behind it.
+    ///
+    /// Every replay ends here when its step is refused for good: a zone,
+    /// layer, or output it names is gone, or the daemon read the write and
+    /// refused it (see [`refuses_step`]). A stale fence, a lost
+    /// connection, or a daemon in trouble never does; those keep the step.
+    pub(super) fn drop_step(self, id: EntryId, redo: bool, why: &str) {
+        self.replay_words.try_set_value(None);
+        self.journal
+            .try_update(|journal| journal.settle(id, Settled::Gone));
+        toasts::toast_info(&dropped_step_notice(redo, why));
+    }
+
     pub fn replay(self, redo: bool) {
         // Edits already queued count as asked for before this; an undo
         // pressed after clicking Add means to undo that Add.
@@ -1722,7 +1750,7 @@ impl StudioHistory {
                             && zone.role != hypercolor_types::scene::ZoneRole::Display
                     })
                 }) {
-                    toasts::toast_error("The edited zone is no longer available");
+                    self.drop_step(id, redo, "the zone it changed is no longer in this scene");
                     return;
                 }
                 self.busy.set(true);
@@ -1800,7 +1828,7 @@ impl StudioHistory {
             layer_moves: layer_moves.clone(),
         };
         let Ok(request) = members_replay_request(&scene, changes, &layer_moves, redo) else {
-            toasts::toast_error("Assignment changed elsewhere; history was not applied");
+            self.drop_step(id, redo, MOVED_ON);
             return;
         };
         let Some(generation) = self.begin() else {
@@ -1845,6 +1873,9 @@ impl StudioHistory {
                     toasts::toast_error(
                         "Scene changed elsewhere; history was not applied. Try again.",
                     );
+                }
+                Written::Answered(Err(error)) if refuses_step(&error) => {
+                    self.drop_step(id, redo, &error.to_string());
                 }
                 Written::Answered(Err(error)) => {
                     toasts::toast_error(&format!("History could not be applied: {error}"));
@@ -1979,7 +2010,8 @@ pub fn members_replay_request(
 /// whose layer is not where it says, and exactly those moves are then all
 /// that is carried. `None` leaves the carrying to the daemon's rule: when
 /// the receipt carried nothing, when a layer it names was replaced,
-/// reordered, or removed since, or when the outputs going back would take
+/// reordered, or removed since, when the stack or zone a layer goes to can
+/// no longer take it as named, or when the outputs going back would take
 /// a layer with them that the receipt does not know.
 #[must_use]
 pub fn replay_layer_moves(
@@ -2004,7 +2036,7 @@ pub fn replay_layer_moves(
                 layer.id == moved.layer_id && layer.scope.as_ref() == Some(&moved.scope_before)
             })
     });
-    if !stands {
+    if !stands || !destinations_take(scene, changes, &moves) {
         return None;
     }
     // Every scoped layer the leaving outputs would take along must be one
@@ -2030,6 +2062,119 @@ pub fn replay_layer_moves(
         }
     }
     Some(moves)
+}
+
+/// Whether every one of `moves` can land where it says, in `scene` once
+/// `changes` have moved their outputs: the other half of what the daemon
+/// checks before it applies named layer moves. A destination that has
+/// changed since the receipt (a stack that lost the slot, a layer of the
+/// same id, a scope naming an output the zone will not hold) has the
+/// whole request refused, so the moves are only named when none has.
+fn destinations_take(
+    scene: &api::SceneDocument,
+    changes: &[MemberEdit],
+    moves: &[LayerMove],
+) -> bool {
+    let zone = |zone_id| scene.zones.iter().find(|zone| zone.id == zone_id);
+    // Whether the zone holds the output once the changes have applied.
+    let holds_after = |zone: &api::ZoneResource, output: &str| {
+        let arrives = changes.iter().any(|change| {
+            change
+                .after
+                .as_ref()
+                .is_some_and(|after| after.zone_id == zone.id && after.output.id == output)
+        });
+        let leaves = changes.iter().any(|change| {
+            change
+                .before
+                .as_ref()
+                .is_some_and(|before| before.zone_id == zone.id && before.output.id == output)
+        });
+        arrives || (!leaves && zone.members.iter().any(|member| member.id.0 == output))
+    };
+    let mut leaving = std::collections::HashSet::new();
+    let mut landing = std::collections::HashSet::new();
+    for moved in moves {
+        // A layer leaves a zone once and lands in a zone once.
+        if !leaving.insert((moved.from.zone_id, moved.layer_id))
+            || !landing.insert((moved.to.zone_id, moved.layer_id))
+        {
+            return false;
+        }
+        let Some(destination) = zone(moved.to.zone_id) else {
+            return false;
+        };
+        let crosses = moved.from.zone_id != moved.to.zone_id;
+        if crosses
+            && destination
+                .layers
+                .iter()
+                .any(|resident| resident.id == moved.layer_id)
+        {
+            return false;
+        }
+        // An output the move adds to the scope must be one the
+        // destination holds; those the layer named already may be gone.
+        let introduces_stranger = moved.scope_after.outputs.iter().any(|output| {
+            !moved.scope_before.contains(output) && !holds_after(destination, output)
+        });
+        if introduces_stranger {
+            return false;
+        }
+    }
+    // Each stack must have the slots its arrivals name, each named once.
+    scene.zones.iter().all(|target| {
+        let arriving: Vec<usize> = moves
+            .iter()
+            .filter(|moved| moved.to.zone_id == target.id)
+            .map(|moved| moved.to.index)
+            .collect();
+        let departing = moves
+            .iter()
+            .filter(|moved| moved.from.zone_id == target.id)
+            .count();
+        let length = target.layers.len().saturating_sub(departing) + arriving.len();
+        let mut slots = std::collections::HashSet::new();
+        arriving
+            .iter()
+            .all(|index| *index < length && slots.insert(*index))
+    })
+}
+
+/// Why a move's undo or redo is dropped when its outputs are not where
+/// the move left them: another client moved or rebound them since.
+pub(super) const MOVED_ON: &str = "the devices it moved are no longer where it left them";
+
+/// Whether the daemon's final answer `error` refuses a replayed step
+/// itself: it read the request and will not apply it to the scene as it
+/// stands (a zone or layer that is gone, a move that no longer fits, a
+/// scene that is no longer active). A replay is built from the same
+/// journal entry against the live scene each time, so asking again gets
+/// the same answer, and the step is dropped rather than left to block
+/// every step before it.
+///
+/// Anything else says nothing about the step, which stays for another
+/// try: a stale fence (the scene is read again first), a daemon in
+/// trouble, a lapsed session, or a failure to reach the daemon at all.
+#[must_use]
+pub fn refuses_step(error: &api::ApiError) -> bool {
+    matches!(
+        error,
+        api::ApiError::Http {
+            status: 400 | 404 | 409 | 410 | 422,
+            ..
+        }
+    )
+}
+
+/// What Studio says when it takes a step that can never apply out of the
+/// journal: an undo (`redo` false) or a redo, and `why`.
+#[must_use]
+pub fn dropped_step_notice(redo: bool, why: &str) -> String {
+    format!(
+        "This change can no longer be {}, so it was removed from history: {why}",
+        if redo { "redone" } else { "undone" }
+    )
 }
 
 /// The same membership change, the other way round.
@@ -2116,8 +2261,14 @@ fn report_failure<T>(outcome: &api::ApiResult<api::zones::ZoneOutcome<T>>) {
         Ok(api::zones::ZoneOutcome::Stale { .. }) => {
             toasts::toast_error("Scene changed elsewhere; assignment was not saved. Try again.");
         }
-        Err(error) => toasts::toast_error(&format!("Assignment failed: {error}")),
+        Err(error) => toasts::toast_error(&assignment_failed(&error.to_string())),
     }
+}
+
+/// What a membership edit that did not apply says, `reason` being the
+/// daemon's or the transport's.
+fn assignment_failed(reason: &str) -> String {
+    format!("Assignment failed: {reason}")
 }
 
 /// The placement edits that center an assignment's arrivals on `point`.

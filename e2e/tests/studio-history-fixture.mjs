@@ -113,6 +113,7 @@ export async function openHistory(page, { placedStand = false, offline = false, 
   };
   let socket;
   let rejectNext = false;
+  let refuseNext = null;
   const writes = [];
   const rejected = [];
   const unexpected = [];
@@ -160,6 +161,12 @@ export async function openHistory(page, { placedStand = false, offline = false, 
         rejectNext = false;
         rejected.push(write);
         return route.fulfill(refusal);
+      }
+      if (refuseNext) {
+        const answer = daemonError(scene, ...refuseNext);
+        refuseNext = null;
+        rejected.push(write);
+        return route.fulfill(answer);
       }
       let changes = structuredClone(body.changes);
       if (body.assignment) {
@@ -253,6 +260,9 @@ export async function openHistory(page, { placedStand = false, offline = false, 
   return {
     scene, writes, rejected, unexpected,
     rejectNext: () => { rejectNext = true; },
+    // The next membership write is refused as the daemon refuses a request
+    // it read and will not apply: `refuseNext(422, "validation_error", "...")`.
+    refuseNext: (...refusal) => { refuseNext = refusal; },
     stack: (zoneId) => zoneOf(zoneId)?.layers.map((stored) => stored.id),
     remotePlacement: (id, fields) => {
       Object.assign(outputs.get(id), fields);
