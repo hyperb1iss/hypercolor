@@ -99,13 +99,17 @@ pub async fn scan_software_conflicts(State(state): State<Arc<AppState>>) -> Resp
     crate::software_conflicts::scan_now(&store).await;
     envelope::ok(store.status())
 }
-const MULTI_ZONE_CAPABILITIES: &[&str] = &[
+/// What this daemon's scene surface can do, for a client that may be
+/// talking to an older one. A client hides the control a missing entry
+/// gates.
+const SCENE_CAPABILITIES: &[&str] = &[
     "multi-zone-sampling",
     "zone-crud",
     "zone-device-assignment",
     "zone-layout-edit",
     "zone-preview-frames",
     "scene-unassigned-behavior-write",
+    "layer-scope",
 ];
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -321,7 +325,7 @@ async fn system_status_with_privacy(
         effect_health,
         preview_runtime,
         event_bus_subscribers: subscribers,
-        capabilities: MULTI_ZONE_CAPABILITIES
+        capabilities: SCENE_CAPABILITIES
             .iter()
             .map(|capability| (*capability).to_owned())
             .chain(

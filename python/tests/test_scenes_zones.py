@@ -3,22 +3,25 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import msgspec
 import pytest
 import respx
 
+from hypercolor._generated.api.scenes import create_live_zone_layer, replace_live_zone_layer
+from hypercolor._generated.models import CreateLayerRequest, ReplaceLayerRequest
 from hypercolor._generated.types import Unset
 from hypercolor.client import HypercolorClient, scene_fence
 from hypercolor.exceptions import HypercolorPreconditionError
-from hypercolor.models import SceneDocument
+from hypercolor.models import LayerScope, SceneDocument
 
 SCENE_ID = "0193d2c0-0000-7000-8000-00000000aaaa"
 ZONE_ID = "0193d2c0-0000-7000-8000-000000000001"
 LAYER_ID = "0193d2c0-0000-7000-8000-000000000002"
 
-ZONE = {
+ZONE: dict[str, Any] = {
     "id": ZONE_ID,
     "name": "Desk",
     "description": "Main desk lighting",
@@ -196,6 +199,98 @@ async def test_stored_scene_put_replaces_the_complete_document(
     # server-owned `is_default` and `revision` it echoes.
     assert replacement == LIVE_SCENE
     assert str(updated.zones[0].layers[0].id) == LAYER_ID
+
+
+def _scoped_scene() -> dict[str, Any]:
+    """The live scene with its one layer limited to the zone's one output."""
+    layer = {**ZONE["layers"][0], "scope": {"outputs": ["out-strimer"]}}
+    return {**LIVE_SCENE, "zones": [{**ZONE, "layers": [layer]}]}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_a_scoped_layer_survives_a_scene_read_and_replace(
+    client: HypercolorClient,
+) -> None:
+    scoped = _scoped_scene()
+    respx.get(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(scoped))
+    )
+    route = respx.put(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(scoped))
+    )
+
+    scene = await client.get_scene(SCENE_ID)
+    scope = scene.zones[0].layers[0].scope
+    assert isinstance(scope, LayerScope)
+    assert scope.outputs == ["out-strimer"]
+
+    updated = await client.update_scene(SCENE_ID, scene)
+
+    # The replacement echoes the scope it read, so the daemon keeps it. A
+    # replacement that left the key out would keep it too; only an explicit
+    # null clears a scope.
+    replacement = json.loads(route.calls[0].request.content)
+    assert replacement == scoped
+    assert replacement["zones"][0]["layers"][0]["scope"] == {"outputs": ["out-strimer"]}
+    kept = updated.zones[0].layers[0].scope
+    assert isinstance(kept, LayerScope)
+    assert kept.outputs == ["out-strimer"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_a_whole_zone_layer_reads_back_without_a_scope(client: HypercolorClient) -> None:
+    respx.get(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
+    )
+    route = respx.put(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}").mock(
+        return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
+    )
+
+    scene = await client.get_scene(SCENE_ID)
+    assert isinstance(scene.zones[0].layers[0].scope, Unset)
+
+    await client.update_scene(SCENE_ID, scene)
+
+    replacement = json.loads(route.calls[0].request.content)
+    assert "scope" not in replacement["zones"][0]["layers"][0]
+
+
+def test_layer_requests_round_trip_scope() -> None:
+    source = ZONE["layers"][0]["source"]
+    scope = {"outputs": ["out-strimer"]}
+
+    created = create_live_zone_layer._get_kwargs(
+        ZONE_ID,
+        body=CreateLayerRequest.from_dict({"source": source, "scope": scope}),
+    )
+    assert created["method"] == "post"
+    assert created["url"] == f"/api/v1/scene/zones/{ZONE_ID}/layers"
+    assert created["json"]["scope"] == scope
+
+    # A replace says one of three things about scope: nothing (the daemon
+    # keeps the replaced layer's), null (whole zone), or a value.
+    def replace_body(body: dict[str, Any]) -> dict[str, Any]:
+        kwargs = replace_live_zone_layer._get_kwargs(
+            ZONE_ID,
+            LAYER_ID,
+            body=ReplaceLayerRequest.from_dict(body),
+        )
+        assert kwargs["method"] == "put"
+        assert kwargs["url"] == f"/api/v1/scene/zones/{ZONE_ID}/layers/{LAYER_ID}"
+        return kwargs["json"]
+
+    assert "scope" not in replace_body({"source": source})
+    cleared = replace_body({"source": source, "scope": None})
+    assert "scope" in cleared
+    assert cleared["scope"] is None
+    assert replace_body({"source": source, "scope": scope})["scope"] == scope
+
+    kept = ReplaceLayerRequest.from_dict({"source": source})
+    assert isinstance(kept.scope, Unset)
+    kept.scope = LayerScope(outputs=["out-strimer"])
+    assert kept.to_dict()["scope"] == scope
 
 
 @respx.mock

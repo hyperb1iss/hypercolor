@@ -125,6 +125,7 @@ fn color_layer(rgba: [f32; 4]) -> SceneLayer {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }
 

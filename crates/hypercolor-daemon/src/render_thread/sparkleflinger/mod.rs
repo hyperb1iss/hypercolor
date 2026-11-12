@@ -36,7 +36,7 @@ use hypercolor_core::bus::DisplayYuv420Frame;
 #[cfg(feature = "wgpu")]
 use hypercolor_core::input::screen::ScreenBranchPublication;
 use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
-use hypercolor_core::spatial::PreparedZonePlan;
+use hypercolor_core::spatial::{LayerPlacement, PreparedZonePlan};
 #[cfg(feature = "wgpu")]
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::canvas::{
@@ -73,10 +73,13 @@ pub(crate) use gpu::ZoneTextureSample;
 pub(crate) use zone_preview::ZonePreviewStage;
 
 use super::producer_queue::ProducerFrame;
+use super::render_zones::ZoneClassKey;
 
+/// One retained texture a scene zone composes into: a texture per scope
+/// class, which is one per zone for a zone with no scoped layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProjectedZoneTextureRequirement {
-    pub(crate) zone_id: ZoneId,
+    pub(crate) key: ZoneClassKey,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -102,7 +105,6 @@ pub(crate) struct CompositionTransform {
     pub(crate) scale: [f32; 2],
     pub(crate) rotation: f32,
     pub(crate) fit: FitMode,
-    pub(crate) sample_target_space: bool,
 }
 
 impl CompositionTransform {
@@ -118,7 +120,6 @@ impl Default for CompositionTransform {
             scale: [1.0, 1.0],
             rotation: 0.0,
             fit: FitMode::Cover,
-            sample_target_space: false,
         }
     }
 }
@@ -131,7 +132,6 @@ impl From<LayerTransform> for CompositionTransform {
             scale: value.scale,
             rotation: value.rotation,
             fit: value.fit,
-            sample_target_space: false,
         }
     }
 }
@@ -198,6 +198,12 @@ pub struct CompositionLayer {
     opaque_hint: bool,
     transform: Option<CompositionTransform>,
     adjust: Option<CompositionAdjust>,
+    /// Where the source lands on the target when the layer is framed to
+    /// some of its zone's outputs. It stands in for `transform`: the
+    /// layer's own anchor, scale, rotation, and fit are part of it. Where
+    /// the placement draws nothing the layer leaves the target as it is,
+    /// whatever its mode.
+    placement: Option<LayerPlacement>,
 }
 
 impl CompositionLayer {
@@ -246,6 +252,7 @@ impl CompositionLayer {
             opaque_hint,
             transform: None,
             adjust: None,
+            placement: None,
         }
     }
 
@@ -254,6 +261,21 @@ impl CompositionLayer {
             self.transform = Some(transform);
         }
         self
+    }
+
+    /// Draw the layer's source through `placement` and nowhere else. The
+    /// placement carries the layer's own transform, so any set with
+    /// [`Self::with_transform`] is dropped.
+    pub(crate) fn with_placement(mut self, placement: LayerPlacement) -> Self {
+        self.transform = None;
+        self.placement = Some(placement);
+        self
+    }
+
+    /// Whether the layer draws through a placement, and so never takes the
+    /// place of the whole target the way a plain replace does.
+    pub(crate) const fn is_framed(&self) -> bool {
+        self.placement.is_some()
     }
 
     pub(crate) fn with_adjust(mut self, adjust: CompositionAdjust) -> Self {
@@ -318,6 +340,7 @@ impl CompositionLayer {
             && self.opacity >= 1.0
             && self.transform.is_none()
             && self.adjust.is_none()
+            && self.placement.is_none()
     }
 
     fn frame_matches_size(&self, width: u32, height: u32) -> bool {
@@ -329,7 +352,10 @@ impl CompositionLayer {
     }
 
     fn needs_processing_for_size(&self, width: u32, height: u32) -> bool {
-        self.transform.is_some() || self.adjust.is_some() || !self.frame_matches_size(width, height)
+        self.transform.is_some()
+            || self.adjust.is_some()
+            || self.placement.is_some()
+            || !self.frame_matches_size(width, height)
     }
 
     /// Mirrors the direct-copy fast path in `compose_layer_into_gpu`: a fully
@@ -352,6 +378,7 @@ impl CompositionLayer {
             opaque_hint: self.opaque_hint,
             transform: self.transform,
             adjust: self.adjust,
+            placement: self.placement,
         })
     }
 
@@ -386,6 +413,7 @@ pub(crate) struct CompositionLayerIdentity {
     opaque_hint: bool,
     transform: Option<CompositionTransform>,
     adjust: Option<CompositionAdjust>,
+    placement: Option<LayerPlacement>,
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +424,8 @@ pub struct CompositionPlan {
     cpu_replay_cacheable: bool,
     /// See [`Self::preserving_scene_preview`].
     preserves_scene_preview: bool,
+    /// See [`Self::composed_on_cpu`].
+    cpu_only: bool,
 }
 
 impl CompositionPlan {
@@ -406,6 +436,7 @@ impl CompositionPlan {
             layers: vec![layer.into_base_layer()],
             cpu_replay_cacheable: true,
             preserves_scene_preview: false,
+            cpu_only: false,
         }
     }
 
@@ -420,6 +451,7 @@ impl CompositionPlan {
             layers,
             cpu_replay_cacheable: true,
             preserves_scene_preview: false,
+            cpu_only: false,
         }
     }
 
@@ -437,6 +469,17 @@ impl CompositionPlan {
     #[must_use]
     pub(crate) fn preserving_scene_preview(mut self) -> Self {
         self.preserves_scene_preview = true;
+        self
+    }
+
+    /// Compose on the CPU whatever the backend. A GPU compositor hands a
+    /// CPU canvas back through one readback latch keyed by size alone, a
+    /// frame late, so of several plans of one size composed in a frame one
+    /// can be handed another's pixels. A plan that must not be is composed
+    /// where its canvas is made. Its layers must be CPU frames.
+    #[must_use]
+    pub(crate) fn composed_on_cpu(mut self) -> Self {
+        self.cpu_only = true;
         self
     }
 
@@ -1047,7 +1090,7 @@ impl SparkleFlinger {
                 let failure_width = plan.width;
                 let failure_height = plan.height;
                 let contains_gpu_frames = plan.contains_gpu_frames();
-                let gpu_compose_outcome = if gpu.supports_plan(&plan) {
+                let gpu_compose_outcome = if !plan.cpu_only && gpu.supports_plan(&plan) {
                     Some(gpu.compose_attempt(
                         &plan,
                         requires_cpu_sampling_canvas,
@@ -1358,18 +1401,19 @@ impl SparkleFlinger {
 
     pub(crate) fn has_projected_zone_resource(
         &self,
-        zone_id: ZoneId,
+        key: impl Into<ZoneClassKey>,
         width: u32,
         height: u32,
     ) -> bool {
+        let key = key.into();
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => {
-                let _ = (zone_id, width, height);
+                let _ = (key, width, height);
                 false
             }
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.has_projected_zone_resource(zone_id, width, height)
+                gpu.has_projected_zone_resource(key, width, height)
             }
         }
     }
@@ -1380,9 +1424,10 @@ impl SparkleFlinger {
     )]
     pub(crate) fn stabilize_projected_zone_frame(
         &mut self,
-        zone_id: ZoneId,
+        key: impl Into<ZoneClassKey>,
         frame: ProducerFrame,
     ) -> Result<ProducerFrame> {
+        let key = key.into();
         #[cfg(feature = "wgpu")]
         {
             return match (&mut self.backend, frame) {
@@ -1392,7 +1437,7 @@ impl SparkleFlinger {
                 ) if gpu_frame.origin
                     == crate::render_thread::producer_queue::GpuTextureFrameOrigin::CompositorOutput =>
                 {
-                    gpu.snapshot_projected_zone_frame(zone_id, gpu_frame)
+                    gpu.snapshot_projected_zone_frame(key, gpu_frame)
                         .map(ProducerFrame::GpuTexture)
                 }
                 (_, frame) => Ok(frame),
@@ -1400,7 +1445,7 @@ impl SparkleFlinger {
         }
         #[cfg(not(feature = "wgpu"))]
         {
-            let _ = zone_id;
+            let _ = key;
             Ok(frame)
         }
     }

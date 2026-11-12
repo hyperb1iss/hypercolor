@@ -196,7 +196,7 @@ async fn missing_scene_preset_and_favorite_references_are_preserved_and_reported
             }),
         }
         let backup = PortableBackupV1 {
-            schema_version: 1,
+            schema_version: hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION,
             setup: desired,
             preferences: None,
             tui_preferences: None,

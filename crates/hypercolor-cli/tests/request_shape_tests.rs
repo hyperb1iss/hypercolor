@@ -402,6 +402,10 @@ async fn effects_reset_replaces_the_real_layer_without_reapplying() -> Result<()
     assert_eq!(body["source"]["effect_id"], EFFECT_ID);
     assert_eq!(body["source"]["controls"], serde_json::json!({}));
     assert!(body["source"].get("preset_id").is_none());
+    assert!(
+        body.get("scope").is_none(),
+        "a reset says nothing about scope, so the daemon keeps the layer's"
+    );
 
     Ok(())
 }

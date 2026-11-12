@@ -17,6 +17,7 @@ use hypercolor_types::api::scene::{
     SideEffectOutcome, TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
 use hypercolor_types::api::scenes::{ReplaceSceneRequest, SnapshotSceneRequest};
+use hypercolor_types::layer::LayerScope;
 use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority};
 use serde_json::json;
 
@@ -263,6 +264,111 @@ fn replace_is_the_creation_shape() {
 }
 
 #[test]
+fn a_created_layer_takes_an_optional_scope() {
+    let source = json!({"type": "color_fill", "rgba": [1.0, 0.0, 0.0, 1.0]});
+    let whole_zone: CreateLayerRequest =
+        serde_json::from_value(json!({"source": source})).expect("no scope decodes");
+    assert_eq!(whole_zone.scope, None, "omitted means the whole zone");
+    assert!(
+        serde_json::to_value(&whole_zone)
+            .expect("serializes")
+            .get("scope")
+            .is_none(),
+        "a whole-zone create stays off the wire"
+    );
+
+    let scoped: CreateLayerRequest = serde_json::from_value(json!({
+        "source": source,
+        "scope": {"outputs": ["out-keys", "out-logo"]}
+    }))
+    .expect("a scope decodes");
+    assert_eq!(
+        scoped.scope,
+        Some(LayerScope {
+            outputs: vec!["out-keys".to_owned(), "out-logo".to_owned()],
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&scoped).expect("serializes")["scope"],
+        json!({"outputs": ["out-keys", "out-logo"]})
+    );
+}
+
+#[test]
+fn a_layer_replace_scope_is_tri_state() {
+    let source = json!({"type": "color_fill", "rgba": [1.0, 0.0, 0.0, 1.0]});
+    let keep: ReplaceLayerRequest =
+        serde_json::from_value(json!({"source": source})).expect("absent decodes");
+    assert_eq!(keep.scope, None, "missing keeps the replaced layer's scope");
+    assert!(
+        serde_json::to_value(&keep)
+            .expect("serializes")
+            .get("scope")
+            .is_none(),
+        "a request that says nothing about scope sends nothing"
+    );
+
+    let clear: ReplaceLayerRequest =
+        serde_json::from_value(json!({"source": source, "scope": null})).expect("null decodes");
+    assert_eq!(
+        clear.scope,
+        Some(None),
+        "explicit null clears to whole zone"
+    );
+    assert_eq!(
+        serde_json::to_value(&clear).expect("serializes")["scope"],
+        serde_json::Value::Null,
+        "a clear travels as an explicit null"
+    );
+
+    let set: ReplaceLayerRequest = serde_json::from_value(json!({
+        "source": source,
+        "scope": {"outputs": ["out-keys"]}
+    }))
+    .expect("value decodes");
+    let scope = LayerScope {
+        outputs: vec!["out-keys".to_owned()],
+    };
+    assert_eq!(set.scope, Some(Some(scope.clone())));
+
+    assert_eq!(CreateLayerRequest::from(keep).scope, None);
+    assert_eq!(CreateLayerRequest::from(clear).scope, None);
+    assert_eq!(CreateLayerRequest::from(set).scope, Some(scope));
+}
+
+#[test]
+fn a_scene_replacement_layer_scope_is_tri_state_and_echoes_a_read() {
+    let mut payload = representative_document();
+    payload["run_epoch"] = json!("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    payload["zones"][0]["layers"][0]["scope"] = json!({"outputs": ["out-desk-1"]});
+    let document: SceneDocument = serde_json::from_value(payload).expect("document decodes");
+
+    let echoed: ReplaceSceneRequest =
+        serde_json::from_value(serde_json::to_value(&document).expect("document encodes"))
+            .expect("a scoped read written back is a valid replacement");
+    let scope = LayerScope {
+        outputs: vec!["out-desk-1".to_owned()],
+    };
+    assert_eq!(echoed.zones[0].layers[0].scope, Some(Some(scope)));
+    assert_eq!(ReplaceSceneRequest::from(&document), echoed);
+
+    let mut wire = serde_json::to_value(&echoed).expect("replacement encodes");
+    wire["zones"][0]["layers"][0]["scope"] = serde_json::Value::Null;
+    let cleared: ReplaceSceneRequest = serde_json::from_value(wire.clone()).expect("null decodes");
+    assert_eq!(cleared.zones[0].layers[0].scope, Some(None));
+
+    wire["zones"][0]["layers"][0]
+        .as_object_mut()
+        .expect("layer object")
+        .remove("scope");
+    let kept: ReplaceSceneRequest = serde_json::from_value(wire).expect("absent decodes");
+    assert_eq!(
+        kept.zones[0].layers[0].scope, None,
+        "a client that drops the field keeps the stored scope"
+    );
+}
+
+#[test]
 fn the_output_resource_patches_either_or_both_fields() {
     let resource: OutputResource =
         serde_json::from_value(json!({"power": "running", "brightness": 0.8}))
@@ -349,11 +455,22 @@ fn membership_edit_contract_round_trips_offline_restore_receipts() {
     assert_eq!(after.index, 1);
     assert_eq!(after.output.led_mapping, Some(vec![3, 2, 1, 0]));
     assert_eq!(after.output.brightness, Some(0.7));
+    assert_eq!(
+        typed.layer_moves, None,
+        "a request without layer moves leaves the carry to the daemon"
+    );
+    assert_eq!(
+        serde_json::to_value(&typed).expect("serialize request")["layer_moves"],
+        serde_json::Value::Null,
+        "an omitted layer_moves stays omitted"
+    );
     let response = EditMembersResponse {
         document: serde_json::from_value(representative_document()).expect("scene"),
         changes: typed.changes,
+        layer_moves: Vec::new(),
     };
     let encoded = serde_json::to_value(&response).expect("serialize receipt");
+    assert_eq!(encoded["layer_moves"], json!([]));
     assert_eq!(
         serde_json::from_value::<EditMembersResponse>(encoded).expect("read receipt"),
         response
@@ -361,6 +478,80 @@ fn membership_edit_contract_round_trips_offline_restore_receipts() {
     let mut unknown = request;
     unknown["replace_layers"] = json!(true);
     assert!(serde_json::from_value::<EditMembersRequest>(unknown).is_err());
+}
+
+#[test]
+fn a_membership_receipt_carries_layer_moves_and_replays_them_reversed() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, LayerMove, LayerSlot,
+    };
+    use hypercolor_types::layer::LayerScope;
+
+    let receipt = json!({
+        "document": representative_document(),
+        "changes": [],
+        "layer_moves": [{
+            "layer_id": "0198c5b6-1111-7000-8000-00000000000a",
+            "from": {"zone_id": "0198c5b6-1111-7000-8000-000000000002", "index": 1},
+            "to": {"zone_id": "0198c5b6-1111-7000-8000-000000000003", "index": 0},
+            "scope_before": {"outputs": ["out-desk-1", "out-desk-2"]},
+            "scope_after": {"outputs": ["out-desk-1", "out-desk-2"]}
+        }]
+    });
+    let response: EditMembersResponse =
+        serde_json::from_value(receipt.clone()).expect("read receipt");
+    assert_eq!(
+        serde_json::to_value(&response).expect("serialize receipt")["layer_moves"],
+        receipt["layer_moves"]
+    );
+    let carried = &response.layer_moves[0];
+    assert_eq!(carried.from.index, 1);
+    assert_eq!(
+        carried.scope_after,
+        LayerScope {
+            outputs: vec!["out-desk-1".to_owned(), "out-desk-2".to_owned()],
+        }
+    );
+
+    let reversed = carried.reversed();
+    assert_eq!(
+        reversed,
+        LayerMove {
+            layer_id: carried.layer_id,
+            from: LayerSlot {
+                zone_id: carried.to.zone_id,
+                index: 0,
+            },
+            to: LayerSlot {
+                zone_id: carried.from.zone_id,
+                index: 1,
+            },
+            scope_before: carried.scope_after.clone(),
+            scope_after: carried.scope_before.clone(),
+        }
+    );
+    assert_eq!(&reversed.reversed(), carried);
+
+    let replay = json!({
+        "scene_id": "0198c5b6-1111-7000-8000-000000000001",
+        "changes": [],
+        "layer_moves": [serde_json::to_value(&reversed).expect("serialize move")]
+    });
+    let typed: EditMembersRequest = serde_json::from_value(replay).expect("replay request");
+    assert_eq!(typed.layer_moves, Some(vec![reversed]));
+
+    // A receipt written before layer moves existed still reads.
+    let mut older = receipt;
+    older
+        .as_object_mut()
+        .expect("receipt is an object")
+        .remove("layer_moves");
+    assert!(
+        serde_json::from_value::<EditMembersResponse>(older)
+            .expect("read older receipt")
+            .layer_moves
+            .is_empty()
+    );
 }
 
 #[test]

@@ -106,6 +106,17 @@ impl ZoneSamplingSet {
             .all(|zone| matches!(zone.source, ZoneSampleSource::Gpu))
     }
 
+    /// Whether every zone's colors are already on the CPU, so the set
+    /// resolves with no GPU dispatch at all.
+    #[cfg(feature = "wgpu")]
+    fn samples_nothing_on_gpu(&self) -> bool {
+        self.gpu_textures.is_empty()
+            && !self
+                .zones
+                .iter()
+                .any(|zone| matches!(zone.source, ZoneSampleSource::Gpu))
+    }
+
     /// Rebuild `zones` in output order from a GPU result holding only the
     /// `Gpu` zones' colors, splicing in CPU-sampled and held zones.
     pub(super) fn assemble_into(&self, zones: &mut Vec<ZoneColors>, published: &[ZoneColors]) {
@@ -1119,6 +1130,10 @@ pub(crate) fn resolve_led_sampling(
             .sampled_us
             .saturating_add(micros_between(gpu_sample_finish, Instant::now()));
     }
+    #[cfg(feature = "wgpu")]
+    let mut zone_set_resolved_on_cpu = false;
+    #[cfg(not(feature = "wgpu"))]
+    let zone_set_resolved_on_cpu = false;
     if !gpu_zone_sampling
         && !uses_scene_sampled_zones
         && !matches!(
@@ -1136,6 +1151,20 @@ pub(crate) fn resolve_led_sampling(
             .expect("CPU spatial sampling requires a SparkleFlinger-owned sampling target")
         {
             GpuSampleTarget::Output { engine, .. } => Some(engine),
+            // A set sampled wholly on the CPU has its colors in hand, on
+            // either compositor backend.
+            #[cfg(feature = "wgpu")]
+            GpuSampleTarget::Zones {
+                set,
+                fallback: None,
+            } if set.samples_nothing_on_gpu() => {
+                let zones = sampling.output_artifacts.zones_mut();
+                zones.clear();
+                let published_frame = state.event_bus.frame_lane().borrow();
+                set.assemble_into(zones, &published_frame.zones);
+                zone_set_resolved_on_cpu = true;
+                None
+            }
             // Zone snapshots never reach the CPU (Spec 48 §4.1): without a GPU
             // sample, a zone set holds its published frame or goes black.
             #[cfg(feature = "wgpu")]
@@ -1257,7 +1286,7 @@ pub(crate) fn resolve_led_sampling(
         zone_set_transition_zones(
             sampling,
             gpu_sample_target.as_ref(),
-            gpu_zone_sampling
+            (gpu_zone_sampling || zone_set_resolved_on_cpu)
                 && !matches!(
                     render_stage.led_sampling_strategy,
                     LedSamplingStrategy::ReusePublished(_)

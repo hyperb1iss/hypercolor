@@ -1,6 +1,6 @@
 +++
 title = "MCP server"
-description = "Hypercolor's Model Context Protocol server: 21 tools, 5 resources, 4 prompts over Streamable HTTP. Canonical docs live in Agents."
+description = "Hypercolor's Model Context Protocol server: 22 tools, 5 resources, 4 prompts over Streamable HTTP. Canonical docs live in Agents."
 weight = 80
 +++
 
@@ -16,7 +16,7 @@ shapes, and the prompt templates) lives in the **Agents** section. Start there:
 
 - [Agents & MCP overview](@/agents/_index.md): MCP vs CLI and the three primitives
 - [MCP setup](@/agents/mcp-setup.md): Claude Code / Desktop / Cursor / Zed config
-- [Tools reference](@/agents/tools-reference.md): all 21 tools, full JSON schema
+- [Tools reference](@/agents/tools-reference.md): all 22 tools, full JSON schema
 - [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
 - [Prompt templates](@/agents/prompt-templates.md): the 4 shipped prompts
   {% </callout> %}
@@ -31,7 +31,7 @@ HTTP with optional Server-Sent Events for streaming.
 | ------------- | ------------------------------------------------------- |
 | Transport     | Streamable HTTP (`streamable-http`)                     |
 | Default URL   | `http://localhost:9420/mcp`                             |
-| Tools         | 21                                                      |
+| Tools         | 22                                                      |
 | Resources     | 5 (`state`, `devices`, `effects`, `audio`, `scenes`)    |
 | Prompts       | 4 (`mood_lighting`, `troubleshoot`, `setup_automation`, `openrgb_setup`) |
 | Default state | **disabled**                                            |
@@ -90,7 +90,7 @@ The three MCP primitives map cleanly onto Hypercolor's engine.
 
 {% <mermaid> %}
 graph TD
-A[MCP client] -->|tools| T[21 tools: set_effect, get_status, capture_canvas, ...]
+A[MCP client] -->|tools| T[22 tools: set_effect, get_status, capture_canvas, ...]
 A -->|resources| R[5 resources: hypercolor://state, devices, ...]
 A -->|prompts| P[4 prompts: mood_lighting, troubleshoot, setup_automation, openrgb_setup]
 T --> E[Daemon engine + event bus]
@@ -101,11 +101,11 @@ R --> E
 `get_devices`, `get_status`, `list_scenes`, `get_audio_state`, `get_sensor_data`,
 `get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`,
 `capture_canvas`), and every tool carries an `idempotent` annotation so agents can
-reason about retries. Six are non-idempotent: `set_effect`, `set_color`,
-`create_scene`, and `set_display_face` because repeated calls replace or add
-state, `install_effect` because each call restarts the running page and
-returns a new console cursor, and `capture_canvas` because every call returns a
-new frame.
+reason about retries. Seven are non-idempotent: `set_effect`, `add_layer`,
+`set_color`, `create_scene`, and `set_display_face` because repeated calls
+replace or add state, `install_effect` because each call restarts the running
+page and returns a new console cursor, and `capture_canvas` because every call
+returns a new frame.
 
 **Resources** are live read-only snapshots the agent can pull for context. The
 `hypercolor://audio` resource updates at roughly 10 Hz when audio is active (not
@@ -127,6 +127,7 @@ input schemas, defaults, enums, and a worked call plus response for each tool.
 | Tool                 | Read-only | Destructive | Idempotent |
 | -------------------- | --------- | ----------- | ---------- |
 | `set_effect`         | No        | Yes         | No         |
+| `add_layer`          | No        | No          | No         |
 | `list_effects`       | Yes       | No          | Yes        |
 | `set_color`          | No        | Yes         | No         |
 | `set_output_power`   | No        | No          | Yes        |
@@ -149,8 +150,8 @@ input schemas, defaults, enums, and a worked call plus response for each tool.
 | `get_effect_console` | Yes       | No          | Yes        |
 
 `set_effect` resolves an effect by exact ID, exact case-insensitive name, or a
-unique case-insensitive name substring. Scene, zone, layer, device, and display
-face selectors follow the same deterministic policy. No match or an ambiguous
+unique case-insensitive name substring. Scene, zone, layer, device, output, and
+display face selectors follow the same deterministic policy. No match or an ambiguous
 substring returns structured candidate details instead of choosing silently.
 Color text keeps its separate CSS and natural-language resolver. Scenes are
 whole-rig configs and zones are flexible canvas partitions; the tools follow

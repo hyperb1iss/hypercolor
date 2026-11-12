@@ -9,7 +9,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlBinding, EffectId};
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
@@ -948,4 +948,127 @@ fn effect_pool_skips_disabled_effect_layers() {
         .expect("enabled layer should reconcile");
 
     assert_eq!(pool.slot_count(), 1);
+}
+
+fn scoped(mut layer: SceneLayer, outputs: &[&str]) -> SceneLayer {
+    layer.scope = Some(LayerScope {
+        outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+    });
+    layer
+}
+
+#[test]
+fn a_scoped_layer_renders_at_the_extent_of_its_frame() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut zone = render_zone(ZoneId::new(), solid_id);
+    zone.layout.canvas_width = 640;
+    zone.layout.canvas_height = 480;
+    // A keyboard-shaped output: 352 by 80 pixels of the zone canvas.
+    zone.layout.zones[0].size = NormalizedPosition::new(0.55, 1.0 / 6.0);
+    let base = effect_layer(solid_id, [0.0, 0.0, 1.0, 1.0]);
+    let framed = scoped(effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]), &["desk:main"]);
+    zone.layers = vec![base.clone(), framed.clone()];
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("zone should reconcile");
+    assert_eq!(pool.slot_count(), 2);
+
+    let mut render = |layer: &SceneLayer| {
+        let mut canvas = Canvas::new(1, 1);
+        pool.render_layer_into(
+            &zone,
+            layer,
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &EMPTY_SENSORS,
+            hypercolor_core::effect::FrameDataSources::default(),
+            &mut canvas,
+        )
+        .expect("layer should render");
+        canvas
+    };
+    let base_canvas = render(&base);
+    assert_eq!((base_canvas.width(), base_canvas.height()), (640, 480));
+    let framed_canvas = render(&framed);
+    assert_eq!((framed_canvas.width(), framed_canvas.height()), (640, 146));
+    assert_eq!(top_left(&framed_canvas), Rgba::new(255, 0, 0, 255));
+}
+
+#[test]
+fn a_frame_that_changes_shape_rebuilds_its_layers_renderer() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut zone = render_zone(ZoneId::new(), solid_id);
+    zone.layout.canvas_width = 640;
+    zone.layout.canvas_height = 480;
+    zone.layout.zones[0].size = NormalizedPosition::new(0.5, 0.5);
+    let framed = scoped(effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]), &["desk:main"]);
+    zone.layers = vec![framed.clone()];
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("zone should reconcile");
+
+    let extent = |pool: &mut EffectPool, zone: &Zone| {
+        let mut canvas = Canvas::new(1, 1);
+        pool.render_layer_into(
+            zone,
+            &framed,
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &EMPTY_SENSORS,
+            hypercolor_core::effect::FrameDataSources::default(),
+            &mut canvas,
+        )
+        .expect("layer should render");
+        (canvas.width(), canvas.height())
+    };
+    assert_eq!(extent(&mut pool, &zone), (640, 480));
+
+    // Moving the output keeps the frame's shape, and so the renderer.
+    zone.layout.zones[0].position = NormalizedPosition::new(0.3, 0.6);
+    let prepared = pool
+        .prepare_reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("moved output should prepare");
+    pool.commit_reconcile(prepared)
+        .expect("moved output should commit");
+    assert_eq!(extent(&mut pool, &zone), (640, 480));
+
+    zone.layout.zones[0].size = NormalizedPosition::new(0.5, 0.25);
+    pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("reshaped output should reconcile");
+    assert_eq!(extent(&mut pool, &zone), (640, 240));
+}
+
+#[test]
+fn a_layer_whose_scope_names_no_output_of_its_zone_gets_no_renderer() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut zone = render_zone(ZoneId::new(), solid_id);
+    let dormant = scoped(
+        effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]),
+        &["keyboard:gone"],
+    );
+    zone.layers.push(dormant.clone());
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("zone should reconcile");
+    assert_eq!(pool.slot_count(), 1, "the dormant layer builds no renderer");
+
+    // The output comes back under the id the scope kept, and the layer
+    // wakes with a renderer of its own.
+    let mut revived = zone.clone();
+    revived.layout.zones.push(Output {
+        id: "keyboard:gone".into(),
+        ..revived.layout.zones[0].clone()
+    });
+    pool.reconcile(std::slice::from_ref(&revived), &registry, &HashMap::new())
+        .expect("revived zone should reconcile");
+    assert_eq!(pool.slot_count(), 2);
 }

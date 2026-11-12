@@ -3,7 +3,9 @@ use std::sync::Weak;
 
 use anyhow::Result;
 
-use super::super::super::CompositionLayer;
+use hypercolor_core::spatial::{FrameEdge, SourceRepeat};
+
+use super::super::super::{CompositionLayer, CompositionMode};
 use super::super::{COMPOSE_PARAM_BYTES, GpuCompositorPipeline, GpuCompositorSurfaceSet};
 #[cfg(feature = "allocation-contract-tests")]
 use super::has_screen_upload_layers;
@@ -425,15 +427,32 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn encode_compose_params(
     bytes[0..4].copy_from_slice(&width.to_le_bytes());
     bytes[4..8].copy_from_slice(&height.to_le_bytes());
     bytes[8..12].copy_from_slice(&(mode as u32).to_le_bytes());
-    bytes[12..16].copy_from_slice(&(fit_mode(transform.fit) as u32).to_le_bytes());
+    let fit = layer.placement.map_or_else(
+        || fit_mode(transform.fit),
+        |placement| match placement.repeat {
+            SourceRepeat::None => ComposeFitMode::Stretch,
+            SourceRepeat::Tile => ComposeFitMode::Tile,
+            SourceRepeat::Mirror => ComposeFitMode::Mirror,
+        },
+    );
+    bytes[12..16].copy_from_slice(&(fit as u32).to_le_bytes());
     bytes[16..20].copy_from_slice(&layer.frame.width().to_le_bytes());
     bytes[20..24].copy_from_slice(&layer.frame.height().to_le_bytes());
-    let processing = if layer.needs_processing_for_size(width, height) {
-        1_u32
+    let processing = if let Some(placement) = layer.placement {
+        // A placed replace covers what it draws on: there the source counts
+        // as opaque, black where the placed source does not reach.
+        match (placement.edge, layer.mode == CompositionMode::Replace) {
+            (FrameEdge::Extend, false) => ComposeProcessing::Placement,
+            (FrameEdge::Extend, true) => ComposeProcessing::PlacementOpaque,
+            (FrameEdge::Clip, false) => ComposeProcessing::ClippedPlacement,
+            (FrameEdge::Clip, true) => ComposeProcessing::ClippedPlacementOpaque,
+        }
+    } else if layer.needs_processing_for_size(width, height) {
+        ComposeProcessing::Transform
     } else {
-        0_u32
+        ComposeProcessing::None
     };
-    bytes[24..28].copy_from_slice(&processing.to_le_bytes());
+    bytes[24..28].copy_from_slice(&(processing as u32).to_le_bytes());
     bytes[28..32].copy_from_slice(&u32::from(source_flip_y).to_le_bytes());
     bytes[32..36].copy_from_slice(&layer.opacity.to_le_bytes());
     bytes[36..40].copy_from_slice(&transform.anchor.x.to_le_bytes());
@@ -442,12 +461,6 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn encode_compose_params(
     bytes[48..52].copy_from_slice(&transform.scale[1].to_le_bytes());
     bytes[52..56].copy_from_slice(&transform.rotation.cos().to_le_bytes());
     bytes[56..60].copy_from_slice(&transform.rotation.sin().to_le_bytes());
-    let sample_target_space = if transform.sample_target_space {
-        1.0_f32
-    } else {
-        0.0_f32
-    };
-    bytes[60..64].copy_from_slice(&sample_target_space.to_le_bytes());
     bytes[64..68].copy_from_slice(&adjust.brightness.to_le_bytes());
     bytes[68..72].copy_from_slice(&adjust.saturation.to_le_bytes());
     bytes[72..76].copy_from_slice(&adjust.hue_shift.to_le_bytes());
@@ -457,7 +470,45 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn encode_compose_params(
     bytes[84..88].copy_from_slice(&adjust.tint[1].to_le_bytes());
     bytes[88..92].copy_from_slice(&adjust.tint[2].to_le_bytes());
     bytes[92..96].copy_from_slice(&adjust.contrast.to_le_bytes());
+    if let Some(placement) = layer.placement {
+        // Two vec4 rows per affine, then the crop.
+        let rows = [
+            &placement.frame_to_source[0..3],
+            &placement.frame_to_source[3..6],
+            &placement.zone_to_frame[0..3],
+            &placement.zone_to_frame[3..6],
+        ];
+        for (row, values) in rows.into_iter().enumerate() {
+            for (column, value) in values.iter().enumerate() {
+                let offset = 96 + row * 16 + column * 4;
+                bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        for (column, value) in placement.source_crop.iter().enumerate() {
+            let offset = 160 + column * 4;
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
     bytes
+}
+
+/// How the compose shader finds a destination pixel's source texel. The
+/// values are the shader's `PROCESS_*` constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum ComposeProcessing {
+    /// The source texel at the destination pixel's own position.
+    None = 0,
+    /// Through the layer's anchor, scale, rotation, and fit.
+    Transform = 1,
+    /// Through a layer's placement, the frame's edge running on beyond it.
+    Placement = 2,
+    /// As `Placement`, with the source opaque everywhere.
+    PlacementOpaque = 3,
+    /// Through a layer's placement, inside its frame only.
+    ClippedPlacement = 4,
+    /// As `ClippedPlacement`, with the source opaque inside the frame.
+    ClippedPlacementOpaque = 5,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

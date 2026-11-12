@@ -12,7 +12,9 @@ fn clear_inactive_zones_releases_cached_zone_state() {
         .clone();
     let display_route = sample_display_route(display_target.device_id);
     let zone_canvas_frame = sample_zone_canvas_frame(&display_target, true);
-    runtime.target_canvases.insert(zone.id, Canvas::new(4, 4));
+    runtime
+        .target_canvases
+        .insert(zone.id.into(), Canvas::new(4, 4));
     runtime
         .spatial_engines
         .insert(zone.id, SpatialEngine::new(zone.layout.clone()));

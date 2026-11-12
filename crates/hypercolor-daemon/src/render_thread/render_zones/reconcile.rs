@@ -11,6 +11,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use super::super::layer_runtime::PreparedLayerRuntimeRegistry;
 use super::ZoneRuntime;
 use super::projection::build_zone_projection;
+use super::scope_classes::{ZoneClassKey, ZoneScopeClasses, multi_class, zone_class_keys};
 use super::zone_state::{
     combine_led_zone_layouts, combined_led_state, desired_media_asset_ids,
     zone_contributes_to_scene_canvas, zone_publishes_direct_canvas,
@@ -27,8 +28,16 @@ const DIRECT_SURFACE_POOL_MAX_SLOTS: usize = 32;
 
 struct PreparedSpatialState {
     engines: HashMap<ZoneId, SpatialEngine>,
+    scope_classes: HashMap<ZoneId, Arc<ZoneScopeClasses>>,
+    class_engines: HashMap<ZoneClassKey, SpatialEngine>,
     combined_layout: Arc<hypercolor_types::spatial::SpatialLayout>,
     combined_engine: SpatialEngine,
+}
+
+impl PreparedSpatialState {
+    fn class_keys(&self, zone: &Zone) -> impl Iterator<Item = ZoneClassKey> + '_ {
+        zone_class_keys(&self.scope_classes, zone.id)
+    }
 }
 
 enum PreparedSceneBacking {
@@ -45,7 +54,7 @@ pub(crate) struct PreparedZoneReconcile {
     effect_pool: PreparedEffectPoolReconcile,
     layer_runtime: PreparedLayerRuntimeRegistry,
     spatial: PreparedSpatialState,
-    target_canvases: HashMap<ZoneId, Canvas>,
+    target_canvases: HashMap<ZoneClassKey, Canvas>,
     scene_canvas_requirements: Vec<ProjectedZoneTextureRequirement>,
     scene_projection_cache: HashMap<ZoneId, super::projection::CachedZoneProjection>,
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
@@ -54,6 +63,7 @@ pub(crate) struct PreparedZoneReconcile {
     retained_materialized_zone_frames: HashMap<ZoneId, super::model::RetainedMaterializedZoneFrame>,
     desired_media_ids: HashSet<hypercolor_types::asset::AssetId>,
     scene_zone_ids: HashSet<ZoneId>,
+    scene_class_keys: HashSet<ZoneClassKey>,
     direct_zone_ids: HashSet<ZoneId>,
     projected_zone_texture_requirements: Vec<ProjectedZoneTextureRequirement>,
     projected_scene_layer_capacity: usize,
@@ -97,13 +107,13 @@ impl PreparedZoneReconcile {
         for requirement in &self.scene_canvas_requirements {
             let reusable = runtime
                 .target_canvases
-                .get(&requirement.zone_id)
+                .get(&requirement.key)
                 .is_some_and(|canvas| {
                     canvas.width() == requirement.width && canvas.height() == requirement.height
                 });
             if !reusable {
                 self.target_canvases.insert(
-                    requirement.zone_id,
+                    requirement.key,
                     Canvas::try_new(requirement.width, requirement.height)?,
                 );
             }
@@ -204,6 +214,8 @@ impl ZoneRuntime {
         self.projected_scene_layers.clear();
         self.scene_projection_cache.clear();
         self.spatial_engines.clear();
+        self.scope_classes.clear();
+        self.class_spatial_engines.clear();
         self.device_surfaces.clear_zones();
         self.direct_surface_pools.clear();
         self.retained_direct_zone_frames.clear();
@@ -312,10 +324,20 @@ impl ZoneRuntime {
             .filter(|zone| zone_publishes_direct_canvas(zone))
             .map(|zone| zone.id)
             .collect::<HashSet<_>>();
+        let mut scene_class_keys = HashSet::new();
+        for zone in zones
+            .iter()
+            .filter(|zone| zone_contributes_to_scene_canvas(zone))
+        {
+            for key in spatial.class_keys(zone) {
+                scene_class_keys.try_reserve(1)?;
+                scene_class_keys.insert(key);
+            }
+        }
         let mut target_canvases = HashMap::new();
-        target_canvases.try_reserve(scene_zone_ids.len())?;
+        target_canvases.try_reserve(scene_class_keys.len())?;
         let mut scene_canvas_requirements = Vec::new();
-        scene_canvas_requirements.try_reserve_exact(scene_zone_ids.len())?;
+        scene_canvas_requirements.try_reserve_exact(scene_class_keys.len())?;
         let mut scene_projection_cache = HashMap::new();
         scene_projection_cache.try_reserve(scene_zone_ids.len())?;
         let mut direct_surface_pools = HashMap::new();
@@ -330,11 +352,15 @@ impl ZoneRuntime {
 
         for zone in zones {
             if zone_contributes_to_scene_canvas(zone) {
-                scene_canvas_requirements.push(ProjectedZoneTextureRequirement {
-                    zone_id: zone.id,
-                    width: zone.layout.canvas_width,
-                    height: zone.layout.canvas_height,
-                });
+                // One retained texture per scope class: the base class alone
+                // for a zone with no scoped layer.
+                scene_canvas_requirements.extend(spatial.class_keys(zone).map(|key| {
+                    ProjectedZoneTextureRequirement {
+                        key,
+                        width: zone.layout.canvas_width,
+                        height: zone.layout.canvas_height,
+                    }
+                }));
 
                 let needs_projection =
                     self.scene_projection_cache
@@ -389,9 +415,24 @@ impl ZoneRuntime {
             projected_scene_layer_capacity = 0;
             Vec::new()
         } else {
+            // A zone with several classes also keeps a texture for its
+            // picture, which a preview of the zone shows.
+            let pictured = zones
+                .iter()
+                .filter(|zone| zone_contributes_to_scene_canvas(zone))
+                .filter(|zone| multi_class(&spatial.scope_classes, zone.id).is_some());
             let mut requirements = Vec::new();
-            requirements.try_reserve_exact(scene_canvas_requirements.len())?;
+            requirements.try_reserve_exact(
+                scene_canvas_requirements
+                    .len()
+                    .saturating_add(pictured.clone().count()),
+            )?;
             requirements.extend(scene_canvas_requirements.iter().copied());
+            requirements.extend(pictured.map(|zone| ProjectedZoneTextureRequirement {
+                key: ZoneClassKey::picture(zone.id),
+                width: zone.layout.canvas_width,
+                height: zone.layout.canvas_height,
+            }));
             requirements
         };
 
@@ -408,6 +449,7 @@ impl ZoneRuntime {
             retained_materialized_zone_frames,
             desired_media_ids,
             scene_zone_ids,
+            scene_class_keys,
             direct_zone_ids,
             projected_zone_texture_requirements,
             projected_scene_layer_capacity,
@@ -432,6 +474,7 @@ impl ZoneRuntime {
             mut retained_materialized_zone_frames,
             desired_media_ids,
             scene_zone_ids,
+            scene_class_keys,
             direct_zone_ids,
             projected_zone_texture_requirements: _,
             projected_scene_layer_capacity: _,
@@ -448,9 +491,9 @@ impl ZoneRuntime {
             }
         }
         if matches!(scene_backing, PreparedSceneBacking::Cpu { .. }) {
-            for (zone_id, canvas) in std::mem::take(&mut self.target_canvases) {
-                if scene_zone_ids.contains(&zone_id) && !target_canvases.contains_key(&zone_id) {
-                    target_canvases.insert(zone_id, canvas);
+            for (key, canvas) in std::mem::take(&mut self.target_canvases) {
+                if scene_class_keys.contains(&key) && !target_canvases.contains_key(&key) {
+                    target_canvases.insert(key, canvas);
                 }
             }
         }
@@ -511,6 +554,8 @@ impl ZoneRuntime {
         self.retained_direct_zone_frames = retained_direct_zone_frames;
         self.retained_materialized_zone_frames = retained_materialized_zone_frames;
         self.spatial_engines = spatial.engines;
+        self.scope_classes = spatial.scope_classes;
+        self.class_spatial_engines = spatial.class_engines;
         let spatial_engines = &self.spatial_engines;
         self.device_surfaces
             .retain_zones(|zone_id| spatial_engines.contains_key(zone_id));
@@ -545,25 +590,65 @@ impl ZoneRuntime {
             engines.insert(zone.id, engine);
         }
 
+        // Scope classes belong to the layers and the layout they were
+        // grouped from, so they are rebuilt with every reconcile.
+        let mut scope_classes = HashMap::new();
+        let mut class_engines = HashMap::new();
+        for zone in zones {
+            let Some(classes) = ZoneScopeClasses::of(zone)? else {
+                continue;
+            };
+            if !classes.is_single() && zone_contributes_to_scene_canvas(zone) {
+                for (class, members) in classes.iter() {
+                    if !classes.class_samples_leds(&zone.layout, members) {
+                        continue;
+                    }
+                    let key = ZoneClassKey::new(zone.id, class);
+                    let layout = classes.class_layout(&zone.layout, class);
+                    let engine = match self
+                        .class_spatial_engines
+                        .get(&key)
+                        .filter(|engine| engine.layout().as_ref() == &layout)
+                    {
+                        Some(existing) => existing.clone(),
+                        None => SpatialEngine::try_new(layout)?,
+                    };
+                    class_engines.insert(key, engine);
+                }
+            }
+            scope_classes.insert(zone.id, Arc::new(classes));
+        }
+
         let mut contributing_zones = zones
             .iter()
             .filter(|zone| zone_contributes_to_scene_canvas(zone));
         if let Some(zone) = contributing_zones.next()
             && contributing_zones.next().is_none()
+            && scope_classes
+                .get(&zone.id)
+                .is_none_or(|classes| classes.is_single())
             && let Some(engine) = engines.get(&zone.id)
         {
             let engine = engine.clone();
             return Ok(PreparedSpatialState {
                 engines,
+                scope_classes,
+                class_engines,
                 combined_layout: engine.layout(),
                 combined_engine: engine,
             });
         }
 
-        let (layout, engine) =
-            combined_led_state(combine_led_zone_layouts(zones, scene_width, scene_height))?;
+        let (layout, engine) = combined_led_state(combine_led_zone_layouts(
+            zones,
+            &scope_classes,
+            scene_width,
+            scene_height,
+        ))?;
         Ok(PreparedSpatialState {
             engines,
+            scope_classes,
+            class_engines,
             combined_layout: layout,
             combined_engine: engine,
         })

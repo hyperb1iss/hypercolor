@@ -14,6 +14,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.layer_adjust import LayerAdjust
     from ..models.layer_binding import LayerBinding
+    from ..models.layer_scope import LayerScope
     from ..models.layer_source import LayerSource
     from ..models.layer_transform import LayerTransform
 
@@ -34,6 +35,7 @@ class SceneLayer:
         enabled (bool | Unset): Whether this layer is currently active.
         name (None | str | Unset): Display name. Defaults to the source's intrinsic name in the UI.
         opacity (float | Unset): Layer opacity.
+        scope (LayerScope | None | Unset):
         transform (LayerTransform | Unset): Geometric placement for a layer source.
     """
 
@@ -45,10 +47,13 @@ class SceneLayer:
     enabled: bool | Unset = UNSET
     name: None | str | Unset = UNSET
     opacity: float | Unset = UNSET
+    scope: LayerScope | None | Unset = UNSET
     transform: LayerTransform | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.layer_scope import LayerScope
+
         id = str(self.id)
 
         source = self.source.to_dict()
@@ -78,6 +83,14 @@ class SceneLayer:
 
         opacity = self.opacity
 
+        scope: dict[str, Any] | None | Unset
+        if isinstance(self.scope, Unset):
+            scope = UNSET
+        elif isinstance(self.scope, LayerScope):
+            scope = self.scope.to_dict()
+        else:
+            scope = self.scope
+
         transform: dict[str, Any] | Unset = UNSET
         if not isinstance(self.transform, Unset):
             transform = self.transform.to_dict()
@@ -102,6 +115,8 @@ class SceneLayer:
             field_dict["name"] = name
         if opacity is not UNSET:
             field_dict["opacity"] = opacity
+        if scope is not UNSET:
+            field_dict["scope"] = scope
         if transform is not UNSET:
             field_dict["transform"] = transform
 
@@ -111,6 +126,7 @@ class SceneLayer:
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.layer_adjust import LayerAdjust
         from ..models.layer_binding import LayerBinding
+        from ..models.layer_scope import LayerScope
         from ..models.layer_source import LayerSource
         from ..models.layer_transform import LayerTransform
 
@@ -155,6 +171,23 @@ class SceneLayer:
 
         opacity = d.pop("opacity", UNSET)
 
+        def _parse_scope(data: object) -> LayerScope | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                scope_type_0 = LayerScope.from_dict(data)
+
+                return scope_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(LayerScope | None | Unset, data)
+
+        scope = _parse_scope(d.pop("scope", UNSET))
+
         _transform = d.pop("transform", UNSET)
         transform: LayerTransform | Unset
         if isinstance(_transform, Unset):
@@ -171,6 +204,7 @@ class SceneLayer:
             enabled=enabled,
             name=name,
             opacity=opacity,
+            scope=scope,
             transform=transform,
         )
 

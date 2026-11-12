@@ -1,16 +1,23 @@
 //! Atomic, reversible membership edits without replacing scene content.
+//!
+//! Outputs move, and the scoped layers that name them move with them. A
+//! forward edit lets the engine decide which layers follow and reports
+//! each one in the receipt; a replay hands those moves back, reversed or
+//! not, and gets exactly them, so an undo puts every layer back at its
+//! slot with its scope.
 
 use std::collections::HashSet;
 
+use hypercolor_core::scene::{LayerMutationError, OutputMove, plan_layer_carry};
 use hypercolor_types::api::scene::{
-    EditMembersRequest, EditMembersResponse, MemberAssignmentTarget, MemberEdit, MemberState,
-    SceneFence,
+    EditMembersRequest, EditMembersResponse, LayerMove, MemberAssignmentTarget, MemberEdit,
+    MemberState, SceneFence,
 };
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use super::{
-    AssignMembersRequest, DomainError, Output, OutputPlacement, ResourceKind, Scene,
-    SceneTreeContext, ZoneRole, active_scene, check_scene_fence, ensure_live_zone_mutable,
+    AssignMembersRequest, DomainError, DomainErrorDetails, Output, OutputPlacement, ResourceKind,
+    Scene, SceneTreeContext, ZoneRole, active_scene, check_scene_fence, ensure_live_zone_mutable,
     member_placement, mint_missing_outputs, reconcile_member_exclusions, scene_document,
     zone_layout_error,
 };
@@ -19,7 +26,8 @@ use super::{
 ///
 /// # Errors
 /// Rejects stale revisions, another active scene, mismatched preconditions,
-/// duplicate output identities, display zones, and invalid geometry before committing.
+/// duplicate output identities, display zones, invalid geometry, and layer
+/// moves that no longer match the stacks, before committing.
 pub async fn edit_members(
     ctx: &SceneTreeContext,
     mut request: EditMembersRequest,
@@ -28,6 +36,11 @@ pub async fn edit_members(
     if request.changes.is_empty() == request.assignment.is_none() {
         return Err(DomainError::validation(
             "provide either an assignment target or explicit membership changes",
+        ));
+    }
+    if request.assignment.is_some() && request.layer_moves.is_some() {
+        return Err(DomainError::validation(
+            "layer moves replay a receipt and travel with explicit membership changes",
         ));
     }
     let minted = if let Some(assignment) = &request.assignment {
@@ -60,6 +73,7 @@ pub async fn edit_members(
                     ctx.scene.run_epoch(),
                 ),
                 changes: Vec::new(),
+                layer_moves: Vec::new(),
             });
         }
     }
@@ -130,6 +144,29 @@ pub async fn edit_members(
         });
     }
 
+    // A replay names its layer moves. A forward edit plans them here, from
+    // the zones as they stand, against everything the edit moves at once.
+    let layer_moves = match request.layer_moves {
+        Some(replayed) => {
+            for moved in &replayed {
+                ensure_live_zone_mutable(&mutation, moved.from.zone_id)?;
+                ensure_live_zone_mutable(&mutation, moved.to.zone_id)?;
+            }
+            // Scopes are stored sorted and unique. Normalizing here makes
+            // the moves this edit reports the moves it committed, so the
+            // receipt reverses cleanly however the request spelled them.
+            replayed
+                .into_iter()
+                .map(|moved| LayerMove {
+                    scope_before: moved.scope_before.normalized(),
+                    scope_after: moved.scope_after.normalized(),
+                    ..moved
+                })
+                .collect()
+        }
+        None => plan_layer_carry(&previous, &output_moves(&changes)),
+    };
+
     // Remove the complete touched set first, allowing a move between zones
     // without a temporary duplicate device/segment binding.
     for change in &changes {
@@ -176,6 +213,9 @@ pub async fn edit_members(
             .set_zone_layout(scene_id, zone.id, layout)
             .map_err(|error| zone_layout_error(error, zone.id))?;
     }
+    mutation
+        .apply_layer_moves(scene_id, &layer_moves)
+        .map_err(layer_move_error)?;
     for zone_id in changes
         .iter()
         .flat_map(|change| {
@@ -185,6 +225,11 @@ pub async fn edit_members(
                 .chain(change.after.iter())
                 .map(|state| state.zone_id)
         })
+        .chain(
+            layer_moves
+                .iter()
+                .flat_map(|moved| [moved.from.zone_id, moved.to.zone_id]),
+        )
         .collect::<HashSet<_>>()
     {
         mutation.retire_zone_preview(scene_id, zone_id);
@@ -204,7 +249,55 @@ pub async fn edit_members(
     Ok(EditMembersResponse {
         document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
         changes,
+        layer_moves,
     })
+}
+
+/// The outputs an edit moves from one zone to another. An output that only
+/// joins or only leaves the scene moves no layer: its scope ids wait for it.
+fn output_moves(changes: &[MemberEdit]) -> Vec<OutputMove> {
+    changes
+        .iter()
+        .filter_map(|change| {
+            let before = change.before.as_ref()?;
+            let after = change.after.as_ref()?;
+            (before.zone_id != after.zone_id).then(|| OutputMove {
+                output_id: before.output.id.clone(),
+                from: before.zone_id,
+                to: after.zone_id,
+            })
+        })
+        .collect()
+}
+
+/// A replayed layer move that no longer fits the stacks is a conflict, the
+/// same answer a membership precondition gets; a move that was never valid
+/// is the caller's error.
+fn layer_move_error(error: LayerMutationError) -> DomainError {
+    match error {
+        LayerMutationError::ZoneMissing => {
+            DomainError::conflict("a layer move names a zone this scene no longer holds")
+        }
+        LayerMutationError::LayerMoveStale { layer_id }
+        | LayerMutationError::DuplicateLayer { layer_id }
+        | LayerMutationError::LayerMissing { layer_id } => DomainError::conflict(format!(
+            "layer {layer_id} is no longer where the membership receipt left it"
+        )),
+        LayerMutationError::InvalidLayer { errors } => DomainError::validation_details(
+            "a layer move carries an invalid scope",
+            DomainErrorDetails::Errors { errors },
+        ),
+        LayerMutationError::InvalidIndex { index, len } => DomainError::validation(format!(
+            "layer move index {index} is out of range for a stack of {len}, or names a slot twice"
+        )),
+        LayerMutationError::ScopeOutputMissing { output, .. } => DomainError::validation_details(
+            "a layer move may only widen a scope to outputs its zone holds",
+            DomainErrorDetails::UnknownMember {
+                unknown_member: output,
+            },
+        ),
+        other => DomainError::Internal(anyhow::anyhow!("layer move refused: {other:?}")),
+    }
 }
 
 fn find_state(scene: &Scene, id: &str) -> Option<MemberState> {

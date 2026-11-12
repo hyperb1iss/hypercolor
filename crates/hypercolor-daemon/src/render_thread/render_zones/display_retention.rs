@@ -10,6 +10,7 @@ use super::model::{
     RetainedDirectZoneFrame, RetainedMaterializedZoneFrame, ZoneContent, ZoneContentKey,
     ZoneContentRevision,
 };
+use super::scope_classes::ZoneClassKey;
 use super::zone_state::zone_publishes_direct_canvas;
 use crate::render_thread::display_lane::PlacedScreen;
 use crate::render_thread::producer_queue::ProducerFrame;
@@ -156,22 +157,22 @@ impl ZoneRuntime {
     /// Record what a zone's frame of this pass was made from. `None` is
     /// content that cannot be told from the last frame's, which counts as
     /// new.
-    pub(super) fn note_zone_content(&mut self, zone_id: ZoneId, key: Option<ZoneContentKey>) {
+    pub(super) fn note_zone_content(&mut self, class: ZoneClassKey, key: Option<ZoneContentKey>) {
         let pass = self.content_pass;
         let unchanged = key.is_some()
             && self
                 .zone_content
-                .get(&zone_id)
+                .get(&class)
                 .is_some_and(|content| content.key == key);
         if unchanged {
-            if let Some(content) = self.zone_content.get_mut(&zone_id) {
+            if let Some(content) = self.zone_content.get_mut(&class) {
                 content.pass = pass;
             }
             return;
         }
         self.next_content_revision = self.next_content_revision.wrapping_add(1);
         self.zone_content.insert(
-            zone_id,
+            class,
             ZoneContent {
                 key,
                 revision: ZoneContentRevision(self.next_content_revision),
@@ -183,9 +184,9 @@ impl ZoneRuntime {
     /// The revision of the content `zone_id` rendered in the scene pass in
     /// progress, or `None` when the pass did not say what its frame was
     /// made from.
-    fn zone_content_revision(&self, zone_id: ZoneId) -> Option<ZoneContentRevision> {
+    fn zone_content_revision(&self, class: ZoneClassKey) -> Option<ZoneContentRevision> {
         self.zone_content
-            .get(&zone_id)
+            .get(&class)
             .filter(|content| content.pass == self.content_pass)
             .map(|content| content.revision)
     }
@@ -200,7 +201,22 @@ impl ZoneRuntime {
     ) -> Vec<(ZoneId, ZoneContentRevision)> {
         frames
             .iter()
-            .filter_map(|(zone_id, _)| Some((*zone_id, self.zone_content_revision(*zone_id)?)))
+            .filter_map(|(zone_id, _)| {
+                let revision = self.zone_content_revision(ZoneClassKey::base(*zone_id))?;
+                Some((*zone_id, revision))
+            })
+            .collect()
+    }
+
+    /// [`Self::zone_revisions_of`] for the frames of scope classes beyond
+    /// their zone's base class.
+    pub(super) fn class_revisions_of(
+        &self,
+        frames: &[(ZoneClassKey, ProducerFrame)],
+    ) -> Vec<(ZoneClassKey, ZoneContentRevision)> {
+        frames
+            .iter()
+            .filter_map(|(class, _)| Some((*class, self.zone_content_revision(*class)?)))
             .collect()
     }
 

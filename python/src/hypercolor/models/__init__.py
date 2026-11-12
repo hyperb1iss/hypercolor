@@ -65,6 +65,7 @@ from .._generated.models.effect_summary import EffectSummary
 from .._generated.models.favorite_summary import FavoriteSummary
 from .._generated.models.health_response import HealthResponse
 from .._generated.models.identify_device_response import IdentifyDeviceResponse
+from .._generated.models.layer_scope import LayerScope
 from .._generated.models.layout_summary import LayoutSummary
 from .._generated.models.normalized_position import NormalizedPosition
 from .._generated.models.output_power_mode import OutputPowerMode
@@ -150,6 +151,7 @@ __all__ = [
     "FavoriteSummary",
     "HealthResponse",
     "IdentifyDeviceResponse",
+    "LayerScope",
     "LayoutSummary",
     "NormalizedPosition",
     "OutputPowerMode",

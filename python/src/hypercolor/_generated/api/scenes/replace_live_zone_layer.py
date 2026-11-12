@@ -140,7 +140,8 @@ def sync_detailed(
 
             Replacement is creation: every successful `PUT` mints a fresh layer
             id, same effect or not (Spec 78 §1.4). The request shape is the
-            creation shape; the path names the layer being replaced.
+            creation shape, except that an omitted `scope` keeps the replaced
+            layer's; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -185,7 +186,8 @@ def sync(
 
             Replacement is creation: every successful `PUT` mints a fresh layer
             id, same effect or not (Spec 78 §1.4). The request shape is the
-            creation shape; the path names the layer being replaced.
+            creation shape, except that an omitted `scope` keeps the replaced
+            layer's; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -225,7 +227,8 @@ async def asyncio_detailed(
 
             Replacement is creation: every successful `PUT` mints a fresh layer
             id, same effect or not (Spec 78 §1.4). The request shape is the
-            creation shape; the path names the layer being replaced.
+            creation shape, except that an omitted `scope` keeps the replaced
+            layer's; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -268,7 +271,8 @@ async def asyncio(
 
             Replacement is creation: every successful `PUT` mints a fresh layer
             id, same effect or not (Spec 78 §1.4). The request shape is the
-            creation shape; the path names the layer being replaced.
+            creation shape, except that an omitted `scope` keeps the replaced
+            layer's; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

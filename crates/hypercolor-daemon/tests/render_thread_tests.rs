@@ -2661,12 +2661,33 @@ async fn gpu_memberless_zone_keeps_the_rest_of_the_scene_lit() {
 #[cfg(feature = "wgpu")]
 #[tokio::test]
 async fn gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color() {
+    assert_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color(
+        RenderAccelerationMode::Gpu,
+    )
+    .await;
+}
+
+/// The CPU backend samples the incoming zone on the CPU and blends the same
+/// way, instead of holding the outgoing LEDs until the fade ends.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn cpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color() {
+    assert_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color(
+        RenderAccelerationMode::Cpu,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+async fn assert_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color(
+    mode: RenderAccelerationMode,
+) {
     let mut state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
-    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    state.render_acceleration_mode = mode;
     let mut frame_rx = state.event_bus.frame_receiver();
     let solid_id = {
         let registry = state.effect_registry.read().await;
@@ -3620,6 +3641,197 @@ async fn gpu_transition_into_overlapping_zones_blends_each_led_toward_its_own_co
     );
 }
 
+/// One zone whose two LEDs sit at the same canvas point and see different
+/// layers: red everywhere, and blue on `zone_blue` alone. The zone has two
+/// scope classes, so each LED samples its own class's frame.
+#[cfg(feature = "wgpu")]
+fn two_class_zone(solid_id: EffectId) -> Zone {
+    let mut zone = primary_zone(
+        solid_id,
+        solid_color_controls(255, 0, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    );
+    let mut overlay = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        solid_id,
+        solid_color_controls(0, 0, 255),
+        HashMap::new(),
+        None,
+    );
+    overlay.blend = hypercolor_types::layer::BlendMode::Replace;
+    overlay.scope = Some(hypercolor_types::layer::LayerScope {
+        outputs: vec!["zone_blue".to_owned()],
+    });
+    zone.layers.push(overlay);
+    zone
+}
+
+/// Run a transition between a scene whose one zone has one scope class
+/// (green on both LEDs) and a scene whose one zone has two (red on one LED,
+/// blue on the other, at the same canvas point), and hold every published
+/// frame to an LED-space blend: each LED goes between its own two colors
+/// and never through the other LED's, and the fade shows blended frames.
+#[cfg(feature = "wgpu")]
+async fn assert_scope_class_transition_blends_in_led_space(
+    mode: RenderAccelerationMode,
+    into_classes: bool,
+) {
+    const GREEN: [u8; 3] = [0, 255, 0];
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = mode;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut plain = make_scene("One Class");
+    plain.zones = vec![primary_zone(
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    )];
+    plain.unassigned_behavior = UnassignedBehavior::Off;
+    let mut classed = make_scene("Two Classes");
+    classed.zones = vec![two_class_zone(solid_id)];
+    classed.unassigned_behavior = UnassignedBehavior::Off;
+    let (first, second) = if into_classes {
+        (&mut plain, &mut classed)
+    } else {
+        (&mut classed, &mut plain)
+    };
+    first.transition.duration_ms = 0;
+    second.transition.duration_ms = 2_000;
+    let (first_id, second_id) = (first.id, second.id);
+    let interpolation = second.transition.color_interpolation.clone();
+    // What each LED shows before and after, in `zone_red`, `zone_blue` order.
+    let (from, to) = if into_classes {
+        ([GREEN, GREEN], [RED, BLUE])
+    } else {
+        ([RED, BLUE], [GREEN, GREEN])
+    };
+    install_render_scenes(&state, vec![plain.clone(), classed.clone()], first_id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some(from[0])
+            && zone_led(frame, "zone_blue") == Some(from[1])
+    })
+    .await;
+
+    activate_render_scene(&state, second_id).await;
+    // The red LED's own path never needs blue, and the blue LED's never
+    // needs red, beyond the step or two Oklab puts there.
+    let red_path_blue = blend_path_peak(from[0], to[0], 2, &interpolation);
+    let blue_path_red = blend_path_peak(from[1], to[1], 0, &interpolation);
+    let mut trace = Vec::new();
+    let mut violations = Vec::new();
+    let mut blended = [0_u32; 2];
+    let settled = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow_and_update().clone();
+            let red = zone_led(&frame, "zone_red");
+            let blue = zone_led(&frame, "zone_blue");
+            trace.push(format!("frame {}: {red:?} {blue:?}", frame.frame_number));
+            match red {
+                Some(red) if red[2] > red_path_blue => violations.push(format!(
+                    "frame {}: the red LED blended through blue: {red:?}",
+                    frame.frame_number
+                )),
+                Some(red) if red[0] > 0 && red[1] > 0 => blended[0] += 1,
+                Some(_) => {}
+                None => violations.push(format!(
+                    "frame {}: the red LED was not published",
+                    frame.frame_number
+                )),
+            }
+            match blue {
+                Some(blue) if blue[0] > blue_path_red => violations.push(format!(
+                    "frame {}: the blue LED blended through red: {blue:?}",
+                    frame.frame_number
+                )),
+                Some(blue) if blue[1] > 0 && blue[2] > 0 => blended[1] += 1,
+                Some(_) => {}
+                None => violations.push(format!(
+                    "frame {}: the blue LED was not published",
+                    frame.frame_number
+                )),
+            }
+            if red == Some(to[0]) && blue == Some(to[1]) {
+                break;
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    let what = format!("{mode:?}, into the two-class scene: {into_classes}");
+    assert!(
+        settled.is_ok(),
+        "{what}: the LEDs never reached their own colors:\n{}",
+        trace.join("\n")
+    );
+    assert!(
+        violations.is_empty(),
+        "{what}: {}\ntrace:\n{}",
+        violations.join("\n"),
+        trace.join("\n")
+    );
+    assert!(
+        blended.iter().all(|frames| *frames > 0),
+        "{what}: the transition cut over without a blended frame ({blended:?} blended \
+         frames for the red and blue LEDs):\n{}",
+        trace.join("\n")
+    );
+}
+
+/// A transition into a zone with two scope classes blends in LED space: the
+/// zone is one zone, and it is two sampling sources (Spec 95 §5.4).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_into_a_zone_with_scope_classes_blends_in_led_space() {
+    assert_scope_class_transition_blends_in_led_space(RenderAccelerationMode::Gpu, true).await;
+}
+
+/// The opposite direction: out of a zone with two scope classes.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_out_of_a_zone_with_scope_classes_blends_in_led_space() {
+    assert_scope_class_transition_blends_in_led_space(RenderAccelerationMode::Gpu, false).await;
+}
+
+/// Scope classes sample per class on the CPU backend too, so its
+/// transitions blend in LED space both ways.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn cpu_transitions_across_scope_classes_blend_in_led_space() {
+    assert_scope_class_transition_blends_in_led_space(RenderAccelerationMode::Cpu, true).await;
+    assert_scope_class_transition_blends_in_led_space(RenderAccelerationMode::Cpu, false).await;
+}
+
 /// The most a transition blend from `from` to `to` in `interpolation` ever
 /// puts into `channel` over the whole fade.
 #[cfg(feature = "wgpu")]
@@ -3758,6 +3970,7 @@ fn color_fill_layers(rgba: [f32; 4]) -> Vec<SceneLayer> {
         adjust: hypercolor_types::layer::LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }]
 }
 

@@ -1,6 +1,6 @@
 use hypercolor_types::api::scene::{MemberEdit, MemberState, PatchZoneRequest, SceneDocument};
 use hypercolor_types::layer::{
-    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerScope, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::compound_selection::CompoundDepth;
@@ -182,6 +182,7 @@ fn layer(name: &str, rgba: [f32; 4], blend: BlendMode, opacity: f32) -> SceneLay
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: false,
+        scope: None,
     }
 }
 
@@ -196,7 +197,7 @@ fn a_deleted_zone_keeps_its_layers_and_restores_them_bottom_to_top() {
     assert_eq!(record.zone_id, scene.zones[0].id.to_string());
     assert_eq!(record.layers, vec![wash.clone(), glow.clone()]);
 
-    let requests = restore_layer_requests(&record);
+    let requests = restore_layer_requests(&record, &HashSet::new());
     assert_eq!(requests.len(), 2);
     for (request, layer) in requests.iter().zip([&wash, &glow]) {
         assert_eq!(request.name, layer.name);
@@ -207,7 +208,61 @@ fn a_deleted_zone_keeps_its_layers_and_restores_them_bottom_to_top() {
         assert_eq!(request.adjust, Some(layer.adjust));
         assert_eq!(request.bindings.as_ref(), Some(&layer.bindings));
         assert_eq!(request.enabled, Some(layer.enabled));
+        assert_eq!(request.scope, None, "a whole-zone layer stays whole-zone");
     }
+}
+
+#[test]
+fn a_restored_scoped_layer_is_never_wider_than_it_was() {
+    let scoped = |name: &str, outputs: &[&str]| {
+        let mut layer = layer(name, [1.0, 0.0, 0.5, 1.0], BlendMode::Screen, 1.0);
+        layer.scope = Some(LayerScope {
+            outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+        });
+        layer
+    };
+    let mut scene = scene();
+    scene.zones[0].layers = vec![
+        layer("Wash", [0.2, 0.4, 0.6, 1.0], BlendMode::Alpha, 1.0),
+        scoped("Keys", &["out-keys", "out-logo"]),
+        scoped("Strip", &["out-strip"]),
+    ];
+    let record = DeletedZone::of(&scene.zones[0], 0, 7);
+
+    let all_back = HashSet::from(["out-keys", "out-logo", "out-strip"]);
+    let requests = restore_layer_requests(&record, &all_back);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.scope.clone())
+            .collect::<Vec<_>>(),
+        record
+            .layers
+            .iter()
+            .map(|layer| layer.scope.clone())
+            .collect::<Vec<_>>(),
+        "every scope comes back as it was"
+    );
+
+    // The logo and the strip were claimed by another zone before the undo.
+    let some_back = HashSet::from(["out-keys"]);
+    let requests = restore_layer_requests(&record, &some_back);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| (request.name.as_deref(), request.scope.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (Some("Wash"), None),
+            (
+                Some("Keys"),
+                Some(LayerScope {
+                    outputs: vec!["out-keys".to_owned()],
+                })
+            ),
+        ],
+        "a scope narrows to what came back, and a layer with nothing left is not rebuilt"
+    );
 }
 
 #[test]

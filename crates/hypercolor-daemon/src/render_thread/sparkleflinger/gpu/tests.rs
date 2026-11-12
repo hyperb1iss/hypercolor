@@ -1,4 +1,3 @@
-use super::compositor::{ComposeShaderMode, encode_compose_params};
 use super::screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
     ScreenUploadResidencyPolicy, resident_frame_bytes,
@@ -22,9 +21,8 @@ use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigi
 use crate::render_thread::producer_queue::{ProducerFrameState, ProducerQueue};
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
 use crate::render_thread::sparkleflinger::{
-    CompositionLayer, CompositionPlan, CompositionTransform, DisplayFinalizeCacheKey,
-    DisplayFinalizeParams, PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend,
-    cpu::CpuSparkleFlinger,
+    CompositionLayer, CompositionPlan, DisplayFinalizeCacheKey, DisplayFinalizeParams,
+    PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend, cpu::CpuSparkleFlinger,
 };
 use hypercolor_core::blend_math::encode_srgb_channel;
 use hypercolor_core::spatial::SpatialEngine;
@@ -44,27 +42,6 @@ use hypercolor_types::viewport::FitMode;
 #[cfg(feature = "servo-gpu-import")]
 use std::sync::Arc;
 use std::sync::mpsc;
-
-#[test]
-fn compose_params_encode_target_space_as_float_flag() {
-    let layer = CompositionLayer::replace(ProducerFrame::Canvas(Canvas::new(2, 2))).with_transform(
-        CompositionTransform {
-            anchor: NormalizedPosition::new(0.5, 0.5),
-            scale: [0.5, 0.5],
-            rotation: 0.0,
-            fit: FitMode::Stretch,
-            sample_target_space: true,
-        },
-    );
-    let params = encode_compose_params(4, 4, ComposeShaderMode::Replace, &layer, false);
-    let flag = f32::from_le_bytes(
-        params[60..64]
-            .try_into()
-            .expect("flag should occupy four bytes"),
-    );
-
-    assert_eq!(flag, 1.0);
-}
 
 pub(super) fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(4, 4);
@@ -3238,6 +3215,7 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
 mod device_loss;
 mod display_finalize;
 mod media_upload;
+mod placement;
 mod preview;
 mod readback_telemetry;
 mod sampler;

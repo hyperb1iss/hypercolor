@@ -1099,7 +1099,8 @@ async fn clear_active_scene_effect_zones(
     let effect = resolve_effect_ref_for_fallback(ctx, effect_id).await;
 
     let mut mutation = ctx.scene.begin_mutation().await;
-    mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
+    let scene_id =
+        mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
     let zone_ids = mutation
         .scenes()
         .active_scene()
@@ -1127,6 +1128,24 @@ async fn clear_active_scene_effect_zones(
         .collect::<Vec<_>>();
     if cleared_zones.is_empty() {
         return Ok(None);
+    }
+    // Clearing keeps layers scoped only to live screens. One of those running
+    // the failed effect is the failure itself, so it goes too.
+    for zone in &cleared_zones {
+        let failed_layers = zone.layers.iter().filter(|layer| {
+            matches!(
+                &layer.source,
+                LayerSource::Effect { effect_id: candidate, .. }
+                    if candidate.to_string() == effect_id
+            )
+        });
+        for layer in failed_layers {
+            mutation
+                .remove_layer(scene_id, zone.id, layer.id, None)
+                .map_err(|error| {
+                    crate::domain::scene_tree::layer_error(error, zone.id, Some(layer.id))
+                })?;
+        }
     }
 
     ctx.scene

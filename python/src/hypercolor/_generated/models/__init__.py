@@ -424,7 +424,10 @@ from .latency_percentiles_status import LatencyPercentilesStatus
 from .latest_frame_status import LatestFrameStatus
 from .layer_adjust import LayerAdjust
 from .layer_binding import LayerBinding
+from .layer_move import LayerMove
 from .layer_parameter import LayerParameter
+from .layer_scope import LayerScope
+from .layer_slot import LayerSlot
 from .layer_source import LayerSource
 from .layer_transform import LayerTransform
 from .layout_summary import LayoutSummary
@@ -1038,7 +1041,10 @@ __all__ = (
     "LatestFrameStatus",
     "LayerAdjust",
     "LayerBinding",
+    "LayerMove",
     "LayerParameter",
+    "LayerScope",
+    "LayerSlot",
     "LayerSource",
     "LayerTransform",
     "LayoutSummary",

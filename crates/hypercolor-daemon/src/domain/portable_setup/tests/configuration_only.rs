@@ -260,7 +260,7 @@ async fn old_archives_restore_configuration_without_staging_or_replacing_local_f
             .expect("source archive payload");
     }
     let backup = PortableBackupV1 {
-        schema_version: 1,
+        schema_version: hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION,
         setup: incoming.clone(),
         preferences: None,
         tui_preferences: None,

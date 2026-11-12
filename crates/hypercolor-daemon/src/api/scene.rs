@@ -34,8 +34,8 @@ use crate::api::envelope;
 use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::scene_tree::{
-    AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
-    ZoneWritten,
+    AssignMembers, ClearScene, LayerScopeEdit, PatchLayerControls, PatchScene, ReplaceLayer,
+    TreeWritten, ZoneWritten,
 };
 use crate::domain::{DomainError, MutationContext, ResourceKind, scene_tree};
 
@@ -487,6 +487,11 @@ pub async fn replace_layer(
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
+    let scope = match body.scope.clone() {
+        None => LayerScopeEdit::Keep,
+        Some(None) => LayerScopeEdit::Clear,
+        Some(Some(scope)) => LayerScopeEdit::Set(scope),
+    };
     let replacement = match build_layer(body.into()) {
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
@@ -499,6 +504,7 @@ pub async fn replace_layer(
                 zone_id,
                 layer_id,
                 layer: replacement,
+                scope,
                 fence: expected,
             },
         )
@@ -682,6 +688,7 @@ fn build_layer(request: CreateLayerRequest) -> Result<SceneLayer, DomainError> {
         adjust: request.adjust.unwrap_or_default(),
         bindings: request.bindings.unwrap_or_default(),
         enabled: request.enabled.unwrap_or(true),
+        scope: request.scope,
     }
     .normalized();
     layer.validate().map_err(|errors| {

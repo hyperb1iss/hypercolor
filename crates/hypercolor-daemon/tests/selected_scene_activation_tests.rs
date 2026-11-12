@@ -397,6 +397,7 @@ async fn selected_context_enforces_media_caps_but_brightness_does_not_activate_m
             adjust: LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         });
     }
     expected.scene.zones = vec![zone];

@@ -13,7 +13,7 @@ description: >-
 
 Hypercolor exposes three control surfaces. Choose the right one before acting.
 
-- **MCP tools** are the canonical agent surface: twenty-one typed tools the daemon serves directly, reachable in Claude Code as `mcp__hypercolor__<tool>`. Prefer them when they are connected.
+- **MCP tools** are the canonical agent surface: twenty-two typed tools the daemon serves directly, reachable in Claude Code as `mcp__hypercolor__<tool>`. Prefer them when they are connected.
 - **Bare `hypercolor`** is the Rust system CLI for the daemon on `localhost:9420`. It covers everything MCP does not: devices, driver and device control surfaces, layouts, library, audio, permissions, config, and daemon lifecycle.
 - **`bunx hypercolor`** inside an effect workspace is the Bun authoring CLI for building, validating, and installing HTML effects.
 
@@ -23,10 +23,11 @@ The daemon mounts its MCP server over Streamable HTTP at `/mcp`, and only when t
 daemon config carries `[mcp] enabled = true`. Until that flag is set the endpoint 404s
 and the CLI is the only route in.
 
-Twenty-one tools, five resources, four prompt templates. Selector arguments (`query`,
-`name`, `zone`, `layer`, `device`, `effect_id`) all resolve in one fixed order: exact
-serialized ID, then exact case-insensitive name, then a unique case-insensitive name
-substring. An ambiguous substring fails with the candidate list instead of guessing.
+Twenty-two tools, five resources, four prompt templates. Selector arguments (`query`,
+`name`, `zone`, `layer`, `device`, `effect`, `effect_id`, and each entry of `outputs`)
+all resolve in one fixed order: exact serialized ID, then exact case-insensitive name,
+then a unique case-insensitive name substring. An ambiguous substring fails with the
+candidate list instead of guessing.
 
 Read-only:
 
@@ -48,14 +49,15 @@ Mutating, not destructive:
 - `set_output_power` (`state` one of `running`, `paused`, required) pauses or resumes all output without discarding the active effect, controls, preset provenance, or scene state
 - `adjust_controls` (`zone` and `layer` required, plus `values` and `clear_bindings`) atomically patches one live layer
 - `create_scene` (`name` required, plus `description`, `enabled`, `mutation_mode` one of `live`, `snapshot`)
+- `add_layer` (`effect` required, plus `zone`, `outputs`, `blend`, `opacity`, `controls`) stacks one effect on top of a zone's layers without replacing anything. `zone` defaults to the primary zone. `outputs` limits the layer to part of the zone: each entry names one output, or a device for every output of it the zone holds. Leave it out for the whole zone. Every call adds another layer
 
 Destructive. These six are the ones the tool definitions flag `destructive`, because
 each replaces or clears state that no single-field undo restores. Read current state
 before calling them:
 
-- `set_effect` (`query` required, plus `controls` and `transition`) replaces the target zone's whole layer stack with one effect. `transition` is an object, `{"type": "cut"}`, never the bare string.
+- `set_effect` (`query` required, plus `controls` and `transition`) replaces the primary zone's whole-zone layers with one effect. Layers that `add_layer` limited to some outputs stay on top. `transition` is an object, `{"type": "cut"}`, never the bare string.
 - `set_color` (`color` required, plus `brightness`) sets a solid color across the LED pipeline. `color` accepts CSS names, hex, `rgb()`, `hsl()`, or a natural-language description.
-- `clear_zone` (`zone` optional) clears one non-display zone's layer stack. Omitting `zone` clears every non-display zone and quiesces output.
+- `clear_zone` (`zone` optional) clears one non-display zone's layer stack, scoped layers included, except a layer scoped only to screens. Omitting `zone` clears every non-display zone and quiesces output.
 - `activate_scene` (`name` required, plus `transition_ms` default 1000)
 - `set_display_face` (`device` required, plus `effect_id`, `clear`, `scope` one of `default`, `scene`, and `controls`)
 - `install_effect` (`html` required, plus `file_name`) validates and installs one HTML page, replacing an installed effect with the same file name in place. It returns `console_after`, the console cursor to read the new page's output from. Writing or debugging an effect is its own loop: follow the `effect-livecoding` skill
@@ -335,7 +337,7 @@ will pick up on boot or via `hypercolor effects rescan`.
 ## Behavioral guidance
 
 - Inspect first. Do not guess the active scene, its zones, or brightness.
-- Reach for the MCP tools when they are connected, and the CLI when they are not or when the work is outside their twenty-one.
+- Reach for the MCP tools when they are connected, and the CLI when they are not or when the work is outside their twenty-two.
 - After a visual change, look before you report: `capture_canvas` or `hypercolor effects capture` for the picture, `get_effect_console` or `hypercolor effects console --level warn` for script errors.
 - Prefer targeted actions over restarting the daemon.
 - Prefer `pause` over `stop`, and `clear_zone` over a whole-scene clear, whenever the narrower action does the job.

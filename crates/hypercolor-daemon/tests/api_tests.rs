@@ -8044,6 +8044,7 @@ async fn stored_scene_replace_is_whole_document_versioned_and_identity_safe() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     });
 
     let replaced = app

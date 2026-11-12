@@ -104,6 +104,47 @@ pub struct SceneLayer {
     /// Whether this layer is currently active.
     #[serde(default = "default_true")]
     pub enabled: bool,
+
+    /// Outputs of the owning zone this layer applies to. `None` applies the
+    /// layer to the whole zone, including canvas no output covers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<LayerScope>,
+}
+
+/// The outputs one layer is limited to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct LayerScope {
+    /// Output ids of the owning zone: the value `Output::id` holds in the
+    /// zone's layout and `ZoneMember::id` carries on the wire. Sorted,
+    /// unique, never empty.
+    pub outputs: Vec<String>,
+}
+
+impl LayerScope {
+    /// Return a copy with its output ids sorted and deduplicated.
+    #[must_use]
+    pub fn normalized(&self) -> Self {
+        let mut outputs = self.outputs.clone();
+        outputs.sort_unstable();
+        outputs.dedup();
+        Self { outputs }
+    }
+
+    /// Whether the scope names `output_id`.
+    #[must_use]
+    pub fn contains(&self, output_id: &str) -> bool {
+        self.outputs.iter().any(|id| id == output_id)
+    }
+
+    fn validate(&self, errors: &mut Vec<String>) {
+        if self.outputs.is_empty() {
+            errors.push("scope.outputs must name at least one output".to_owned());
+        }
+        if self.outputs.iter().any(String::is_empty) {
+            errors.push("scope.outputs must not hold an empty output id".to_owned());
+        }
+    }
 }
 
 impl SceneLayer {
@@ -131,6 +172,7 @@ impl SceneLayer {
             adjust: LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         }
     }
 
@@ -141,6 +183,7 @@ impl SceneLayer {
         layer.opacity = normalize_f32(layer.opacity, 0.0, 1.0, default_layer_opacity());
         layer.transform = layer.transform.normalized();
         layer.adjust = layer.adjust.normalized();
+        layer.scope = layer.scope.as_ref().map(LayerScope::normalized);
         layer
     }
 
@@ -153,6 +196,9 @@ impl SceneLayer {
         self.adjust.validate(&mut errors);
         for binding in &self.bindings {
             binding.validate(&mut errors);
+        }
+        if let Some(scope) = &self.scope {
+            scope.validate(&mut errors);
         }
 
         if errors.is_empty() {

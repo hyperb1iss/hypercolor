@@ -28,6 +28,7 @@ use super::traits::{
 };
 use crate::asset::AssetLibrary;
 use crate::input::{InteractionData, ScreenBranchPublication};
+use crate::spatial::LayerFraming;
 
 use self::control_sync::{ActiveBindingState, apply_sensor_bindings, canonical_control_set};
 
@@ -152,7 +153,7 @@ impl EffectPool {
         let mut replacements = Vec::new();
         replacements.try_reserve(desired_layers.len())?;
 
-        for (zone, layer) in desired_layers {
+        for (zone, layer, extent) in desired_layers {
             let Some(source) = layer_effect_source(&layer) else {
                 continue;
             };
@@ -169,13 +170,7 @@ impl EffectPool {
                 .and_then(|_| display_descriptors.get(&zone.id));
             let revision = SetRevision::new(zone.layers_version);
             let reusable = self.slots.get(&key).filter(|slot| {
-                !slot.needs_rebuild(
-                    source.effect_id,
-                    entry,
-                    display_descriptor,
-                    zone.layout.canvas_width,
-                    zone.layout.canvas_height,
-                )
+                !slot.needs_rebuild(source.effect_id, entry, display_descriptor, extent)
             });
             if let Some(slot) = reusable {
                 if slot.controls.set_revision() != revision
@@ -191,14 +186,15 @@ impl EffectPool {
                 // The slot built from these controls validates them the same
                 // way, so this check only moves the failure ahead of the build.
                 canonical_control_set(revision, &entry.metadata, &source)?;
-                replacements.push((key, zone, entry, source, display_descriptor));
+                replacements.push((key, zone, entry, source, display_descriptor, extent));
             }
         }
 
-        for (key, zone, entry, source, display_descriptor) in replacements {
+        for (key, zone, entry, source, display_descriptor, extent) in replacements {
             let slot = EffectSlot::build(
                 entry,
                 zone,
+                extent,
                 source,
                 self.asset_library.as_ref(),
                 display_descriptor.cloned(),
@@ -353,15 +349,14 @@ impl EffectPool {
         sources: FrameDataSources<'_>,
         target: &mut Canvas,
     ) -> Result<()> {
-        prepare_target_canvas(target, zone.layout.canvas_width, zone.layout.canvas_height);
-
+        let key = EffectSlotKey::new(zone.id, layer.id);
         if !zone.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
+            prepare_target_canvas(target, zone.layout.canvas_width, zone.layout.canvas_height);
             target.clear();
             return Ok(());
         }
-
-        let key = EffectSlotKey::new(zone.id, layer.id);
         if self.unavailable.contains(&key) {
+            prepare_target_canvas(target, zone.layout.canvas_width, zone.layout.canvas_height);
             target.fill(hypercolor_types::canvas::Rgba::TRANSPARENT);
             return Ok(());
         }
@@ -372,6 +367,7 @@ impl EffectPool {
                 layer.id
             )
         })?;
+        prepare_target_canvas(target, slot.canvas_width, slot.canvas_height);
         slot.render_into(
             delta_secs,
             audio,
@@ -379,8 +375,6 @@ impl EffectPool {
             screen,
             sensors,
             sources,
-            zone.layout.canvas_width,
-            zone.layout.canvas_height,
             target,
         )
     }
@@ -452,16 +446,7 @@ impl EffectPool {
                 layer.id
             )
         })?;
-        slot.render_output(
-            delta_secs,
-            audio,
-            interaction,
-            screen,
-            sensors,
-            sources,
-            zone.layout.canvas_width,
-            zone.layout.canvas_height,
-        )
+        slot.render_output(delta_secs, audio, interaction, screen, sensors, sources)
     }
 
     #[expect(
@@ -494,16 +479,7 @@ impl EffectPool {
                 layer.id
             )
         })?;
-        slot.advance_output(
-            delta_secs,
-            audio,
-            interaction,
-            screen,
-            sensors,
-            sources,
-            zone.layout.canvas_width,
-            zone.layout.canvas_height,
-        )
+        slot.advance_output(delta_secs, audio, interaction, screen, sensors, sources)
     }
 }
 
@@ -536,6 +512,7 @@ impl EffectSlot {
     fn build(
         entry: &EffectEntry,
         zone: &Zone,
+        (canvas_width, canvas_height): (u32, u32),
         layer_source: LayerEffectSource,
         asset_library: Option<&Arc<RwLock<AssetLibrary>>>,
         display_descriptor: Option<DisplayDescriptor>,
@@ -549,11 +526,7 @@ impl EffectSlot {
         if display_descriptor.is_some() {
             renderer.set_display_descriptor(display_descriptor.clone());
         }
-        renderer.init_with_canvas_size(
-            &entry.metadata,
-            zone.layout.canvas_width,
-            zone.layout.canvas_height,
-        )?;
+        renderer.init_with_canvas_size(&entry.metadata, canvas_width, canvas_height)?;
 
         let mut slot = Self {
             effect_id: entry.metadata.id,
@@ -562,8 +535,8 @@ impl EffectSlot {
             registry_modified: entry.modified,
             metadata: entry.metadata.clone(),
             display_descriptor,
-            canvas_width: zone.layout.canvas_width,
-            canvas_height: zone.layout.canvas_height,
+            canvas_width,
+            canvas_height,
             renderer,
             controls: ControlSet::new(SetRevision::new(zone.layers_version)),
             control_bindings: HashMap::new(),
@@ -582,8 +555,7 @@ impl EffectSlot {
         effect_id: EffectId,
         entry: &EffectEntry,
         display_descriptor: Option<&DisplayDescriptor>,
-        canvas_width: u32,
-        canvas_height: u32,
+        (canvas_width, canvas_height): (u32, u32),
     ) -> bool {
         self.effect_id != effect_id
             || self.registry_metadata != entry.metadata
@@ -717,8 +689,6 @@ impl EffectSlot {
         screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
-        canvas_width: u32,
-        canvas_height: u32,
         target: &mut Canvas,
     ) -> Result<()> {
         let time_secs = self.advance_elapsed(delta_secs);
@@ -741,18 +711,14 @@ impl EffectSlot {
             screen,
             sensors,
             sources,
-            canvas_width,
-            canvas_height,
+            canvas_width: self.canvas_width,
+            canvas_height: self.canvas_height,
         };
         self.renderer.render_into(&input, target)?;
         self.frame_number = self.frame_number.wrapping_add(1);
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "rendering needs the full frame input for output-capable renderers"
-    )]
     fn render_output(
         &mut self,
         delta_secs: f32,
@@ -761,8 +727,6 @@ impl EffectSlot {
         screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
-        canvas_width: u32,
-        canvas_height: u32,
     ) -> Result<EffectRenderOutput> {
         let time_secs = self.advance_elapsed(delta_secs);
         apply_sensor_bindings(
@@ -784,18 +748,14 @@ impl EffectSlot {
             screen,
             sensors,
             sources,
-            canvas_width,
-            canvas_height,
+            canvas_width: self.canvas_width,
+            canvas_height: self.canvas_height,
         };
         let output = self.renderer.render_output(&input)?;
         self.frame_number = self.frame_number.wrapping_add(1);
         Ok(output)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "advancing output-capable renderers needs the full frame input"
-    )]
     fn advance_output(
         &mut self,
         delta_secs: f32,
@@ -804,8 +764,6 @@ impl EffectSlot {
         screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
-        canvas_width: u32,
-        canvas_height: u32,
     ) -> Result<()> {
         let time_secs = self.advance_elapsed(delta_secs);
         apply_sensor_bindings(
@@ -827,8 +785,8 @@ impl EffectSlot {
             screen,
             sensors,
             sources,
-            canvas_width,
-            canvas_height,
+            canvas_width: self.canvas_width,
+            canvas_height: self.canvas_height,
         };
         self.renderer.advance_output(&input)?;
         self.frame_number = self.frame_number.wrapping_add(1);
@@ -848,7 +806,10 @@ impl Drop for EffectSlot {
     }
 }
 
-fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
+/// Every enabled effect layer that renders, with the size it renders at. A
+/// layer whose scope names no output of its zone is dormant: it gets no
+/// renderer.
+fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer, (u32, u32))> {
     zones
         .iter()
         .filter(|zone| zone.enabled)
@@ -857,9 +818,19 @@ fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
                 .clone()
                 .into_iter()
                 .filter(|layer| layer.enabled && layer_effect_source(layer).is_some())
-                .map(move |layer| (zone, layer))
+                .filter_map(move |layer| {
+                    let extent = layer_render_extent(zone, &layer)?;
+                    Some((zone, layer, extent))
+                })
         })
         .collect()
+}
+
+/// The size `layer` renders at in `zone`: the zone canvas, or the extent of
+/// its scope's frame. `None` for a dormant layer.
+fn layer_render_extent(zone: &Zone, layer: &SceneLayer) -> Option<(u32, u32)> {
+    LayerFraming::of(zone, layer)
+        .render_extent((zone.layout.canvas_width, zone.layout.canvas_height))
 }
 
 fn single_enabled_effect_layer(zone: &Zone) -> Result<Option<SceneLayer>> {
@@ -1290,8 +1261,8 @@ mod tests {
             registry_modified: SystemTime::UNIX_EPOCH,
             metadata: registry_metadata,
             display_descriptor: None,
-            canvas_width: 1,
-            canvas_height: 1,
+            canvas_width: 32,
+            canvas_height: 16,
             renderer: Box::new(AdvanceSpyRenderer { advanced }),
             controls: ControlSet::new(SetRevision::default()),
             control_bindings: HashMap::new(),
@@ -2163,6 +2134,7 @@ mod tests {
             adjust: LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         };
 
         let source = layer_effect_source(&layer).expect("web viewport should map to effect");

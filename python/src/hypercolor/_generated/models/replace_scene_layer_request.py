@@ -13,6 +13,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.layer_adjust import LayerAdjust
     from ..models.layer_binding import LayerBinding
+    from ..models.layer_scope import LayerScope
     from ..models.layer_source import LayerSource
     from ..models.layer_transform import LayerTransform
 
@@ -22,17 +23,24 @@ T = TypeVar("T", bound="ReplaceSceneLayerRequest")
 
 @_attrs_define
 class ReplaceSceneLayerRequest:
-    """
-    Attributes:
-        source (LayerSource): Source that feeds one authored layer.
-        adjust (LayerAdjust | Unset): Per-layer color adjustment settings.
-        bindings (list[LayerBinding] | Unset):
-        blend (BlendMode | Unset): Blend mode used by authored layers and display faces.
-        enabled (bool | Unset):
-        id (None | Unset | UUID):
-        name (None | str | Unset):
-        opacity (float | Unset):
-        transform (LayerTransform | Unset): Geometric placement for a layer source.
+    """One layer of a zone in a whole-scene replacement.
+
+    A layer that carries an `id` replaces the stored layer with that id;
+    one without is new. `scope` has three states: leaving it out keeps the
+    stored layer's scope, `null` applies the layer to its whole zone, and
+    a value sets it.
+
+        Attributes:
+            source (LayerSource): Source that feeds one authored layer.
+            adjust (LayerAdjust | Unset): Per-layer color adjustment settings.
+            bindings (list[LayerBinding] | Unset):
+            blend (BlendMode | Unset): Blend mode used by authored layers and display faces.
+            enabled (bool | Unset):
+            id (None | Unset | UUID):
+            name (None | str | Unset):
+            opacity (float | Unset):
+            scope (LayerScope | None | Unset):
+            transform (LayerTransform | Unset): Geometric placement for a layer source.
     """
 
     source: LayerSource
@@ -43,9 +51,12 @@ class ReplaceSceneLayerRequest:
     id: None | Unset | UUID = UNSET
     name: None | str | Unset = UNSET
     opacity: float | Unset = UNSET
+    scope: LayerScope | None | Unset = UNSET
     transform: LayerTransform | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.layer_scope import LayerScope
+
         source = self.source.to_dict()
 
         adjust: dict[str, Any] | Unset = UNSET
@@ -81,6 +92,14 @@ class ReplaceSceneLayerRequest:
 
         opacity = self.opacity
 
+        scope: dict[str, Any] | None | Unset
+        if isinstance(self.scope, Unset):
+            scope = UNSET
+        elif isinstance(self.scope, LayerScope):
+            scope = self.scope.to_dict()
+        else:
+            scope = self.scope
+
         transform: dict[str, Any] | Unset = UNSET
         if not isinstance(self.transform, Unset):
             transform = self.transform.to_dict()
@@ -106,6 +125,8 @@ class ReplaceSceneLayerRequest:
             field_dict["name"] = name
         if opacity is not UNSET:
             field_dict["opacity"] = opacity
+        if scope is not UNSET:
+            field_dict["scope"] = scope
         if transform is not UNSET:
             field_dict["transform"] = transform
 
@@ -115,6 +136,7 @@ class ReplaceSceneLayerRequest:
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.layer_adjust import LayerAdjust
         from ..models.layer_binding import LayerBinding
+        from ..models.layer_scope import LayerScope
         from ..models.layer_source import LayerSource
         from ..models.layer_transform import LayerTransform
 
@@ -174,6 +196,23 @@ class ReplaceSceneLayerRequest:
 
         opacity = d.pop("opacity", UNSET)
 
+        def _parse_scope(data: object) -> LayerScope | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                scope_type_0 = LayerScope.from_dict(data)
+
+                return scope_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(LayerScope | None | Unset, data)
+
+        scope = _parse_scope(d.pop("scope", UNSET))
+
         _transform = d.pop("transform", UNSET)
         transform: LayerTransform | Unset
         if isinstance(_transform, Unset):
@@ -190,6 +229,7 @@ class ReplaceSceneLayerRequest:
             id=id,
             name=name,
             opacity=opacity,
+            scope=scope,
             transform=transform,
         )
 

@@ -520,7 +520,7 @@ echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":2}}]}' | 
 
 **Source:** `crates/hypercolor-daemon/src/mcp/tools/`
 
-Hypercolor exposes 21 MCP tools for AI assistant integration. These give agents
+Hypercolor exposes 22 MCP tools for AI assistant integration. These give agents
 programmatic control over the lighting system.
 
 ### Tool Inventory
@@ -528,6 +528,7 @@ programmatic control over the lighting system.
 | Tool                 | Read-Only | Description                                                     |
 | -------------------- | --------- | --------------------------------------------------------------- |
 | `set_effect`         | no        | Apply a deterministically selected lighting effect              |
+| `add_layer`          | no        | Stack an effect on a zone, optionally limited to some outputs   |
 | `list_effects`       | yes       | Browse the effect library with category/audio filters           |
 | `set_color`          | no        | Set a static color on devices                                   |
 | `set_output_power`   | no        | Pause or resume output without discarding scene state           |

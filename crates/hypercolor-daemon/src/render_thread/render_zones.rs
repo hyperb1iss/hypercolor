@@ -63,8 +63,8 @@ use model::{
     RetainedMaterializedZoneFrame, RetainedRenderZoneFrame,
 };
 pub(crate) use model::{
-    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RenderSceneContext, ZoneEffectError,
-    ZoneFrameInputs, ZoneResult,
+    ClassFrames, DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RenderSceneContext,
+    ZoneEffectError, ZoneFrameInputs, ZoneResult,
 };
 use projection::CachedZoneProjection;
 #[cfg(test)]
@@ -72,6 +72,7 @@ use projection::{
     ProjectionBounds, blit_zone_projection, copy_full_scene_identity_projection,
     projection_composition_layers_for_zone, zone_local_position_for_scene_pixel,
 };
+pub(crate) use scope_classes::{ZoneClassKey, ZoneScopeClasses};
 pub(super) use zone_state::zone_is_active;
 use zone_state::{combined_led_state, empty_zone_layout};
 
@@ -90,9 +91,18 @@ pub(crate) struct ZoneRuntime {
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     effect_pool: EffectPool,
     media_producers: HashMap<AssetId, CachedMediaProducer>,
-    target_canvases: HashMap<ZoneId, Canvas>,
+    /// The CPU canvas each scope class of a scene zone composes into.
+    target_canvases: HashMap<ZoneClassKey, Canvas>,
     scene_projection_cache: HashMap<ZoneId, CachedZoneProjection>,
     spatial_engines: HashMap<ZoneId, SpatialEngine>,
+    /// The classes of every zone with an enabled scoped layer. A zone with
+    /// none has one class and no entry.
+    scope_classes: HashMap<ZoneId, Arc<ZoneScopeClasses>>,
+    /// The sampling engine of each class of a zone that has more than one,
+    /// over that class's LED outputs alone.
+    class_spatial_engines: HashMap<ZoneClassKey, SpatialEngine>,
+    /// Zones with several classes whose picture a preview shows.
+    pictured_zones: Vec<ZoneId>,
     device_surfaces: DeviceSurfaceCache,
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     retained_direct_zone_frames: HashMap<ZoneId, RetainedDirectZoneFrame>,
@@ -106,17 +116,18 @@ pub(crate) struct ZoneRuntime {
     scene_surface_pool_initial_slots: usize,
     scene_surface_pool_max_slots: usize,
     projected_scene_layers: Vec<super::sparkleflinger::CompositionLayer>,
-    /// Each GPU-resident scene zone's last stabilized frame, which a zone
-    /// whose layers are all still loading keeps sampling (Spec 86 §2.2).
-    last_zone_frames: HashMap<ZoneId, ProducerFrame>,
-    /// The layers whose composition each zone's held frame shows.
-    zone_composition_identities: HashMap<ZoneId, model::ZoneCompositionIdentity>,
+    /// The last stabilized frame of each scope class of a GPU-resident
+    /// scene zone, which a class whose layers are all still loading keeps
+    /// sampling (Spec 86 §2.2).
+    last_zone_frames: HashMap<ZoneClassKey, ProducerFrame>,
+    /// The layers whose composition each class's held frame shows.
+    zone_composition_identities: HashMap<ZoneClassKey, model::ZoneCompositionIdentity>,
     /// Zones in the current scene pass whose layers matched their held
     /// frame's composition, so they reused it without composing.
     composition_skips: u32,
-    /// What each zone last rendered, for the screens that hold a picture
-    /// of it.
-    zone_content: HashMap<ZoneId, model::ZoneContent>,
+    /// What each scope class last rendered, for the screens that hold a
+    /// picture of it.
+    zone_content: HashMap<ZoneClassKey, model::ZoneContent>,
     /// The scene pass in progress, or the last one that ran.
     content_pass: u64,
     next_content_revision: u64,
@@ -230,6 +241,9 @@ impl ZoneRuntime {
             target_canvases: HashMap::new(),
             scene_projection_cache: HashMap::new(),
             spatial_engines: HashMap::new(),
+            scope_classes: HashMap::new(),
+            class_spatial_engines: HashMap::new(),
+            pictured_zones: Vec::new(),
             device_surfaces: DeviceSurfaceCache::default(),
             direct_surface_pools: HashMap::new(),
             retained_direct_zone_frames: HashMap::new(),
@@ -415,6 +429,22 @@ impl ZoneRuntime {
         self.layer_runtime.drain_events()
     }
 
+    /// Say which zones a preview shows. A zone with several scope classes
+    /// has no one frame that is its picture, so the next scene pass makes
+    /// one for each such zone `shown` accepts, and for no other.
+    pub(crate) fn request_zone_pictures(&mut self, shown: impl Fn(ZoneId) -> bool) {
+        if self.scope_classes.is_empty() && self.pictured_zones.is_empty() {
+            return;
+        }
+        self.pictured_zones.clear();
+        self.pictured_zones.extend(
+            self.scope_classes
+                .iter()
+                .filter(|(zone_id, classes)| !classes.is_single() && shown(**zone_id))
+                .map(|(zone_id, _)| *zone_id),
+        );
+    }
+
     /// Adopt the layout-device bindings the output stage routes LEDs with,
     /// so touches resolve to the canvas point their device's LEDs sample.
     pub(crate) fn observe_device_bindings<'a>(
@@ -436,10 +466,13 @@ mod projection;
 mod reconcile;
 mod zone_state;
 pub(crate) use reconcile::PreparedZoneReconcile;
+#[cfg(feature = "wgpu")]
+pub(crate) use scene_retention::RetainedOutputFrame;
 mod render_pass;
 mod scene_assembly;
 mod scene_output;
 mod scene_retention;
+mod scope_classes;
 mod surface_pools;
 #[cfg(test)]
 mod tests;

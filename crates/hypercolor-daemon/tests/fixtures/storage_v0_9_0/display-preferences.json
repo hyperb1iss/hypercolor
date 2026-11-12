@@ -1,0 +1,13 @@
+{
+  "01a1d074-95a2-756b-aa84-0780c00852ad": {
+    "effect_id": "01a1d074-95a2-756b-aa84-077ef92f24c5",
+    "controls": {
+      "hour_format": {
+        "kind": "text",
+        "value": "24h"
+      }
+    },
+    "blend_mode": "alpha",
+    "opacity": 1.0
+  }
+}

@@ -30,6 +30,7 @@ fn layer() -> SceneLayer {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }
 
@@ -556,42 +557,39 @@ async fn runtime_reservation_failure_is_returned_without_attempting_either_save(
 }
 
 #[tokio::test]
-async fn core_stack_replacement_validates_the_whole_input_before_mutating() {
+async fn core_base_replacement_validates_its_input_before_mutating() {
     use hypercolor_core::scene::LayerMutationError;
+    use hypercolor_types::layer::LayerScope;
     let (state, _dir, before, target) = fixture().await;
     let mut manager = state.scene_manager.snapshot().await;
     let valid = layer();
     let mut invalid = layer();
     invalid.opacity = f32::NAN;
     assert!(matches!(
-        manager.replace_zone_layer_stack(
-            target.scene_id,
-            target.zone_id,
-            vec![valid.clone(), invalid]
-        ),
+        manager.replace_zone_base_layer(target.scene_id, target.zone_id, invalid),
+        Err(LayerMutationError::InvalidLayer { .. })
+    ));
+    let mut scoped = layer();
+    scoped.scope = Some(LayerScope {
+        outputs: vec!["an-output".to_owned()],
+    });
+    assert!(matches!(
+        manager.replace_zone_base_layer(target.scene_id, target.zone_id, scoped),
         Err(LayerMutationError::InvalidLayer { .. })
     ));
     assert!(matches!(
-        manager.replace_zone_layer_stack(
-            target.scene_id,
-            target.zone_id,
-            vec![valid.clone(), valid.clone()]
-        ),
-        Err(LayerMutationError::DuplicateLayer { .. })
-    ));
-    assert!(matches!(
-        manager.replace_zone_layer_stack(SceneId::new(), target.zone_id, vec![valid.clone()]),
+        manager.replace_zone_base_layer(SceneId::new(), target.zone_id, valid.clone()),
         Err(LayerMutationError::SceneMissing)
     ));
     assert!(matches!(
-        manager.replace_zone_layer_stack(target.scene_id, ZoneId::new(), vec![valid]),
+        manager.replace_zone_base_layer(target.scene_id, ZoneId::new(), valid.clone()),
         Err(LayerMutationError::ZoneMissing)
     ));
     assert_eq!(manager.get(&target.scene_id), Some(&before));
     let (zone, _) = manager
-        .replace_zone_layer_stack(target.scene_id, target.zone_id, Vec::new())
-        .expect("explicit empty stack");
-    assert!(zone.layers.is_empty());
+        .replace_zone_base_layer(target.scene_id, target.zone_id, valid.clone())
+        .expect("a valid base layer replaces the stack");
+    assert_eq!(zone.layers, vec![valid]);
     let mut restored = manager.get(&target.scene_id).expect("scene").clone();
     restored.zones[0].layers = before.zones[0].layers.clone();
     restored.zones[0].layers_version = before.zones[0].layers_version;

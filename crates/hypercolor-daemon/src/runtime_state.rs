@@ -23,6 +23,34 @@ use crate::persistence::{
 
 const STORE_SUBJECT: &str = "runtime session state";
 
+/// The runtime session schema this build writes, in the file's top-level
+/// `schema_version`.
+///
+/// The file had no version before scene layers gained an output scope, and
+/// a file without the field is schema 0. Schema 1 has the same shape with
+/// the field added, which is the point of it: a build from before the
+/// field refuses the file on the unknown key instead of reading a scoped
+/// layer and dropping the scope it does not know.
+pub(crate) const RUNTIME_SESSION_SCHEMA_VERSION: u32 = 1;
+const SCHEMA_FIELD: &str = "schema_version";
+
+/// The snapshot as the file holds it: its schema, then its fields.
+#[derive(Serialize)]
+struct VersionedSnapshot<'a> {
+    schema_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a RuntimeSessionSnapshot,
+}
+
+impl<'a> VersionedSnapshot<'a> {
+    const fn current(snapshot: &'a RuntimeSessionSnapshot) -> Self {
+        Self {
+            schema_version: RUNTIME_SESSION_SCHEMA_VERSION,
+            snapshot,
+        }
+    }
+}
+
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +117,19 @@ pub enum RuntimeSessionError {
         path: PathBuf,
         #[source]
         source: serde_json::Error,
+    },
+    /// The file declares a schema a newer release wrote. It is a valid
+    /// session this build cannot read, not a damaged one, so a caller that
+    /// would go on to save a session of its own must stop instead.
+    #[error(
+        "runtime snapshot at {path} declares schema {found}, which a newer Hypercolor wrote; \
+         this release reads schemas 0 through {newest}. Upgrade Hypercolor, or restore the \
+         state directory from before the newer release ran. The file was not modified"
+    )]
+    UnsupportedSchema {
+        path: PathBuf,
+        found: u64,
+        newest: u32,
     },
     #[error("failed to serialize runtime snapshot: {0}")]
     Serialize(#[source] serde_json::Error),
@@ -180,17 +221,43 @@ fn read_document(path: &Path) -> Result<RuntimeSessionDocument, RuntimeSessionEr
             source,
         })?;
     let mut decoded = original.clone();
+    let mut schema = 0;
     if let Some(object) = decoded.as_object_mut() {
         object.remove("global_brightness");
+        if let Some(declared) = object.remove(SCHEMA_FIELD) {
+            // A version that is not a count is damage, the same as any
+            // other field of the wrong type. A count past this build's is
+            // a newer release's file.
+            let found = declared
+                .as_u64()
+                .ok_or_else(|| RuntimeSessionError::Parse {
+                    path: path.to_path_buf(),
+                    source: serde::de::Error::custom(format!(
+                        "schema_version must be a non-negative integer, found {declared}"
+                    )),
+                })?;
+            schema = u32::try_from(found)
+                .ok()
+                .filter(|schema| *schema <= RUNTIME_SESSION_SCHEMA_VERSION)
+                .ok_or_else(|| RuntimeSessionError::UnsupportedSchema {
+                    path: path.to_path_buf(),
+                    found,
+                    newest: RUNTIME_SESSION_SCHEMA_VERSION,
+                })?;
+        }
     }
+    // Schema 0 and schema 1 share every field but the version itself, so
+    // one decode reads both and the rewrite below is the whole upgrade.
     let snapshot: RuntimeSessionSnapshot =
         serde_json::from_value(decoded).map_err(|source| RuntimeSessionError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
-    let normalized = serde_json::to_value(&snapshot).map_err(RuntimeSessionError::Serialize)?;
+    let normalized = serde_json::to_value(VersionedSnapshot::current(&snapshot))
+        .map_err(RuntimeSessionError::Serialize)?;
     Ok(RuntimeSessionDocument {
         snapshot,
+        schema,
         needs_rewrite: normalized != original,
     })
 }
@@ -198,7 +265,15 @@ fn read_document(path: &Path) -> Result<RuntimeSessionDocument, RuntimeSessionEr
 #[derive(Debug, Clone)]
 struct RuntimeSessionDocument {
     snapshot: RuntimeSessionSnapshot,
+    /// The schema the file declared; 0 for a file with no version field.
+    schema: u32,
     needs_rewrite: bool,
+}
+
+impl RuntimeSessionDocument {
+    fn versioned(self) -> VersionedDocument<Self> {
+        VersionedDocument::new(self.schema, self)
+    }
 }
 
 struct RuntimeSessionCodec;
@@ -211,7 +286,7 @@ impl MigratedStore for RuntimeSessionCodec {
         &self,
         path: &Path,
     ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
-        read_document(path).map(VersionedDocument::unversioned)
+        read_document(path).map(RuntimeSessionDocument::versioned)
     }
 
     fn decode_legacy(
@@ -219,12 +294,13 @@ impl MigratedStore for RuntimeSessionCodec {
         path: &Path,
     ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
         read_document(path)
-            .map(VersionedDocument::unversioned)
+            .map(RuntimeSessionDocument::versioned)
             .map(Some)
     }
 
     fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
-        serialize_json_pretty(&document.snapshot).map_err(RuntimeSessionError::Serialize)
+        serialize_json_pretty(&VersionedSnapshot::current(&document.snapshot))
+            .map_err(RuntimeSessionError::Serialize)
     }
 }
 
@@ -327,7 +403,8 @@ pub(crate) fn prepare_reserved(
     pending: RuntimeSnapshotSave,
     snapshot: &RuntimeSessionSnapshot,
 ) -> Result<PreparedRuntimeSnapshotSave, RuntimeSessionError> {
-    let payload = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
+    let payload = serialize_json_pretty(&VersionedSnapshot::current(snapshot))
+        .map_err(RuntimeSessionError::Serialize)?;
     Ok(PreparedRuntimeSnapshotSave {
         write: pending.write,
         payload,
@@ -568,6 +645,213 @@ mod tests {
             .expect("snapshot should exist");
 
         assert!(!loaded.manual_paused);
+    }
+
+    /// `runtime-state.json` as the real v0.9.0 daemon wrote it, with a
+    /// named scene active and a default scene that holds a primary zone and
+    /// two display zones. It has no version field. Captured by running the
+    /// v0.9.0 scene manager and `runtime_state::save`. Frozen: never edit
+    /// it to make a test pass.
+    const V0_9_0_SESSION: &str =
+        include_str!("../tests/fixtures/storage_v0_9_0/runtime-state.json");
+
+    /// The top-level shape the v0.9.0 reader accepted. It denied unknown
+    /// fields, so the reader's verdict on a file is whether this decodes.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields, default)]
+    #[derive(Default)]
+    #[allow(dead_code, reason = "the fields exist to be decoded, not read")]
+    struct V090RuntimeSession {
+        active_scene_id: Option<String>,
+        default_scene_zones: Vec<serde_json::Value>,
+        default_scene_settings: Option<serde_json::Value>,
+        active_layout_id: Option<String>,
+        manual_paused: bool,
+        output_stopped: bool,
+    }
+
+    fn file_json(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).expect("snapshot should read"))
+            .expect("snapshot should parse")
+    }
+
+    #[test]
+    fn a_saved_snapshot_declares_schema_1_ahead_of_its_fields() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+
+        save(&path, &RuntimeSessionSnapshot::default()).expect("save snapshot");
+
+        let serialized = std::fs::read_to_string(&path).expect("saved snapshot should read");
+        assert!(
+            serialized.starts_with("{\n  \"schema_version\": 1,"),
+            "{serialized}"
+        );
+        assert_eq!(
+            load(&path).expect("load snapshot"),
+            Some(RuntimeSessionSnapshot::default())
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("loaded snapshot should read"),
+            serialized,
+            "a current file is not rewritten on load"
+        );
+    }
+
+    #[test]
+    fn the_session_captured_from_v0_9_0_loads_as_schema_0_and_is_rewritten_as_schema_1() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        std::fs::write(&path, V0_9_0_SESSION).expect("captured session should write");
+        let captured: serde_json::Value =
+            serde_json::from_str(V0_9_0_SESSION).expect("captured session is valid JSON");
+        assert!(captured.get("schema_version").is_none());
+        serde_json::from_value::<V090RuntimeSession>(captured.clone())
+            .expect("the v0.9.0 reader accepts its own file");
+
+        let loaded = load(&path)
+            .expect("a file with no version is schema 0 and loads")
+            .expect("snapshot should exist");
+
+        assert_eq!(loaded.default_scene_zones.len(), 3);
+        assert_eq!(loaded.active_layout_id.as_deref(), Some("default"));
+        assert_eq!(
+            loaded,
+            serde_json::from_value(captured).expect("the captured session decodes as it is"),
+            "the upgrade changes no session content"
+        );
+        let mut rewritten = file_json(&path);
+        let version = rewritten
+            .as_object_mut()
+            .expect("snapshot is an object")
+            .remove("schema_version");
+        assert_eq!(version, Some(serde_json::json!(1)));
+        assert_eq!(
+            loaded,
+            serde_json::from_value(rewritten).expect("the rewritten session decodes"),
+            "only the version is added on disk"
+        );
+    }
+
+    #[test]
+    fn a_build_from_before_the_version_field_refuses_a_current_snapshot() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        let manager = SceneManager::with_default();
+        let mut zone = manager
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.zones.first())
+            .cloned()
+            .expect("default scene should have a primary zone");
+        let mut layer = SceneLayer::from_effect(
+            SceneLayerId::new(),
+            EffectId::from(Uuid::now_v7()),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            None,
+        );
+        layer.scope = Some(hypercolor_types::layer::LayerScope {
+            outputs: vec!["usb:keyboard-main".to_owned()],
+        });
+        zone.layers = vec![layer];
+        let snapshot = RuntimeSessionSnapshot {
+            default_scene_zones: vec![zone],
+            ..RuntimeSessionSnapshot::default()
+        };
+        save(&path, &snapshot).expect("save snapshot");
+
+        let error = serde_json::from_value::<V090RuntimeSession>(file_json(&path))
+            .err()
+            .expect("the unknown version field must stop the older reader");
+        assert!(
+            error.to_string().contains("unknown field `schema_version`"),
+            "{error}"
+        );
+        // Without the boundary the same reader takes the file, scope and all,
+        // and its layer type silently drops the scope it does not know.
+        let mut unversioned = file_json(&path);
+        unversioned
+            .as_object_mut()
+            .expect("snapshot is an object")
+            .remove("schema_version");
+        serde_json::from_value::<V090RuntimeSession>(unversioned)
+            .expect("the version field is the only thing the older reader refuses");
+
+        assert_eq!(
+            load(&path).expect("load snapshot"),
+            Some(snapshot),
+            "this build reads the scope back"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_from_a_newer_release_is_refused_by_name_and_left_alone() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 2,
+            "active_scene_id": null,
+            "default_scene_zones": [],
+            "a_field_from_the_future": true,
+        }))
+        .expect("snapshot should serialize");
+        std::fs::write(&path, &payload).expect("snapshot should be written");
+
+        let error = load(&path).expect_err("a newer schema must be refused");
+        assert!(
+            matches!(
+                error,
+                RuntimeSessionError::UnsupportedSchema {
+                    found: 2,
+                    newest: 1,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("schema 2"), "{message}");
+        assert!(message.contains("newer Hypercolor"), "{message}");
+        assert!(message.contains("schemas 0 through 1"), "{message}");
+        assert_eq!(
+            std::fs::read(&path).expect("snapshot should read"),
+            payload,
+            "a refused snapshot is never rewritten"
+        );
+    }
+
+    #[test]
+    fn a_schema_version_that_is_not_a_count_is_damage_not_a_newer_release() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        for declared in [
+            serde_json::json!("1"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(null),
+        ] {
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "schema_version": declared,
+                "default_scene_zones": [],
+            }))
+            .expect("snapshot should serialize");
+            std::fs::write(&path, &payload).expect("snapshot should be written");
+
+            let error = load(&path).expect_err("a malformed version must be refused");
+            assert!(
+                matches!(error, RuntimeSessionError::Parse { .. }),
+                "{declared}: {error:?}"
+            );
+            assert!(
+                error.to_string().contains("non-negative integer"),
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("snapshot should read"),
+                payload,
+                "a refused snapshot is never rewritten"
+            );
+        }
     }
 
     #[test]

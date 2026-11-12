@@ -2,13 +2,14 @@ use hypercolor_color::PixelBlendMode;
 use hypercolor_core::blend_math::{
     blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
 };
+use hypercolor_core::spatial::{LayerPlacement, LayerPlacementKey};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceResourceError,
 };
 
 use super::face_overlay::{blend_luma_reveal_rgba, blend_material_tint_rgba};
-use super::transform::process_layer_canvas;
+use super::transform::{process_layer_canvas, process_placed_layer_canvas};
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
     publish_composed_frame, scaled_preview_surface_from_rgba,
@@ -72,6 +73,7 @@ struct CachedCpuCompositionLayer {
     opaque_hint: bool,
     transform: Option<CachedCpuCompositionTransform>,
     adjust: Option<CachedCpuCompositionAdjust>,
+    placement: Option<LayerPlacementKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +84,6 @@ struct CachedCpuCompositionTransform {
     scale_y_bits: u32,
     rotation_bits: u32,
     fit: hypercolor_types::viewport::FitMode,
-    sample_target_space: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +142,7 @@ impl CpuSparkleFlinger {
             mut layers,
             cpu_replay_cacheable,
             preserves_scene_preview: _,
+            cpu_only: _,
         } = plan;
         let requires_full_size_preview =
             preview_request_matches_plan(preview_surface_request, width, height);
@@ -254,6 +256,7 @@ fn cached_composition_key(
             opaque_hint: layer.opaque_hint,
             transform: layer.transform.map(cached_transform),
             adjust: layer.adjust.map(cached_adjust),
+            placement: layer.placement.as_ref().map(LayerPlacement::key),
         });
     }
 
@@ -398,6 +401,9 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         layer.opaque_hint && !layer.needs_processing_for_size(target.width(), target.height());
     let transform = layer.transform;
     let adjust = layer.adjust;
+    if let Some(placement) = layer.placement {
+        return compose_placed_layer(target, target_opaque, layer, &placement);
+    }
     if transform.is_none()
         && adjust.is_none()
         && layer.frame.width() == target.width()
@@ -432,6 +438,47 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         layer.mode,
         layer.opacity,
         layer_opaque_hint,
+        source_canvas.as_rgba_bytes(),
+    )
+}
+
+/// Compose a placed layer: its source drawn through `placement`, and the
+/// target left as it is wherever the placement draws nothing, for every
+/// mode.
+///
+/// `Replace` writes the whole target otherwise, so it composes here as
+/// alpha with the source treated as opaque wherever the placement draws:
+/// that region is replaced, black where the placed source does not reach,
+/// and the canvas around a clipped frame stays.
+fn compose_placed_layer(
+    target: &mut Canvas,
+    target_opaque: bool,
+    layer: CompositionLayer,
+    placement: &LayerPlacement,
+) -> bool {
+    let replaces_frame = layer.mode == CompositionMode::Replace;
+    let Some((source_canvas, _)) = layer.frame.into_cpu_render_frame() else {
+        return target_opaque;
+    };
+    let source_canvas = process_placed_layer_canvas(
+        &source_canvas,
+        target.width(),
+        target.height(),
+        placement,
+        replaces_frame,
+        layer.adjust,
+    );
+    let mode = if replaces_frame {
+        CompositionMode::Alpha
+    } else {
+        layer.mode
+    };
+    compose_rgba_layer(
+        target,
+        target_opaque,
+        mode,
+        layer.opacity,
+        false,
         source_canvas.as_rgba_bytes(),
     )
 }
@@ -494,7 +541,6 @@ fn cached_transform(transform: super::CompositionTransform) -> CachedCpuComposit
         scale_y_bits: transform.scale[1].to_bits(),
         rotation_bits: transform.rotation.to_bits(),
         fit: transform.fit,
-        sample_target_space: transform.sample_target_space,
     }
 }
 

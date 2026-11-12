@@ -256,11 +256,12 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 
 ## MCP Server Integration
 
-The MCP surface rides an `rmcp` `StreamableHttpService` mounted at `McpConfig::base_path` (default `/mcp`) and merged into the router only when `mcp.enabled`. 17 tools exposed via Model Context Protocol for AI control:
+The MCP surface rides an `rmcp` `StreamableHttpService` mounted at `McpConfig::base_path` (default `/mcp`) and merged into the router only when `mcp.enabled`. 22 tools exposed via Model Context Protocol for AI control:
 
 | Tool               | Purpose                                                            |
 | ------------------ | ------------------------------------------------------------------ |
 | `set_effect`       | Apply one deterministically selected effect with optional controls |
+| `add_layer`        | Stack one effect on a zone, optionally limited to some outputs     |
 | `list_effects`     | Browse effect catalog with category/audio_reactive filters         |
 | `set_color`        | Apply a solid color effect                                         |
 | `set_output_power` | Pause or resume output without discarding effect state             |
@@ -277,11 +278,16 @@ The MCP surface rides an `rmcp` `StreamableHttpService` mounted at `McpConfig::b
 | `set_display_face` | Assign an HTML display face to a display device                    |
 | `get_layout`       | Get the active spatial layout                                      |
 | `diagnose`         | Canonical safe diagnostics from the shared REST collector          |
+| `openrgb_status`   | OpenRGB host install, SDK probes, and bridge coverage              |
+| `capture_canvas`   | The composed canvas as images, one per frame                       |
+| `install_effect`   | Install or hot swap an HTML effect from its page source            |
+| `get_effect_console` | Effect console output and script errors after a cursor           |
 
 Every tool declares `read_only`, `destructive`, and `idempotent` annotations.
 The destructive set is `set_effect`, `set_color`, `clear_zone`,
-`activate_scene`, and `set_display_face`. `adjust_controls` is a
-non-destructive atomic patch.
+`activate_scene`, `set_display_face`, and `install_effect`.
+`adjust_controls` is a non-destructive atomic patch, and `add_layer` only
+adds.
 
 `diagnose` accepts only an empty closed object and returns the canonical REST
 diagnostic data object: `checks`, `summary`, and `snapshot`. It always runs the

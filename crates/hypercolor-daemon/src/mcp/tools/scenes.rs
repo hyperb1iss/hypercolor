@@ -354,7 +354,7 @@ pub(super) async fn handle_adjust_controls_with_state(
     })
 }
 
-fn resolve_zone(
+pub(super) fn resolve_zone(
     query: &str,
     document: &SceneDocument,
 ) -> Result<hypercolor_types::api::scene::ZoneResource, ToolError> {
@@ -385,7 +385,11 @@ fn resolve_layer(
         .map_err(|error| ToolError::selector("layer", error))
 }
 
-async fn retry_resolved_scene_target<T, ReadRevision, ReadFuture, Mutate, MutateFuture>(
+/// Run a fenced mutation against ids resolved from one read of the scene,
+/// refreshing the fence and trying again whenever another writer lands
+/// first. The ids are never re-resolved, so a target that was replaced
+/// under the same name fails instead of being mistaken for the old one.
+pub(super) async fn retry_resolved_scene_target<T, ReadRevision, ReadFuture, Mutate, MutateFuture>(
     mut revision: u64,
     mut read_revision: ReadRevision,
     mut mutate: Mutate,

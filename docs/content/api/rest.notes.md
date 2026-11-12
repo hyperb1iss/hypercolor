@@ -203,6 +203,23 @@ its session-level failure arrives through `degraded` instead, as one of
 `no_interactive_session`, `access_denied`, or `unavailable`. Each entry in
 `sources` carries per-source lifecycle, freshness, and issue detail.
 
+`status.capabilities` names what this daemon's scene surface can do. A client
+that may be talking to an older daemon reads it and hides the control a missing
+entry gates, instead of sending a request that daemon would misread.
+
+| Capability | The daemon |
+| --- | --- |
+| `multi-zone-sampling` | samples each zone's outputs from that zone's own canvas |
+| `zone-crud` | serves the zone create, read, patch, and delete routes |
+| `zone-device-assignment` | serves the member assignment and removal routes |
+| `zone-layout-edit` | serves `PUT /scene/zones/{zone}/layout` |
+| `zone-preview-frames` | publishes per-zone preview frames |
+| `scene-unassigned-behavior-write` | accepts `unassigned_behavior` on `PATCH /scene` |
+| `layer-scope` | accepts `scope` on the layer routes, limiting a layer to some of its zone's outputs |
+
+A build with release notifications adds `oss-release-notifications`. The list
+grows over time, so ignore entries you do not recognize.
+
 # GET /api/v1/system/sensors
 
 CPU temperature, GPU load, RAM usage, and raw component readings. These feed
@@ -440,9 +457,12 @@ sliders, color pickers, and dropdowns.
 
 # POST /api/v1/effects/{id}/apply
 
-Replaces the target zone's layer stack with one new layer running this effect.
-The server validates the effect, zone, and controls before committing, mints a
-fresh layer id, then wakes paused output.
+Replaces the target zone's whole-zone layers with one new layer running this
+effect. Layers limited to some of the zone's outputs by a `scope` stay above
+it, in their existing order, so changing the base effect keeps a keyboard's own
+layer. A zone with no scoped layer ends up with exactly one layer. The server
+validates the effect, zone, and controls before committing, mints a fresh layer
+id, then wakes paused output.
 
 ```json
 {
@@ -704,6 +724,17 @@ daemon mints it. Omitted optional fields are cleared, so partial update bodies
 are not accepted. A stale `If-Match` returns `412 Precondition Failed` with the
 current revision.
 
+A layer's `scope` is the one field with three states, as it is on a single-layer
+replace. A value sets the scope, `null` clears it to the whole zone, and leaving
+the key out keeps the scope of the stored layer that the entry names by `id`. A
+read-back document carries each scoped layer's scope, so sending it back
+unchanged changes nothing, and a client that drops the field cannot widen a
+layer. Because a whole-zone layer reads back with no `scope` key, deleting the
+key does not clear a scope; send `null`. Ids the stored layer's scope already
+held are accepted as they are, and any other id must be one of the zone's
+`members` in the same body, or the daemon returns `422` with
+`details.unknown_member`.
+
 # POST /api/v1/scenes/{id}/activate
 
 Applies the scene's effects and controls with the configured transition. The
@@ -733,7 +764,9 @@ Returns to the default scene and answers with the new live scene document.
 
 Clears every non-display layer stack, or pass `{ "zone": "<zone_uuid>" }` to
 clear one non-display zone. Display zones remain owned by the display API, and
-a targeted display clear is rejected. This is the canonical stop gesture.
+a targeted display clear is rejected. This is the canonical stop gesture. It
+removes whole-zone and scoped layers alike, with one exception: a layer whose
+scope reaches only screens is a face, not lighting, and stays.
 
 # @section scenes Scene zones /api/v1/scene/zones /api/v1/scene/members
 
@@ -782,7 +815,9 @@ member ids, which are the resource identities for later removal.
 
 # DELETE /api/v1/scene/zones/{zone}/members/{member}
 
-Removes one membership by the member id returned in the live zone document.
+Removes one membership by the member id returned in the live zone document. A
+layer whose `scope` names the member keeps the id and stops rendering on it;
+assigning the same output again revives the layer.
 
 # POST /api/v1/scene/members/edit
 
@@ -802,6 +837,15 @@ unchanged. The response contains the committed `document` and canonical
 `changes` receipts with complete output snapshots for undo and redo. The
 committed revision is available in `document.revision` and the response `ETag`.
 
+Scoped layers follow their outputs. When an edit moves every live output of a
+layer's `scope` to one other zone, the layer moves to the top of that zone's
+stack with its id and scope intact. When it moves only some of them, the layer
+stays and loses those ids. The response lists each such layer in `layer_moves`,
+with its zone and stack position before and after and its scope before and
+after. To undo an edit exactly, send the reversed `changes` together with the
+reversed `layer_moves`: the daemon then applies those moves and carries nothing
+else. `layer_moves` is only valid beside explicit `changes`.
+
 Omitting `If-Match` or sending `*` is rejected. A stale revision returns `412`.
 Explicit edits also validate their `before` states, so rebasing requires fresh
 member states from the current document.
@@ -817,9 +861,35 @@ routes.
 Each zone stacks layers bottom to top. Clients use the layer ids returned by
 `GET /scene`; they never derive an id from the zone.
 
+A layer applies to its whole zone unless it carries a `scope`: a list of the
+zone's member ids the layer is limited to. Outputs outside the scope render the
+stack as if the layer were not there. A whole-zone layer reads back with no
+`scope` key. A scope id whose output has left the zone is kept and renders
+nothing, and a layer with no live output left is dormant: compare the scope's
+ids with the zone's `members` to detect it. Check for the `layer-scope`
+capability in `GET /system` before sending the field to a daemon that may be
+older.
+
 # POST /api/v1/scene/zones/{zone}/layers
 
 Appends a layer to the zone. The server mints its id.
+
+```json
+{
+  "source": {
+    "type": "effect",
+    "effect_id": "0198c5b6-1111-7000-8000-000000000004",
+    "controls": {}
+  },
+  "blend": "screen",
+  "scope": { "outputs": ["keyboard-left"] }
+}
+```
+
+Omit `scope` to apply the layer to the whole zone. Every id in
+`scope.outputs` must be a current member of the zone, or the daemon returns
+`422 validation_error` with the missing id in `details.unknown_member`. An
+empty list is also a `422`. The stored list is sorted and deduplicated.
 
 # PATCH /api/v1/scene/zones/{zone}/layers/order
 
@@ -828,7 +898,23 @@ Send every layer id exactly once, from bottom to top.
 # PUT /api/v1/scene/zones/{zone}/layers/{layer}
 
 Every successful replacement mints a fresh layer id, even when the effect is
-unchanged.
+unchanged. The body is the creation shape with one difference, in `scope`:
+
+| `scope` in the body | Result |
+| --- | --- |
+| Key left out | The replacement keeps the replaced layer's scope |
+| `null` | The replacement applies to the whole zone |
+| `{ "outputs": [...] }` | The replacement is limited to those outputs |
+
+Leaving the key out keeps the scope so that a client written before the field
+existed, which replaces a layer by sending back the fields it knows, cannot
+widen a keyboard's layer to the whole zone by changing its blend mode. Changing
+a layer's scope is this route with a new value.
+
+Ids the replaced layer's scope already held are accepted even when their output
+has left the zone, so a dormant layer can still be edited. Any other id must be
+a current member, or the daemon returns `422 validation_error` with
+`details.unknown_member`.
 
 # PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls
 

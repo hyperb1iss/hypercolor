@@ -891,7 +891,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
     {
         let mut mutation = state.scene_manager.begin_mutation().await;
         let zone_id = hypercolor_types::scene::ZoneId(zone_id.parse::<Uuid>().expect("zone uuid"));
-        let (scene_id, layer_index, mut layer) = {
+        let (scene_id, mut layer) = {
             let scene = mutation
                 .scenes()
                 .active_scene()
@@ -906,7 +906,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
                 .iter()
                 .position(|layer| layer.id.to_string() == layer_id)
                 .expect("seeded layer should remain active");
-            (scene.id, layer_index, zone.layers[layer_index].clone())
+            (scene.id, zone.layers[layer_index].clone())
         };
         let LayerSource::Effect {
             control_bindings, ..
@@ -927,7 +927,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
             },
         );
         mutation
-            .replace_layer(scene_id, zone_id, layer.id, layer, layer_index)
+            .replace_layer(scene_id, zone_id, layer.id, layer)
             .expect("binding should attach");
         hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
@@ -2117,6 +2117,7 @@ async fn membership_edit_restores_offline_outputs_and_preserves_hidden_fields() 
             }),
             after: None,
         }],
+        layer_moves: None,
     };
     let revision = document["data"]["revision"].as_u64().expect("revision");
     let removed = send(
@@ -2149,6 +2150,7 @@ async fn membership_edit_restores_offline_outputs_and_preserves_hidden_fields() 
                 after: change.before.clone(),
             })
             .collect(),
+        layer_moves: None,
     };
     let restored = send(
         &app,
@@ -2204,6 +2206,7 @@ async fn membership_edit_rejects_stale_invalid_and_partial_batches() {
                 after: None,
             },
         ],
+        layer_moves: None,
     };
     let rejected = send(
         &app,
@@ -2223,6 +2226,7 @@ async fn membership_edit_rejects_stale_invalid_and_partial_batches() {
         assignment: None,
         scene_id,
         changes: vec![valid],
+        layer_moves: None,
     };
     let stale = send(
         &app,
@@ -2303,6 +2307,7 @@ async fn membership_edit_moves_outputs_without_losing_unrelated_controls() {
                         before: Some(before),
                         after: Some(after)
                     }],
+                    layer_moves: None,
                 }),
             ),
             document["data"]["revision"].as_u64().expect("revision"),
@@ -2338,6 +2343,7 @@ async fn membership_edit_moves_outputs_without_losing_unrelated_controls() {
                 after: change.before.clone(),
             })
             .collect(),
+        layer_moves: None,
     };
     let restored = send(
         &app,
@@ -2408,6 +2414,7 @@ async fn membership_edit_rejects_duplicate_identities_geometry_and_display_targe
                     after: Some(after),
                 })
                 .collect(),
+            layer_moves: None,
         };
         let rejected = send(
             &app,
@@ -2483,7 +2490,8 @@ async fn membership_edit_preserves_multiple_attachment_instances_on_one_segment(
                 json!(EditMembersRequest {
                     scene_id,
                     changes,
-                    assignment: None
+                    assignment: None,
+                    layer_moves: None,
                 }),
             ),
             document["data"]["revision"].as_u64().expect("revision"),
@@ -2512,6 +2520,7 @@ async fn membership_edit_preserves_multiple_attachment_instances_on_one_segment(
                         }),
                         after: None,
                     }],
+                    layer_moves: None,
                 }),
             ),
             added.document.revision,
@@ -2536,6 +2545,7 @@ async fn membership_edit_preserves_multiple_attachment_instances_on_one_segment(
                     }),
                     scene_id,
                     changes: Vec::new(),
+                    layer_moves: None,
                 }),
             ),
             removed.document.revision,
@@ -2567,6 +2577,7 @@ async fn membership_edit_preserves_multiple_attachment_instances_on_one_segment(
                 after: change.before.clone(),
             })
             .collect(),
+        layer_moves: None,
     };
     let restored = send(
         &app,
@@ -2657,6 +2668,7 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
             segments: Vec::new(),
             placements: Vec::new(),
         }),
+        layer_moves: None,
     };
     let assigned = send(
         &app,
@@ -2710,6 +2722,7 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
                         before: assigned.changes[0].after.clone(),
                         after: None,
                     }],
+                    layer_moves: None,
                 }),
             ),
             assigned.document.revision,
@@ -2961,6 +2974,7 @@ async fn physical_panel_geometry_survives_assignment_scene_reads_and_layout_edit
             segments: Vec::new(),
             placements: Vec::new(),
         }),
+        layer_moves: None,
     };
     let assigned = send(
         &app,
@@ -3139,6 +3153,7 @@ async fn custom_zone_panel_removal_and_reassignment_refreshes_device_geometry() 
             segments: Vec::new(),
             placements: vec![authored.clone()],
         }),
+        layer_moves: None,
     };
     let assigned = send(
         &app,
@@ -3207,6 +3222,7 @@ async fn custom_zone_panel_removal_and_reassignment_refreshes_device_geometry() 
                             after: None,
                         })
                         .collect(),
+                    layer_moves: None,
                 }),
             ),
             held.document.revision,
@@ -3287,11 +3303,13 @@ async fn membership_edit_rejects_ambiguous_forms_and_overflowing_topologies_atom
             scene_id,
             changes: vec![remove.clone()],
             assignment: Some(assignment),
+            layer_moves: None,
         },
         EditMembersRequest {
             scene_id,
             changes: Vec::new(),
             assignment: None,
+            layer_moves: None,
         },
     ] {
         let response = send(
@@ -3360,6 +3378,7 @@ async fn membership_edit_rejects_ambiguous_forms_and_overflowing_topologies_atom
                     }),
                 },
             ],
+            layer_moves: None,
         };
         let response = send(
             &app,
@@ -3422,6 +3441,7 @@ async fn membership_edit_domain_rejects_nonfinite_topology_coordinates() {
                         index: 2,
                     }),
                 }],
+                layer_moves: None,
             },
             revision.into(),
         )

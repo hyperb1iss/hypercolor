@@ -10,8 +10,6 @@ mod sampling_state;
 pub(crate) use bind_groups::PreparedProjectedComposeBindGroups;
 #[cfg(feature = "allocation-contract-tests")]
 pub(crate) use bind_groups::ProjectedLookupAllocationFixture;
-#[cfg(test)]
-pub(super) use bind_groups::{ComposeShaderMode, encode_compose_params};
 pub(super) use bind_groups::{ComposeSourceBindGroupCache, create_compose_bind_group};
 pub(super) use sampling_state::{SamplingReadbackBuffers, SamplingReadbackLatch};
 

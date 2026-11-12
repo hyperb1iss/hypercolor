@@ -10,6 +10,16 @@ use crate::render_thread::frame_sampling::LedSamplingStrategy;
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
+/// What an output showed in the last scene pass that rendered.
+#[cfg(feature = "wgpu")]
+pub(crate) enum RetainedOutputFrame<'a> {
+    /// Nobody kept that pass, so what it showed is not known.
+    NotKept,
+    /// The output's zone rendered nothing.
+    Nothing,
+    Frame(&'a ProducerFrame),
+}
+
 impl ZoneRuntime {
     pub(crate) fn release_retained_scene_frame(&mut self) {
         self.retained_frame = None;
@@ -24,13 +34,31 @@ impl ZoneRuntime {
         Some(zone_result_from_retained(retained))
     }
 
-    /// The zone frames of the last scene pass that rendered, while they are
-    /// still retained: what each zone showed in the frame before this one.
+    /// What the output at `output_index` of `zone_id` showed in the last
+    /// scene pass that rendered, while its frames are still retained: the
+    /// frame of the output's scope class, or of the zone's whole canvas for
+    /// `None`.
     #[cfg(feature = "wgpu")]
-    pub(crate) fn retained_zone_frames(&self) -> Option<&[(ZoneId, ProducerFrame)]> {
-        self.retained_frame
-            .as_ref()
-            .map(|retained| retained.zone_canvases.as_slice())
+    pub(crate) fn retained_output_frame(
+        &self,
+        zone_id: ZoneId,
+        output_index: Option<usize>,
+    ) -> RetainedOutputFrame<'_> {
+        let Some(retained) = self.retained_frame.as_ref() else {
+            return RetainedOutputFrame::NotKept;
+        };
+        let class = retained.class_frames.class_of(zone_id, output_index);
+        let frame = if class.is_base() {
+            retained
+                .zone_canvases
+                .iter()
+                .find_map(|(id, frame)| (*id == zone_id).then_some(frame))
+        } else {
+            retained
+                .class_frames
+                .frame(super::scope_classes::ZoneClassKey::new(zone_id, class))
+        };
+        frame.map_or(RetainedOutputFrame::Nothing, RetainedOutputFrame::Frame)
     }
 
     /// Stand in for a scene pass that rendered `zone_frames`, for a test of
@@ -47,6 +75,8 @@ impl ZoneRuntime {
             active_display_zone_ids: Vec::new(),
             zone_canvases: zone_frames.to_vec(),
             zone_revisions: Vec::new(),
+            class_frames: super::model::ClassFrames::default(),
+            scope_class_count: 0,
             led_sampling_strategy: RetainedLedSamplingStrategy::PreSampled {
                 layout: std::sync::Arc::clone(&self.combined_led_layout),
                 zones: std::sync::Arc::from(Vec::new()),
@@ -77,6 +107,8 @@ impl ZoneRuntime {
             active_display_zone_ids: result.active_display_zone_ids.clone(),
             zone_canvases: result.zone_canvases.clone(),
             zone_revisions: result.zone_revisions.clone(),
+            class_frames: result.class_frames.clone(),
+            scope_class_count: result.scope_class_count,
             led_sampling_strategy: result.led_sampling_strategy.retain(zones, recycled),
             logical_layer_count: result.logical_layer_count,
         });
@@ -90,6 +122,8 @@ fn zone_result_from_retained(retained: &RetainedRenderZoneFrame) -> ZoneResult {
         display_zone_frames: retained.display_zone_frames.clone(),
         zone_canvases: retained.zone_canvases.clone(),
         zone_revisions: retained.zone_revisions.clone(),
+        class_frames: retained.class_frames.clone(),
+        scope_class_count: retained.scope_class_count,
         active_display_zone_ids: retained.active_display_zone_ids.clone(),
         led_sampling_strategy: LedSamplingStrategy::from_retained(&retained.led_sampling_strategy),
         producer_full_frame_copy: FullFrameCopyMetrics::default(),

@@ -152,6 +152,7 @@ fn stacked_layers_use_layer_compositor() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     };
     zone.layers = vec![effect_layer, overlay];
 
@@ -434,6 +435,7 @@ fn missing_media_layer_renders_transparent_black_and_reports_health() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }];
     let layer_id = zone.layers[0].id;
     let mut zones = Vec::new();
@@ -479,6 +481,7 @@ fn screen_region_layer_uses_latest_capture_canvas() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }];
     let screen = hypercolor_core::input::SyntheticScreenPublisher::surface(
         hypercolor_core::input::screen::PixelExtent::new(2, 1).expect("fixture extent"),
@@ -539,6 +542,7 @@ fn gif_asset_layer_can_drive_direct_display_zone() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }];
     let mut zones = Vec::new();
 
@@ -597,6 +601,7 @@ fn stream_media_layer_reports_loading_until_first_frame() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }];
     let layer_id = zone.layers[0].id;
     let mut zones = Vec::new();

@@ -28,10 +28,10 @@ use arc_swap::{ArcSwap, Guard};
 use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
 use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, SceneManager, ScenePlanSnapshot, ZoneMetaPatch,
-    ZoneMutationError, default_primary_zone,
+    ZoneMutationError, check_introduced_scope, default_primary_zone,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::api::scene::{SceneFence, SideEffectOutcome};
+use hypercolor_types::api::scene::{LayerMove, SceneFence, SideEffectOutcome};
 use hypercolor_types::api::scenes::{
     MediaLayerDetail, MediaProducerCaps, MediaProducerCounts, MediaProducerLayers,
     ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest,
@@ -46,7 +46,7 @@ use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent, LayerStackChangeKind,
     SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind, Severity, ZoneChangeKind,
 };
-use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
@@ -1333,7 +1333,8 @@ impl SceneMutation {
             .map(|zone| zone.id)
     }
 
-    /// The effect currently loaded in one of the active scene's zones.
+    /// The whole-zone effect loaded in one of the active scene's zones:
+    /// the one an effect apply replaces. A scoped layer's effect is not it.
     #[must_use]
     pub fn zone_effect(&self, zone_id: ZoneId) -> Option<hypercolor_types::effect::EffectId> {
         self.candidate
@@ -1341,7 +1342,14 @@ impl SceneMutation {
             .zones
             .iter()
             .find(|zone| zone.id == zone_id)
-            .and_then(|zone| zone.effect_ids().next())
+            .and_then(|zone| {
+                zone.layers
+                    .iter()
+                    .find_map(|layer| match (&layer.scope, &layer.source) {
+                        (None, LayerSource::Effect { effect_id, .. }) => Some(*effect_id),
+                        _ => None,
+                    })
+            })
     }
 
     /// Load an effect into the active scene's primary zone, creating the
@@ -1643,16 +1651,31 @@ impl SceneMutation {
         Ok(())
     }
 
-    /// Move one output into a zone.
+    /// Move one output into a zone. See [`Self::assign_outputs`].
     pub fn assign_output(
         &mut self,
         scene_id: SceneId,
         zone_id: ZoneId,
         output: Output,
         placement: OutputPlacement,
-    ) -> Result<(), ZoneMutationError> {
-        self.candidate
-            .assign_output_to_zone(&scene_id, zone_id, output, placement)?;
+    ) -> Result<Vec<LayerMove>, ZoneMutationError> {
+        self.assign_outputs(scene_id, zone_id, vec![output], placement)
+    }
+
+    /// Move a set of outputs into a zone as one membership edit.
+    ///
+    /// Scoped layers follow outputs that leave another zone together, and
+    /// the returned moves say which layers went where.
+    pub fn assign_outputs(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        outputs: Vec<Output>,
+        placement: OutputPlacement,
+    ) -> Result<Vec<LayerMove>, ZoneMutationError> {
+        let layer_moves = self
+            .candidate
+            .assign_outputs_to_zone(&scene_id, zone_id, outputs, placement)?;
         self.persists_scene_content = true;
         if let Some(zone) = self
             .candidate
@@ -1662,7 +1685,53 @@ impl SceneMutation {
         {
             self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
         }
+        self.record_layer_moves(scene_id, &layer_moves);
+        Ok(layer_moves)
+    }
+
+    /// Move scoped layers between zones, or narrow them, as a planned or
+    /// replayed membership edit names them. Call it after the edit's
+    /// outputs have moved.
+    pub fn apply_layer_moves(
+        &mut self,
+        scene_id: SceneId,
+        layer_moves: &[LayerMove],
+    ) -> Result<(), LayerMutationError> {
+        self.candidate.apply_layer_moves(scene_id, layer_moves)?;
+        self.persists_scene_content = true;
+        self.record_layer_moves(scene_id, layer_moves);
         Ok(())
+    }
+
+    /// Publish the stack change of every zone a set of layer moves touched.
+    fn record_layer_moves(&mut self, scene_id: SceneId, layer_moves: &[LayerMove]) {
+        let mut changes: Vec<(ZoneId, LayerStackChangeKind)> = Vec::new();
+        let mut note = |zone_id: ZoneId, kind: LayerStackChangeKind| {
+            match changes.iter_mut().find(|(noted, _)| *noted == zone_id) {
+                // A zone that both gains and loses layers changed, plainly.
+                Some((_, noted)) if *noted != kind => *noted = LayerStackChangeKind::Updated,
+                Some(_) => {}
+                None => changes.push((zone_id, kind)),
+            }
+        };
+        for moved in layer_moves {
+            if moved.from.zone_id == moved.to.zone_id {
+                note(moved.from.zone_id, LayerStackChangeKind::Updated);
+            } else {
+                note(moved.from.zone_id, LayerStackChangeKind::Removed);
+                note(moved.to.zone_id, LayerStackChangeKind::Created);
+            }
+        }
+        for (zone_id, kind) in changes {
+            if let Some(zone) = self
+                .candidate
+                .get(&scene_id)
+                .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+                .cloned()
+            {
+                self.record_layer_change(scene_id, &zone, kind);
+            }
+        }
     }
 
     /// Drop one output out of whatever zone holds it.
@@ -1797,7 +1866,9 @@ impl SceneMutation {
         Ok(zone)
     }
 
-    /// Replace the layers of one exact live lighting zone in this candidate.
+    /// Replace the whole-zone layers of one exact live lighting zone in this
+    /// candidate with a color, keeping its scoped layers as an effect apply
+    /// does.
     ///
     /// # Errors
     ///
@@ -1832,10 +1903,11 @@ impl SceneMutation {
             adjust: hypercolor_types::layer::LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         };
         let (zone, _) = self
             .candidate
-            .replace_zone_layer_stack(scene_id, target.zone_id, vec![layer])
+            .replace_zone_base_layer(scene_id, target.zone_id, layer)
             .map_err(|error| DomainError::Internal(anyhow::anyhow!("{error:?}")))?;
         let zone = zone.clone();
         self.persists_scene_content = true;
@@ -1861,19 +1933,19 @@ impl SceneMutation {
     }
 
     /// Replace one layer in place while publishing one coherent stack change.
+    ///
+    /// The replacement's scope is final: a caller that means to keep the
+    /// replaced layer's scope copies it onto the replacement first.
     pub fn replace_layer(
         &mut self,
         scene_id: SceneId,
         zone_id: ZoneId,
         layer_id: SceneLayerId,
         layer: SceneLayer,
-        index: usize,
     ) -> Result<Zone, LayerMutationError> {
-        self.candidate
-            .remove_zone_layer(scene_id, zone_id, layer_id, None)?;
-        let (zone, _version) =
-            self.candidate
-                .insert_zone_layer(scene_id, zone_id, layer, Some(index), None)?;
+        let (zone, _version) = self
+            .candidate
+            .replace_zone_layer(scene_id, zone_id, layer_id, layer, None)?;
         let zone = zone.clone();
         self.persists_scene_content = true;
         self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Updated);
@@ -3066,12 +3138,12 @@ fn replacement_zones(
                 .iter()
                 .find(|candidate| candidate.id == zone_id);
             let layout = replacement_zone_layout(stored, default_layout, &zone)?;
-            let layers = zone
+            let (layers, stored_scopes): (Vec<_>, Vec<_>) = zone
                 .layers
                 .into_iter()
-                .map(replacement_layer)
-                .collect::<Vec<_>>();
-            Ok(Zone {
+                .map(|layer| replacement_layer(existing, layer))
+                .unzip();
+            let replacement = Zone {
                 id: zone_id,
                 name: zone.name,
                 description: zone.description,
@@ -3085,13 +3157,44 @@ fn replacement_zones(
                 controls_version: stored
                     .map_or(0, |stored| stored.controls_version.saturating_add(1)),
                 layers_version: stored.map_or(0, |stored| stored.layers_version.saturating_add(1)),
-            })
+            };
+            for (layer, stored_scope) in replacement.layers.iter().zip(&stored_scopes) {
+                check_introduced_scope(&replacement, layer, stored_scope.as_ref()).map_err(
+                    |error| crate::domain::scene_tree::layer_error(error, zone_id, Some(layer.id)),
+                )?;
+            }
+            Ok(replacement)
         })
         .collect()
 }
 
-fn replacement_layer(request: ReplaceSceneLayerRequest) -> SceneLayer {
-    SceneLayer {
+/// Build a stored layer from a replacement request, beside the scope of
+/// the stored layer it names.
+///
+/// The request's `scope` is a tri-state. Missing, a layer the request
+/// names by id keeps the scope the stored layer has, wherever in the scene
+/// the request puts it, and a layer without an id applies to its whole
+/// zone. `null` clears the scope and a value sets it. The stored scope
+/// comes back so the caller can accept its ids without a membership
+/// check.
+fn replacement_layer(
+    existing: &Scene,
+    request: ReplaceSceneLayerRequest,
+) -> (SceneLayer, Option<LayerScope>) {
+    let stored_scope = request.id.and_then(|layer_id| {
+        existing
+            .zones
+            .iter()
+            .flat_map(|zone| zone.layers.iter())
+            .find(|layer| layer.id == layer_id)
+            .and_then(|layer| layer.scope.clone())
+    });
+    let scope = match request.scope {
+        None => stored_scope.clone(),
+        Some(None) => None,
+        Some(Some(scope)) => Some(scope.normalized()),
+    };
+    let layer = SceneLayer {
         id: request.id.unwrap_or_default(),
         name: request.name,
         source: request.source,
@@ -3101,7 +3204,9 @@ fn replacement_layer(request: ReplaceSceneLayerRequest) -> SceneLayer {
         adjust: request.adjust,
         bindings: request.bindings,
         enabled: request.enabled,
-    }
+        scope,
+    };
+    (layer, stored_scope)
 }
 
 fn replacement_zone_layout(

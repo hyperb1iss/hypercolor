@@ -225,6 +225,7 @@ fn color_zone(color: [f32; 4]) -> Zone {
             adjust: LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         }],
         layout: SpatialLayout {
             id: "preview-test".to_owned(),

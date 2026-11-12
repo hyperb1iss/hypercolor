@@ -156,6 +156,9 @@ pub(crate) struct LatestFrameMetrics {
     /// Scene zones whose composition key matched their held frame, so they
     /// skipped composing and stabilizing this frame (Spec 86 §2.1).
     pub zone_composition_skips: u32,
+    /// Scope classes the scene's zones composed: one per zone with no scoped
+    /// layer, and one per distinct stack of layers in a zone that has some.
+    pub scope_class_count: u32,
     pub gpu_sample_deferred: bool,
     pub gpu_sample_stale: bool,
     pub gpu_sample_retry_hit: bool,

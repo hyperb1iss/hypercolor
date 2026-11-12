@@ -1,6 +1,6 @@
 +++
 title = "Agents & MCP"
-description = "Drive Hypercolor with AI agents over MCP and the CLI: 21 tools, 5 resources, 4 prompts, plus a scriptable command line."
+description = "Drive Hypercolor with AI agents over MCP and the CLI: 22 tools, 5 resources, 4 prompts, plus a scriptable command line."
 sort_by = "weight"
 weight = 0
 template = "section.html"
@@ -50,7 +50,7 @@ P -->|orchestrate| T
 P -->|reference| R
 {% </mermaid> %}
 
-**Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **21**: `get_status`, `get_devices`, `list_effects`, `list_scenes`, `get_audio_state`, `get_layout`, `get_sensor_data`, `diagnose`, `openrgb_status`, `get_effect_console`, `capture_canvas`, `set_brightness`, `set_output_power`, `set_effect`, `set_color`, `clear_zone`, `adjust_controls`, `activate_scene`, `create_scene`, `set_display_face`, and `install_effect`. The first eleven are read-only. The other ten mutate state, and six of those mutations are destructive. See the [tools reference](@/agents/tools-reference.md).
+**Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **22**: `get_status`, `get_devices`, `list_effects`, `list_scenes`, `get_audio_state`, `get_layout`, `get_sensor_data`, `diagnose`, `openrgb_status`, `get_effect_console`, `capture_canvas`, `set_brightness`, `set_output_power`, `set_effect`, `add_layer`, `set_color`, `clear_zone`, `adjust_controls`, `activate_scene`, `create_scene`, `set_display_face`, and `install_effect`. The first eleven are read-only. The other eleven mutate state, and six of those mutations are destructive. See the [tools reference](@/agents/tools-reference.md).
 
 **Resources** are browsable, read-only views of live state under the `hypercolor://` scheme, the nouns. There are **5**: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://scenes`, and `hypercolor://audio`. An agent reads a resource to orient itself before acting. See the [resources reference](@/agents/resources-reference.md).
 
@@ -67,7 +67,7 @@ New to agent control? Walk it in order: enable the server, learn the tools, then
 {% </callout> %}
 
 - **[MCP setup](@/agents/mcp-setup.md)**: Turn the server on, then copy-paste connection config for Claude Code, Claude Desktop, Cursor, Zed, and generic MCP clients.
-- **[Tools reference](@/agents/tools-reference.md)**: All 21 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
+- **[Tools reference](@/agents/tools-reference.md)**: All 22 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources, their payload shapes, and how fresh each one is.
 - **[Prompt templates](@/agents/prompt-templates.md)**: The 4 shipped prompts, their arguments, and when each one fits.
 - **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell: `--json` output, exit codes, env vars, and a state-first workflow.

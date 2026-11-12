@@ -1,6 +1,7 @@
 use crate::render_thread::producer_queue::NativeScreenCacheLease;
 use crate::render_thread::producer_queue::NativeScreenTextureLease;
 use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
+use hypercolor_core::spatial::LayerPlacementKey;
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_gpu_frame::{FrameOrigin, ImportedEffectFrame};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
@@ -48,6 +49,7 @@ pub(super) struct CachedReadbackLayer {
     pub(super) opacity_bits: u32,
     pub(super) transform: Option<CachedReadbackTransform>,
     pub(super) adjust: Option<CachedReadbackAdjust>,
+    pub(super) placement: Option<LayerPlacementKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +60,6 @@ pub(super) struct CachedReadbackTransform {
     pub(super) scale_y_bits: u32,
     pub(super) rotation_bits: u32,
     pub(super) fit: FitMode,
-    pub(super) sample_target_space: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

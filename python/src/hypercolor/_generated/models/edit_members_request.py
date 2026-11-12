@@ -9,6 +9,7 @@ from typing_extensions import Self
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.layer_move import LayerMove
     from ..models.member_assignment_target import MemberAssignmentTarget
     from ..models.member_edit import MemberEdit
 
@@ -24,16 +25,23 @@ class EditMembersRequest:
         scene_id (str):
         assignment (MemberAssignmentTarget | None | Unset):
         changes (list[MemberEdit] | Unset):
+        layer_moves (list[LayerMove] | None | Unset): The scoped layers to move with the outputs, replayed from a
+            receipt's `layer_moves` beside its `changes`.
+
+            Omitted, the daemon decides which scoped layers follow the moved
+            outputs. Present, exactly these moves are applied and nothing else
+            is carried, so replaying a receipt's reversed moves restores each
+            layer's zone, stack position, and scope. Only valid with explicit
+            `changes`.
     """
 
     scene_id: str
     assignment: MemberAssignmentTarget | None | Unset = UNSET
     changes: list[MemberEdit] | Unset = UNSET
+    layer_moves: list[LayerMove] | None | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.member_assignment_target import (
-            MemberAssignmentTarget,
-        )
+        from ..models.member_assignment_target import MemberAssignmentTarget
 
         scene_id = self.scene_id
 
@@ -52,6 +60,18 @@ class EditMembersRequest:
                 changes_item = changes_item_data.to_dict()
                 changes.append(changes_item)
 
+        layer_moves: list[dict[str, Any]] | None | Unset
+        if isinstance(self.layer_moves, Unset):
+            layer_moves = UNSET
+        elif isinstance(self.layer_moves, list):
+            layer_moves = []
+            for layer_moves_type_0_item_data in self.layer_moves:
+                layer_moves_type_0_item = layer_moves_type_0_item_data.to_dict()
+                layer_moves.append(layer_moves_type_0_item)
+
+        else:
+            layer_moves = self.layer_moves
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -63,11 +83,14 @@ class EditMembersRequest:
             field_dict["assignment"] = assignment
         if changes is not UNSET:
             field_dict["changes"] = changes
+        if layer_moves is not UNSET:
+            field_dict["layer_moves"] = layer_moves
 
         return field_dict
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.layer_move import LayerMove
         from ..models.member_assignment_target import (
             MemberAssignmentTarget,
         )
@@ -102,10 +125,35 @@ class EditMembersRequest:
 
                 changes.append(changes_item)
 
+        def _parse_layer_moves(data: object) -> list[LayerMove] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                layer_moves_type_0 = []
+                _layer_moves_type_0 = data
+                for layer_moves_type_0_item_data in _layer_moves_type_0:
+                    layer_moves_type_0_item = LayerMove.from_dict(
+                        layer_moves_type_0_item_data
+                    )
+
+                    layer_moves_type_0.append(layer_moves_type_0_item)
+
+                return layer_moves_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[LayerMove] | None | Unset, data)
+
+        layer_moves = _parse_layer_moves(d.pop("layer_moves", UNSET))
+
         edit_members_request = cls(
             scene_id=scene_id,
             assignment=assignment,
             changes=changes,
+            layer_moves=layer_moves,
         )
 
         return edit_members_request

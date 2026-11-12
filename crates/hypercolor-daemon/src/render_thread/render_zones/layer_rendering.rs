@@ -3,12 +3,14 @@ use anyhow::Result;
 use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::FrameDataSources;
 use hypercolor_core::effect::media::MediaProducer;
-use hypercolor_core::spatial::DeviceSurfaceMap;
+use hypercolor_core::spatial::{DeviceSurfaceMap, LayerFrame, LayerFraming, LayerPlacement};
 use hypercolor_types::asset::AssetId;
 #[cfg(not(feature = "servo-gpu-import"))]
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::LayerHealth;
-use hypercolor_types::layer::{LayerSource, MediaPlayback, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{
+    LayerSource, LayerTransform, MediaPlayback, SceneLayer, SceneLayerId,
+};
 use hypercolor_types::scene::Zone;
 
 use super::ZoneRuntime;
@@ -17,24 +19,76 @@ use super::effect_errors::render_layer_effect_error;
 use super::frame_helpers::upload_off_extent_canvas;
 use super::frame_helpers::{
     color_fill_frame, composed_frame_to_producer_frame, composition_layer_for_scene_layer,
-    media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
-    screen_region_layer_frame, transparent_black_frame,
+    media_layer_producer_frame, opaque_black_frame, passthrough_effect_layer,
+    producer_frame_is_gpu, screen_region_layer_frame, transparent_black_frame,
 };
 use super::model::{
     CachedMediaProducer, MediaLayerFrame, ZoneCompositionIdentity, ZoneContentKey,
     ZoneFrameContext, ZoneFrameRequirements,
 };
+use super::scope_classes::{ScopeClass, ZoneClassKey, ZoneScopeClasses, multi_class};
 use crate::render_thread::binding_eval::evaluate_layer_runtime;
 use crate::render_thread::producer_queue::{ProducerFrame, record_producer_frame};
 use crate::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger,
 };
 
+/// One layer's frame this pass, with the layer as its bindings left it.
+pub(super) struct RenderedLayer {
+    /// The layer's index in its zone's stack.
+    index: usize,
+    layer: SceneLayer,
+    frame: ProducerFrame,
+    /// Where the frame lands when the layer is framed to its scope.
+    placement: Option<LayerPlacement>,
+}
+
+/// Every layer of a zone that produced a frame this pass, bottom to top.
+/// Each layer renders once, whatever number of scope classes show it.
+pub(super) struct RenderedLayers {
+    layers: Vec<RenderedLayer>,
+    unavailable_source: bool,
+}
+
+impl RenderedLayers {
+    pub(super) fn is_empty(&self) -> bool {
+        self.layers.is_empty()
+    }
+
+    /// Whether any layer's frame lives on the GPU.
+    pub(super) fn holds_gpu_frames(&self) -> bool {
+        self.layers
+            .iter()
+            .any(|layer| producer_frame_is_gpu(&layer.frame))
+    }
+
+    /// Count each layer's frame once, whatever number of stacks compose it.
+    pub(super) fn record_producer_frames(&self) {
+        for layer in &self.layers {
+            record_producer_frame(&layer.frame);
+        }
+    }
+}
+
+/// One stack of layers ready to compose at its zone's extent.
+pub(super) struct ZoneStack {
+    layers: Vec<CompositionLayer>,
+    gpu_source_layers: Vec<SceneLayerId>,
+    unavailable_source: bool,
+}
+
 impl ZoneRuntime {
     /// Where device touch surfaces sit on this zone's canvas.
     pub(super) fn device_surfaces_for(&mut self, zone: &Zone) -> Option<DeviceSurfaceMap> {
         self.device_surfaces
             .surfaces_for(zone.id, self.spatial_engines.get(&zone.id))
+    }
+
+    /// How the layer at `index` of `zone`'s stack is framed.
+    fn layer_framing(&self, zone: &Zone, index: usize) -> LayerFraming {
+        self.scope_classes
+            .get(&zone.id)
+            .map_or(LayerFraming::Zone, |classes| classes.framing(index))
     }
 
     pub(super) fn render_zone_frame(
@@ -44,12 +98,45 @@ impl ZoneRuntime {
         sparkleflinger: &mut SparkleFlinger,
         requirements: ZoneFrameRequirements,
     ) -> Result<Option<ProducerFrame>> {
+        let rendered = self.render_layer_frames(zone, context, sparkleflinger, requirements)?;
+        rendered.record_producer_frames();
+        let stack = ZoneStack {
+            unavailable_source: rendered.unavailable_source,
+            ..composition_stack(rendered.layers.iter())
+        };
+        self.compose_zone_stack(
+            zone,
+            ZoneClassKey::base(zone.id),
+            stack,
+            None,
+            context,
+            sparkleflinger,
+            requirements,
+        )
+    }
+
+    /// Render every enabled layer of `zone` that has an output to show on.
+    ///
+    /// A layer whose scope names no output of the zone is dormant: it has
+    /// no renderer and is skipped here, so it reaches no stack.
+    pub(super) fn render_layer_frames(
+        &mut self,
+        zone: &Zone,
+        context: ZoneFrameContext<'_>,
+        sparkleflinger: &mut SparkleFlinger,
+        requirements: ZoneFrameRequirements,
+    ) -> Result<RenderedLayers> {
+        let zone_size = (zone.layout.canvas_width, zone.layout.canvas_height);
         let mut layer_frames = Vec::new();
         let mut unavailable_source = false;
-        for layer in &zone.layers {
+        for (index, layer) in zone.layers.iter().enumerate() {
             if !layer.enabled {
                 continue;
             }
+            let framing = self.layer_framing(zone, index);
+            let Some((width, height)) = framing.render_extent(zone_size) else {
+                continue;
+            };
             if self.note_unavailable_effect(zone, layer, context) {
                 unavailable_source = true;
                 continue;
@@ -62,17 +149,23 @@ impl ZoneRuntime {
             )
             .apply_to_layer(&layer);
             let frame = match &layer_runtime.source {
-                LayerSource::Effect { .. } => {
-                    self.render_effect_layer_frame(zone, &layer_runtime, context)?
-                }
+                LayerSource::Effect { .. } => self.render_effect_layer_frame(
+                    zone,
+                    &layer_runtime,
+                    self.layer_touch(zone, index, &layer_runtime, framing),
+                    context,
+                )?,
                 #[cfg(feature = "servo")]
-                LayerSource::WebViewport { .. } => {
-                    self.render_effect_layer_frame(zone, &layer_runtime, context)?
-                }
+                LayerSource::WebViewport { .. } => self.render_effect_layer_frame(
+                    zone,
+                    &layer_runtime,
+                    self.layer_touch(zone, index, &layer_runtime, framing),
+                    context,
+                )?,
                 LayerSource::ColorFill { rgba } => Some(color_fill_frame(
                     &mut self.static_layer_surface_cache,
-                    zone.layout.canvas_width,
-                    zone.layout.canvas_height,
+                    width,
+                    height,
                     *rgba,
                 )?),
                 LayerSource::Media { asset_id, playback } => {
@@ -101,8 +194,8 @@ impl ZoneRuntime {
                             );
                             Some(transparent_black_frame(
                                 &mut self.static_layer_surface_cache,
-                                zone.layout.canvas_width,
-                                zone.layout.canvas_height,
+                                width,
+                                height,
                             )?)
                         }
                         MediaLayerFrame::Missing => {
@@ -124,8 +217,8 @@ impl ZoneRuntime {
                             );
                             Some(transparent_black_frame(
                                 &mut self.static_layer_surface_cache,
-                                zone.layout.canvas_width,
-                                zone.layout.canvas_height,
+                                width,
+                                height,
                             )?)
                         }
                     }
@@ -150,8 +243,8 @@ impl ZoneRuntime {
                         );
                         Some(transparent_black_frame(
                             &mut self.static_layer_surface_cache,
-                            zone.layout.canvas_width,
-                            zone.layout.canvas_height,
+                            width,
+                            height,
                         )?)
                     }
                 }
@@ -167,8 +260,8 @@ impl ZoneRuntime {
                     );
                     Some(transparent_black_frame(
                         &mut self.static_layer_surface_cache,
-                        zone.layout.canvas_width,
-                        zone.layout.canvas_height,
+                        width,
+                        height,
                     )?)
                 }
             };
@@ -192,7 +285,7 @@ impl ZoneRuntime {
                     LayerHealth::Active,
                 );
             }
-            layer_frames.push((layer_runtime, frame));
+            layer_frames.push((index, framing, layer_runtime, frame));
         }
 
         // A plan that can only compose on the GPU, because the zone asks for
@@ -202,26 +295,121 @@ impl ZoneRuntime {
         if requirements.requires_gpu_output()
             || layer_frames
                 .iter()
-                .any(|(_, frame)| producer_frame_is_gpu(frame))
+                .any(|(_, _, _, frame)| producer_frame_is_gpu(frame))
         {
-            for (layer_runtime, frame) in &mut layer_frames {
+            for (_, _, layer_runtime, frame) in &mut layer_frames {
                 upload_off_extent_canvas(frame, layer_runtime.id, zone, sparkleflinger);
             }
         }
+        #[cfg(not(feature = "wgpu"))]
+        let _ = (sparkleflinger, requirements);
 
-        let mut composition_layers = Vec::with_capacity(layer_frames.len());
-        let mut gpu_source_layers = Vec::new();
-        for (layer_runtime, frame) in layer_frames {
-            if producer_frame_is_gpu(&frame) {
-                gpu_source_layers.push(layer_runtime.id);
-            }
-            record_producer_frame(&frame);
-            composition_layers.push(composition_layer_for_scene_layer(&layer_runtime, frame));
+        let mut layers = Vec::with_capacity(layer_frames.len());
+        for (index, framing, layer, frame) in layer_frames {
+            // A framed layer draws through the placement of the frame it
+            // produced. One that cannot be placed draws nothing.
+            let placement = match framing {
+                LayerFraming::Framed(layer_frame) => {
+                    let Some(placement) = LayerPlacement::new(
+                        &layer_frame,
+                        layer.transform,
+                        (frame.width(), frame.height()),
+                        zone_size,
+                    ) else {
+                        continue;
+                    };
+                    Some(placement)
+                }
+                LayerFraming::Zone | LayerFraming::Dormant => None,
+            };
+            layers.push(RenderedLayer {
+                index,
+                layer,
+                frame,
+                placement,
+            });
         }
+        Ok(RenderedLayers {
+            layers,
+            unavailable_source,
+        })
+    }
 
-        let composition_identity = ZoneCompositionIdentity::of(zone, &composition_layers);
+    /// The layers of one scope class, ready to compose.
+    ///
+    /// `base` is the base class's frame of this pass. A class that adds its
+    /// layers on top of the whole base stack starts from those pixels and
+    /// composes only what it adds; the second value is then the class's
+    /// whole stack, which says what its frame shows however it was
+    /// composed.
+    pub(super) fn class_stack(
+        rendered: &RenderedLayers,
+        classes: &ZoneScopeClasses,
+        class: &ScopeClass,
+        base: Option<&ProducerFrame>,
+    ) -> (ZoneStack, Option<Vec<CompositionLayer>>) {
+        let in_class = |layer: &&RenderedLayer| class.layers.contains(&layer.index);
+        let mut whole = composition_stack(rendered.layers.iter().filter(in_class));
+        whole.unavailable_source = rendered.unavailable_source;
+        let Some(base) = base.filter(|_| classes.extends_base(class)) else {
+            return (whole, None);
+        };
+        let above_base = |layer: &&RenderedLayer| {
+            in_class(layer) && !classes.base().layers.contains(&layer.index)
+        };
+        let mut stack = composition_stack(rendered.layers.iter().filter(above_base));
+        stack
+            .layers
+            .insert(0, CompositionLayer::replace(base.clone()));
+        stack.unavailable_source = rendered.unavailable_source;
+        (stack, Some(whole.layers))
+    }
+
+    /// Compose one stack of layers at `zone`'s extent, as the frame of
+    /// `key`.
+    ///
+    /// `identity` is the stack that says what the frame shows, when it is
+    /// not the stack being composed: a class that starts from the base
+    /// class's pixels is still told apart by every layer it shows.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "composing a stack needs the zone, its key, and the frame's requirements"
+    )]
+    pub(super) fn compose_zone_stack(
+        &mut self,
+        zone: &Zone,
+        key: ZoneClassKey,
+        stack: ZoneStack,
+        identity: Option<Vec<CompositionLayer>>,
+        context: ZoneFrameContext<'_>,
+        sparkleflinger: &mut SparkleFlinger,
+        requirements: ZoneFrameRequirements,
+    ) -> Result<Option<ProducerFrame>> {
+        let ZoneStack {
+            layers: mut composition_layers,
+            gpu_source_layers,
+            unavailable_source,
+        } = stack;
+        // The bottom layer of a plan replaces the whole canvas with its own
+        // blend set aside. A framed layer keeps its blend and draws where
+        // its placement says, so it goes over black instead of becoming the
+        // base. A scene zone with scoped layers is black as well where no
+        // layer applies: it is active, and nothing is drawn there.
+        let over_black = match composition_layers.first() {
+            Some(bottom) => bottom.is_framed(),
+            None => {
+                !unavailable_source
+                    && zone.display_target.is_none()
+                    && self.scope_classes.contains_key(&zone.id)
+            }
+        };
+        if over_black {
+            composition_layers.insert(0, self.black_base_layer(zone)?);
+        }
+        let identity_layers = identity.as_deref().unwrap_or(&composition_layers);
+        let composition_identity = ZoneCompositionIdentity::of(zone, identity_layers);
         self.note_zone_content(
-            zone.id,
+            key,
             composition_identity.clone().map(ZoneContentKey::Layers),
         );
         if composition_layers.is_empty() {
@@ -236,7 +424,7 @@ impl ZoneRuntime {
             return Ok(None);
         }
         if requirements.reuse_unchanged_composition
-            && let Some(held) = self.unchanged_zone_frame(zone, &composition_layers)
+            && let Some(held) = self.unchanged_zone_frame(zone, key, identity_layers)
         {
             self.composition_skips = self.composition_skips.saturating_add(1);
             return Ok(Some(held));
@@ -254,6 +442,16 @@ impl ZoneRuntime {
                 zone.layout.canvas_height,
                 composition_layers,
             )
+        };
+        // The classes of one zone are all its size. Where a class needs a
+        // CPU canvas it is composed on the CPU, so it is never handed
+        // another class's pixels by a GPU compositor's readback latch.
+        let plan = if requirements.requires_cpu_sampling_canvas
+            && multi_class(&self.scope_classes, zone.id).is_some()
+        {
+            plan.composed_on_cpu()
+        } else {
+            plan
         };
         let composed = sparkleflinger.compose_for_outputs(
             plan.with_cpu_replay_cacheable(false)
@@ -282,28 +480,91 @@ impl ZoneRuntime {
         if requirements.reuse_unchanged_composition {
             match (&frame, composition_identity) {
                 (Some(_), Some(identity)) => {
-                    self.zone_composition_identities.insert(zone.id, identity);
+                    self.zone_composition_identities.insert(key, identity);
                 }
                 _ => {
-                    self.zone_composition_identities.remove(&zone.id);
+                    self.zone_composition_identities.remove(&key);
                 }
             }
         }
         Ok(frame)
     }
 
-    /// The zone's held frame when its layers match the ones that produced it,
-    /// so composing again would draw the same pixels.
+    /// The opaque black a stack with no whole-zone layer at its bottom is
+    /// composed over.
+    fn black_base_layer(&mut self, zone: &Zone) -> Result<CompositionLayer> {
+        Ok(CompositionLayer::replace_opaque(opaque_black_frame(
+            &mut self.static_layer_surface_cache,
+            zone.layout.canvas_width,
+            zone.layout.canvas_height,
+        )?))
+    }
+
+    /// The held frame of `key` when its layers match the ones that produced
+    /// it, so composing again would draw the same pixels.
     fn unchanged_zone_frame(
         &self,
         zone: &Zone,
+        key: ZoneClassKey,
         layers: &[CompositionLayer],
     ) -> Option<ProducerFrame> {
         self.zone_composition_identities
-            .get(&zone.id)
+            .get(&key)
             .is_some_and(|identity| identity.matches(zone, layers))
-            .then(|| self.last_zone_frames.get(&zone.id).cloned())
+            .then(|| self.last_zone_frames.get(&key).cloned())
             .flatten()
+    }
+
+    /// The device surfaces the effect layer at `index` of `zone` is handed:
+    /// the zone's, narrowed to the layer when it is scoped or transformed.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn effect_layer_surfaces_for_test(
+        &mut self,
+        zone: &Zone,
+        index: usize,
+    ) -> Option<DeviceSurfaceMap> {
+        let layer = zone.layers.get(index)?;
+        let touch = self.layer_touch(zone, index, layer, self.layer_framing(zone, index));
+        self.layer_device_surfaces(zone, touch)
+    }
+
+    /// The zone's device surfaces as one layer sees them.
+    fn layer_device_surfaces(
+        &mut self,
+        zone: &Zone,
+        touch: Option<LayerTouch>,
+    ) -> Option<DeviceSurfaceMap> {
+        self.device_surfaces_for(zone).map(|surfaces| match touch {
+            Some(touch) => touch.narrow(&surfaces),
+            None => surfaces,
+        })
+    }
+
+    /// How a touch reaches the layer's own source: the placement the layer
+    /// is drawn with and the outputs it applies to. `None` for a layer that
+    /// fills its zone untransformed, whose source is the zone canvas.
+    fn layer_touch(
+        &self,
+        zone: &Zone,
+        index: usize,
+        layer: &SceneLayer,
+        framing: LayerFraming,
+    ) -> Option<LayerTouch> {
+        let zone_size = (zone.layout.canvas_width, zone.layout.canvas_height);
+        let frame = match framing {
+            LayerFraming::Framed(frame) => frame,
+            LayerFraming::Zone if layer.transform != LayerTransform::default() => LayerFrame::ZONE,
+            LayerFraming::Zone | LayerFraming::Dormant => return None,
+        };
+        let source_size = framing.render_extent(zone_size)?;
+        Some(LayerTouch {
+            placement: LayerPlacement::new(&frame, layer.transform, source_size, zone_size)?,
+            zone_size,
+            scope: self
+                .scope_classes
+                .get(&zone.id)
+                .and_then(|classes| classes.scope(index)),
+        })
     }
 
     fn render_media_layer_frame(
@@ -394,7 +655,7 @@ impl ZoneRuntime {
         };
 
         if self.note_unavailable_effect(zone, &layer, context) {
-            self.note_zone_content(zone.id, None);
+            self.note_zone_content(ZoneClassKey::base(zone.id), None);
             return transparent_black_frame(
                 &mut self.static_layer_surface_cache,
                 zone.layout.canvas_width,
@@ -403,9 +664,9 @@ impl ZoneRuntime {
             .map(Some);
         }
 
-        let frame = self.render_effect_layer_frame(zone, &layer, context)?;
+        let frame = self.render_effect_layer_frame(zone, &layer, None, context)?;
         self.note_zone_content(
-            zone.id,
+            ZoneClassKey::base(zone.id),
             frame
                 .as_ref()
                 .and_then(ProducerFrame::stable_identity)
@@ -434,8 +695,8 @@ impl ZoneRuntime {
         zone: &Zone,
         context: ZoneFrameContext<'_>,
     ) -> Result<()> {
-        for layer in &zone.layers {
-            if !layer.enabled {
+        for (index, layer) in zone.layers.iter().enumerate() {
+            if !layer.enabled || self.layer_framing(zone, index).is_dormant() {
                 continue;
             }
             if self.note_unavailable_effect(zone, layer, context) {
@@ -518,10 +779,14 @@ impl ZoneRuntime {
         }
     }
 
+    /// Render one effect layer. `touch` narrows the zone's device surfaces
+    /// to the layer, so the page is told where a finger lands on its own
+    /// source.
     fn render_effect_layer_frame(
         &mut self,
         zone: &Zone,
         layer: &SceneLayer,
+        touch: Option<LayerTouch>,
         context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
         #[cfg(all(test, feature = "wgpu"))]
@@ -536,7 +801,7 @@ impl ZoneRuntime {
         if let Some(frame) = self.injected_effect_layer_frames.remove(&layer.id) {
             return Ok(Some(frame));
         }
-        let device_surfaces = self.device_surfaces_for(zone);
+        let device_surfaces = self.layer_device_surfaces(zone, touch);
         let sources = FrameDataSources {
             device_surfaces: device_surfaces.as_ref(),
             ..context.inputs.sources()
@@ -626,5 +891,41 @@ impl ZoneRuntime {
                     error,
                 ))
             })
+    }
+}
+
+/// A layer's own view of its zone's device surfaces.
+#[derive(Clone)]
+pub(super) struct LayerTouch {
+    placement: LayerPlacement,
+    zone_size: (u32, u32),
+    scope: Option<std::sync::Arc<hypercolor_types::layer::LayerScope>>,
+}
+
+impl LayerTouch {
+    fn narrow(self, surfaces: &DeviceSurfaceMap) -> DeviceSurfaceMap {
+        surfaces.for_layer(self.placement, self.zone_size, self.scope)
+    }
+}
+
+/// The composition layers of `rendered`, bottom to top, each drawn the way
+/// its scene layer asks.
+fn composition_stack<'a>(rendered: impl Iterator<Item = &'a RenderedLayer>) -> ZoneStack {
+    let mut layers = Vec::new();
+    let mut gpu_source_layers = Vec::new();
+    for rendered in rendered {
+        if producer_frame_is_gpu(&rendered.frame) {
+            gpu_source_layers.push(rendered.layer.id);
+        }
+        layers.push(composition_layer_for_scene_layer(
+            &rendered.layer,
+            rendered.frame.clone(),
+            rendered.placement,
+        ));
+    }
+    ZoneStack {
+        layers,
+        gpu_source_layers,
+        unavailable_source: false,
     }
 }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::input::{
     AudioSource, AudioSourceRole, InputData, ManagedSource, ManagedSourceRole, SourceIssue,
     SourceKind, SourceRoleBinding, SourceStatusHandle, SourceStatusReporter,
@@ -15,6 +16,7 @@ use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
@@ -844,7 +846,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 21);
+    assert_eq!(tools.len(), 22);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -2230,6 +2232,476 @@ async fn stateful_set_effect_preserves_primary_assignment_when_custom_zones_exis
     assert_eq!(active_zone.layout, expected_layout);
 }
 
+const KEYS: &str = "out-keys";
+const LOGO: &str = "out-logo";
+const STRIP: &str = "out-strip";
+
+async fn insert_test_led_device(state: &Arc<AppState>, name: &str) -> (DeviceId, String) {
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: name.to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("wled", "WLED"),
+        model: None,
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),
+        segments: Vec::new(),
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let _ = state.device_registry.add(info.clone()).await;
+    let fingerprint = state.device_registry.fingerprint_for_id(&id).await;
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, fingerprint.as_ref());
+    (id, layout_device_id)
+}
+
+fn scope_output(id: &str, name: &str, layout_device_id: &str) -> Output {
+    let mut output = test_device_zone(id);
+    name.clone_into(&mut output.name);
+    layout_device_id.clone_into(&mut output.device_id);
+    output
+}
+
+/// The default scene with a primary zone running one base effect over a
+/// two-output keyboard and a one-output strip that shares its device's
+/// name, plus the keyboard's registry id.
+async fn seed_scope_rig(state: &Arc<AppState>) -> (EffectMetadata, DeviceId) {
+    let base = insert_test_effect(state, "Current").await;
+    insert_test_effect(state, "Aurora").await;
+    let (keyboard_id, keyboard_layout_id) = insert_test_led_device(state, "Desk Keyboard").await;
+    let (_, strip_layout_id) = insert_test_led_device(state, "Shelf Strip").await;
+    let layout = test_layout(
+        "scope-layout",
+        vec![
+            scope_output(KEYS, "Keys", &keyboard_layout_id),
+            scope_output(LOGO, "Logo", &keyboard_layout_id),
+            scope_output(STRIP, "Shelf Strip", &strip_layout_id),
+        ],
+    );
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &base,
+            HashMap::new(),
+            None,
+            layout,
+            ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should be seeded");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("scope rig should commit");
+    (base, keyboard_id)
+}
+
+#[test]
+fn add_layer_advertises_its_arguments_from_the_layer_types() {
+    let tools = build_tool_definitions();
+    let add_layer = tools
+        .iter()
+        .find(|tool| tool.name == "add_layer")
+        .expect("add_layer should be registered");
+
+    let properties = add_layer.input_schema["properties"]
+        .as_object()
+        .expect("add_layer should declare properties");
+    let mut names = properties.keys().map(String::as_str).collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["blend", "controls", "effect", "opacity", "outputs", "zone"]
+    );
+    assert_eq!(add_layer.input_schema["required"], json!(["effect"]));
+    assert_eq!(
+        properties["blend"]["enum"],
+        json!([
+            "replace",
+            "alpha",
+            "add",
+            "screen",
+            "multiply",
+            "overlay",
+            "soft_light",
+            "color_dodge",
+            "difference",
+            "tint",
+            "luma_reveal"
+        ]),
+        "the blend vocabulary is the layer type's own"
+    );
+    assert_eq!(properties["outputs"]["minItems"], 1);
+    assert!(
+        add_layer.output_schema["properties"]["layers"].is_object(),
+        "add_layer returns the zone resource"
+    );
+}
+
+#[tokio::test]
+async fn add_layer_stacks_an_effect_on_the_primary_zone_without_replacing_it() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let (base, _) = seed_scope_rig(&state).await;
+
+    let zone = execute_tool_with_state(
+        "add_layer",
+        &json!({
+            "effect": "aurora",
+            "blend": "screen",
+            "opacity": 0.5,
+            "controls": { "speed": 7.5 }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("add_layer should succeed");
+
+    assert_eq!(zone["role"], "primary");
+    let layers = zone["layers"]
+        .as_array()
+        .expect("the zone carries its stack");
+    assert_eq!(layers.len(), 2, "the base layer stays");
+    assert_eq!(layers[0]["source"]["effect_id"], base.id.to_string());
+    assert_eq!(layers[1]["blend"], "screen");
+    assert_eq!(layers[1]["opacity"], 0.5);
+    assert_eq!(
+        layers[1]["source"]["controls"]["speed"],
+        json!({ "kind": "float", "value": 7.5 })
+    );
+    assert!(
+        layers[1].get("scope").is_none(),
+        "no outputs means the whole zone"
+    );
+
+    let defaults =
+        execute_tool_with_state("add_layer", &json!({ "effect": "aurora" }), state.as_ref())
+            .await
+            .expect("add_layer should succeed with its defaults");
+    let top = &defaults["layers"][2];
+    assert_eq!(top["blend"], "alpha");
+    assert_eq!(top["opacity"], 1.0);
+}
+
+#[tokio::test]
+async fn add_layer_resolves_outputs_by_output_and_device_ids_and_names() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let (_, keyboard_id) = seed_scope_rig(&state).await;
+    let keyboard_layout_id = {
+        let manager = state.scene_manager.snapshot().await;
+        let zone = manager
+            .active_scene()
+            .and_then(|scene| scene.primary_zone())
+            .expect("primary zone");
+        zone.layout.zones[0].device_id.clone()
+    };
+
+    for (outputs, expected) in [
+        (json!(["desk keyboard"]), json!([KEYS, LOGO])),
+        (json!([keyboard_id.to_string()]), json!([KEYS, LOGO])),
+        (json!([keyboard_layout_id]), json!([KEYS, LOGO])),
+        (json!(["Logo", KEYS, "logo"]), json!([KEYS, LOGO])),
+        (json!(["shelf"]), json!([STRIP])),
+        (json!(["keyb", STRIP]), json!([KEYS, LOGO, STRIP])),
+    ] {
+        let zone = execute_tool_with_state(
+            "add_layer",
+            &json!({ "effect": "aurora", "outputs": outputs }),
+            state.as_ref(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("outputs {outputs} should resolve: {error}"));
+        let top = zone["layers"]
+            .as_array()
+            .and_then(|layers| layers.last())
+            .expect("the new layer is on top");
+        assert_eq!(top["scope"]["outputs"], expected, "outputs {outputs}");
+    }
+}
+
+#[tokio::test]
+async fn add_layer_refuses_outputs_it_cannot_resolve_to_one_target() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    seed_scope_rig(&state).await;
+    let stack_len = || async {
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene()
+            .and_then(|scene| scene.primary_zone())
+            .expect("primary zone")
+            .layers
+            .len()
+    };
+
+    let missing = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "outputs": ["monitor"] }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("an output the zone does not hold should be refused");
+    assert_eq!(missing.error_code(), -32602);
+    let details = missing.details().expect("selector details");
+    assert_eq!(details["kind"], "no_match");
+    assert_eq!(details["parameter"], "outputs");
+    let candidates = details["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .filter_map(|candidate| candidate["name"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates,
+        [
+            "Desk Keyboard",
+            "Keys",
+            "Logo",
+            "Shelf Strip",
+            "Shelf Strip"
+        ],
+        "the refusal lists the zone's outputs and their devices"
+    );
+
+    let ambiguous = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "outputs": ["e"] }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("a substring that names different outputs should be refused");
+    assert_eq!(
+        ambiguous.details().expect("selector details")["kind"],
+        "ambiguous"
+    );
+
+    let empty = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "outputs": [] }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("an empty output list is not the whole zone");
+    assert_eq!(empty.error_code(), -32602);
+
+    for (argument, value) in [("blend", json!("glow")), ("opacity", json!(1.5))] {
+        let error = execute_tool_with_state(
+            "add_layer",
+            &json!({ "effect": "aurora", argument: value }),
+            state.as_ref(),
+        )
+        .await
+        .expect_err("an out-of-vocabulary argument should be refused");
+        assert_eq!(error.details().expect("details")["parameter"], argument);
+    }
+
+    assert_eq!(stack_len().await, 1, "no refusal added a layer");
+}
+
+#[tokio::test]
+async fn add_layer_targets_a_named_zone_and_checks_its_own_outputs() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let existing = insert_test_effect(&state, "Current").await;
+    insert_test_effect(&state, "Aurora").await;
+    seed_multi_zone_primary_assignment(&state, &existing).await;
+
+    let zone = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "zone": "custom", "outputs": ["custom-zone"] }),
+        state.as_ref(),
+    )
+    .await
+    .expect("add_layer should target the named zone");
+    assert_eq!(zone["name"], "Custom");
+    assert_eq!(
+        zone["layers"][0]["scope"]["outputs"],
+        json!(["custom-zone"])
+    );
+
+    let foreign = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "zone": "custom", "outputs": ["primary-zone"] }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("an output of another zone is not in this zone");
+    assert_eq!(
+        foreign.details().expect("selector details")["kind"],
+        "no_match"
+    );
+
+    let unknown_zone = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "zone": "attic" }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("an unknown zone should be refused");
+    assert_eq!(
+        unknown_zone.details().expect("selector details")["parameter"],
+        "zone"
+    );
+}
+
+#[tokio::test]
+async fn add_layer_gathers_a_device_split_into_logical_devices() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let base = insert_test_effect(&state, "Current").await;
+    insert_test_effect(&state, "Aurora").await;
+    let (controller_id, _) = insert_test_led_device(&state, "Fan Hub").await;
+    {
+        let mut logical = state.logical_devices.write().await;
+        for (id, led_start) in [("hub:front", 0), ("hub:rear", 16)] {
+            logical.insert(
+                id.to_owned(),
+                LogicalDevice {
+                    id: id.to_owned(),
+                    physical_device_id: controller_id,
+                    name: id.to_owned(),
+                    led_start,
+                    led_count: 16,
+                    enabled: true,
+                    kind: LogicalDeviceKind::Segment,
+                },
+            );
+        }
+    }
+    let layout = test_layout(
+        "hub-layout",
+        vec![
+            scope_output("out-front", "Front Fans", "hub:front"),
+            scope_output("out-rear", "Rear Fan", "hub:rear"),
+            scope_output(STRIP, "Shelf Strip", "mock:strip"),
+        ],
+    );
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &base,
+            HashMap::new(),
+            None,
+            layout,
+            ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should be seeded");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("hub rig should commit");
+
+    for (outputs, expected) in [
+        (json!(["fan hub"]), json!(["out-front", "out-rear"])),
+        (json!(["hub:rear"]), json!(["out-rear"])),
+    ] {
+        let zone = execute_tool_with_state(
+            "add_layer",
+            &json!({ "effect": "aurora", "outputs": outputs }),
+            state.as_ref(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("outputs {outputs} should resolve: {error}"));
+        let top = zone["layers"]
+            .as_array()
+            .and_then(|layers| layers.last())
+            .expect("the new layer is on top");
+        assert_eq!(top["scope"]["outputs"], expected, "outputs {outputs}");
+    }
+}
+
+#[tokio::test]
+async fn add_layer_is_for_lighting_and_refuses_faces_and_display_zones() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    seed_scope_rig(&state).await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let assigned = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": display_id.to_string(),
+            "effect_id": face.id.to_string(),
+            "scope": "scene"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("display face assignment should succeed");
+    let display_zone = assigned["zone"]["id"].as_str().expect("display zone id");
+
+    let face_error =
+        execute_tool_with_state("add_layer", &json!({ "effect": face.name }), state.as_ref())
+            .await
+            .expect_err("a display face is not a lighting layer");
+    assert_eq!(
+        face_error.details().expect("details")["parameter"],
+        "effect"
+    );
+    assert!(format!("{face_error}").contains("display face"));
+
+    let zone_error = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "zone": display_zone }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("a display zone takes its layers through the display tools");
+    assert_eq!(zone_error.details().expect("details")["parameter"], "zone");
+
+    let manager = state.scene_manager.snapshot().await;
+    let scene = manager.active_scene().expect("active scene");
+    assert_eq!(
+        scene.primary_zone().expect("primary zone").layers.len(),
+        1,
+        "the lighting zone is untouched"
+    );
+    assert_eq!(
+        scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == display_zone)
+            .expect("display zone")
+            .layers
+            .len(),
+        1,
+        "the display zone keeps only its face"
+    );
+}
+
+#[tokio::test]
+async fn add_layer_conflicts_when_snapshot_scene_is_active() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+    execute_tool_with_state(
+        "create_scene",
+        &json!({ "name": "Focus", "mutation_mode": "snapshot" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("scene creation should succeed");
+    execute_tool_with_state(
+        "activate_scene",
+        &json!({ "name": "Focus" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("scene activation should succeed");
+
+    let error =
+        execute_tool_with_state("add_layer", &json!({ "effect": "aurora" }), state.as_ref())
+            .await
+            .expect_err("snapshot scenes should reject MCP layer mutation");
+
+    assert!(matches!(&error, ToolError::Conflict(message) if message.contains("snapshot mode")));
+    assert_eq!(error.error_code(), -32000);
+}
+
 #[tokio::test]
 async fn stateful_set_color_syncs_scene_runtime_state() {
     let (state, _tmp) = isolated_state_with_tempdir();
@@ -2329,7 +2801,7 @@ async fn read_only_tool_results_match_their_declared_schemas() {
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 21);
+    assert_eq!(tools.len(), 22);
     assert!(
         tools
             .iter()
@@ -2549,8 +3021,9 @@ fn tool_annotations_report_what_each_tool_actually_does() {
         "set_output_power",
         "adjust_controls",
         "create_scene",
+        "add_layer",
     ] {
-        let expected_idempotent = name != "create_scene";
+        let expected_idempotent = !matches!(name, "create_scene" | "add_layer");
         assert_eq!(
             annotation(name),
             (false, false, expected_idempotent),

@@ -105,6 +105,79 @@ async fn cloud_restore_survives_manual_archive_export() {
     assert_offline_display(&backup.setup);
 }
 
+/// Rewrite the manifest schema a staging record declares, as a build that
+/// wrote a different schema would have left it on disk.
+fn restage_at_schema(fixture: &Fixture, operation_id: Uuid, schema: u32) {
+    let path = fixture
+        .service
+        .root
+        .join(format!("backup-{operation_id}.json"));
+    let mut staged: crate::portable_setup_state::StagedBackup =
+        serde_json::from_slice(&std::fs::read(&path).expect("staging record"))
+            .expect("staging record decodes");
+    assert_eq!(
+        staged.backup.schema_version,
+        hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION
+    );
+    staged.backup.schema_version = schema;
+    std::fs::write(&path, serde_json::to_vec(&staged).expect("staging record")).expect("restage");
+}
+
+async fn staged_preview(fixture: &Fixture) -> hypercolor_types::api::backups::BackupPreview {
+    let mut desired = fixture.empty(Uuid::now_v7()).await.manifest;
+    desired.name = "Studio".into();
+    let backup = PortableBackupV1 {
+        tui_preferences: None,
+        schema_version: hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION,
+        setup: desired,
+        preferences: None,
+        favorites: Vec::new(),
+    };
+    let mut archive = fixture.service.archive_upload_file().expect("spool");
+    write_archive(&mut archive, &backup, &fixture.service.blobs).expect("archive");
+    archive.seek(SeekFrom::Start(0)).expect("rewind");
+    fixture
+        .service
+        .preview_archive(archive)
+        .await
+        .expect("preview")
+}
+
+#[tokio::test]
+async fn a_backup_staged_at_manifest_schema_1_applies_after_the_upgrade() {
+    let fixture = Fixture::new("local");
+    let preview = staged_preview(&fixture).await;
+    restage_at_schema(&fixture, preview.operation_id, 1);
+
+    let applied = fixture
+        .drive(fixture.service.apply_archive(preview.operation_id))
+        .await
+        .expect("a backup staged by a schema 1 build is upgraded, not refused");
+
+    assert_eq!(applied.operation_id, preview.operation_id);
+    let replay = fixture
+        .drive(fixture.service.apply_archive(preview.operation_id))
+        .await
+        .expect("a lost response retries against the same staging record");
+    assert_eq!(applied, replay);
+}
+
+#[tokio::test]
+async fn a_backup_staged_by_a_newer_build_is_refused_by_name() {
+    let fixture = Fixture::new("local");
+    let preview = staged_preview(&fixture).await;
+    let newer = hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION + 1;
+    restage_at_schema(&fixture, preview.operation_id, newer);
+
+    let error = fixture
+        .drive(fixture.service.apply_archive(preview.operation_id))
+        .await
+        .expect_err("a manifest from a newer build must not be applied");
+
+    let message = format!("{error:?}");
+    assert!(message.contains("newer Hypercolor"), "{message}");
+}
+
 #[tokio::test]
 async fn manual_import_survives_first_cloud_association_export() {
     let fixture = Fixture::new("local");
@@ -112,7 +185,7 @@ async fn manual_import_survives_first_cloud_association_export() {
     desired.name = "Studio".into();
     let backup = PortableBackupV1 {
         tui_preferences: None,
-        schema_version: 1,
+        schema_version: hypercolor_types::portable_setup::PORTABLE_BACKUP_SCHEMA_VERSION,
         setup: desired,
         preferences: None,
         favorites: Vec::new(),

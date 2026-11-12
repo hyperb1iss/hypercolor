@@ -27,10 +27,10 @@ fn late_zone_sampling_failure_preserves_last_good_zones() {
 
     runtime
         .target_canvases
-        .insert(first_zone.id, Canvas::new(4, 4));
+        .insert(first_zone.id.into(), Canvas::new(4, 4));
     runtime
         .target_canvases
-        .insert(second_zone.id, Canvas::new(100, 100));
+        .insert(second_zone.id.into(), Canvas::new(100, 100));
     runtime.spatial_engines.insert(first_zone.id, first_engine);
     runtime
         .spatial_engines
@@ -121,7 +121,7 @@ fn single_full_scene_zone_renders_directly_into_surface() {
     assert_eq!(
         runtime
             .target_canvases
-            .get(&zone.id)
+            .get(&zone.id.into())
             .expect("reconcile should provision a zone canvas")
             .get_pixel(0, 0),
         Rgba::new(0, 0, 0, 255)

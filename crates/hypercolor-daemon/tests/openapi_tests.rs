@@ -49,6 +49,96 @@ fn membership_edit_declares_its_required_revision_header() {
 }
 
 #[test]
+fn membership_edit_documents_layer_moves_as_an_optional_receipt() {
+    let document = openapi_document();
+    let schemas = &document["components"]["schemas"];
+    let required = |schema: &str| {
+        schemas[schema]["required"]
+            .as_array()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    for schema in ["EditMembersRequest", "EditMembersResponse"] {
+        assert!(
+            schemas[schema]["properties"]["layer_moves"].is_object(),
+            "{schema} documents layer_moves"
+        );
+        assert!(
+            !required(schema).contains(&"layer_moves"),
+            "{schema}.layer_moves is additive: a client that predates it omits it and ignores it"
+        );
+    }
+    let mut move_fields = required("LayerMove");
+    move_fields.sort_unstable();
+    assert_eq!(
+        move_fields,
+        ["from", "layer_id", "scope_after", "scope_before", "to"]
+    );
+    let mut slot_fields = required("LayerSlot");
+    slot_fields.sort_unstable();
+    assert_eq!(slot_fields, ["index", "zone_id"]);
+    assert_eq!(required("LayerScope"), ["outputs"]);
+    assert!(
+        schemas["SceneLayer"]["properties"]["scope"].is_object()
+            && !required("SceneLayer").contains(&"scope"),
+        "a layer's scope is an optional response field"
+    );
+}
+
+#[test]
+fn layer_requests_document_scope_as_an_optional_nullable_property() {
+    let document = openapi_document();
+    let schemas = &document["components"]["schemas"];
+    let scope_schema = serde_json::json!("#/components/schemas/LayerScope");
+
+    for schema in [
+        "CreateLayerRequest",
+        "ReplaceLayerRequest",
+        "ReplaceSceneLayerRequest",
+    ] {
+        let scope = &schemas[schema]["properties"]["scope"];
+        let branches = scope["oneOf"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{schema}.scope is a nullable reference: {scope}"));
+        assert!(
+            branches.iter().any(|branch| branch["$ref"] == scope_schema),
+            "{schema}.scope is a LayerScope"
+        );
+        assert!(
+            branches.iter().any(|branch| branch["type"] == "null"),
+            "{schema}.scope accepts an explicit null"
+        );
+        let required = schemas[schema]["required"]
+            .as_array()
+            .expect("the request names its required fields");
+        assert!(
+            !required.iter().any(|field| field == "scope"),
+            "{schema}.scope is additive: a client that predates it omits it"
+        );
+    }
+
+    for schema in ["ReplaceLayerRequest", "ReplaceSceneLayerRequest"] {
+        let description = schemas[schema]["properties"]["scope"]["oneOf"][0]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{schema}.scope describes its three states"));
+        assert!(
+            description.contains("missing keeps") && description.contains("`null`"),
+            "{schema}.scope says what omitting it and nulling it mean: {description}"
+        );
+    }
+
+    let outputs = &schemas["LayerScope"]["properties"]["outputs"];
+    assert_eq!(outputs["type"], "array");
+    assert_eq!(outputs["items"]["type"], "string");
+}
+
+#[test]
 fn keyed_writes_document_their_capacity_refusal() {
     let document = openapi_document();
     let mut keyed = 0;

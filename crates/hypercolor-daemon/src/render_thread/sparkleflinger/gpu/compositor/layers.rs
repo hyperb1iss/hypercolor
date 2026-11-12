@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::super::super::{CompositionLayer, CompositionMode};
 use super::super::source::{
@@ -25,22 +25,25 @@ pub(super) fn compose_layer_into_gpu(
     use_front_as_current: bool,
     native_screen_leases: &mut Vec<NativeScreenTextureLease>,
 ) -> Result<()> {
-    let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
-        ComposeShaderMode::Replace
-    } else {
-        match layer.mode {
-            CompositionMode::Replace | CompositionMode::Alpha => ComposeShaderMode::Alpha,
-            CompositionMode::Add => ComposeShaderMode::Add,
-            CompositionMode::Screen => ComposeShaderMode::Screen,
-            CompositionMode::Multiply => ComposeShaderMode::Multiply,
-            CompositionMode::Overlay => ComposeShaderMode::Overlay,
-            CompositionMode::SoftLight => ComposeShaderMode::SoftLight,
-            CompositionMode::ColorDodge => ComposeShaderMode::ColorDodge,
-            CompositionMode::Difference => ComposeShaderMode::Difference,
-            CompositionMode::Tint => ComposeShaderMode::Tint,
-            CompositionMode::LumaReveal => ComposeShaderMode::LumaReveal,
-        }
-    };
+    // A framed replace must leave the target alone outside its frame, so it
+    // never takes the replace mode, which writes every pixel.
+    let shader_mode =
+        if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 && !layer.is_framed() {
+            ComposeShaderMode::Replace
+        } else {
+            match layer.mode {
+                CompositionMode::Replace | CompositionMode::Alpha => ComposeShaderMode::Alpha,
+                CompositionMode::Add => ComposeShaderMode::Add,
+                CompositionMode::Screen => ComposeShaderMode::Screen,
+                CompositionMode::Multiply => ComposeShaderMode::Multiply,
+                CompositionMode::Overlay => ComposeShaderMode::Overlay,
+                CompositionMode::SoftLight => ComposeShaderMode::SoftLight,
+                CompositionMode::ColorDodge => ComposeShaderMode::ColorDodge,
+                CompositionMode::Difference => ComposeShaderMode::Difference,
+                CompositionMode::Tint => ComposeShaderMode::Tint,
+                CompositionMode::LumaReveal => ComposeShaderMode::LumaReveal,
+            }
+        };
     let output_surface = if use_front_as_current {
         GpuCompositorOutputSurface::Back
     } else {
@@ -161,17 +164,27 @@ pub(super) fn compose_layer_into_gpu(
             let _ = source;
             let source_view = frame.view();
             let source_storage_id = frame.cached_display_source_copy().storage_id;
-            if projected_source {
-                compose_source_bind_groups
-                    .get_projected(
+            let admitted = projected_source
+                .then(|| {
+                    compose_source_bind_groups.get_projected(
                         *generation,
                         source_storage_id,
                         source_view,
                         use_front_as_current,
                     )
-                    .context("projected source bind group was not admitted")?
-            } else {
-                compose_source_bind_groups.get_or_create_transient(
+                })
+                .flatten();
+            match admitted {
+                Some(bind_group) => bind_group,
+                // The scene projection binds zone snapshots through groups
+                // admitted with them, and one that is missing is an
+                // admission fault. A framed layer reads a snapshot only in a
+                // zone's own picture, composed at the zone's extent while a
+                // preview shows it, and binds like any producer texture.
+                None if projected_source && !layer.is_framed() => {
+                    anyhow::bail!("projected source bind group was not admitted")
+                }
+                None => compose_source_bind_groups.get_or_create_transient(
                     device,
                     pipeline,
                     *generation,
@@ -181,7 +194,7 @@ pub(super) fn compose_layer_into_gpu(
                     current_view,
                     output_view,
                     frame.native_screen_cache_lease(),
-                )
+                ),
             }
         };
         dispatch_compose_pass(encoder, pipeline, &bind_group, params_offset, width, height);

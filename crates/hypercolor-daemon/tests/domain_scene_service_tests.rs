@@ -448,6 +448,7 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }
 

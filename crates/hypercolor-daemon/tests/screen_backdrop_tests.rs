@@ -368,6 +368,7 @@ fn fill_layer(rgba: [f32; 4]) -> SceneLayer {
         adjust: hypercolor_types::layer::LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }
 
