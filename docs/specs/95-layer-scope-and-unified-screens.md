@@ -1080,6 +1080,117 @@ This changes the display lane, the display output targets, and the workers. It
 ships first, as W1, on zone frames: it fixes overlapping screens across zones
 on its own, and scope classes then only swap the frame it reads.
 
+### 5.11 As built in W2
+
+Sections 5.4 to 5.10 are the design as proposed. Where a point below differs
+from them, the point below is what the code does.
+
+**A frame places a layer. It clips only in pictures.** §5.5 makes the frame a
+clip. On LED output that costs a device its edge LEDs. A matrix or a strip
+puts its first and last LEDs on the border of its placed rectangle, and the
+sampler reads the pixel at `n * (W - 1)` where composition puts the frame's
+edge at `n * W`. A border LED therefore lands up to half a pixel outside a
+frame cut at its edge, bilinear sampling reads a pixel further, and area
+sampling reads its whole radius further. Those LEDs read the layer beneath.
+So a scoped layer's edge runs on past its frame (`FrameEdge::Extend`): frame
+units clamp before the source lookup, and the source's edge texels continue
+outward. Nothing else reads them, because each class is sampled with only its
+own outputs. The clip survives as `FrameEdge::Clip`, used where a class frame
+is drawn into an output's box in the scene canvas and the zone picture.
+`LayerPlacement` carries `zone_to_frame` and `frame_to_source` in place of
+`zone_to_source`, since the clamp sits between the two, and an `edge`.
+
+**A scoped bottom layer keeps its own blend.** It composes over the opaque
+black base in the mode it asks for. An unscoped bottom layer still has its
+blend forced to `Replace`.
+
+**Touch carries the layer view in the surface map.** `TouchCanvas` gained no
+fields. `DeviceSurfaceMap::for_layer` returns the zone's map with the layer's
+placement and scope attached, each surface records its output id, and
+`segment_source_position` resolves a touch to the layer's own source point or
+to nothing. An unscoped layer with a transform gets a whole-zone placement
+through the same call.
+
+**A lone zone with classes keeps its picture.** It leaves the lone-zone path,
+as §5.4 says. Its base class frame is the ground of the scene canvas, in
+place of black, and each output's box is then drawn from its class.
+
+**The zone picture is a retained texture.** A zone with more than one class
+has no single frame that is its preview, so one is composed at the zone's
+extent while a subscriber selects that zone, and for no other zone. It costs
+one retained texture per such zone, which the table in §5.8 does not list, and
+it arrives one frame after the subscription.
+
+**Off the resident path a zone with classes composes on the CPU, or fails.**
+When the GPU cannot keep class textures resident, the zone composes each class
+on the CPU from CPU layer frames. When a layer frame is a GPU texture the zone
+fails through the render-failure surface instead. The projected-resource
+fallback §5.8 names reads back through a latch keyed by size alone, and two
+classes of one size would be handed each other's pixels.
+
+**Transitions.** A zone with classes is sampled per class, so the existing
+per-zone test already counts it. Leaving one for a single-zone scene exposed a
+fault the CPU compositor had for multi-zone scenes too: the incoming zone was
+sampled on the CPU and then discarded, so the outgoing LEDs were held for the
+whole fade. A sampling set whose colors are all in hand now resolves without a
+GPU dispatch.
+
+**Metrics.** `scope_class_count` is in the daemon's frame metrics and the
+frame log. No wire type carries it yet.
+
+**Spike: placement.** `layer_placement_tests` holds the property test: over
+random frames, canvas aspects and layer transforms, a source point survives
+the trip to the canvas and back, and a touch resolves to the source point its
+LED samples. In the daemon,
+`random_placements_draw_where_the_placement_says_on_both_compositors` holds
+the GPU and CPU compositors to the same placements.
+
+**Spike: effects at framed extents.** The nine interactive and audio effects
+(Audio Pulse, Frequency Cascade, Keystrike, Touch Ripple, Cymatics,
+Hyperbloom, Iris, Spectral Fire, Shockwave) were rendered through
+`ServoRenderer` at 640 by 64, 64 by 640 and 640 by 640 with synthetic audio,
+keys, pointer clicks and touches, and the frames were reviewed. Each renders
+at each extent with no error and no blank frame. Keystrike's key cells and
+Touch Ripple's contact points span the frame. Three are worth knowing about,
+none a fault: Audio Pulse and Hyperbloom size themselves by the short side, so
+on a 10 to 1 frame they light about a tenth of it; Frequency Cascade shows a
+slice of its scene; Iris is dim at 64 by 640. The capture harness needs a
+running daemon and a request type that carries scope, so the renderer was
+driven directly.
+
+**Spike: class cost.** Measured through the render-zone pass in a test
+harness, not on a running daemon: the benchmark drives scenes over REST, and
+no request type carries scope in W2. One 640 by 480 scene of 62 outputs and
+2,537 LEDs shaped like the evidence rig's, every layer handed a fresh frame
+every frame, timed from the start of the scene pass until every LED color is
+on the CPU and the GPU is idle. 400 frames after 60 of warmup, preview
+profile, on an i7-14700K with an RTX 4070 SUPER that other work shared. No
+effect renders, no faces and no device writes are in these numbers. The 60 fps
+tier allows 16.7 ms for all of that together.
+
+| Scene | GPU, bilinear | GPU, area | CPU, bilinear |
+| --- | --- | --- | --- |
+| One zone, no scope | 0.10 / 0.70 | 0.36 / 1.66 | 0.05 / 0.08 |
+| Three zones, five layers | 1.68 / 2.95 | 2.86 / 4.28 | 23.9 / 32.2 |
+| One zone, two classes | 2.14 / 3.50 | 1.62 / 3.92 | 32.7 / 33.7 |
+| One zone, two classes, zone preview shown | 1.84 / 3.26 | 2.00 / 4.37 | 36.3 / 48.7 |
+| One zone, four classes | 2.34 / 3.67 | 2.96 / 4.44 | 58.2 / 73.8 |
+| One zone, scoped layer mid-stack of three | 1.66 / 3.01 | 1.74 / 4.09 | 39.5 / 50.1 |
+
+Median and p95, in milliseconds. On the GPU backend every case is within a
+millisecond of the three-zone scene it replaces and far inside the tier. On
+the CPU backend the three-zone scene already misses the 60 fps tier, and each
+class beyond the base adds 9 to 13 ms: the measured limit is the 30 fps tier
+for two classes and below it for four. By reading the code, not by profile,
+two things own that time: the CPU scene canvas draws every output's box by
+sampling each pixel on its own, and a placed layer walks every zone pixel
+through the placement. With area sampling on the CPU backend the three-zone
+scene did not finish: the scene canvas builds a summed-area table for every
+pixel it draws, at more than 800 ms a frame, before any class exists.
+
+The hardware pass of W2, ten minutes on the evidence rig from a stored scene,
+is not in these numbers.
+
 ---
 
 ## 6. Part B: screens as scoped layers
