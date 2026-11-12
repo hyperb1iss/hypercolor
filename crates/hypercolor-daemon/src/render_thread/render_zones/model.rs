@@ -63,6 +63,11 @@ pub(crate) struct ZoneResult {
     pub scene_frame_zone: Option<ZoneId>,
     pub display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     pub zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    /// The content revision of each zone canvas that says what it was made
+    /// from. It belongs to these frames: a result retained and handed out
+    /// again keeps the revisions its frames were rendered with, whatever
+    /// the zones have rendered, or failed to render, since.
+    pub zone_revisions: Vec<(ZoneId, ZoneContentRevision)>,
     pub active_display_zone_ids: Vec<ZoneId>,
     pub led_sampling_strategy: LedSamplingStrategy,
     pub producer_full_frame_copy: FullFrameCopyMetrics,
@@ -416,6 +421,7 @@ pub(super) struct RetainedRenderZoneFrame {
     pub(super) display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     pub(super) active_display_zone_ids: Vec<ZoneId>,
     pub(super) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    pub(super) zone_revisions: Vec<(ZoneId, ZoneContentRevision)>,
     pub(super) led_sampling_strategy: RetainedLedSamplingStrategy,
     pub(super) logical_layer_count: u32,
 }

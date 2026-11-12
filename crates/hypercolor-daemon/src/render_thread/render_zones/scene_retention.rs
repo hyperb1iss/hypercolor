@@ -54,6 +54,7 @@ impl ZoneRuntime {
             display_zone_frames: result.display_zone_frames.clone(),
             active_display_zone_ids: result.active_display_zone_ids.clone(),
             zone_canvases: result.zone_canvases.clone(),
+            zone_revisions: result.zone_revisions.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones, recycled),
             logical_layer_count: result.logical_layer_count,
         });
@@ -66,6 +67,7 @@ fn zone_result_from_retained(retained: &RetainedRenderZoneFrame) -> ZoneResult {
         scene_frame_zone: retained.scene_frame_zone,
         display_zone_frames: retained.display_zone_frames.clone(),
         zone_canvases: retained.zone_canvases.clone(),
+        zone_revisions: retained.zone_revisions.clone(),
         active_display_zone_ids: retained.active_display_zone_ids.clone(),
         led_sampling_strategy: LedSamplingStrategy::from_retained(&retained.led_sampling_strategy),
         producer_full_frame_copy: FullFrameCopyMetrics::default(),

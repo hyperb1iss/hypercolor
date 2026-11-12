@@ -959,9 +959,10 @@ the implementation:
   driven, and keeps what it last showed.
 - **A backdrop is held by its zone's content.** The zone runtime keeps a
   content revision per zone that stands while the layers drawing the zone are
-  the ones that drew its last frame. A still zone costs each screen one
-  finalize pass, or one published canvas on the CPU backend, whatever the
-  screen's cadence.
+  the ones that drew its last frame. The revision travels with the zone's
+  frame, so frames retained across a failed render keep the revision they
+  were rendered with. A still zone costs each screen one finalize pass, or
+  one published canvas on the CPU backend, whatever the screen's cadence.
 - **Frames that compose no scene still carry the screens.** The idle frame
   gives every placed screen black and is composed again when the set of
   screens or the scene's zones change, and the frame that releases output

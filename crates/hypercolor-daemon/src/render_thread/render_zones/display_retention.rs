@@ -12,6 +12,7 @@ use super::model::{
 };
 use super::zone_state::zone_publishes_direct_canvas;
 use crate::render_thread::display_lane::PlacedScreen;
+use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
 /// Why a screen's retained backdrop frame still stands.
@@ -179,14 +180,28 @@ impl ZoneRuntime {
         );
     }
 
-    /// The revision of the content `zone_id` shows, or `None` when the last
-    /// scene pass did not say what its frame was made from. A retained
-    /// scene keeps its zones' revisions: no pass ran to change them.
-    pub(crate) fn zone_content_revision(&self, zone_id: ZoneId) -> Option<ZoneContentRevision> {
+    /// The revision of the content `zone_id` rendered in the scene pass in
+    /// progress, or `None` when the pass did not say what its frame was
+    /// made from.
+    fn zone_content_revision(&self, zone_id: ZoneId) -> Option<ZoneContentRevision> {
         self.zone_content
             .get(&zone_id)
             .filter(|content| content.pass == self.content_pass)
             .map(|content| content.revision)
+    }
+
+    /// The revisions of the zone frames a scene pass just rendered, to
+    /// travel with them. Read only by the pass that rendered `frames`: the
+    /// runtime's own record moves on with the next pass, a failed one
+    /// included, and would then describe frames nobody was handed.
+    pub(super) fn zone_revisions_of(
+        &self,
+        frames: &[(ZoneId, ProducerFrame)],
+    ) -> Vec<(ZoneId, ZoneContentRevision)> {
+        frames
+            .iter()
+            .filter_map(|(zone_id, _)| Some((*zone_id, self.zone_content_revision(*zone_id)?)))
+            .collect()
     }
 
     /// The screen's retained backdrop frame, while it still stands in for

@@ -23,7 +23,8 @@ use super::frame_sampling::LedSamplingStrategy;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use super::render_zones::{
-    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneEffectError, ZoneResult,
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneContentRevision, ZoneEffectError,
+    ZoneResult,
 };
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
@@ -456,6 +457,7 @@ impl ComposeContext<'_> {
                     &render_zone_result.active_display_zone_ids,
                     render_zone_result.display_zone_frames,
                     &render_zone_result.zone_canvases,
+                    &render_zone_result.zone_revisions,
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -690,6 +692,7 @@ impl ComposeContext<'_> {
             &[],
             Vec::new(),
             &[],
+            &[],
         )
     }
 
@@ -701,6 +704,7 @@ impl ComposeContext<'_> {
         active_display_zone_ids: &[ZoneId],
         display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
         zone_frames: &[(ZoneId, ProducerFrame)],
+        zone_revisions: &[(ZoneId, ZoneContentRevision)],
     ) -> MaterializedDisplayLanes {
         let scene_runtime = &self.scene_snapshot.scene_runtime;
         let (_, display_routes) = self.state.event_bus.display_zone_output_routes_snapshot();
@@ -711,16 +715,6 @@ impl ComposeContext<'_> {
             [0, 0, 0],
         ));
         let screens = place_screens(&backdrop_routes, &scene_runtime.resolved_zones);
-        let zone_revisions = zone_frames
-            .iter()
-            .filter_map(|(zone_id, _)| {
-                let revision = self
-                    .compose
-                    .render_zone_runtime
-                    .zone_content_revision(*zone_id)?;
-                Some((*zone_id, revision))
-            })
-            .collect::<Vec<_>>();
         let faced = faced_screens(&scene_runtime.resolved_zones, active_display_zone_ids);
         let fade = ScreenTransition::of(scene_runtime).map(|transition| transition.weight);
         let context = DisplayLaneContext {
@@ -734,7 +728,7 @@ impl ComposeContext<'_> {
             backdrops: ScreenBackdrops {
                 screens: &screens,
                 zone_frames,
-                zone_revisions: &zone_revisions,
+                zone_revisions,
                 black: &black,
             },
             fade,
