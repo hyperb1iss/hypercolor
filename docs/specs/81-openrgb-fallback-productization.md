@@ -330,8 +330,9 @@ Crate: `hypercolor-ui`.
   `disabled_reason` from `DeviceSummary.bridge` when output is disabled.
 - Devices page gains an "Unclaimed hardware" section fed by
   `GET /devices/unclaimed` and refetched on `unclaimed_devices_changed`.
-  Each row offers "Request support" (prefilled issue-form URL with vendor,
-  model, VID:PID, platform, existing-support text) and, when the bridge is
+  Each row offers "Request device support" (issue-form URL with VID:PID,
+  platform, daemon version, and separate detected facts; retail identity
+  and lighting answers remain user-supplied) and, when the bridge is
   reachable and lists a controller with a matching serial, "Available via
   OpenRGB".
 - Settings → Discovery gains an OpenRGB card: reachable, version,
@@ -348,7 +349,9 @@ Crate: `hypercolor-ui`.
 guided install (`hypercolor openrgb hints`), partition, enable, discover,
 zone sizes, then layout. Bridged strimers are raw rows until multi-zone slot
 groups exist (tracked separately). `scripts/request_support.py` builds the
-prefilled issue URL or files with `gh` when authenticated.
+issue-form URL with detected facts and lists existing requests. Submissions
+use the GitHub form with the owner's product identity and lighting answers;
+the helper does not file issues directly.
 
 ## Verification Gates
 

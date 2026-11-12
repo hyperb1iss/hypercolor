@@ -1,5 +1,8 @@
 //! Hardware coverage that starts with the host inventory, not browser probes.
-use crate::{api, app::WsContext};
+use crate::{
+    api,
+    app::{DaemonStatusContext, WsContext},
+};
 use hypercolor_types::api::devices::{CoverageIdentityKind, DeviceCoverageRow, UnclaimedDevice};
 use leptos::prelude::*;
 
@@ -39,38 +42,66 @@ pub fn vendor_and_model(vendor: &str, model: &str) -> String {
     }
 }
 
-/// Prefill the repository's device-support issue form without submitting it.
-pub fn support_issue_url(device: &UnclaimedDevice, platform: &str, available: bool) -> String {
+/// Prefill detected facts, leaving product identity and lighting questions to
+/// the owner. Serial numbers and host paths never enter the public issue URL.
+pub fn support_issue_url(
+    device: &UnclaimedDevice,
+    platform: &str,
+    available: bool,
+    daemon_version: Option<&str>,
+) -> String {
     let platform = match platform.to_ascii_lowercase().as_str() {
         "linux" => "Linux",
         "macos" | "darwin" => "macOS",
         "windows" => "Windows",
         _ => "",
     };
-    let model = device.product.as_deref().unwrap_or("Unknown USB device");
-    let vendor = device.vendor_label();
-    let support = if available {
-        "OpenRGB lists a controller with the same serial number.".to_owned()
-    } else if let Some(driver) = &device.claimable_by {
-        format!("Hypercolor has a native protocol in the disabled {driver} driver.")
+    let native = if let Some(driver) = &device.claimable_by {
+        format!(
+            "Matched disabled driver: {driver} (experimental: {}).",
+            device.experimental
+        )
     } else {
-        "No enabled Hypercolor native driver claims this device. Other support has not been verified.".to_owned()
+        "No native driver match reported.".to_owned()
     };
-    let fields = [
+    let bridge = if available {
+        "A reachable OpenRGB server lists a controller with a matching serial. Lighting control has not been verified."
+    } else {
+        "No matching controller on a reachable OpenRGB server was confirmed. Support is unknown."
+    };
+    let interfaces = if device.interface_classes.is_empty() {
+        "Not reported".to_owned()
+    } else {
+        device
+            .interface_classes
+            .iter()
+            .map(|class| format!("0x{class:02X}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let detected = format!(
+        "USB vendor label: {}\nUSB product string: {}\nUSB interface classes: {interfaces}\nNative driver: {native}\nOpenRGB: {bridge}\nWeb UI version: {}\n\nUSB detection does not establish lighting capability or the retail brand/model.",
+        device.vendor_label(),
+        device.product.as_deref().unwrap_or("Not reported"),
+        env!("CARGO_PKG_VERSION"),
+    );
+    let mut fields = vec![
         ("template", "device-support.yml".to_owned()),
-        (
-            "title",
-            format!("[device] {}", vendor_and_model(&vendor, model)),
-        ),
-        ("vendor", vendor.into_owned()),
-        ("model", model.to_owned()),
         (
             "vid-pid",
             format!("{:04X}:{:04X}", device.vendor_id, device.product_id),
         ),
-        ("platform", platform.to_owned()),
-        ("existing-support", support),
+        ("detected-device", detected),
     ];
+    if !platform.is_empty() {
+        fields.push(("platform", platform.to_owned()));
+    }
+    if let Some(version) = daemon_version
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+    {
+        fields.push(("version", version.to_owned()));
+    }
     let query = fields
         .into_iter()
         .map(|(key, value)| format!("{key}={}", crate::control_surface_api::path_segment(&value)))
@@ -104,7 +135,7 @@ pub fn UnclaimedHardware() -> impl IntoView {
             {move || match inventory.get() {
                 Some(Ok(devices)) if !devices.is_empty() => view! {
                     <h2 class="text-base font-semibold text-fg-primary">"Unclaimed hardware"</h2>
-                    <p class="text-sm text-fg-secondary">"USB hardware without an enabled native driver. Some devices may not have lighting."</p>
+                    <p class="text-sm text-fg-secondary">"USB detection does not confirm controllable lighting or a display. To request support, tell us the product's brand and model, what you want to control, and how you control it today."</p>
                     <div class="space-y-2">
                         {devices.into_iter().map(|device| view! {
                             <UnclaimedRow device=device status=status devices=devices_resource />
@@ -124,6 +155,7 @@ fn UnclaimedRow(
     status: LocalResource<api::ApiResult<hypercolor_types::api::system::OpenRgbStatus>>,
     devices: LocalResource<api::ApiResult<Vec<api::DeviceSummary>>>,
 ) -> impl IntoView {
+    let daemon = expect_context::<DaemonStatusContext>();
     let title = vendor_and_model(
         &device.vendor_label(),
         device.product.as_deref().unwrap_or("USB device"),
@@ -146,7 +178,14 @@ fn UnclaimedRow(
             .and_then(Result::ok)
             .map(|status| status.platform)
             .unwrap_or_default();
-        support_issue_url(&device_for_link, &platform, available.get())
+        daemon.status.with(|snapshot| {
+            support_issue_url(
+                &device_for_link,
+                &platform,
+                available.get(),
+                snapshot.as_ref().map(|status| status.version.as_str()),
+            )
+        })
     });
     let open_support = move |event: leptos::ev::MouseEvent| {
         if !crate::tauri_bridge::is_tauri_available() {
@@ -172,7 +211,7 @@ fn UnclaimedRow(
                 <span class="text-xs text-fg-secondary">"Available via OpenRGB"</span>
             </Show>
             <a class="rounded-md border border-edge-subtle px-3 py-2 text-xs text-accent-purple hover:bg-surface-hover focus-visible:outline"
-                href=move || support_url.get() on:click=open_support target="_blank" rel="noopener noreferrer">"Request support"</a>
+                href=move || support_url.get() on:click=open_support target="_blank" rel="noopener noreferrer">"Request device support"</a>
         </div>
     }
 }

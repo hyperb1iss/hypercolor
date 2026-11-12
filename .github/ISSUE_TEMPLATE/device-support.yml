@@ -1,45 +1,66 @@
 name: Device support request
-description: Add a device we don't track, or promote one from researched to supported.
+description: Request lighting or display support for a device.
 title: "[device] "
-labels: ["hardware", "device-support"]
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Before opening this, search `data/drivers/vendors/*.toml` and the
-        [compatibility matrix](https://github.com/hyperb1iss/hypercolor/blob/main/docs/content/hardware/compatibility.md)
-        for your device.
+        Tell us which product you have and what you want Hypercolor to control.
+        Put the product's brand and model in the issue title.
+        A device appearing in Unclaimed hardware does not mean it has controllable lighting.
+        If it has no lighting or display, you do not need to request support for it.
+        You can submit a request without technical captures or knowing its protocol.
 
-        If your vendor isn't listed at all, this issue will seed a new vendor TOML.
-        If your vendor is listed but your device is missing or marked `known` / `researched`,
-        include USB captures or protocol notes below so we can promote it to `supported`.
+        Check the [compatibility matrix](https://github.com/hyperb1iss/hypercolor/blob/main/docs/content/hardware/compatibility.md)
+        and [existing requests](https://github.com/hyperb1iss/hypercolor/issues?q=is%3Aissue+%22%5Bdevice%5D%22+in%3Atitle)
+        first. If your device is listed as supported but is not working, use the bug report form.
 
-  - type: input
-    id: vendor
+  - type: textarea
+    id: product
     attributes:
-      label: Vendor
-      placeholder: "Razer / Corsair / Lian Li / ..."
-    validations:
-      required: true
-
-  - type: input
-    id: model
-    attributes:
-      label: Device model
-      placeholder: "Razer Blade 15 (2023)"
-    validations:
-      required: true
-
-  - type: input
-    id: vid-pid
-    attributes:
-      label: USB VID:PID
+      label: Product brand and model
       description: |
-        Linux: `lsusb`. macOS: System Report → USB. Windows: Device Manager → properties → details → Hardware Ids.
-        If this is a network device with no USB IDs, put the protocol name instead (e.g., "WLED DDP").
-      placeholder: "1532:029D"
+        Use the name on the product, packaging, or receipt. Include a product link if you have one.
+        If you cannot identify it, say unknown and share what you can, such as a photo of the device or label (cover any serial number).
+        Names such as "USB Keyboard" or "VID 1A2C" do not identify the retail product.
+      placeholder: "Brand and model, plus a product link or photo"
     validations:
       required: true
+
+  - type: textarea
+    id: lighting
+    attributes:
+      label: What would you like Hypercolor to control?
+      description: |
+        Describe the lighting or display on the device and what you want it to do.
+        For example, keyboard backlighting, a fan ring, or a built-in screen.
+        If you are unsure what can be controlled, describe what you can see.
+      placeholder: "The keys light up, and I want to change their colors from Hypercolor."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lighting-control
+    attributes:
+      label: How do you control it today?
+      options:
+        - "An app can change the lighting or display"
+        - "Only buttons or keyboard shortcuts on the device"
+        - "The lights are fixed; I cannot change them"
+        - "It has no lighting or display"
+        - "I am not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: control-software
+    attributes:
+      label: Software that controls the device
+      description: |
+        If an app works, give its name and what it can change. A link or screenshot helps.
+        This can be the manufacturer's app, OpenRGB, SignalRGB, or another tool.
+        Leave blank if you do not know of any.
 
   - type: dropdown
     id: platform
@@ -52,30 +73,50 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: existing-support
+  - type: input
+    id: version
     attributes:
-      label: Existing support
-      description: Does OpenRGB, SignalRGB, the vendor app, or anything else currently control this device? Link to evidence if you have it.
+      label: Hypercolor version
+      description: "Find the running daemon version in Settings > About or run `hypercolor status`. Enter unknown if you cannot check."
+      placeholder: "Version shown in Settings > About"
+    validations:
+      required: true
+
+  - type: input
+    id: vid-pid
+    attributes:
+      label: USB IDs or connection type
+      description: |
+        Keep any prefilled USB VID:PID. Otherwise, include it if known, or describe the connection
+        (USB, Wi-Fi, Ethernet, serial, or a controller port). Leave blank if unsure.
+      placeholder: "1532:029D, Wi-Fi, or connected to a fan controller"
 
   - type: textarea
-    id: protocol-notes
+    id: detected-device
     attributes:
-      label: Protocol notes or captures
+      label: Detected device details
       description: |
-        Attach Wireshark pcapng files, paste `hidapitester`/`sniffusb` output, or link to reverse-engineering
-        references. If you don't have captures, say what tool currently drives the device and we'll use that
-        as a starting point.
+        Hypercolor may fill this from your computer's device inventory. These details help match
+        the hardware; they do not confirm its retail model or that its lighting is controllable.
+        Keep any prefilled details. You can leave this blank when opening a request directly.
 
   - type: textarea
     id: diagnostics
     attributes:
       label: Diagnostics
       description: |
-        Optional, and most useful on Windows. With Hypercolor running, choose Export
-        Diagnostics from the tray menu and attach the zip it saves to your Desktop. It
-        records which Windows driver owns the device and any other RGB software that
-        could be holding it.
+        Optional. In the desktop app, choose Export Diagnostics from the tray menu.
+        The zip is normally saved to your Desktop. Review its contents before attaching it
+        to this public issue. On Windows, it includes driver ownership and other RGB software.
+        Without the desktop app, you can paste the output of `hypercolor diagnose` instead.
+
+  - type: textarea
+    id: protocol-notes
+    attributes:
+      label: Protocol notes or captures (optional)
+      description: |
+        If you already have USB captures or protocol research, attach or link them here.
+        You do not need to make captures to open this request.
 
   - type: dropdown
     id: willing-to-test
@@ -85,6 +126,7 @@ body:
         - "Yes, I can run patched builds and capture logs"
         - "Sometimes, when I have time"
         - "No, I'm just flagging the request"
+        - "I am not sure; I would need instructions"
     validations:
       required: true
 
@@ -93,5 +135,5 @@ body:
     attributes:
       label: Before submitting
       options:
-        - label: I checked that this device isn't already in the compatibility matrix
+        - label: I checked the compatibility matrix and existing requests for this product
           required: true
