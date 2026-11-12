@@ -7,18 +7,18 @@ use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 use super::ZoneRuntime;
 use super::model::{
     DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdropFrame,
-    RetainedDirectZoneFrame, RetainedMaterializedZoneFrame,
+    RetainedDirectZoneFrame, RetainedMaterializedZoneFrame, ZoneContent, ZoneContentKey,
+    ZoneContentRevision,
 };
 use super::zone_state::zone_publishes_direct_canvas;
 use crate::render_thread::display_lane::PlacedScreen;
-use crate::render_thread::producer_queue::ProducerFrameIdentity;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
 /// Why a screen's retained backdrop frame still stands.
 #[derive(Clone)]
 pub(crate) enum RetainedBackdrop {
-    /// The backdrop shows what it showed when the frame was finalized, so
-    /// finalizing it again would produce the same picture.
+    /// The screen's zone shows what it showed when the frame was made, so
+    /// making it again would produce the same picture.
     Unchanged(DisplayZoneCanvasFrame),
     /// The backdrop moved on, but the screen's next frame is not due yet.
     Held(DisplayZoneCanvasFrame),
@@ -146,19 +146,62 @@ impl ZoneRuntime {
         Some(retained.frame.clone())
     }
 
+    /// Begin a pass over the scene's zones. A zone's content revision is
+    /// known only for the pass that last rendered it.
+    pub(super) fn begin_zone_content_pass(&mut self) {
+        self.content_pass = self.content_pass.wrapping_add(1);
+    }
+
+    /// Record what a zone's frame of this pass was made from. `None` is
+    /// content that cannot be told from the last frame's, which counts as
+    /// new.
+    pub(super) fn note_zone_content(&mut self, zone_id: ZoneId, key: Option<ZoneContentKey>) {
+        let pass = self.content_pass;
+        let unchanged = key.is_some()
+            && self
+                .zone_content
+                .get(&zone_id)
+                .is_some_and(|content| content.key == key);
+        if unchanged {
+            if let Some(content) = self.zone_content.get_mut(&zone_id) {
+                content.pass = pass;
+            }
+            return;
+        }
+        self.next_content_revision = self.next_content_revision.wrapping_add(1);
+        self.zone_content.insert(
+            zone_id,
+            ZoneContent {
+                key,
+                revision: ZoneContentRevision(self.next_content_revision),
+                pass,
+            },
+        );
+    }
+
+    /// The revision of the content `zone_id` shows, or `None` when the last
+    /// scene pass did not say what its frame was made from. A retained
+    /// scene keeps its zones' revisions: no pass ran to change them.
+    pub(crate) fn zone_content_revision(&self, zone_id: ZoneId) -> Option<ZoneContentRevision> {
+        self.zone_content
+            .get(&zone_id)
+            .filter(|content| content.pass == self.content_pass)
+            .map(|content| content.revision)
+    }
+
     /// The screen's retained backdrop frame, while it still stands in for
     /// `backdrop` on the screen as it is placed now.
     pub(crate) fn reuse_retained_backdrop_frame(
         &self,
         elapsed_ms: u64,
         screen: &PlacedScreen,
-        backdrop: Option<ProducerFrameIdentity>,
+        content: Option<ZoneContentRevision>,
     ) -> Option<RetainedBackdrop> {
         let retained = self.retained_backdrop_frames.get(&screen.device_id)?;
         if retained.screen != *screen {
             return None;
         }
-        if backdrop.is_some() && retained.backdrop == backdrop {
+        if content.is_some() && retained.content == content {
             return Some(RetainedBackdrop::Unchanged(retained.frame.clone()));
         }
         retained
@@ -181,7 +224,7 @@ impl ZoneRuntime {
         &mut self,
         elapsed_ms: u64,
         screen: &PlacedScreen,
-        backdrop: Option<ProducerFrameIdentity>,
+        content: Option<ZoneContentRevision>,
         frame: &DisplayZoneCanvasFrame,
     ) {
         let previous = self
@@ -199,7 +242,7 @@ impl ZoneRuntime {
                     Some(screen.target_fps),
                 ),
                 screen: screen.clone(),
-                backdrop,
+                content,
             },
         );
     }

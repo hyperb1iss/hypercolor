@@ -17,8 +17,10 @@ use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 use super::pipeline_runtime::ComposeRuntime;
 #[cfg(feature = "wgpu")]
 use super::pipeline_runtime::PendingDisplayFinalizeWork;
-use super::producer_queue::{ProducerFrame, ProducerFrameIdentity};
-use super::render_zones::{DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdrop};
+use super::producer_queue::ProducerFrame;
+use super::render_zones::{
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdrop, ZoneContentRevision,
+};
 use super::scene_dependency::SceneDependencyKey;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::{
@@ -97,6 +99,9 @@ pub(super) struct ScreenBackdrops<'a> {
     pub(super) screens: &'a [PlacedScreen],
     /// Each scene zone's frame this pass.
     pub(super) zone_frames: &'a [(ZoneId, ProducerFrame)],
+    /// The content revision of each zone whose frame says what it was made
+    /// from. A screen holds its picture while its zone's revision stands.
+    pub(super) zone_revisions: &'a [(ZoneId, ZoneContentRevision)],
     /// What a screen shows when its zone renders nothing.
     pub(super) black: &'a ProducerFrame,
 }
@@ -119,6 +124,12 @@ impl<'a> ScreenBackdrops<'a> {
         self.zone_frames
             .iter()
             .find_map(|(id, frame)| (*id == zone_id).then_some(frame))
+    }
+
+    fn zone_revision(&self, zone_id: ZoneId) -> Option<ZoneContentRevision> {
+        self.zone_revisions
+            .iter()
+            .find_map(|(id, revision)| (*id == zone_id).then_some(*revision))
     }
 
     /// The backdrop of the screen on `device_id`. A screen no zone places,
@@ -333,6 +344,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             Some(&frame),
             &display_target,
             display_route,
+            None,
         ) {
             return Some(DisplayZoneCanvasFrame {
                 frame: finalized.frame,
@@ -369,19 +381,39 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         let lane_id = screen_backdrop_lane_id(device_id);
         let backdrops = self.context.backdrops;
         let backdrop = backdrops.zone_frame(screen.zone_id);
+        // A zone that renders nothing has no content to hold a picture by.
+        let content = backdrop.and_then(|_| backdrops.zone_revision(screen.zone_id));
+        let retained = self
+            .compose
+            .render_zone_runtime
+            .reuse_retained_backdrop_frame(self.context.elapsed_ms, screen, content)
+            .filter(|retained| {
+                let (RetainedBackdrop::Unchanged(frame) | RetainedBackdrop::Held(frame)) = retained;
+                frame.display_target.finalized == finalizes
+            });
         if !finalizes {
+            // The worker paces its own encodes, so only a picture that has
+            // not changed is held here.
+            if let Some(RetainedBackdrop::Unchanged(frame)) = retained {
+                return Some(frame);
+            }
             // The viewport travels with the canvas it applies to, so the
             // worker never crops one scene's canvas through another's box.
-            let frame = backdrop.unwrap_or(backdrops.black).clone();
-            return Some(DisplayZoneCanvasFrame {
+            let surface = self.cpu_surface(backdrop.unwrap_or(backdrops.black).clone())?;
+            let frame = DisplayZoneCanvasFrame {
                 frame: DisplayZoneFrame::Backdrop(DisplayBackdropFrame {
-                    frame: hypercolor_core::bus::CanvasFrame::from_surface(
-                        self.cpu_surface(frame)?,
-                    ),
+                    frame: hypercolor_core::bus::CanvasFrame::from_surface(surface),
                     viewport: screen.output.viewport,
                 }),
                 display_target: backdrop_lane_target(device_id, false),
-            });
+            };
+            self.compose.render_zone_runtime.retain_backdrop_frame(
+                self.context.elapsed_ms,
+                screen,
+                content,
+                &frame,
+            );
+            return Some(frame);
         }
         let Some(backdrop) = backdrop else {
             // Black needs no finalize pass, and a render loop that is about
@@ -394,14 +426,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             });
         };
 
-        match self
-            .compose
-            .render_zone_runtime
-            .reuse_retained_backdrop_frame(
-                self.context.elapsed_ms,
-                screen,
-                backdrop.stable_identity(),
-            ) {
+        match retained {
             Some(RetainedBackdrop::Unchanged(frame)) => {
                 // Work still in flight would only finalize this picture
                 // again, or an older one.
@@ -418,12 +443,14 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             None,
             &backdrop_finalize_target(device_id),
             Some(&screen.output),
+            content,
         );
         let Some(finalized) = finalized else {
             let retained = self
                 .compose
                 .render_zone_runtime
-                .reuse_latest_backdrop_frame(screen)?;
+                .reuse_latest_backdrop_frame(screen)
+                .filter(|frame| frame.display_target.finalized)?;
             #[cfg(feature = "wgpu")]
             crate::render_thread::sparkleflinger::gpu::record_gpu_display_finalize_latch();
             return Some(retained);
@@ -435,7 +462,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         self.compose.render_zone_runtime.retain_backdrop_frame(
             self.context.elapsed_ms,
             screen,
-            finalized.backdrop,
+            finalized.content,
             &frame,
         );
         Some(frame)
@@ -471,6 +498,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         face_frame: Option<&ProducerFrame>,
         display_target: &DisplayFaceTarget,
         display_route: Option<&DisplayZoneOutputRoute>,
+        content: Option<ZoneContentRevision>,
     ) -> Option<FinalizedDisplayFrame> {
         let Some(display_route) =
             display_route.filter(|route| route.device_id == display_target.device_id)
@@ -484,6 +512,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             face_frame,
             display_target,
             display_route,
+            content,
         )
     }
 
@@ -495,7 +524,9 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         face_frame: Option<&ProducerFrame>,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
+        content: Option<ZoneContentRevision>,
     ) -> Option<FinalizedDisplayFrame> {
+        let _ = content;
         let _ = zone_id;
         let _ = backdrop_frame;
         let _ = face_frame;
@@ -511,7 +542,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
 
     /// Finalize a display lane's frame: `face_frame` over `backdrop_frame`
     /// seen through the route's viewport, or the backdrop alone when the
-    /// lane has no face.
+    /// lane has no face. `content` is what a lane with no face shows.
     #[cfg(feature = "wgpu")]
     fn finalize_display_zone_canvas_with_route(
         &mut self,
@@ -520,6 +551,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         face_frame: Option<&ProducerFrame>,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
+        content: Option<ZoneContentRevision>,
     ) -> Option<FinalizedDisplayFrame> {
         let params = DisplayFinalizeParams {
             cache_key: DisplayFinalizeCacheKey {
@@ -550,6 +582,16 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 DisplayFinalizeProgress::Pending => return None,
                 DisplayFinalizeProgress::Idle => None,
             };
+        // A finalization that just landed for the content the zone still
+        // shows is this lane's frame. Asking again would submit a pass and
+        // a readback for the same picture.
+        if content.is_some()
+            && completed
+                .as_ref()
+                .is_some_and(|completed| completed.content == content)
+        {
+            return completed;
+        }
 
         let dispatch = match face_frame {
             Some(face_frame) if display_route.frame_format == DisplayFrameFormat::Jpeg => self
@@ -568,12 +610,14 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
 
         match dispatch {
             Ok(DisplayFinalizeDispatch::Pending(pending)) => {
+                #[cfg(test)]
+                self.compose.display_finalize_runtime.note_dispatch();
                 let mut work = PendingDisplayFinalizeWork {
                     dependency_key: self.context.dependency_key,
                     display_target: display_target.clone(),
                     display_route: display_route.clone(),
                     frame_format: display_route.frame_format,
-                    backdrop: backdrop_frame.stable_identity(),
+                    content,
                     pending,
                 };
                 match self.try_finish_display_finalize_work(&mut work) {
@@ -657,7 +701,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 display_finalize_frame_to_zone(frame, work.frame_format).map(|frame| {
                     FinalizedDisplayFrame {
                         frame,
-                        backdrop: work.backdrop,
+                        content: work.content,
                     }
                 }),
             ),
@@ -672,13 +716,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
     }
 }
 
-/// A frame finalized for a screen, with what its backdrop showed when the
+/// A frame finalized for a screen, with what its zone showed when the
 /// finalization was dispatched. A finalization can land a frame later than
-/// it was asked for, so this is not always the current backdrop.
+/// it was asked for, so this is not always what the zone shows now.
 struct FinalizedDisplayFrame {
     frame: DisplayZoneFrame,
     #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
-    backdrop: Option<ProducerFrameIdentity>,
+    content: Option<ZoneContentRevision>,
 }
 
 #[cfg(feature = "wgpu")]
@@ -783,10 +827,12 @@ mod tests {
     };
     use crate::render_thread::producer_queue::ProducerFrame;
     #[cfg(feature = "wgpu")]
+    use crate::render_thread::producer_queue::ProducerFrameIdentity;
+    #[cfg(feature = "wgpu")]
     use crate::render_thread::producer_queue::ProducerQueue;
     #[cfg(feature = "wgpu")]
     use crate::render_thread::render_zones::{
-        DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneRuntime,
+        DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneContentRevision, ZoneRuntime,
     };
     #[cfg(feature = "wgpu")]
     use crate::render_thread::scene_dependency::SceneDependencyKey;
@@ -870,6 +916,7 @@ mod tests {
         let own_frames = ScreenBackdrops {
             screens: &screens,
             zone_frames: &zone_frames,
+            zone_revisions: &[],
             black: &black,
         };
 
@@ -1017,6 +1064,87 @@ mod tests {
         assert!(
             right[2] > 24 && right[1] > 24 && right[0] == 0,
             "the right face should sit over its blue zone: {right:?}"
+        );
+    }
+
+    /// A zone whose content stands is finalized for its screen once, however
+    /// many ticks pass and however often its frame changes identity on the
+    /// way out: one pass and one readback, none while it is collected and
+    /// none after. New content costs exactly one more.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn gpu_backdrop_of_a_still_zone_is_finalized_exactly_once() {
+        let Some(mut harness) = DisplayLaneHarness::with_gpu_display() else {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "GPU display finalization test was required but no GPU compositor started"
+            );
+            return;
+        };
+        let zone = ZoneId::new();
+        let screen = DeviceId::new();
+        let lane = screen_backdrop_lane_id(screen);
+        let screens = HashMap::from([(screen, placed_screen(screen, zone, 15))]);
+        harness
+            .pinned_revisions
+            .insert(zone, ZoneContentRevision(1));
+
+        let mut shown = None;
+        for tick in 0..60 {
+            harness.display_sparkleflinger.wait_for_gpu_idle_for_test();
+            harness.elapsed_ms += 100;
+            // The same picture in a new frame each tick, the way a still
+            // zone is snapshotted and composed again every frame.
+            let red = [(zone, surface_frame([255, 0, 0]))];
+            let lanes = harness.materialize(harness.elapsed_ms, &screens, &red, Vec::new());
+            let Some(frame) = lane_frame(&lanes, lane) else {
+                assert!(shown.is_none(), "tick {tick}: the screen lost its backdrop");
+                continue;
+            };
+            assert_eq!(first_pixel(&frame.frame), [255, 0, 0, 255]);
+            let identity = surface_identity(&frame.frame);
+            assert_eq!(
+                *shown.get_or_insert(identity),
+                identity,
+                "tick {tick}: a still zone's backdrop was finalized again"
+            );
+        }
+        assert!(shown.is_some(), "the backdrop never arrived");
+        assert_eq!(
+            harness.display_finalize_runtime.dispatch_count(),
+            1,
+            "a still zone should cost its screen one finalize pass"
+        );
+        assert_eq!(harness.display_finalize_runtime.pending_zone_count(), 0);
+
+        harness
+            .pinned_revisions
+            .insert(zone, ZoneContentRevision(2));
+        let blue = [(zone, surface_frame([0, 0, 255]))];
+        let start = std::time::Instant::now();
+        loop {
+            harness.display_sparkleflinger.wait_for_gpu_idle_for_test();
+            harness.elapsed_ms += 100;
+            let lanes = harness.materialize(harness.elapsed_ms, &screens, &blue, Vec::new());
+            if lane_frame(&lanes, lane)
+                .is_some_and(|frame| first_pixel(&frame.frame) == [0, 0, 255, 255])
+            {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "the new content never reached the screen"
+            );
+        }
+        for _ in 0..10 {
+            harness.display_sparkleflinger.wait_for_gpu_idle_for_test();
+            harness.elapsed_ms += 100;
+            harness.materialize(harness.elapsed_ms, &screens, &blue, Vec::new());
+        }
+        assert_eq!(
+            harness.display_finalize_runtime.dispatch_count(),
+            2,
+            "new content should cost exactly one more finalize pass"
         );
     }
 
@@ -1169,6 +1297,7 @@ mod tests {
             backdrops: ScreenBackdrops {
                 screens: &[],
                 zone_frames: &[],
+                zone_revisions: &[],
                 black: &black,
             },
         };
@@ -1652,6 +1781,7 @@ mod tests {
             backdrops: ScreenBackdrops {
                 screens: &[],
                 zone_frames: &[],
+                zone_revisions: &[],
                 black: &black,
             },
         };
@@ -1716,6 +1846,13 @@ mod tests {
         render_zone_runtime: ZoneRuntime,
         output_artifacts: OutputArtifactsState,
         elapsed_ms: u64,
+        /// The content revision each zone's frame was last given, the way
+        /// the zone runtime gives them: a frame that can be told to be the
+        /// last one keeps its revision, and any other frame gets a new one.
+        zone_revisions: HashMap<ZoneId, (Option<ProducerFrameIdentity>, ZoneContentRevision)>,
+        /// Revisions a test sets itself, whatever frame the zone hands over.
+        pinned_revisions: HashMap<ZoneId, ZoneContentRevision>,
+        next_revision: u64,
     }
 
     #[cfg(feature = "wgpu")]
@@ -1731,7 +1868,37 @@ mod tests {
                 render_zone_runtime: ZoneRuntime::new(2, 2),
                 output_artifacts: OutputArtifactsState::default(),
                 elapsed_ms: 100,
+                zone_revisions: HashMap::new(),
+                pinned_revisions: HashMap::new(),
+                next_revision: 0,
             }
+        }
+
+        /// The revision of each zone frame this pass.
+        fn revise(
+            &mut self,
+            zone_frames: &[(ZoneId, ProducerFrame)],
+        ) -> Vec<(ZoneId, ZoneContentRevision)> {
+            zone_frames
+                .iter()
+                .map(|(zone_id, frame)| {
+                    if let Some(pinned) = self.pinned_revisions.get(zone_id) {
+                        return (*zone_id, *pinned);
+                    }
+                    let identity = frame.stable_identity();
+                    let revision = match self.zone_revisions.get(zone_id) {
+                        Some((known, revision)) if identity.is_some() && *known == identity => {
+                            *revision
+                        }
+                        _ => {
+                            self.next_revision += 1;
+                            ZoneContentRevision(self.next_revision)
+                        }
+                    };
+                    self.zone_revisions.insert(*zone_id, (identity, revision));
+                    (*zone_id, revision)
+                })
+                .collect()
         }
 
         /// Materialize one frame's lanes. Every face is routed to a raw RGB
@@ -1763,6 +1930,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let fallback_routes = HashMap::new();
             let black = black_frame();
+            let zone_revisions = self.revise(zone_frames);
             let context = DisplayLaneContext {
                 elapsed_ms,
                 dependency_key: SceneDependencyKey::new(1, 1),
@@ -1774,6 +1942,7 @@ mod tests {
                 backdrops: ScreenBackdrops {
                     screens: &placed,
                     zone_frames,
+                    zone_revisions: &zone_revisions,
                     black: &black,
                 },
             };

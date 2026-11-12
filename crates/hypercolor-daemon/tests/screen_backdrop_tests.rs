@@ -347,6 +347,21 @@ fn test_scene(name: &str, zones: Vec<Zone>, transition_ms: u64) -> Scene {
     scene
 }
 
+/// A layer that never changes: a fill has no renderer to produce new frames.
+fn fill_layer(rgba: [f32; 4]) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: hypercolor_types::layer::LayerSource::ColorFill { rgba },
+        blend: BlendMode::Replace,
+        opacity: 1.0,
+        transform: hypercolor_types::layer::LayerTransform::default(),
+        adjust: hypercolor_types::layer::LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
+}
+
 /// The effects a test scene is built from.
 struct Effects {
     solid: EffectId,
@@ -1402,6 +1417,50 @@ async fn cpu_screen_fades_out_when_the_whole_scene_goes_dark() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gpu_screen_fades_out_when_the_whole_scene_goes_dark() {
     screen_fades_out_when_the_whole_scene_goes_dark(RenderAccelerationMode::Gpu).await;
+}
+
+/// A scene that does not change sends a screen its backdrop once. Finalizing
+/// and reading back a still picture at the screen's cadence would cost a
+/// pass per screen per tick for nothing.
+async fn still_scene_sends_its_screen_one_frame(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("still").await;
+    let zones = vec![scene_zone(
+        "Still",
+        ZoneRole::Primary,
+        vec![fill_layer(RED)],
+        vec![
+            strip_output("strip:still", (0.5, 0.1), (0.8, 0.1)),
+            screen.output((0.5, 0.5), (0.4, 0.4)),
+        ],
+    )];
+
+    let running = rig.run(zones).await;
+    rig.writes
+        .wait_for(screen.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    let settled = rig.writes.of(screen.device_id).len();
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    running.stop().await;
+
+    let resent = rig.writes.of(screen.device_id).len() - settled;
+    assert!(
+        resent <= 1,
+        "a still scene sent its screen {resent} more frames in under a second"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_still_scene_sends_its_screen_one_frame() {
+    still_scene_sends_its_screen_one_frame(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_still_scene_sends_its_screen_one_frame() {
+    still_scene_sends_its_screen_one_frame(RenderAccelerationMode::Gpu).await;
 }
 
 // ── Viewports: the owning zone against the spatial service ────────────────

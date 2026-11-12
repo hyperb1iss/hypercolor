@@ -691,6 +691,16 @@ impl ComposeContext<'_> {
             [0, 0, 0],
         ));
         let screens = place_screens(&backdrop_routes, &scene_runtime.resolved_zones);
+        let zone_revisions = zone_frames
+            .iter()
+            .filter_map(|(zone_id, _)| {
+                let revision = self
+                    .compose
+                    .render_zone_runtime
+                    .zone_content_revision(*zone_id)?;
+                Some((*zone_id, revision))
+            })
+            .collect::<Vec<_>>();
         let faced = faced_screens(&scene_runtime.resolved_zones, active_display_zone_ids);
         let context = DisplayLaneContext {
             elapsed_ms: self.scene_snapshot.elapsed_ms,
@@ -703,6 +713,7 @@ impl ComposeContext<'_> {
             backdrops: ScreenBackdrops {
                 screens: &screens,
                 zone_frames,
+                zone_revisions: &zone_revisions,
                 black: &black,
             },
         };

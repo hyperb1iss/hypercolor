@@ -157,6 +157,7 @@ impl ZoneFrameRequirements {
 
 /// The pixel-free description of the layers whose composition a zone's held
 /// frame shows.
+#[derive(Clone, PartialEq)]
 pub(super) struct ZoneCompositionIdentity {
     width: u32,
     height: u32,
@@ -187,6 +188,32 @@ impl ZoneCompositionIdentity {
                 .zip(layers)
                 .all(|(stored, layer)| layer.identity().is_some_and(|current| current == *stored))
     }
+}
+
+/// What a zone's frame shows, told without its pixels.
+#[derive(Clone, PartialEq)]
+pub(super) enum ZoneContentKey {
+    /// The layers composed into the frame.
+    Layers(ZoneCompositionIdentity),
+    /// The one layer frame passed through as the zone's own.
+    Frame(ProducerFrameIdentity),
+}
+
+/// A count that moves whenever a zone's frame may show something new.
+///
+/// A zone's frame is copied, snapshotted and re-composed on its way out, so
+/// its identity changes on ticks where its pixels do not. The revision
+/// follows what the frame was made from instead: it holds while a zone's
+/// layers are the ones that drew its last frame, and moves when they change
+/// or cannot be told apart. A screen holds its picture by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ZoneContentRevision(pub(crate) u64);
+
+/// The content a zone last rendered, and the scene pass that rendered it.
+pub(super) struct ZoneContent {
+    pub(super) key: Option<ZoneContentKey>,
+    pub(super) revision: ZoneContentRevision,
+    pub(super) pass: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,8 +443,8 @@ pub(super) struct RetainedBackdropFrame {
     pub(super) cadence: Option<DisplayFrameCadence>,
     /// The screen as the scene placed it when `frame` was finalized.
     pub(super) screen: PlacedScreen,
-    /// What the backdrop showed when `frame` was finalized over it.
-    pub(super) backdrop: Option<ProducerFrameIdentity>,
+    /// What the screen's zone showed when `frame` was made from it.
+    pub(super) content: Option<ZoneContentRevision>,
 }
 
 pub(super) struct CachedMediaProducer {

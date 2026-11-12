@@ -38,6 +38,7 @@ impl ZoneRuntime {
             !self.needs_reconcile(context.dependency_key),
             "render-zone resources were not admitted before scene rendering"
         );
+        self.begin_zone_content_pass();
         #[cfg(all(test, feature = "wgpu"))]
         if std::mem::take(&mut self.fail_next_scene_render) {
             anyhow::bail!("injected scene render failure");

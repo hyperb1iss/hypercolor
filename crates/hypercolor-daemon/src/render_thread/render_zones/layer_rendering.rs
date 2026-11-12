@@ -21,8 +21,8 @@ use super::frame_helpers::{
     screen_region_layer_frame, transparent_black_frame,
 };
 use super::model::{
-    CachedMediaProducer, MediaLayerFrame, ZoneCompositionIdentity, ZoneFrameContext,
-    ZoneFrameRequirements,
+    CachedMediaProducer, MediaLayerFrame, ZoneCompositionIdentity, ZoneContentKey,
+    ZoneFrameContext, ZoneFrameRequirements,
 };
 use crate::render_thread::binding_eval::evaluate_layer_runtime;
 use crate::render_thread::producer_queue::{ProducerFrame, record_producer_frame};
@@ -219,6 +219,11 @@ impl ZoneRuntime {
             composition_layers.push(composition_layer_for_scene_layer(&layer_runtime, frame));
         }
 
+        let composition_identity = ZoneCompositionIdentity::of(zone, &composition_layers);
+        self.note_zone_content(
+            zone.id,
+            composition_identity.clone().map(ZoneContentKey::Layers),
+        );
         if composition_layers.is_empty() {
             if unavailable_source {
                 return transparent_black_frame(
@@ -236,11 +241,6 @@ impl ZoneRuntime {
             self.composition_skips = self.composition_skips.saturating_add(1);
             return Ok(Some(held));
         }
-        let composition_identity = if requirements.reuse_unchanged_composition {
-            ZoneCompositionIdentity::of(zone, &composition_layers)
-        } else {
-            None
-        };
 
         let plan = if composition_layers.len() == 1 {
             let layer = composition_layers
@@ -394,6 +394,7 @@ impl ZoneRuntime {
         };
 
         if self.note_unavailable_effect(zone, &layer, context) {
+            self.note_zone_content(zone.id, None);
             return transparent_black_frame(
                 &mut self.static_layer_surface_cache,
                 zone.layout.canvas_width,
@@ -403,6 +404,13 @@ impl ZoneRuntime {
         }
 
         let frame = self.render_effect_layer_frame(zone, &layer, context)?;
+        self.note_zone_content(
+            zone.id,
+            frame
+                .as_ref()
+                .and_then(ProducerFrame::stable_identity)
+                .map(ZoneContentKey::Frame),
+        );
         if frame.is_some() {
             self.layer_runtime.note_health(
                 context.active_scene_id,

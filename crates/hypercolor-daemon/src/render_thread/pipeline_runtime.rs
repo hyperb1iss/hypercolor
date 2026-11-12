@@ -56,9 +56,9 @@ use super::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputPublicationReader, OwnedInputPublicationDemand,
 };
-#[cfg(feature = "wgpu")]
-use super::producer_queue::ProducerFrameIdentity;
 use super::producer_queue::ProducerQueue;
+#[cfg(feature = "wgpu")]
+use super::render_zones::ZoneContentRevision;
 use super::render_zones::{
     PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
 };
@@ -1754,8 +1754,9 @@ pub(crate) struct PendingDisplayFinalizeWork {
     pub(crate) display_target: DisplayFaceTarget,
     pub(crate) display_route: DisplayZoneOutputRoute,
     pub(crate) frame_format: DisplayFrameFormat,
-    /// What the backdrop showed when this finalization was dispatched.
-    pub(crate) backdrop: Option<ProducerFrameIdentity>,
+    /// What the lane's zone showed when this finalization was dispatched,
+    /// for a lane that shows a zone's frame alone.
+    pub(crate) content: Option<ZoneContentRevision>,
     pub(crate) pending: PendingDisplayFinalization,
 }
 
@@ -1779,6 +1780,9 @@ impl PendingDisplayFinalizeWork {
 #[derive(Default)]
 pub(crate) struct DisplayFinalizeRuntime {
     pending: HashMap<ZoneId, PendingDisplayFinalizeWork>,
+    /// Finalize passes submitted to the GPU, each with its readback.
+    #[cfg(test)]
+    dispatches: u64,
 }
 
 #[cfg(feature = "wgpu")]
@@ -1799,6 +1803,16 @@ impl DisplayFinalizeRuntime {
     #[cfg(test)]
     pub(crate) fn pending_zone_count(&self) -> usize {
         self.pending.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_dispatch(&mut self) {
+        self.dispatches += 1;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_count(&self) -> u64 {
+        self.dispatches
     }
 
     pub(crate) fn take_inactive(
