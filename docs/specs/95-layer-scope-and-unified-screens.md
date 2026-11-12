@@ -1592,6 +1592,65 @@ The tool's description stops saying "display zone". `scope: default` is marked
 deprecated in the REST and MCP references in favor of screen layers, and keeps
 working through 1.x.
 
+### 6.8 As built in W5
+
+Where the build differs from the text above, and what it measured.
+
+**The surface table holds every registered screen.** The face routes accept
+any registered display, connected or not, and a stored display zone always
+reached the render list. So the table is built from the device registry, each
+entry says whether its device can take frames now, and a screen that is away
+keeps its view while it has a stack and lowers as before. A screen with no
+entry is one the rig does not know. A scene face write reads the registry
+itself, because it may be the first thing written for a display the table has
+not seen.
+
+**The daemon builds a screen's box.** Automatic layout leaves screens off the
+canvas on purpose, so the member route §6.6 points at mints nothing for a
+screen. When a face is written or converted for a screen no zone places, the
+daemon builds one box for it, centered, with the panel's shape, and adds it to
+the primary zone.
+
+**A placed screen with a face stays placed.** A primary zone that follows the
+active layout is rewritten from that layout on activation and on every layout
+publication. A screen the daemon placed is not in that layout, so the rewrite
+keeps each screen of the zone that a screen layer is scoped to. Once the
+screen has no layer, the next rewrite drops its box.
+
+**Conversion has three more guards.** A zone also stays in the legacy spelling
+when its stored target is one the renderer clamps (a replacing target with a
+partial opacity), when the zone that places its screen is paused (the face
+would stop, §6.3), and when that zone already uses one of its layer ids. Each
+is reported with its reason.
+
+**A stored display zone is the screen's whole stack while it exists.** Screen
+layers scoped to the same screen are not lowered beside it, so a screen never
+has two bindings.
+
+**Layer health is published under the view's id.** That is the zone id an
+unchanged client holds for a screen's layers. W6 reads screens from their
+owning zone and needs the owning zone's id, with a layer on several screens
+reporting its least healthy instance.
+
+**`add_layer` takes a face on screens.** The MCP tool accepts a display-face
+effect when `outputs` resolve to screens and nothing else, which is what the
+REST layer routes accept. Without outputs, or with an LED output among them,
+it refuses as before, and it still refuses a view as its `zone`.
+
+**Views are of the live scene.** `GET /scenes/{id}` lists none. `PUT
+/scenes/{id}` skips a zone that carries `view_of` or is the view of a screen,
+so a document read from `GET /scene` writes back unchanged.
+
+**Spikes.** A face's effect slot is keyed by zone and layer. Conversion moves
+it from the stored zone's id to the derived id once, which is one renderer
+start, and a second conversion, the surface table arriving again and a move of
+the screen between zones all leave the key alone. One layer on three panels
+asks for three slots, as three display zones do. The captured 0.9.0 store
+converts whole: two zones become screen layers, the bare surface is removed,
+none is left legacy, and all three panels show the same frames before and
+after on both compositors. The evidence rig's stored scenes and the hardware
+pass are not in this.
+
 ---
 
 ## 7. Part C: Studio
