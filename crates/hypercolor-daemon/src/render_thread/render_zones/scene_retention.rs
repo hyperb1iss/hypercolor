@@ -37,6 +37,7 @@ impl ZoneRuntime {
         self.retained_frame = Some(RetainedRenderZoneFrame {
             dependency_key,
             scene_frame: result.scene_frame.clone(),
+            scene_frame_zone: result.scene_frame_zone,
             display_zone_frames: result.display_zone_frames.clone(),
             active_display_zone_ids: result.active_display_zone_ids.clone(),
             zone_canvases: result.zone_canvases.clone(),
@@ -49,6 +50,7 @@ impl ZoneRuntime {
 fn zone_result_from_retained(retained: &RetainedRenderZoneFrame) -> ZoneResult {
     ZoneResult {
         scene_frame: retained.scene_frame.clone(),
+        scene_frame_zone: retained.scene_frame_zone,
         display_zone_frames: retained.display_zone_frames.clone(),
         zone_canvases: retained.zone_canvases.clone(),
         active_display_zone_ids: retained.active_display_zone_ids.clone(),

@@ -55,6 +55,24 @@ impl GpuSparkleFlinger {
     }
 
     #[cfg(test)]
+    pub(crate) fn finalize_display_backdrop(
+        &mut self,
+        backdrop: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<Option<PublishedSurface>> {
+        let pending = match self.begin_finalize_display_backdrop(backdrop, params)? {
+            GpuDisplayFinalizeDispatch::Pending(pending) => pending,
+            GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                return Ok(None);
+            }
+        };
+        match self.finish_pending_display_finalization_blocking(pending)? {
+            Some(GpuDisplayFinalizeFrame::Rgba(surface)) => Ok(Some(surface)),
+            Some(GpuDisplayFinalizeFrame::Yuv420(_)) | None => Ok(None),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn finalize_display_face_yuv420(
         &mut self,
         scene: &ProducerFrame,
@@ -79,7 +97,7 @@ impl GpuSparkleFlinger {
         face: &ProducerFrame,
         params: DisplayFinalizeParams,
     ) -> Result<GpuDisplayFinalizeDispatch> {
-        self.begin_display_finalize(scene, face, params, GpuDisplayFinalizeFormat::Rgba)
+        self.begin_display_finalize(scene, Some(face), params, GpuDisplayFinalizeFormat::Rgba)
     }
 
     pub(crate) fn begin_finalize_display_face_yuv420(
@@ -88,13 +106,34 @@ impl GpuSparkleFlinger {
         face: &ProducerFrame,
         params: DisplayFinalizeParams,
     ) -> Result<GpuDisplayFinalizeDispatch> {
-        self.begin_display_finalize(scene, face, params, GpuDisplayFinalizeFormat::Yuv420)
+        self.begin_display_finalize(scene, Some(face), params, GpuDisplayFinalizeFormat::Yuv420)
     }
 
+    /// Finalize a screen's backdrop alone, for a screen that shows no face:
+    /// the backdrop through its viewport, then mask, brightness, and format.
+    pub(crate) fn begin_finalize_display_backdrop(
+        &mut self,
+        backdrop: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<GpuDisplayFinalizeDispatch> {
+        self.begin_display_finalize(backdrop, None, params, GpuDisplayFinalizeFormat::Rgba)
+    }
+
+    pub(crate) fn begin_finalize_display_backdrop_yuv420(
+        &mut self,
+        backdrop: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<GpuDisplayFinalizeDispatch> {
+        self.begin_display_finalize(backdrop, None, params, GpuDisplayFinalizeFormat::Yuv420)
+    }
+
+    /// `face` is `None` for a screen that shows its backdrop alone. The pass
+    /// still binds a face texture, so the backdrop stands in for it and the
+    /// encoded parameters give it no weight.
     fn begin_display_finalize(
         &mut self,
         scene: &ProducerFrame,
-        face: &ProducerFrame,
+        face: Option<&ProducerFrame>,
         params: DisplayFinalizeParams,
         format: GpuDisplayFinalizeFormat,
     ) -> Result<GpuDisplayFinalizeDispatch> {
@@ -102,8 +141,7 @@ impl GpuSparkleFlinger {
             || params.height == 0
             || scene.width() == 0
             || scene.height() == 0
-            || face.width() == 0
-            || face.height() == 0
+            || face.is_some_and(|face| face.width() == 0 || face.height() == 0)
         {
             return Ok(GpuDisplayFinalizeDispatch::Unsupported);
         }
@@ -163,33 +201,35 @@ impl GpuSparkleFlinger {
                 return Err(error);
             }
         }
-        let face_gpu = gpu_source_frame(face);
-        let face_prepared = prepare_display_source_texture(
-            device,
-            queue,
-            pipeline,
-            &mut encoder,
-            &mut surfaces.face_source,
-            &mut surfaces.face_source_retry,
-            admission_clock,
-            &mut surfaces.pending_upload_buffers,
-            face,
-            face_gpu.as_ref(),
-            "SparkleFlinger Display Face Source",
-            &mut native_screen_leases,
-            #[cfg(test)]
-            &mut surfaces.face_upload_count,
-        );
-        match face_prepared {
-            Ok(true) => {}
-            Ok(false) => {
-                // The source texture is waiting out a failed admission.
-                surfaces.abandon_dispatch(readback_slot);
-                return Ok(GpuDisplayFinalizeDispatch::Saturated);
-            }
-            Err(error) => {
-                surfaces.abandon_dispatch(readback_slot);
-                return Err(error);
+        let face_gpu = face.and_then(gpu_source_frame);
+        if let Some(face) = face {
+            let face_prepared = prepare_display_source_texture(
+                device,
+                queue,
+                pipeline,
+                &mut encoder,
+                &mut surfaces.face_source,
+                &mut surfaces.face_source_retry,
+                admission_clock,
+                &mut surfaces.pending_upload_buffers,
+                face,
+                face_gpu.as_ref(),
+                "SparkleFlinger Display Face Source",
+                &mut native_screen_leases,
+                #[cfg(test)]
+                &mut surfaces.face_upload_count,
+            );
+            match face_prepared {
+                Ok(true) => {}
+                Ok(false) => {
+                    // The source texture is waiting out a failed admission.
+                    surfaces.abandon_dispatch(readback_slot);
+                    return Ok(GpuDisplayFinalizeDispatch::Saturated);
+                }
+                Err(error) => {
+                    surfaces.abandon_dispatch(readback_slot);
+                    return Err(error);
+                }
             }
         }
 
@@ -215,18 +255,22 @@ impl GpuSparkleFlinger {
                     .texture
                     .view
             });
-        let face_view = face_gpu
-            .as_ref()
-            .filter(|frame| !frame.needs_display_source_copy())
-            .map(GpuSourceFrame::view)
-            .unwrap_or_else(|| {
-                &surfaces
-                    .face_source
-                    .as_ref()
-                    .expect("uploaded face source should exist")
-                    .texture
-                    .view
-            });
+        let face_view = if face.is_some() {
+            face_gpu
+                .as_ref()
+                .filter(|frame| !frame.needs_display_source_copy())
+                .map(GpuSourceFrame::view)
+                .unwrap_or_else(|| {
+                    &surfaces
+                        .face_source
+                        .as_ref()
+                        .expect("uploaded face source should exist")
+                        .texture
+                        .view
+                })
+        } else {
+            scene_view
+        };
         let bind_group = create_display_finalize_bind_group(
             device,
             pipeline,

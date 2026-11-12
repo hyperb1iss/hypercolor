@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::bus::{DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget};
+use hypercolor_core::bus::{
+    DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget, ScreenBackdropRoute,
+};
 use hypercolor_core::effect::media::MediaProducer;
 use hypercolor_core::effect::{EffectRegistry, FrameDataSources, InputSourceAvailability};
 use hypercolor_core::input::{InteractionData, ScreenBranchPublication};
@@ -18,7 +20,7 @@ use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 
 use super::super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
-use super::super::producer_queue::ProducerFrame;
+use super::super::producer_queue::{ProducerFrame, ProducerFrameIdentity};
 use super::super::scene_dependency::SceneDependencyKey;
 use super::super::sparkleflinger::{CompositionLayer, CompositionLayerIdentity};
 use super::display_retention::DisplayFrameCadence;
@@ -56,6 +58,10 @@ pub(crate) struct DisplayZoneCanvasFrame {
 
 pub(crate) struct ZoneResult {
     pub scene_frame: ProducerFrame,
+    /// The zone whose own frame is the scene frame: a lone scene zone at the
+    /// scene extent. `None` when the scene frame is a picture of several
+    /// zones, which no zone's screens or LEDs read as their own.
+    pub scene_frame_zone: Option<ZoneId>,
     pub display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     pub zone_canvases: Vec<(ZoneId, ProducerFrame)>,
     pub active_display_zone_ids: Vec<ZoneId>,
@@ -380,6 +386,7 @@ pub(crate) struct ZoneEffectError {
 pub(super) struct RetainedRenderZoneFrame {
     pub(super) dependency_key: SceneDependencyKey,
     pub(super) scene_frame: ProducerFrame,
+    pub(super) scene_frame_zone: Option<ZoneId>,
     pub(super) display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     pub(super) active_display_zone_ids: Vec<ZoneId>,
     pub(super) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
@@ -402,6 +409,15 @@ pub(super) struct RetainedMaterializedZoneFrame {
     pub(super) display_target: DisplayFaceTarget,
     pub(super) display_route: DisplayZoneOutputRoute,
     pub(super) empty_direct_shell: bool,
+}
+
+/// The last frame finalized for a screen that shows its backdrop alone.
+pub(super) struct RetainedBackdropFrame {
+    pub(super) frame: DisplayZoneCanvasFrame,
+    pub(super) cadence: Option<DisplayFrameCadence>,
+    pub(super) route: ScreenBackdropRoute,
+    /// What the backdrop showed when `frame` was finalized over it.
+    pub(super) backdrop: Option<ProducerFrameIdentity>,
 }
 
 pub(super) struct CachedMediaProducer {

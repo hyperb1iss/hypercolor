@@ -156,8 +156,8 @@ pub(super) fn encode_canvas_frame(
     }
 }
 
-pub(super) fn encode_face_scene_blend(
-    scene_source: Option<&CanvasFrame>,
+pub(super) fn encode_face_backdrop_blend(
+    backdrop_source: Option<&CanvasFrame>,
     face_source: &CanvasFrame,
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
@@ -168,8 +168,8 @@ pub(super) fn encode_face_scene_blend(
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
-    if let Some(scene_source) = scene_source {
-        render_canvas_frame_rgba(scene_source, viewport, geometry, encode_state, false)?;
+    if let Some(backdrop_source) = backdrop_source {
+        render_canvas_frame_rgba(backdrop_source, viewport, geometry, encode_state, false)?;
     } else {
         prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
     }
@@ -816,7 +816,7 @@ mod tests {
         let frame =
             CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
 
-        let encoded = encode_face_scene_blend(
+        let encoded = encode_face_backdrop_blend(
             None,
             &frame,
             &default_viewport(),
@@ -849,7 +849,7 @@ mod tests {
             ..default_viewport()
         };
 
-        let encoded = encode_face_scene_blend(
+        let encoded = encode_face_backdrop_blend(
             None,
             &frame,
             &viewport,
@@ -900,7 +900,7 @@ mod tests {
         let frame =
             CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
 
-        let encoded = encode_face_scene_blend(
+        let encoded = encode_face_backdrop_blend(
             None,
             &frame,
             &default_viewport(),

@@ -56,6 +56,8 @@ use super::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputPublicationReader, OwnedInputPublicationDemand,
 };
+#[cfg(feature = "wgpu")]
+use super::producer_queue::ProducerFrameIdentity;
 use super::producer_queue::ProducerQueue;
 use super::render_zones::{
     PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
@@ -1752,6 +1754,8 @@ pub(crate) struct PendingDisplayFinalizeWork {
     pub(crate) display_target: DisplayFaceTarget,
     pub(crate) display_route: DisplayZoneOutputRoute,
     pub(crate) frame_format: DisplayFrameFormat,
+    /// What the backdrop showed when this finalization was dispatched.
+    pub(crate) backdrop: Option<ProducerFrameIdentity>,
     pub(crate) pending: PendingDisplayFinalization,
 }
 
@@ -1817,16 +1821,10 @@ impl DisplayFinalizeRuntime {
 
 impl ComposeRuntime<'_> {
     /// The scene renders no zones: release their resources and forget any
-    /// effect error, which no longer describes a running effect.
+    /// effect error, which no longer describes a running effect. Display
+    /// finalizations are left to the display lanes materialized next, which
+    /// retire every lane but the screens' backdrops.
     pub(crate) fn clear_inactive_zones(&mut self) {
-        #[cfg(feature = "wgpu")]
-        for pending in self.display_finalize_runtime.drain() {
-            self.display_sparkleflinger
-                .discard_pending_display_finalization(pending.pending);
-        }
-        #[cfg(feature = "wgpu")]
-        self.display_sparkleflinger
-            .retain_display_finalize_zones(&[]);
         self.render_zone_runtime.clear_inactive_zones();
         self.render_zone_runtime.forget_effect_error();
         self.effect_delta_clock.clear();

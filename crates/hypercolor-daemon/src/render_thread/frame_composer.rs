@@ -15,14 +15,16 @@ use self::preview_policy::{
     requires_cpu_sampling_canvas, scene_canvas_forces_full_surface,
 };
 use super::display_lane::{
-    DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
-    display_zones_require_composed_scene,
+    ComposedSceneBackdrop, DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
+    MaterializedDisplayLanes, ScreenBackdrops, screen_faces,
 };
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
-use super::render_zones::{DisplayZoneCanvasFrame, ZoneEffectError, ZoneResult};
+use super::render_zones::{
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, ZoneEffectError, ZoneResult,
+};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest, SparkleFlinger};
@@ -315,6 +317,7 @@ impl ComposeContext<'_> {
             requires_cpu_sampling_canvas,
             preview_request,
         );
+        let display_lanes = self.materialize_backdrop_lanes();
         let composition_done_at = Instant::now();
         let composition_us = micros_between(composition_start, composition_done_at);
         let composition_done_us = micros_between(stage_start, composition_done_at);
@@ -326,9 +329,9 @@ impl ComposeContext<'_> {
             web_viewport_preview: None,
             producer_full_frame_copy: FullFrameCopyMetrics::default(),
             zone_composition_skips: 0,
-            display_zone_frames: Vec::new(),
+            display_zone_frames: display_lanes.frames,
             zone_canvases: Vec::new(),
-            active_display_zone_ids: Vec::new(),
+            active_display_zone_ids: display_lanes.active_lane_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                 self.scene_snapshot.spatial_engine.clone(),
             ),
@@ -397,12 +400,10 @@ impl ComposeContext<'_> {
                 let preview_request = self.preview_surface_request();
                 let preview_surface_pressure = self.preview_surface_pressure();
                 let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
-                let display_blend_requires_scene =
-                    display_zones_require_composed_scene(&render_zone_result.display_zone_frames);
                 let requires_full_composition = render_zone_requires_full_composition(
                     compiled_plan.metadata.transition_active,
                     &render_zone_result.led_sampling_strategy,
-                ) || display_blend_requires_scene
+                )
                     || producer_frame_requires_composition_for_preview(
                         &scene_frame,
                         preview_request.is_some(),
@@ -430,32 +431,30 @@ impl ComposeContext<'_> {
                         .sparkleflinger
                         .preview_only_frame(scene_frame.clone(), preview_request)
                 };
-                let scene_display_frame =
-                    self.scene_display_frame_for_zones(&scene_frame, requires_full_composition);
-                let (_, display_routes) =
-                    self.state.event_bus.display_zone_output_routes_snapshot();
-                let display_lane_context = DisplayLaneContext {
-                    elapsed_ms: self.scene_snapshot.elapsed_ms,
+                // The composed scene is a zone's backdrop in two cases only:
+                // while a transition crossfades, and when one zone at the
+                // scene extent is the whole scene.
+                let composed_scene = (requires_full_composition
+                    && (compiled_plan.metadata.transition_active
+                        || render_zone_result.scene_frame_zone.is_some()))
+                .then(|| self.composed_scene_frame(&composed))
+                .flatten();
+                let composed_backdrop = composed_scene.as_ref().and_then(|frame| {
+                    if compiled_plan.metadata.transition_active {
+                        Some(ComposedSceneBackdrop::Transition(frame))
+                    } else {
+                        render_zone_result
+                            .scene_frame_zone
+                            .map(|zone_id| ComposedSceneBackdrop::Zone(zone_id, frame))
+                    }
+                });
+                let display_lanes = self.materialize_display_lanes(
                     dependency_key,
-                    target_fps: &self
-                        .scene_snapshot
-                        .scene_runtime
-                        .active_display_zone_target_fps,
-                    routes: DisplayLaneRoutes {
-                        current: &display_routes,
-                        fallback: &self
-                            .scene_snapshot
-                            .scene_runtime
-                            .active_display_zone_output_routes,
-                    },
-                };
-                let display_zone_frames =
-                    DisplayLaneMaterializer::new(&mut self.compose, display_lane_context)
-                        .materialize_zone_canvases(
-                            &render_zone_result.active_display_zone_ids,
-                            render_zone_result.display_zone_frames,
-                            &scene_display_frame,
-                        );
+                    &render_zone_result.active_display_zone_ids,
+                    render_zone_result.display_zone_frames,
+                    &render_zone_result.zone_canvases,
+                    composed_backdrop,
+                );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
                 let composition_us = micros_between(composition_start, composition_done_at);
@@ -467,9 +466,9 @@ impl ComposeContext<'_> {
                     web_viewport_preview: None,
                     producer_full_frame_copy: render_zone_result.producer_full_frame_copy,
                     zone_composition_skips: render_zone_result.zone_composition_skips,
-                    display_zone_frames,
+                    display_zone_frames: display_lanes.frames,
                     zone_canvases: render_zone_result.zone_canvases,
-                    active_display_zone_ids: render_zone_result.active_display_zone_ids,
+                    active_display_zone_ids: display_lanes.active_lane_ids,
                     led_sampling_strategy: render_zone_result.led_sampling_strategy,
                     led_transition_source,
                     producer_render_us: render_zone_result.render_us,
@@ -548,6 +547,7 @@ impl ComposeContext<'_> {
                     preview_request,
                 );
                 let composition_bypassed = composed.bypassed;
+                let display_lanes = self.materialize_backdrop_lanes();
                 let composition_done_at = Instant::now();
                 let composition_us = micros_between(composition_start, composition_done_at);
                 let composition_done_us = micros_between(stage_start, composition_done_at);
@@ -558,9 +558,9 @@ impl ComposeContext<'_> {
                     web_viewport_preview: None,
                     producer_full_frame_copy: FullFrameCopyMetrics::default(),
                     zone_composition_skips: 0,
-                    display_zone_frames: Vec::new(),
+                    display_zone_frames: display_lanes.frames,
                     zone_canvases: Vec::new(),
-                    active_display_zone_ids: Vec::new(),
+                    active_display_zone_ids: display_lanes.active_lane_ids,
                     led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                         self.scene_snapshot.spatial_engine.clone(),
                     ),
@@ -679,26 +679,77 @@ impl ComposeContext<'_> {
         )
     }
 
-    fn scene_display_frame_for_zones(
-        &mut self,
-        fallback: &ProducerFrame,
-        requires_full_composition: bool,
-    ) -> ProducerFrame {
+    /// The scene as the primary composition just produced it: on the GPU
+    /// where the compositor keeps it there, and otherwise its CPU pixels.
+    fn composed_scene_frame(&mut self, composed: &ComposedFrameSet) -> Option<ProducerFrame> {
         #[cfg(feature = "wgpu")]
-        if requires_full_composition {
-            match self.compose.sparkleflinger.current_output_frame() {
-                Ok(Some(frame)) => return ProducerFrame::GpuTexture(frame),
-                Ok(None) => {}
-                Err(error) => {
-                    debug!(%error, "failed to export GPU scene frame for display finalization");
-                }
+        match self.compose.sparkleflinger.current_output_frame() {
+            Ok(Some(frame)) => return Some(ProducerFrame::GpuTexture(frame)),
+            Ok(None) => {}
+            Err(error) => {
+                debug!(%error, "failed to export GPU scene frame for display backdrops");
             }
         }
 
-        #[cfg(not(feature = "wgpu"))]
-        let _ = requires_full_composition;
+        shared_composed_frame(
+            composed,
+            self.state.canvas_dims.width(),
+            self.state.canvas_dims.height(),
+        )
+    }
 
-        fallback.clone()
+    /// Materialize the display lanes of a frame that renders no zone: every
+    /// placed screen shows black, the backdrop of a zone that renders
+    /// nothing.
+    fn materialize_backdrop_lanes(&mut self) -> MaterializedDisplayLanes {
+        self.materialize_display_lanes(
+            self.scene_snapshot.effect_dependency_key,
+            &[],
+            Vec::new(),
+            &[],
+            None,
+        )
+    }
+
+    /// Materialize the frame's display lanes: each face over its screen's
+    /// backdrop, and the backdrop alone for a placed screen with no face.
+    fn materialize_display_lanes(
+        &mut self,
+        dependency_key: SceneDependencyKey,
+        active_display_zone_ids: &[ZoneId],
+        display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
+        zone_frames: &[(ZoneId, ProducerFrame)],
+        composed: Option<ComposedSceneBackdrop<'_>>,
+    ) -> MaterializedDisplayLanes {
+        let scene_runtime = &self.scene_snapshot.scene_runtime;
+        let (_, display_routes) = self.state.event_bus.display_zone_output_routes_snapshot();
+        let (_, backdrop_routes) = self.state.event_bus.screen_backdrop_routes_snapshot();
+        let black = ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
+            self.state.canvas_dims.width(),
+            self.state.canvas_dims.height(),
+            [0, 0, 0],
+        ));
+        let faces = screen_faces(&scene_runtime.resolved_zones, active_display_zone_ids);
+        let context = DisplayLaneContext {
+            elapsed_ms: self.scene_snapshot.elapsed_ms,
+            dependency_key,
+            target_fps: &scene_runtime.active_display_zone_target_fps,
+            routes: DisplayLaneRoutes {
+                current: &display_routes,
+                fallback: &scene_runtime.active_display_zone_output_routes,
+            },
+            backdrops: ScreenBackdrops {
+                routes: &backdrop_routes,
+                zone_frames,
+                composed,
+                black: &black,
+            },
+        };
+        DisplayLaneMaterializer::new(&mut self.compose, context).materialize(
+            active_display_zone_ids,
+            &faces,
+            display_zone_frames,
+        )
     }
 
     fn publish_effect_error(&mut self, error: &anyhow::Error) {

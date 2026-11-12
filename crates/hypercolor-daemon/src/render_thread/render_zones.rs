@@ -47,6 +47,7 @@ use super::sparkleflinger::{CompositionPlan, PreviewSurfaceRequest};
 #[cfg(test)]
 use crate::performance::FullFrameCopyMetrics;
 use device_surfaces::DeviceSurfaceCache;
+pub(crate) use display_retention::RetainedBackdrop;
 use frame_helpers::StaticLayerSurfaceCache;
 #[cfg(all(test, feature = "wgpu"))]
 use frame_helpers::media_mime_prefers_gpu_texture;
@@ -57,8 +58,8 @@ use frame_helpers::surface_backed_frame;
 #[cfg(test)]
 use frame_helpers::{color_fill_frame, transparent_black_frame};
 use model::{
-    CachedMediaProducer, RetainedDirectZoneFrame, RetainedMaterializedZoneFrame,
-    RetainedRenderZoneFrame,
+    CachedMediaProducer, RetainedBackdropFrame, RetainedDirectZoneFrame,
+    RetainedMaterializedZoneFrame, RetainedRenderZoneFrame,
 };
 pub(crate) use model::{
     DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RenderSceneContext, ZoneEffectError,
@@ -95,6 +96,7 @@ pub(crate) struct ZoneRuntime {
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     retained_direct_zone_frames: HashMap<ZoneId, RetainedDirectZoneFrame>,
     retained_materialized_zone_frames: HashMap<ZoneId, RetainedMaterializedZoneFrame>,
+    retained_backdrop_frames: HashMap<DeviceId, RetainedBackdropFrame>,
     effect_registry_snapshot: Option<Arc<EffectRegistry>>,
     static_layer_surface_cache: StaticLayerSurfaceCache,
     scene_surface_pool: Option<RenderSurfacePool>,
@@ -223,6 +225,7 @@ impl ZoneRuntime {
             direct_surface_pools: HashMap::new(),
             retained_direct_zone_frames: HashMap::new(),
             retained_materialized_zone_frames: HashMap::new(),
+            retained_backdrop_frames: HashMap::new(),
             effect_registry_snapshot: None,
             static_layer_surface_cache: StaticLayerSurfaceCache::default(),
             // 8 slots absorbs typical downstream fan-out (watch channel +

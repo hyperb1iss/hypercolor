@@ -42,22 +42,36 @@ pub(super) fn create_display_finalize_bind_group(
     })
 }
 
+/// Encode the uniforms of one display finalize pass.
+///
+/// Without a face the backdrop is bound in the face slot, and the pass
+/// composes it in `Alpha` mode at zero opacity, which leaves the backdrop
+/// as it is whatever blend the caller's parameters name.
 pub(super) fn encode_display_finalize_params(
     params: &DisplayFinalizeParams,
     scene: &ProducerFrame,
-    face: &ProducerFrame,
+    face: Option<&ProducerFrame>,
 ) -> [u8; DISPLAY_FINALIZE_PARAM_BYTES] {
     let mut bytes = [0u8; DISPLAY_FINALIZE_PARAM_BYTES];
     let circular = u32::from(params.circular);
     let yuv_layout = DisplayYuv420Layout::new(params.width, params.height);
+    let (mode, opacity) = if face.is_some() {
+        (
+            display_finalize_mode(params.blend_mode),
+            params.opacity.clamp(0.0, 1.0),
+        )
+    } else {
+        (DisplayFinalizeShaderMode::Alpha, 0.0)
+    };
+    let face_source = face.unwrap_or(scene);
     bytes[0..4].copy_from_slice(&params.width.to_le_bytes());
     bytes[4..8].copy_from_slice(&params.height.to_le_bytes());
     bytes[8..12].copy_from_slice(&circular.to_le_bytes());
-    bytes[12..16].copy_from_slice(&(display_finalize_mode(params.blend_mode) as u32).to_le_bytes());
+    bytes[12..16].copy_from_slice(&(mode as u32).to_le_bytes());
     bytes[16..20].copy_from_slice(&scene.width().to_le_bytes());
     bytes[20..24].copy_from_slice(&scene.height().to_le_bytes());
-    bytes[24..28].copy_from_slice(&face.width().to_le_bytes());
-    bytes[28..32].copy_from_slice(&face.height().to_le_bytes());
+    bytes[24..28].copy_from_slice(&face_source.width().to_le_bytes());
+    bytes[28..32].copy_from_slice(&face_source.height().to_le_bytes());
     bytes[32..36].copy_from_slice(&display_brightness_factor(params.brightness).to_le_bytes());
     bytes[36..40]
         .copy_from_slice(&display_edge_behavior(params.viewport_edge_behavior).to_le_bytes());
@@ -68,7 +82,7 @@ pub(super) fn encode_display_finalize_params(
     bytes[64..68].copy_from_slice(&params.viewport_rotation.cos().to_le_bytes());
     bytes[68..72].copy_from_slice(&params.viewport_rotation.sin().to_le_bytes());
     bytes[72..76].copy_from_slice(&params.viewport_scale.to_le_bytes());
-    bytes[76..80].copy_from_slice(&params.opacity.clamp(0.0, 1.0).to_le_bytes());
+    bytes[76..80].copy_from_slice(&opacity.to_le_bytes());
     bytes[80..84].copy_from_slice(&yuv_layout.y_stride.to_le_bytes());
     bytes[84..88].copy_from_slice(&yuv_layout.uv_stride.to_le_bytes());
     bytes[88..92].copy_from_slice(&yuv_layout.y_plane_len.to_le_bytes());

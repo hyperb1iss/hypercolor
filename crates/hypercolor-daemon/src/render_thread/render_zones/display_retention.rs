@@ -1,15 +1,27 @@
 use std::collections::HashMap;
 
-use hypercolor_core::bus::DisplayZoneOutputRoute;
+use hypercolor_core::bus::{DisplayZoneOutputRoute, ScreenBackdropRoute};
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 
 use super::ZoneRuntime;
 use super::model::{
-    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedDirectZoneFrame,
-    RetainedMaterializedZoneFrame,
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdropFrame,
+    RetainedDirectZoneFrame, RetainedMaterializedZoneFrame,
 };
 use super::zone_state::zone_publishes_direct_canvas;
+use crate::render_thread::producer_queue::ProducerFrameIdentity;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
+
+/// Why a screen's retained backdrop frame still stands.
+#[derive(Clone)]
+pub(crate) enum RetainedBackdrop {
+    /// The backdrop shows what it showed when the frame was finalized, so
+    /// finalizing it again would produce the same picture.
+    Unchanged(DisplayZoneCanvasFrame),
+    /// The backdrop moved on, but the screen's next frame is not due yet.
+    Held(DisplayZoneCanvasFrame),
+}
 
 impl ZoneRuntime {
     pub(super) fn reuse_retained_direct_zone_frame(
@@ -131,6 +143,73 @@ impl ZoneRuntime {
         }
 
         Some(retained.frame.clone())
+    }
+
+    /// The screen's retained backdrop frame, while it still stands in for
+    /// `backdrop` on `route`.
+    pub(crate) fn reuse_retained_backdrop_frame(
+        &self,
+        device_id: DeviceId,
+        elapsed_ms: u64,
+        route: &ScreenBackdropRoute,
+        backdrop: Option<ProducerFrameIdentity>,
+    ) -> Option<RetainedBackdrop> {
+        let retained = self.retained_backdrop_frames.get(&device_id)?;
+        if retained.route != *route {
+            return None;
+        }
+        if backdrop.is_some() && retained.backdrop == backdrop {
+            return Some(RetainedBackdrop::Unchanged(retained.frame.clone()));
+        }
+        retained
+            .cadence
+            .is_some_and(|cadence| cadence.holds_at(elapsed_ms, route.target_fps))
+            .then(|| RetainedBackdrop::Held(retained.frame.clone()))
+    }
+
+    /// The screen's latest backdrop frame on `route`, whatever its age: what
+    /// the screen keeps showing while its next frame is still being made.
+    pub(crate) fn reuse_latest_backdrop_frame(
+        &self,
+        device_id: DeviceId,
+        route: &ScreenBackdropRoute,
+    ) -> Option<DisplayZoneCanvasFrame> {
+        let retained = self.retained_backdrop_frames.get(&device_id)?;
+        (retained.route == *route).then(|| retained.frame.clone())
+    }
+
+    pub(crate) fn retain_backdrop_frame(
+        &mut self,
+        device_id: DeviceId,
+        elapsed_ms: u64,
+        route: &ScreenBackdropRoute,
+        backdrop: Option<ProducerFrameIdentity>,
+        frame: &DisplayZoneCanvasFrame,
+    ) {
+        let previous = self
+            .retained_backdrop_frames
+            .get(&device_id)
+            .filter(|retained| retained.route == *route)
+            .and_then(|retained| retained.cadence);
+        self.retained_backdrop_frames.insert(
+            device_id,
+            RetainedBackdropFrame {
+                frame: frame.clone(),
+                cadence: DisplayFrameCadence::after_render(
+                    previous,
+                    elapsed_ms,
+                    Some(route.target_fps),
+                ),
+                route: route.clone(),
+                backdrop,
+            },
+        );
+    }
+
+    /// Forget the backdrop frames of screens that no longer show one.
+    pub(crate) fn retain_backdrop_frames_for(&mut self, device_ids: &[DeviceId]) {
+        self.retained_backdrop_frames
+            .retain(|device_id, _| device_ids.contains(device_id));
     }
 
     pub(crate) fn retain_materialized_zone_frame(

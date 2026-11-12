@@ -149,6 +149,7 @@ impl ZoneRuntime {
             .into_parts_for_zone_order(context.zones);
         let result = ZoneResult {
             scene_frame,
+            scene_frame_zone: None,
             display_zone_frames: rendered_parts.display_zone_frames,
             zone_canvases: rendered_parts.zone_canvases,
             active_display_zone_ids: rendered_parts.active_display_zone_ids,
@@ -249,6 +250,7 @@ impl ZoneRuntime {
         let rendered_parts = rendered_zones.rendered_zones.into_parts();
         Ok(Some(ZoneResult {
             scene_frame,
+            scene_frame_zone: Some(scene_zone.id),
             display_zone_frames: rendered_parts.display_zone_frames,
             zone_canvases: rendered_parts.zone_canvases,
             active_display_zone_ids: rendered_parts.active_display_zone_ids,

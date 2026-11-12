@@ -42,6 +42,51 @@ fn gpu_display_finalize_alpha_blends_in_linear_light() {
     );
 }
 
+/// A screen with no face finalizes its backdrop alone: the backdrop seen
+/// through the viewport, masked and dimmed like a face frame, whatever
+/// blend the parameters name.
+#[test]
+fn gpu_display_finalize_shows_a_backdrop_alone_through_its_viewport() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let mut backdrop = Canvas::new(4, 2);
+    for y in 0..2 {
+        for x in 0..4 {
+            let color = if x < 2 {
+                Rgba::new(255, 0, 0, 255)
+            } else {
+                Rgba::new(0, 0, 255, 255)
+            };
+            backdrop.set_pixel(x, y, color);
+        }
+    }
+    let backdrop = ProducerFrame::Canvas(backdrop);
+
+    for blend_mode in [BlendMode::Replace, BlendMode::Alpha, BlendMode::Multiply] {
+        let mut right_half = display_finalize_params(2, 2, blend_mode);
+        right_half.viewport_position = NormalizedPosition::new(0.75, 0.5);
+        right_half.viewport_size = NormalizedPosition::new(0.5, 1.0);
+        right_half.brightness = 0.5;
+
+        let surface = (0..16)
+            .find_map(|_| {
+                compositor
+                    .finalize_display_backdrop(&backdrop, right_half)
+                    .expect("backdrop finalize should not fail")
+            })
+            .expect("backdrop finalize should produce a surface");
+
+        for pixel in surface.rgba_bytes().as_chunks::<4>().0 {
+            assert_eq!(
+                pixel,
+                &[0, 0, 128, 255],
+                "the {blend_mode:?} parameters should leave the dimmed blue half alone"
+            );
+        }
+    }
+}
+
 #[test]
 fn gpu_display_finalize_yuv420_reads_back_luma_and_chroma_planes() {
     let Some(mut compositor) = super::gpu_test_compositor() else {

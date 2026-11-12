@@ -11,6 +11,7 @@ use tokio::time::timeout;
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayZoneFrame, DisplayZoneTarget, HypercolorBus, PreviewKind,
+    screen_backdrop_lane_id,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::scene::SceneManager;
@@ -37,7 +38,7 @@ use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
 use hypercolor_daemon::domain::layout::LayoutContext;
-use hypercolor_daemon::domain::scene::SceneService;
+use hypercolor_daemon::domain::scene::{ScenePlanReader, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::output_power::OutputPowerState;
@@ -698,25 +699,42 @@ fn layout_with_zones(zones: Vec<Output>) -> SpatialLayout {
     }
 }
 
-fn spatial_with_zones(zones: Vec<Output>) -> SpatialService {
-    SpatialService::new(SpatialEngine::new(layout_with_zones(zones)))
+/// The layout and scene authorities a test places its screens through. The
+/// default scene's primary zone follows the layout, so a screen the layout
+/// places is placed by that zone.
+#[derive(Clone)]
+struct TestPlacement {
+    spatial: SpatialService,
+    scenes: SceneService,
 }
 
-async fn publish_spatial_layout(spatial: &SpatialService, layout: SpatialLayout) {
+impl TestPlacement {
+    fn scene_plan(&self) -> ScenePlanReader {
+        self.scenes.plan_reader()
+    }
+}
+
+fn placement_with_zones(zones: Vec<Output>) -> TestPlacement {
+    let layout = layout_with_zones(zones);
+    TestPlacement {
+        spatial: SpatialService::new(SpatialEngine::new(layout.clone())),
+        scenes: SceneService::in_memory(
+            SceneManager::with_default_layout(layout),
+            Arc::new(HypercolorBus::new()),
+        ),
+    }
+}
+
+async fn publish_spatial_layout(placement: &TestPlacement, layout: SpatialLayout) {
     let state_dir = tempfile::tempdir().expect("layout state dir should be created");
-    let event_bus = Arc::new(HypercolorBus::new());
-    let scenes = SceneService::in_memory(
-        SceneManager::with_default_layout(spatial.layout().as_ref().clone()),
-        event_bus,
-    );
     let transactions = SceneTransactionQueue::default();
     let context = LayoutContext::new_test_context(
         HashMap::new(),
         state_dir.path().join("layouts.json"),
         HashMap::new(),
         state_dir.path().join("layout-auto-exclusions.json"),
-        spatial.clone(),
-        scenes.clone(),
+        placement.spatial.clone(),
+        placement.scenes.clone(),
         transactions.clone(),
         state_dir.path().join("runtime-state.json"),
     );
@@ -739,6 +757,58 @@ async fn publish_spatial_layout(spatial: &SpatialService, layout: SpatialLayout)
         .await
         .expect("layout publication task should complete")
         .expect("layout publication workflow should succeed");
+}
+
+/// Place the screen on `device_id` over its zone's whole canvas, so its
+/// backdrop is the zone's whole frame.
+async fn full_canvas_placement(
+    logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    device_id: DeviceId,
+) -> TestPlacement {
+    let logical_id = insert_default_logical_device(logical_devices, device_id).await;
+    placement_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )])
+}
+
+/// Publish `frame` as the backdrop of the screen on `device_id`, the way a
+/// render thread whose compositor leaves the crop to the display worker
+/// publishes the owning zone's canvas.
+fn publish_screen_backdrop(event_bus: &HypercolorBus, device_id: DeviceId, frame: CanvasFrame) {
+    let lane = screen_backdrop_lane_id(device_id);
+    event_bus.upsert_display_zone_target(
+        lane,
+        DisplayZoneTarget {
+            device_id,
+            blend_mode: BlendMode::Replace,
+            opacity: 1.0,
+            finalized: false,
+        },
+    );
+    event_bus
+        .zone_canvas_sender(lane)
+        .send_replace(DisplayZoneFrame::Canvas(frame));
+}
+
+/// Wait until the display output thread has resolved the zone that places
+/// the screen on `device_id`.
+async fn wait_for_screen_backdrop_route(event_bus: &HypercolorBus, device_id: DeviceId) {
+    timeout(DISPLAY_TEST_TIMEOUT, async {
+        loop {
+            if event_bus
+                .screen_backdrop_routes_snapshot()
+                .1
+                .contains_key(&device_id)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("display output should resolve the screen's backdrop route");
 }
 
 fn simulated_display_metadata() -> HashMap<String, String> {
@@ -984,20 +1054,6 @@ async fn wait_for_display_frame_snapshot(
     .expect("display preview frame should arrive within timeout")
 }
 
-async fn wait_for_scene_canvas_receiver_count(event_bus: &HypercolorBus, expected_count: usize) {
-    tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
-        loop {
-            if event_bus.scene_canvas_receiver_count() >= expected_count {
-                return;
-            }
-
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("authoritative scene canvas receiver should appear within timeout");
-}
-
 async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> Duration {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
@@ -1008,7 +1064,7 @@ async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> D
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -1039,24 +1095,21 @@ async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> D
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(1, 0, 0, 255)),
-            1,
-            16,
-        ));
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(1, 0, 0, 255)), 1, 16),
+    );
     let _ = wait_for_display_write_count(&display_writes, 1).await;
 
     display_writes.lock().await.clear();
@@ -1064,13 +1117,15 @@ async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> D
 
     for frame in 0_u32..100 {
         let red = u8::try_from(frame.saturating_add(2)).unwrap_or(u8::MAX);
-        event_bus
-            .scene_canvas_lane()
-            .send_replace(CanvasFrame::from_canvas(
+        publish_screen_backdrop(
+            &event_bus,
+            device_id,
+            CanvasFrame::from_canvas(
                 &solid_canvas(Rgba::new(red, 0, 0, 255)),
                 frame.saturating_add(2),
                 frame.saturating_add(2).saturating_mul(16),
-            ));
+            ),
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
@@ -1179,7 +1234,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -1208,22 +1263,23 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let canvas = sample_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     assert!(!writes[0].is_empty());
@@ -1246,7 +1302,7 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    let spatial_engine = spatial_with_zones(vec![
+    let placement = placement_with_zones(vec![
         display_zone_with_id(
             "zone-slow-display",
             slow_logical_id.as_str(),
@@ -1293,24 +1349,25 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(32, 64, 96, 255)),
-            1,
-            16,
-        ));
+    for device_id in [slow_device_id, fast_device_id] {
+        wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    }
+    for device_id in [slow_device_id, fast_device_id] {
+        publish_screen_backdrop(
+            &event_bus,
+            device_id,
+            CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 64, 96, 255)), 1, 16),
+        );
+    }
 
     wait_for_atomic_count(slow_sink.entered_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
     wait_for_atomic_count(
@@ -1349,7 +1406,7 @@ async fn automatic_display_output_aborts_stale_waiter_without_cancelling_transpo
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    let spatial_engine = spatial_with_zones(vec![
+    let placement = placement_with_zones(vec![
         display_zone_with_id(
             "zone-slow-display",
             slow_logical_id.as_str(),
@@ -1396,24 +1453,25 @@ async fn automatic_display_output_aborts_stale_waiter_without_cancelling_transpo
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(32, 64, 96, 255)),
-            1,
-            16,
-        ));
+    for device_id in [slow_device_id, fast_device_id] {
+        wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    }
+    for device_id in [slow_device_id, fast_device_id] {
+        publish_screen_backdrop(
+            &event_bus,
+            device_id,
+            CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 64, 96, 255)), 1, 16),
+        );
+    }
 
     wait_for_atomic_count(slow_sink.entered_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
     wait_for_atomic_count(fast_sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
@@ -1423,13 +1481,13 @@ async fn automatic_display_output_aborts_stale_waiter_without_cancelling_transpo
             .await
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(96, 32, 160, 255)),
-            2,
-            32,
-        ));
+    for device_id in [slow_device_id, fast_device_id] {
+        publish_screen_backdrop(
+            &event_bus,
+            device_id,
+            CanvasFrame::from_canvas(&solid_canvas(Rgba::new(96, 32, 160, 255)), 2, 32),
+        );
+    }
 
     wait_for_atomic_count(
         fast_sink.write_count.as_ref(),
@@ -1458,7 +1516,7 @@ async fn display_thread_shutdown_is_bounded_while_actor_delivery_is_blocked() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
@@ -1469,7 +1527,7 @@ async fn display_thread_shutdown_is_bounded_while_actor_delivery_is_blocked() {
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
     publish_spatial_layout(
-        &spatial_engine,
+        &placement,
         layout_with_zones(vec![display_zone_with_id(
             "zone-slow-shutdown-display",
             logical_id.as_str(),
@@ -1503,24 +1561,21 @@ async fn display_thread_shutdown_is_bounded_while_actor_delivery_is_blocked() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::clone(&backend_manager),
         device_registry,
-        spatial_engine,
+        scene_plan: placement.scene_plan(),
         logical_devices,
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(32, 64, 96, 255)),
-            1,
-            16,
-        ));
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 64, 96, 255)), 1, 16),
+    );
     wait_for_atomic_count(sink.entered_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
 
     timeout(Duration::from_millis(600), thread.shutdown())
@@ -1563,7 +1618,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
     let sinks_available = Arc::new(AtomicBool::new(false));
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -1596,24 +1651,21 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(96, 64, 32, 255)),
-            1,
-            16,
-        ));
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(96, 64, 32, 255)), 1, 16),
+    );
     let fallback_before_promotion =
         wait_for_atomic_count(fallback_write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
     assert_eq!(
@@ -1621,13 +1673,11 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
         2,
         "worker should look up once at spawn and once on the first write"
     );
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(64, 96, 32, 255)),
-            2,
-            32,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(64, 96, 32, 255)), 2, 32),
+    );
     let fallback_after_cached_negative = wait_for_atomic_count(
         fallback_write_count.as_ref(),
         fallback_before_promotion + 1,
@@ -1642,13 +1692,11 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
 
     sinks_available.store(true, Ordering::SeqCst);
     tokio::time::sleep(Duration::from_millis(300)).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(32, 96, 64, 255)),
-            3,
-            48,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 96, 64, 255)), 3, 48),
+    );
 
     wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
     assert_eq!(
@@ -1662,13 +1710,11 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
         "display output should promote to a sink instead of staying on backend fallback"
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(64, 32, 96, 255)),
-            4,
-            64,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(64, 32, 96, 255)), 4, 64),
+    );
     wait_for_atomic_count(sink.write_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
     assert_eq!(
         display_sink_lookup_count.load(Ordering::SeqCst),
@@ -1691,7 +1737,7 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
     let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -1723,24 +1769,21 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(48, 48, 128, 255)),
-            1,
-            16,
-        ));
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(48, 48, 128, 255)), 1, 16),
+    );
 
     wait_for_atomic_count(sink.entered_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1755,13 +1798,11 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
         "the initial display lane should resolve its sink exactly once"
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(128, 48, 48, 255)),
-            2,
-            32,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(128, 48, 48, 255)), 2, 32),
+    );
 
     wait_for_atomic_count(sink.entered_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
     wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
@@ -1777,13 +1818,11 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
         "sink recovery should avoid the backend-lock fallback"
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(48, 128, 48, 255)),
-            3,
-            48,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(48, 128, 48, 255)), 3, 48),
+    );
     wait_for_atomic_count(sink.write_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
     assert_eq!(
         display_sink_lookup_count.load(Ordering::SeqCst),
@@ -1799,7 +1838,7 @@ async fn automatic_display_output_reconciles_replaced_backend_generation() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let old_writes = Arc::new(Mutex::new(Vec::new()));
     let new_writes = Arc::new(Mutex::new(Vec::new()));
@@ -1807,7 +1846,7 @@ async fn automatic_display_output_reconciles_replaced_backend_generation() {
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     publish_spatial_layout(
-        &spatial_engine,
+        &placement,
         layout_with_zones(vec![display_zone(
             logical_id.as_str(),
             NormalizedPosition::new(0.5, 0.5),
@@ -1843,24 +1882,21 @@ async fn automatic_display_output_reconciles_replaced_backend_generation() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::clone(&backend_manager),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     let initial_writes = wait_for_display_write_count(&old_writes, 1).await;
     assert_eq!(initial_writes.len(), 1);
 
@@ -1884,13 +1920,11 @@ async fn automatic_display_output_reconciles_replaced_backend_generation() {
     assert_eq!(replacement_writes.len(), 1);
     assert_eq!(old_writes.lock().await.len(), 1);
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(0, 255, 0, 255)),
-            2,
-            32,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(0, 255, 0, 255)), 2, 32),
+    );
     let replacement_writes = wait_for_display_write_count(&new_writes, 2).await;
     let image = decode_jpeg(
         replacement_writes
@@ -1915,7 +1949,7 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -1949,22 +1983,23 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let canvas = sample_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     assert_eq!(writes[0].len(), 320 * 200 * 3);
@@ -1986,7 +2021,7 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -2020,37 +2055,32 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(&writes[0][..3], &[255, 0, 0]);
     assert!(display_frames.read().await.frame(device_id).is_none());
 
     let mut preview_rx = display_frames.write().await.subscribe(device_id);
     assert!(preview_rx.borrow_and_update().is_none());
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(0, 255, 0, 255)),
-            2,
-            32,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(0, 255, 0, 255)), 2, 32),
+    );
 
     tokio::time::timeout(DISPLAY_TEST_TIMEOUT, preview_rx.changed())
         .await
@@ -2073,8 +2103,11 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     thread.shutdown().await.expect("display thread should stop");
 }
 
+/// A screen's frames arrive on its own lane, so the display output thread
+/// asks the render thread for no scene canvas or preview on a screen's
+/// behalf, and neither is read back for it.
 #[tokio::test]
-async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_preview_runtime() {
+async fn automatic_display_output_drives_a_screen_without_reading_any_scene_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -2083,7 +2116,7 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -2113,31 +2146,36 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::clone(&preview_runtime),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    assert_eq!(event_bus.canvas_receiver_count(), 0);
-    assert_eq!(preview_runtime.canvas_receiver_count(), 0);
-    assert_eq!(preview_runtime.tracked_canvas_receiver_count(), 0);
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let canvas = sample_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
     let _ = wait_for_display_writes(&display_writes).await;
 
+    assert_eq!(event_bus.scene_canvas_receiver_count(), 0);
+    assert_eq!(event_bus.canvas_receiver_count(), 0);
+    assert_eq!(preview_runtime.scene_canvas_receiver_count(), 0);
+    assert_eq!(preview_runtime.canvas_receiver_count(), 0);
+    assert_eq!(preview_runtime.tracked_canvas_receiver_count(), 0);
     let preview_snapshot = preview_runtime.snapshot();
-    let canvas_preview = preview_snapshot.preview(PreviewKind::Canvas);
-    assert_eq!(canvas_preview.receivers, 0);
-    assert_eq!(canvas_preview.frames_published, 0);
+    for kind in [PreviewKind::Canvas, PreviewKind::SceneCanvas] {
+        let preview = preview_snapshot.preview(kind);
+        assert_eq!(preview.receivers, 0);
+        assert_eq!(preview.frames_published, 0);
+    }
 
     thread.shutdown().await.expect("display thread should stop");
 }
@@ -2153,7 +2191,7 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -2190,19 +2228,20 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&sample_canvas(), 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&sample_canvas(), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(120)).await;
 
     assert!(display_writes.lock().await.is_empty());
@@ -2222,7 +2261,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -2259,35 +2298,30 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(120)).await;
     assert!(display_writes.lock().await.is_empty());
 
     let _preview_rx = display_frames.write().await.subscribe(device_id);
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(0, 255, 0, 255)),
-            2,
-            32,
-        ));
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(0, 255, 0, 255)), 2, 32),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     assert!(!writes.is_empty());
@@ -2301,7 +2335,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = spatial_with_zones(Vec::new());
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2325,10 +2359,9 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -2336,9 +2369,11 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     });
 
     let canvas = sample_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(display_writes.lock().await.is_empty());
@@ -2351,7 +2386,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = spatial_with_zones(Vec::new());
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2379,10 +2414,9 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -2390,9 +2424,11 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     });
 
     let canvas = sample_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(display_writes.lock().await.is_empty());
@@ -2410,7 +2446,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.25, 0.5),
         NormalizedPosition::new(0.5, 1.0),
@@ -2439,22 +2475,23 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let canvas = split_color_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -2498,7 +2535,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
         );
     }
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.25, 0.5),
         NormalizedPosition::new(0.5, 1.0),
@@ -2527,10 +2564,9 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -2538,9 +2574,11 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     });
 
     let canvas = split_color_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -2568,7 +2606,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![led_zone(
+    let placement = placement_with_zones(vec![led_zone(
         logical_id.as_str(),
         "Pads",
         NormalizedPosition::new(0.25, 0.5),
@@ -2598,10 +2636,9 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -2609,9 +2646,11 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     });
 
     let canvas = split_color_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -2635,7 +2674,7 @@ async fn display_zone_canvas_routes_to_device_worker() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = spatial_with_zones(Vec::new());
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2666,10 +2705,9 @@ async fn display_zone_canvas_routes_to_device_worker() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -2683,13 +2721,11 @@ async fn display_zone_canvas_routes_to_device_worker() {
             1,
             16,
         )));
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -2712,7 +2748,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2743,10 +2779,9 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -2793,7 +2828,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
@@ -2825,10 +2860,9 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -2891,10 +2925,10 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let placement = full_canvas_placement(&logical_devices, device_id).await;
     let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
@@ -2930,25 +2964,22 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
@@ -2980,10 +3011,10 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let placement = full_canvas_placement(&logical_devices, device_id).await;
     let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
@@ -3019,17 +3050,16 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     event_bus
         .zone_canvas_sender(zone_id)
@@ -3052,13 +3082,11 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
     );
     display_writes.lock().await.clear();
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            2,
-            32,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 2, 32),
+    );
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
     let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
@@ -3076,7 +3104,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -3105,10 +3133,9 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -3125,13 +3152,11 @@ async fn display_output_uses_render_published_face_route_metadata() {
         },
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
@@ -3163,7 +3188,7 @@ async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -3198,23 +3223,20 @@ async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
@@ -3242,11 +3264,11 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_write_times = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let placement = full_canvas_placement(&logical_devices, device_id).await;
     let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
@@ -3284,10 +3306,9 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -3301,13 +3322,11 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
             1,
             16,
         )));
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     let _ = wait_for_display_write_count(&display_writes, 1).await;
 
     display_writes.lock().await.clear();
@@ -3323,13 +3342,15 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
         while display_write_times.lock().await.len() < MEASURED_WRITES {
             let red =
                 u8::try_from((frame % 12).saturating_add(1).saturating_mul(20)).unwrap_or(u8::MAX);
-            event_bus
-                .scene_canvas_lane()
-                .send_replace(CanvasFrame::from_canvas(
+            publish_screen_backdrop(
+                &event_bus,
+                device_id,
+                CanvasFrame::from_canvas(
                     &solid_canvas(Rgba::new(red, 0, 0, 255)),
                     frame.saturating_add(2),
                     frame.saturating_add(2).saturating_mul(16),
-                ));
+                ),
+            );
             frame = frame.saturating_add(1);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -3354,10 +3375,10 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let placement = full_canvas_placement(&logical_devices, device_id).await;
     let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
@@ -3393,25 +3414,22 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
@@ -3443,10 +3461,10 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let placement = full_canvas_placement(&logical_devices, device_id).await;
     let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
@@ -3482,25 +3500,22 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 255, 255, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 255, 255, 255)), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
@@ -3532,10 +3547,10 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+    let placement = full_canvas_placement(&logical_devices, device_id).await;
     let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
@@ -3571,25 +3586,22 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(
-            &solid_canvas(Rgba::new(255, 0, 0, 255)),
-            1,
-            16,
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
@@ -3626,7 +3638,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -3655,10 +3667,9 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -3669,16 +3680,18 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let green = solid_canvas(Rgba::new(0, 255, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&green, 2, 32));
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&blue, 3, 48));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&green, 2, 32),
+    );
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&blue, 3, 48),
+    );
 
     tokio::time::sleep(Duration::from_millis(550)).await;
 
@@ -3721,7 +3734,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -3750,10 +3763,9 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -3764,9 +3776,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let green = solid_canvas(Rgba::new(0, 255, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(
         writes
@@ -3779,13 +3789,17 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
         "expected first paced frame to be red, got {first_pixel:?}"
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&green, 2, 32));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&green, 2, 32),
+    );
     tokio::time::sleep(Duration::from_millis(20)).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&blue, 3, 48));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&blue, 3, 48),
+    );
 
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected second paced display frame"));
@@ -3812,7 +3826,7 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -3843,30 +3857,27 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let started = Instant::now();
     let mut frame_number = 1_u32;
     let mut channel = 1_u8;
     while started.elapsed() < Duration::from_millis(360) {
         let canvas = solid_canvas(Rgba::new(channel, 0, 255_u8.saturating_sub(channel), 255));
-        event_bus
-            .scene_canvas_lane()
-            .send_replace(CanvasFrame::from_canvas(
-                &canvas,
-                frame_number,
-                frame_number.saturating_mul(16),
-            ));
+        publish_screen_backdrop(
+            &event_bus,
+            device_id,
+            CanvasFrame::from_canvas(&canvas, frame_number, frame_number.saturating_mul(16)),
+        );
         frame_number = frame_number.saturating_add(1);
         channel = channel.wrapping_add(7).max(1);
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -3893,7 +3904,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -3919,22 +3930,19 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
 
     let frame = wait_for_display_frame_snapshot(&display_frames, device_id).await;
     let image = decode_jpeg(frame.jpeg_data.as_slice());
@@ -3960,7 +3968,7 @@ async fn automatic_display_output_routes_failures_through_the_core_lifecycle_fen
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -3994,22 +4002,19 @@ async fn automatic_display_output_routes_failures_through_the_core_lifecycle_fen
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::clone(&backend_manager),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
 
     wait_for_display_attempt_count(&display_write_attempt_times, 1).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -4032,9 +4037,7 @@ async fn automatic_display_output_routes_failures_through_the_core_lifecycle_fen
         ErrorRecoverability::Reconnect
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
 
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let attempt_times = wait_for_display_attempt_count(&display_write_attempt_times, 2).await;
@@ -4077,7 +4080,7 @@ async fn static_hold_refresh_recovers_without_a_private_retry_pipeline() {
     let sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4113,29 +4116,24 @@ async fn static_hold_refresh_recovers_without_a_private_retry_pipeline() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state,
         static_hold_refresh_interval: Duration::from_millis(20),
         face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
     wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
 
     sink.failures_remaining.store(1, Ordering::SeqCst);
     wait_for_atomic_count(sink.entered_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
 
     let metrics = tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
@@ -4165,7 +4163,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4194,30 +4192,25 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
     tokio::time::sleep(Duration::from_millis(140)).await;
     assert_eq!(
         display_writes.lock().await.len(),
@@ -4225,9 +4218,11 @@ async fn automatic_display_output_skips_unchanged_frames() {
         "identical frame should not trigger another LCD write"
     );
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&blue, 3, 48));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&blue, 3, 48),
+    );
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     assert_eq!(writes.len(), 2);
 
@@ -4251,7 +4246,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4280,31 +4275,32 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let surface =
         PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16);
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_surface(surface.clone()));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_surface(surface.clone()),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_surface(
-            surface.with_frame_metadata(2, 32),
-        ));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_surface(surface.with_frame_metadata(2, 32)),
+    );
     tokio::time::sleep(Duration::from_millis(140)).await;
     assert_eq!(
         display_writes.lock().await.len(),
@@ -4325,7 +4321,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4354,26 +4350,23 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
 
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.0), None)
         .await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let black_image = decode_jpeg(
         writes
@@ -4389,9 +4382,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.5), None)
         .await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let dimmed_image = decode_jpeg(
         writes
@@ -4417,7 +4408,7 @@ async fn automatic_display_output_turns_with_the_device_mount_rotation() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4458,22 +4449,23 @@ async fn automatic_display_output_turns_with_the_device_mount_rotation() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let canvas = split_color_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -4501,7 +4493,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4530,10 +4522,9 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -4546,15 +4537,15 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.0), None)
         .await;
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&blue, 2, 32));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&blue, 2, 32),
+    );
     tokio::time::sleep(Duration::from_millis(140)).await;
     assert_eq!(
         display_writes.lock().await.len(),
@@ -4575,7 +4566,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.25, 0.5),
         NormalizedPosition::new(0.5, 1.0),
@@ -4604,10 +4595,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -4615,9 +4605,11 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     });
 
     let canvas = split_color_canvas();
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 1, 16),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(writes.first().expect("expected initial display frame"));
     let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
@@ -4627,7 +4619,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     );
 
     publish_spatial_layout(
-        &spatial_engine,
+        &placement,
         layout_with_zones(vec![display_zone(
             logical_id.as_str(),
             NormalizedPosition::new(0.75, 0.5),
@@ -4636,9 +4628,11 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     )
     .await;
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&canvas, 2, 32));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&canvas, 2, 32),
+    );
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected refreshed display frame"));
     let second_pixel = second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
@@ -4661,7 +4655,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let zone_id = ZoneId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4690,10 +4684,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
@@ -4703,9 +4696,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(writes.first().expect("expected initial display frame"));
     let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
@@ -4718,9 +4709,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     event_bus
         .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(&blue, 2, 32)));
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&red, 3, 48));
+    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 3, 48));
 
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected refreshed direct-face frame"));
@@ -4744,7 +4733,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
 
-    let spatial_engine = spatial_with_zones(vec![display_zone(
+    let placement = placement_with_zones(vec![display_zone(
         logical_id.as_str(),
         NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(1.0, 1.0),
@@ -4773,22 +4762,23 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: spatial_engine.clone(),
+        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
-        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state,
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
         face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let black = solid_canvas(Rgba::BLACK);
-    event_bus
-        .scene_canvas_lane()
-        .send_replace(CanvasFrame::from_canvas(&black, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        device_id,
+        CanvasFrame::from_canvas(&black, 1, 16),
+    );
     let _ = wait_for_display_write_count(&display_writes, 1).await;
 
     power_tx.send_replace(OutputPowerState {

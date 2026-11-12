@@ -1,9 +1,11 @@
 //! Automatic display output pipeline for LCD-capable devices.
 //!
-//! This task renders the latest canvas into layout-mapped display zones without
-//! disturbing the existing LED frame routing path.
+//! This task delivers each screen's frames, a face or the backdrop of the
+//! zone that places the screen, without disturbing the LED frame routing
+//! path.
 
 mod encode;
+mod placement;
 mod render;
 mod worker;
 
@@ -22,22 +24,22 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneViewport, HypercolorBus,
-    OutputDemandHold,
+    OutputDemandHold, ScreenBackdropRoute, screen_backdrop_lane_id,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
-use hypercolor_core::spatial::is_display_zone;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
-use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
+use self::placement::screen_placement_signature;
+pub use self::placement::{ScreenPlacement, screen_placement, screen_viewport_in_layout};
 use self::render::display_viewport_signature;
 use crate::display_frames::DisplayFrameRuntime;
-use crate::domain::spatial::SpatialService;
+use crate::domain::scene::ScenePlanReader;
 use crate::logical_devices::LogicalDevice;
 use crate::output_power::OutputPowerState;
-use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
 use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
@@ -63,14 +65,12 @@ pub struct DisplayOutputState {
     pub backend_manager: Arc<Mutex<BackendManager>>,
     /// Live registry used to discover currently renderable display devices.
     pub device_registry: DeviceRegistry,
-    /// Active spatial layout used to decide which LCDs should render and how.
-    pub spatial_engine: SpatialService,
+    /// Active scene plan: the zones whose layouts place each LCD.
+    pub scene_plan: ScenePlanReader,
     /// Logical-device mappings used to match physical devices to layout zones.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-    /// Event bus canvas stream produced by the render thread.
+    /// Event bus carrying the display frames the render thread produces.
     pub event_bus: Arc<HypercolorBus>,
-    /// Internal preview-demand accounting shared with the render thread.
-    pub preview_runtime: Arc<PreviewRuntime>,
     /// Session power policy used to decide whether static hold refresh is active.
     pub power_state: watch::Receiver<OutputPowerState>,
     /// How often unchanged display frames should be reasserted during static hold.
@@ -105,9 +105,13 @@ struct DisplayTarget {
     /// The device's encoded-frame wire cap, when it declares one.
     max_frame_len: Option<usize>,
     canvas_source: DisplayCanvasSource,
-    zone_canvas_sender: Option<watch::Sender<DisplayZoneFrame>>,
+    /// The display lane this screen's frames arrive on.
+    lane_sender: watch::Sender<DisplayZoneFrame>,
+    /// The screen's backdrop lane, for a face the worker blends over it.
+    backdrop_sender: Option<watch::Sender<DisplayZoneFrame>>,
     display_target: Option<DisplayFaceTarget>,
-    finalized_face: bool,
+    /// Whether the lane's frames arrive finalized by the render thread.
+    finalized: bool,
     viewport: DisplayViewport,
 }
 
@@ -137,6 +141,8 @@ pub(super) struct DisplayWorkerConfigSignature {
 struct DisplayTargetCache {
     version: u64,
     cache_key: Option<DisplayTargetCacheKey>,
+    /// The zones revision `placement_signature` was computed for.
+    placement_signature: Option<(u64, u64)>,
     targets: Arc<[Arc<DisplayTarget>]>,
 }
 
@@ -158,7 +164,7 @@ impl DisplayTargetDependencyKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplayTargetCacheKey {
     dependency_key: DisplayTargetDependencyKey,
-    layout_ptr: usize,
+    placement_signature: u64,
     logical_signature: u64,
     display_preview_signature: u64,
 }
@@ -166,39 +172,35 @@ struct DisplayTargetCacheKey {
 impl DisplayTargetCacheKey {
     const fn new(
         dependency_key: DisplayTargetDependencyKey,
-        layout_ptr: usize,
+        placement_signature: u64,
         logical_signature: u64,
         display_preview_signature: u64,
     ) -> Self {
         Self {
             dependency_key,
-            layout_ptr,
+            placement_signature,
             logical_signature,
             display_preview_signature,
         }
     }
 }
 
+/// What a screen shows.
 #[derive(Clone, Debug)]
 enum DisplayCanvasSource {
-    Scene,
+    /// The backdrop of the zone that places the screen, alone.
+    Backdrop,
+    /// The face a display zone renders for the screen.
     ZoneDirect { zone_id: ZoneId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DisplayCanvasSourceSignature {
-    Scene,
+    Backdrop,
     ZoneDirect { zone_id: ZoneId },
 }
 
-#[derive(Clone, Copy, Debug)]
-struct DisplayViewport {
-    position: NormalizedPosition,
-    size: NormalizedPosition,
-    rotation: f32,
-    scale: f32,
-    edge_behavior: EdgeBehavior,
-}
+type DisplayViewport = DisplayZoneViewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplayViewportSignature {
@@ -220,10 +222,13 @@ struct DisplayTargetsSnapshot {
 
 #[derive(Clone, Debug)]
 pub(super) enum DisplayWorkerFrameSource {
-    Scene(Arc<CanvasFrame>),
+    /// The owning zone's frame, for the worker to crop to the screen.
+    Backdrop(Arc<CanvasFrame>),
+    /// A frame the render thread finalized for the screen.
     Direct(Arc<DisplayZoneFrame>),
+    /// A face for the worker to blend over the screen's backdrop.
     Face {
-        scene_frame: Option<Arc<CanvasFrame>>,
+        backdrop_frame: Option<Arc<CanvasFrame>>,
         face_frame: Arc<CanvasFrame>,
         blend_mode: BlendMode,
         opacity: f32,
@@ -257,10 +262,10 @@ struct StableDisplayFrameSetIdentity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StableDisplayFrameSourceIdentity {
-    Scene(DisplaySourceIdentity),
+    Backdrop(DisplaySourceIdentity),
     Direct(DisplaySourceIdentity),
     Face {
-        scene_frame: Option<DisplaySourceIdentity>,
+        backdrop_frame: Option<DisplaySourceIdentity>,
         face_frame: DisplaySourceIdentity,
         blend_mode: BlendMode,
         opacity_bits: u32,
@@ -300,25 +305,16 @@ impl DisplayTarget {
             .as_ref()
             .map_or(1.0, |target| target.opacity.clamp(0.0, 1.0))
     }
-
-    fn requires_scene_canvas(&self) -> bool {
-        matches!(self.canvas_source, DisplayCanvasSource::Scene)
-            || (self.blends_with_effect() && !self.finalized_face)
-    }
 }
 
 impl DisplayCanvasSource {
     fn signature(&self) -> DisplayCanvasSourceSignature {
         match self {
-            Self::Scene => DisplayCanvasSourceSignature::Scene,
+            Self::Backdrop => DisplayCanvasSourceSignature::Backdrop,
             Self::ZoneDirect { zone_id } => {
                 DisplayCanvasSourceSignature::ZoneDirect { zone_id: *zone_id }
             }
         }
-    }
-
-    fn is_zone_direct(&self) -> bool {
-        matches!(self, Self::ZoneDirect { .. })
     }
 }
 
@@ -385,7 +381,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     let mut targets_cache = DisplayTargetCache::default();
     let initial_targets = display_targets(
         &state.device_registry,
-        &state.spatial_engine,
+        &state.scene_plan,
         &state.logical_devices,
         &state.event_bus,
         &state.display_frames,
@@ -393,8 +389,6 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         state.face_fps_cap,
     )
     .await;
-    let mut scene_canvas_rx = display_requires_scene_canvas(initial_targets.targets.as_ref())
-        .then(|| state.preview_runtime.scene_canvas_receiver());
     let mut output_demand_hold = None;
     sync_output_demand_hold(
         &mut output_demand_hold,
@@ -409,36 +403,18 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     dispatch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        if let Some(scene_canvas_rx) = scene_canvas_rx.as_mut() {
-            tokio::select! {
-                _ = &mut shutdown_rx => {
-                    debug!("display output task shutting down");
-                    break;
-                }
-                changed = scene_canvas_rx.changed() => {
-                    if changed.is_err() {
-                        debug!("display output task exiting because canvas stream closed");
-                        break;
-                    }
-                    let _ = scene_canvas_rx.borrow_and_update();
-                }
-                _ = dispatch_tick.tick() => {
-                }
+        tokio::select! {
+            _ = &mut shutdown_rx => {
+                debug!("display output task shutting down");
+                break;
             }
-        } else {
-            tokio::select! {
-                _ = &mut shutdown_rx => {
-                    debug!("display output task shutting down");
-                    break;
-                }
-                _ = dispatch_tick.tick() => {
-                }
+            _ = dispatch_tick.tick() => {
             }
         }
 
         let targets = display_targets(
             &state.device_registry,
-            &state.spatial_engine,
+            &state.scene_plan,
             &state.logical_devices,
             &state.event_bus,
             &state.display_frames,
@@ -452,11 +428,6 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             last_reconciled_target_version = Some(targets.version);
             last_dispatched_sources.clear();
         }
-        sync_display_canvas_receiver(
-            &mut scene_canvas_rx,
-            state.preview_runtime.as_ref(),
-            display_requires_scene_canvas(targets.targets.as_ref()),
-        );
         sync_output_demand_hold(
             &mut output_demand_hold,
             &state.event_bus,
@@ -467,27 +438,13 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             continue;
         }
 
-        let scene_frame = scene_canvas_rx.as_ref().and_then(|scene_canvas_rx| {
-            let frame = scene_canvas_rx.borrow();
-            stable_display_source_identity(&frame)
-                .map(|identity| (identity, Arc::new(frame.clone())))
-        });
-
         for target in targets.targets.iter() {
-            let face_frame = match &target.canvas_source {
-                DisplayCanvasSource::Scene => None,
-                DisplayCanvasSource::ZoneDirect { .. } => {
-                    let Some(sender) = target.zone_canvas_sender.as_ref() else {
-                        continue;
-                    };
-                    let frame = sender.borrow();
-                    stable_display_zone_source_identity(&frame).map(|_| Arc::new(frame.clone()))
-                }
-            };
+            let lane_frame = stable_lane_frame(&target.lane_sender);
+            let backdrop_frame = target.backdrop_sender.as_ref().and_then(stable_lane_frame);
             let Some((frames, dispatch_identity)) = build_display_worker_frame_set(
                 target.as_ref(),
-                scene_frame.as_ref(),
-                face_frame.as_ref(),
+                lane_frame.as_ref(),
+                backdrop_frame.as_ref(),
             ) else {
                 continue;
             };
@@ -504,6 +461,12 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     for (_, worker) in workers {
         worker.shutdown().await;
     }
+}
+
+/// The lane's latest frame, unless the lane has published nothing yet.
+fn stable_lane_frame(sender: &watch::Sender<DisplayZoneFrame>) -> Option<Arc<DisplayZoneFrame>> {
+    let frame = sender.borrow();
+    stable_display_zone_source_identity(&frame).map(|_| Arc::new(frame.clone()))
 }
 
 fn stable_display_source_identity(frame: &CanvasFrame) -> Option<DisplaySourceIdentity> {
@@ -531,60 +494,63 @@ fn stable_display_zone_source_identity(frame: &DisplayZoneFrame) -> Option<Displ
 
 fn build_display_worker_frame_set(
     target: &DisplayTarget,
-    scene_frame: Option<&(DisplaySourceIdentity, Arc<CanvasFrame>)>,
-    face_frame: Option<&Arc<DisplayZoneFrame>>,
+    lane_frame: Option<&Arc<DisplayZoneFrame>>,
+    backdrop_frame: Option<&Arc<DisplayZoneFrame>>,
 ) -> Option<(DisplayWorkerFrameSet, StableDisplayFrameSetIdentity)> {
+    let lane_frame = lane_frame?;
+    let lane_identity = stable_display_zone_source_identity(lane_frame.as_ref())?;
+    if target.finalized {
+        return Some((
+            DisplayWorkerFrameSet {
+                source: DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
+            },
+            StableDisplayFrameSetIdentity {
+                source: StableDisplayFrameSourceIdentity::Direct(lane_identity),
+            },
+        ));
+    }
+    // A frame the render thread did not finalize is the owning zone's canvas
+    // or a face at panel size, for the worker to crop or blend.
+    let DisplayZoneFrame::Canvas(lane_canvas_frame) = lane_frame.as_ref() else {
+        return None;
+    };
     match &target.canvas_source {
-        DisplayCanvasSource::Scene => {
-            let (frame_identity, frame) = scene_frame?;
-            Some((
-                DisplayWorkerFrameSet {
-                    source: DisplayWorkerFrameSource::Scene(Arc::clone(frame)),
-                },
-                StableDisplayFrameSetIdentity {
-                    source: StableDisplayFrameSourceIdentity::Scene(*frame_identity),
-                },
-            ))
-        }
+        DisplayCanvasSource::Backdrop => Some((
+            DisplayWorkerFrameSet {
+                source: DisplayWorkerFrameSource::Backdrop(Arc::new(lane_canvas_frame.clone())),
+            },
+            StableDisplayFrameSetIdentity {
+                source: StableDisplayFrameSourceIdentity::Backdrop(lane_identity),
+            },
+        )),
         DisplayCanvasSource::ZoneDirect { .. } => {
-            let face_frame = face_frame?;
-            let face_identity = stable_display_zone_source_identity(face_frame.as_ref())?;
-            if target.finalized_face {
-                return Some((
-                    DisplayWorkerFrameSet {
-                        source: DisplayWorkerFrameSource::Direct(Arc::clone(face_frame)),
-                    },
-                    StableDisplayFrameSetIdentity {
-                        source: StableDisplayFrameSourceIdentity::Direct(face_identity),
-                    },
-                ));
-            }
-            let DisplayZoneFrame::Canvas(face_canvas_frame) = face_frame.as_ref() else {
-                return None;
-            };
-            let face_identity = stable_display_source_identity(face_canvas_frame)?;
-            let scene = if target.blends_with_effect() {
-                scene_frame
-                    .map(|(scene_identity, scene_frame)| (*scene_identity, Arc::clone(scene_frame)))
-            } else {
-                None
-            };
-            let (scene_identity, scene_frame) = scene
+            let backdrop = target
+                .blends_with_effect()
+                .then_some(backdrop_frame)
+                .flatten()
+                .and_then(|frame| match frame.as_ref() {
+                    DisplayZoneFrame::Canvas(frame) => {
+                        let identity = stable_display_source_identity(frame)?;
+                        Some((identity, Arc::new(frame.clone())))
+                    }
+                    DisplayZoneFrame::Yuv420(_) => None,
+                });
+            let (backdrop_identity, backdrop_frame) = backdrop
                 .map(|(identity, frame)| (Some(identity), Some(frame)))
                 .unwrap_or((None, None));
             Some((
                 DisplayWorkerFrameSet {
                     source: DisplayWorkerFrameSource::Face {
-                        scene_frame,
-                        face_frame: Arc::new(face_canvas_frame.clone()),
+                        backdrop_frame,
+                        face_frame: Arc::new(lane_canvas_frame.clone()),
                         blend_mode: target.face_blend_mode(),
                         opacity: target.face_opacity(),
                     },
                 },
                 StableDisplayFrameSetIdentity {
                     source: StableDisplayFrameSourceIdentity::Face {
-                        scene_frame: scene_identity,
-                        face_frame: face_identity,
+                        backdrop_frame: backdrop_identity,
+                        face_frame: lane_identity,
                         blend_mode: target.face_blend_mode(),
                         opacity_bits: target.face_opacity().to_bits(),
                     },
@@ -594,26 +560,12 @@ fn build_display_worker_frame_set(
     }
 }
 
-fn sync_display_canvas_receiver(
-    receiver: &mut Option<PreviewFrameReceiver>,
-    preview_runtime: &PreviewRuntime,
-    subscribe: bool,
-) {
-    if subscribe {
-        if receiver.is_none() {
-            *receiver = Some(preview_runtime.scene_canvas_receiver());
-        }
-    } else {
-        let _ = receiver.take();
-    }
-}
-
 /// Hold render output demand while any display target exists.
 ///
-/// A face rendered straight to its zone is read from the zone's canvas
-/// sender, not through a receiver, so the render loop would not count it as
-/// a consumer. Physical displays are already counted as devices; this hold
-/// is what keeps a previewed simulated display rendering.
+/// A screen's frames are read from its lane's sender, not through a
+/// receiver, so the render loop would not count the screen as a consumer.
+/// Physical displays are already counted as devices; this hold is what
+/// keeps a previewed simulated display rendering.
 fn sync_output_demand_hold(
     hold: &mut Option<OutputDemandHold>,
     event_bus: &HypercolorBus,
@@ -626,10 +578,6 @@ fn sync_output_demand_hold(
     } else {
         let _ = hold.take();
     }
-}
-
-fn display_requires_scene_canvas(targets: &[Arc<DisplayTarget>]) -> bool {
-    targets.iter().any(|target| target.requires_scene_canvas())
 }
 
 async fn reconcile_display_workers(
@@ -712,31 +660,37 @@ fn retire_display_worker(
 
 async fn display_targets(
     registry: &DeviceRegistry,
-    spatial_engine: &SpatialService,
+    scene_plan: &ScenePlanReader,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
     event_bus: &Arc<HypercolorBus>,
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     cache: &mut DisplayTargetCache,
     face_fps_cap: u32,
 ) -> DisplayTargetsSnapshot {
-    let layout = { spatial_engine.layout() };
+    let (zones, zones_revision) = {
+        let plan = scene_plan.load();
+        (Arc::clone(&plan.zones), plan.zones_revision)
+    };
+    let placement_signature = match cache.placement_signature {
+        Some((revision, signature)) if revision == zones_revision => signature,
+        _ => {
+            let signature = screen_placement_signature(&zones);
+            cache.placement_signature = Some((zones_revision, signature));
+            signature
+        }
+    };
     let (display_zone_targets_revision, published_display_zone_targets) =
         event_bus.display_zone_targets_snapshot();
     let logical_store = logical_devices.read().await;
     let display_preview_subscribers = display_frames.read().await.subscribed_device_ids();
     let registry_generation = registry.generation();
-    #[expect(
-        clippy::as_conversions,
-        reason = "pointer-to-usize for identity comparison"
-    )]
-    let layout_ptr = Arc::as_ptr(&layout) as usize;
     let logical_signature = logical_device_store_signature(&logical_store);
     let display_preview_signature = device_id_set_signature(&display_preview_subscribers);
     let dependency_key =
         DisplayTargetDependencyKey::new(registry_generation, display_zone_targets_revision);
     let cache_key = DisplayTargetCacheKey::new(
         dependency_key,
-        layout_ptr,
+        placement_signature,
         logical_signature,
         display_preview_signature,
     );
@@ -748,8 +702,9 @@ async fn display_targets(
         };
     }
 
-    let display_face_targets = display_face_targets_by_device(published_display_zone_targets);
+    let lane_targets = display_lane_targets_by_device(published_display_zone_targets);
     let mut targets = Vec::new();
+    let mut backdrop_routes = HashMap::new();
     for tracked in registry
         .list()
         .await
@@ -768,6 +723,7 @@ async fn display_targets(
         let Some(surface) = tracked.info.display_surface() else {
             continue;
         };
+        let device_id = tracked.info.id;
         let geometry = DisplayGeometry {
             width: surface.width,
             height: surface.height,
@@ -777,58 +733,80 @@ async fn display_targets(
         let has_non_display_led_segments = tracked.info.segments.iter().any(|segment| {
             segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
         });
-        let display_target = display_face_targets
-            .get(&tracked.info.id)
-            .map(|binding| binding.target.clone());
-        let finalized_face = display_face_targets
-            .get(&tracked.info.id)
-            .is_some_and(|binding| binding.finalized);
-        let canvas_source = display_face_targets
-            .get(&tracked.info.id)
-            .map(|binding| binding.zone_id)
-            .map_or(DisplayCanvasSource::Scene, |zone_id| {
-                DisplayCanvasSource::ZoneDirect { zone_id }
-            });
-        let zone_canvas_sender = match &canvas_source {
-            DisplayCanvasSource::Scene => None,
-            DisplayCanvasSource::ZoneDirect { zone_id } => {
-                Some(event_bus.zone_canvas_sender(*zone_id))
-            }
-        };
-        let viewport = display_viewport_for_device(
-            layout.as_ref(),
+        let placement = screen_placement(
+            &zones,
             &logical_store,
-            tracked.info.id,
+            device_id,
             has_non_display_led_segments,
-        )
-        .or_else(|| {
-            canvas_source
-                .is_zone_direct()
-                .then_some(default_display_viewport())
-        });
-        let Some(mut viewport) = viewport else {
+        );
+        let face = lane_targets.faces.get(&device_id);
+        // A screen no zone places shows nothing of its own, so it is driven
+        // only while a face is.
+        let Some(mut viewport) = placement
+            .map(|placement| placement.viewport)
+            .or_else(|| face.is_some().then_some(default_display_viewport()))
+        else {
             continue;
         };
-        // The layout says where the screen sits on the canvas; the device's
-        // user settings say how the panel is mounted. Both turns fold into
-        // the viewport, which the finalize pass applies to the scene
-        // underlay and the face alike, so a media-only screen turns too.
+        // The owning zone says where the screen sits on its canvas; the
+        // device's user settings say how the panel is mounted. Both turns
+        // fold into the viewport, which the finalize pass applies to the
+        // backdrop and the face alike, so a screen with no face turns too.
         let mount_rotation = tracked.user_settings.display_rotation;
         viewport.rotation += mount_rotation.radians();
+        let backdrop_lane = screen_backdrop_lane_id(device_id);
+        let (canvas_source, lane_id, finalized) = match face {
+            Some(face) => (
+                DisplayCanvasSource::ZoneDirect {
+                    zone_id: face.zone_id,
+                },
+                face.zone_id,
+                face.finalized,
+            ),
+            None => (
+                DisplayCanvasSource::Backdrop,
+                backdrop_lane,
+                lane_targets.finalized_backdrops.contains(&device_id),
+            ),
+        };
         debug!(
-            device_id = %tracked.info.id,
-            face_zone = ?display_face_targets.get(&tracked.info.id).map(|binding| binding.zone_id),
+            %device_id,
+            face_zone = ?face.map(|binding| binding.zone_id),
+            backdrop_zone = ?placement.map(|placement| placement.zone_id),
             ?mount_rotation,
             viewport_rotation = viewport.rotation,
-            face_bindings = display_face_targets.len(),
+            face_bindings = lane_targets.faces.len(),
             "display target viewport resolved"
         );
 
+        let backdrop_fps = capped_display_target_fps(
+            tracked.info.capabilities.max_fps,
+            &DisplayCanvasSource::Backdrop,
+            frame_format,
+            face_fps_cap,
+        );
+        if let Some(placement) = placement {
+            backdrop_routes.insert(
+                device_id,
+                ScreenBackdropRoute {
+                    zone_id: placement.zone_id,
+                    output: display_zone_output_route(
+                        device_id,
+                        geometry,
+                        tracked.user_settings.brightness,
+                        frame_format,
+                        viewport,
+                    ),
+                    target_fps: backdrop_fps,
+                },
+            );
+        }
+
         let backend_id = tracked.info.output_backend_id().to_owned();
         targets.push(Arc::new(DisplayTarget {
-            worker_key: (backend_id.clone(), tracked.info.id),
+            worker_key: (backend_id.clone(), device_id),
             backend_id,
-            device_id: tracked.info.id,
+            device_id,
             name: tracked.info.name,
             target_fps: capped_display_target_fps(
                 tracked.info.capabilities.max_fps,
@@ -840,10 +818,12 @@ async fn display_targets(
             geometry,
             frame_format,
             max_frame_len: tracked.info.capabilities.features.max_display_frame_len,
+            lane_sender: event_bus.zone_canvas_sender(lane_id),
+            backdrop_sender: (face.is_some() && placement.is_some())
+                .then(|| event_bus.zone_canvas_sender(backdrop_lane)),
             canvas_source,
-            zone_canvas_sender,
-            display_target,
-            finalized_face,
+            display_target: face.map(|binding| binding.target.clone()),
+            finalized,
             viewport,
         }));
     }
@@ -854,12 +834,31 @@ async fn display_targets(
             .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
     });
     publish_display_zone_output_routes(event_bus, &targets);
+    event_bus.replace_screen_backdrop_routes(backdrop_routes);
     cache.version = cache.version.saturating_add(1);
     cache.cache_key = Some(cache_key);
     cache.targets = Arc::from(targets);
     DisplayTargetsSnapshot {
         version: cache.version,
         targets: Arc::clone(&cache.targets),
+    }
+}
+
+fn display_zone_output_route(
+    device_id: DeviceId,
+    geometry: DisplayGeometry,
+    brightness: f32,
+    frame_format: DisplayFrameFormat,
+    viewport: DisplayViewport,
+) -> DisplayZoneOutputRoute {
+    DisplayZoneOutputRoute {
+        device_id,
+        width: geometry.width,
+        height: geometry.height,
+        circular: geometry.circular,
+        brightness,
+        frame_format,
+        viewport,
     }
 }
 
@@ -872,33 +871,41 @@ fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<
         active_zone_ids.push(zone_id);
         event_bus.upsert_display_zone_output_route(
             zone_id,
-            DisplayZoneOutputRoute {
-                device_id: target.device_id,
-                width: target.geometry.width,
-                height: target.geometry.height,
-                circular: target.geometry.circular,
-                brightness: target.brightness,
-                frame_format: target.frame_format,
-                viewport: DisplayZoneViewport {
-                    position: target.viewport.position,
-                    size: target.viewport.size,
-                    rotation: target.viewport.rotation,
-                    scale: target.viewport.scale,
-                    edge_behavior: target.viewport.edge_behavior,
-                },
-            },
+            display_zone_output_route(
+                target.device_id,
+                target.geometry,
+                target.brightness,
+                target.frame_format,
+                target.viewport,
+            ),
         );
     }
     event_bus.retain_display_zone_output_routes(&active_zone_ids);
 }
 
-/// Pick one face target per device: a finalized zone beats a plain one,
-/// and among equals the newer zone id wins.
-fn display_face_targets_by_device(
+/// The display lanes the render thread publishes, by the screen they feed.
+#[derive(Default)]
+struct DisplayLaneTargets {
+    /// The face lane each screen shows.
+    faces: HashMap<DeviceId, DisplayFaceTargetBinding>,
+    /// Screens whose backdrop lane carries frames finalized for the panel.
+    finalized_backdrops: HashSet<DeviceId>,
+}
+
+/// Sort the published lanes into faces and backdrops, and pick one face per
+/// device: a finalized zone beats a plain one, and among equals the newer
+/// zone id wins.
+fn display_lane_targets_by_device(
     targets: HashMap<ZoneId, hypercolor_core::bus::DisplayZoneTarget>,
-) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
-    let mut by_device = HashMap::new();
+) -> DisplayLaneTargets {
+    let mut lanes = DisplayLaneTargets::default();
     for (zone_id, target) in targets {
+        if zone_id == screen_backdrop_lane_id(target.device_id) {
+            if target.finalized {
+                lanes.finalized_backdrops.insert(target.device_id);
+            }
+            continue;
+        }
         let binding = DisplayFaceTargetBinding {
             zone_id,
             target: DisplayFaceTarget {
@@ -909,7 +916,7 @@ fn display_face_targets_by_device(
             finalized: target.finalized,
         };
 
-        match by_device.entry(target.device_id) {
+        match lanes.faces.entry(target.device_id) {
             Entry::Vacant(entry) => {
                 entry.insert(binding);
             }
@@ -931,7 +938,7 @@ fn display_face_targets_by_device(
             }
         }
     }
-    by_device
+    lanes
 }
 
 fn display_face_target_binding_preferred(
@@ -940,70 +947,6 @@ fn display_face_target_binding_preferred(
 ) -> bool {
     (candidate.finalized && !current.finalized)
         || (candidate.finalized == current.finalized && candidate.zone_id.0 > current.zone_id.0)
-}
-
-fn display_viewport_for_device(
-    layout: &SpatialLayout,
-    logical_store: &HashMap<String, LogicalDevice>,
-    physical_device_id: DeviceId,
-    has_non_display_led_segments: bool,
-) -> Option<DisplayViewport> {
-    let mut first_matching_zone = None;
-    let mut explicit_display_zone = None;
-    let mut generic_display_zone = None;
-
-    for zone in &layout.zones {
-        if !display_zone_targets_physical_device(
-            zone.device_id.as_str(),
-            logical_store,
-            physical_device_id,
-        ) {
-            continue;
-        }
-
-        first_matching_zone.get_or_insert(zone);
-        if is_display_zone(zone) {
-            explicit_display_zone = Some(zone);
-            break;
-        }
-        if generic_display_zone.is_none() && zone.zone_name.is_none() {
-            generic_display_zone = Some(zone);
-        }
-    }
-
-    explicit_display_zone.or(generic_display_zone).map_or_else(
-        || {
-            let first_matching_zone = first_matching_zone?;
-            if !has_non_display_led_segments {
-                return Some(DisplayViewport {
-                    position: first_matching_zone.position,
-                    size: first_matching_zone.size,
-                    rotation: first_matching_zone.rotation,
-                    scale: first_matching_zone.scale,
-                    edge_behavior: first_matching_zone
-                        .edge_behavior
-                        .unwrap_or(layout.default_edge_behavior),
-                });
-            }
-
-            Some(DisplayViewport {
-                position: NormalizedPosition::new(0.5, 0.5),
-                size: NormalizedPosition::new(1.0, 1.0),
-                rotation: 0.0,
-                scale: 1.0,
-                edge_behavior: layout.default_edge_behavior,
-            })
-        },
-        |zone| {
-            Some(DisplayViewport {
-                position: zone.position,
-                size: zone.size,
-                rotation: zone.rotation,
-                scale: zone.scale,
-                edge_behavior: zone.edge_behavior.unwrap_or(layout.default_edge_behavior),
-            })
-        },
-    )
 }
 
 fn default_display_viewport() -> DisplayViewport {
@@ -1016,38 +959,36 @@ fn default_display_viewport() -> DisplayViewport {
     }
 }
 
-fn display_zone_targets_physical_device(
-    zone_device_id: &str,
-    logical_store: &HashMap<String, LogicalDevice>,
-    physical_device_id: DeviceId,
-) -> bool {
-    logical_store
-        .get(zone_device_id)
-        .is_some_and(|entry| entry.physical_device_id == physical_device_id)
-}
-
+/// The frame rate a screen is driven at.
+///
+/// A face takes the face cadence. A screen showing its backdrop alone keeps
+/// the cap a mirrored canvas has always had: an encoded panel takes fewer
+/// frames than a raw one.
 fn capped_display_target_fps(
     device_max_fps: u32,
     canvas_source: &DisplayCanvasSource,
     frame_format: DisplayFrameFormat,
     face_fps_cap: u32,
 ) -> u32 {
-    if canvas_source.is_zone_direct() {
-        return capped_zone_direct_display_target_fps(device_max_fps, face_fps_cap);
+    match canvas_source {
+        DisplayCanvasSource::ZoneDirect { .. } => {
+            capped_zone_direct_display_target_fps(device_max_fps, face_fps_cap)
+        }
+        DisplayCanvasSource::Backdrop => {
+            let max_fps = if frame_format == DisplayFrameFormat::Rgb {
+                RAW_DISPLAY_OUTPUT_MAX_FPS
+            } else {
+                DISPLAY_OUTPUT_MAX_FPS
+            };
+            let device_limit = if device_max_fps == 0 {
+                max_fps
+            } else {
+                device_max_fps
+            };
+
+            device_limit.clamp(1, max_fps)
+        }
     }
-
-    let max_fps = if frame_format == DisplayFrameFormat::Rgb {
-        RAW_DISPLAY_OUTPUT_MAX_FPS
-    } else {
-        DISPLAY_OUTPUT_MAX_FPS
-    };
-    let device_limit = if device_max_fps == 0 {
-        max_fps
-    } else {
-        device_max_fps
-    };
-
-    device_limit.clamp(1, max_fps)
 }
 
 pub(crate) fn capped_zone_direct_display_target_fps(device_max_fps: u32, face_fps_cap: u32) -> u32 {
@@ -1105,14 +1046,6 @@ mod tests {
 
     use super::*;
 
-    fn canvas_frame(frame_number: u32) -> Arc<CanvasFrame> {
-        Arc::new(CanvasFrame::from_owned_canvas(
-            Canvas::new(2, 2),
-            frame_number,
-            frame_number,
-        ))
-    }
-
     fn zone_canvas_frame(frame_number: u32) -> Arc<DisplayZoneFrame> {
         Arc::new(DisplayZoneFrame::Canvas(CanvasFrame::from_owned_canvas(
             Canvas::new(2, 2),
@@ -1142,6 +1075,7 @@ mod tests {
 
     fn display_target(blend_mode: BlendMode) -> DisplayTarget {
         let device_id = DeviceId::new();
+        let (lane_sender, _) = watch::channel(DisplayZoneFrame::empty());
         DisplayTarget {
             worker_key: ("test".into(), device_id),
             backend_id: "test".into(),
@@ -1159,15 +1093,23 @@ mod tests {
             canvas_source: DisplayCanvasSource::ZoneDirect {
                 zone_id: ZoneId::new(),
             },
-            zone_canvas_sender: None,
+            lane_sender,
+            backdrop_sender: None,
             display_target: Some(DisplayFaceTarget {
                 device_id,
                 blend_mode,
                 opacity: 0.5,
             }),
-            finalized_face: false,
+            finalized: false,
             viewport: default_display_viewport(),
         }
+    }
+
+    fn backdrop_target() -> DisplayTarget {
+        let mut target = display_target(BlendMode::Replace);
+        target.canvas_source = DisplayCanvasSource::Backdrop;
+        target.display_target = None;
+        target
     }
 
     fn fixed_device_id(value: u128) -> DeviceId {
@@ -1223,36 +1165,91 @@ mod tests {
     }
 
     #[test]
-    fn capped_display_target_fps_scene_paths_ignore_face_cap() {
+    fn capped_display_target_fps_backdrop_keeps_its_cap_whatever_the_face_cap() {
+        let backdrop = DisplayCanvasSource::Backdrop;
+
         assert_eq!(
-            capped_display_target_fps(
-                60,
-                &DisplayCanvasSource::Scene,
-                DisplayFrameFormat::Jpeg,
-                60
-            ),
+            capped_display_target_fps(60, &backdrop, DisplayFrameFormat::Jpeg, 60),
             DISPLAY_OUTPUT_MAX_FPS
         );
         assert_eq!(
-            capped_display_target_fps(60, &DisplayCanvasSource::Scene, DisplayFrameFormat::Rgb, 60),
+            capped_display_target_fps(60, &backdrop, DisplayFrameFormat::Rgb, 60),
             RAW_DISPLAY_OUTPUT_MAX_FPS
         );
         assert_eq!(
-            capped_display_target_fps(0, &DisplayCanvasSource::Scene, DisplayFrameFormat::Rgb, 60),
+            capped_display_target_fps(0, &backdrop, DisplayFrameFormat::Rgb, 60),
             RAW_DISPLAY_OUTPUT_MAX_FPS
+        );
+        assert_eq!(
+            capped_display_target_fps(10, &backdrop, DisplayFrameFormat::Jpeg, 60),
+            10,
+            "a slower panel still limits its own backdrop"
         );
     }
 
     #[test]
-    fn direct_display_face_uses_unified_face_frame_source_without_scene() {
+    fn finalized_backdrop_goes_to_the_worker_as_it_is() {
+        let mut target = backdrop_target();
+        target.finalized = true;
+        let frame = zone_canvas_frame(1);
+
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&frame), None)
+            .expect("a finalized backdrop should build a frame set");
+
+        let DisplayWorkerFrameSource::Direct(published) = frames.source else {
+            panic!("a finalized backdrop should use the direct frame source");
+        };
+        assert_eq!(
+            stable_display_zone_source_identity(published.as_ref()),
+            stable_display_zone_source_identity(frame.as_ref())
+        );
+        assert!(matches!(
+            identity.source,
+            StableDisplayFrameSourceIdentity::Direct(_)
+        ));
+    }
+
+    #[test]
+    fn unfinalized_backdrop_is_cropped_by_the_worker() {
+        let target = backdrop_target();
+        let frame = zone_canvas_frame(1);
+
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&frame), None)
+            .expect("an unfinalized backdrop should build a frame set");
+
+        let DisplayWorkerFrameSource::Backdrop(published) = frames.source else {
+            panic!("an unfinalized backdrop should use the backdrop frame source");
+        };
+        assert_eq!(
+            stable_display_source_identity(published.as_ref()),
+            stable_display_zone_source_identity(frame.as_ref())
+        );
+        assert!(matches!(
+            identity.source,
+            StableDisplayFrameSourceIdentity::Backdrop(_)
+        ));
+    }
+
+    #[test]
+    fn a_screen_waits_for_its_lane_to_publish() {
+        assert!(build_display_worker_frame_set(&backdrop_target(), None, None).is_none());
+        assert!(
+            build_display_worker_frame_set(&display_target(BlendMode::Alpha), None, None).is_none()
+        );
+    }
+
+    #[test]
+    fn direct_display_face_uses_unified_face_frame_source_without_backdrop() {
         let target = display_target(BlendMode::Replace);
         let face_frame = zone_canvas_frame(1);
+        let backdrop_frame = zone_canvas_frame(2);
 
-        let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
-            .expect("direct face should not require a scene frame");
+        let (frames, identity) =
+            build_display_worker_frame_set(&target, Some(&face_frame), Some(&backdrop_frame))
+                .expect("direct face should not require a backdrop frame");
 
         let DisplayWorkerFrameSource::Face {
-            scene_frame,
+            backdrop_frame,
             face_frame: published_face,
             blend_mode,
             opacity,
@@ -1261,7 +1258,7 @@ mod tests {
             panic!("display face should use the unified face frame source");
         };
         let StableDisplayFrameSourceIdentity::Face {
-            scene_frame: scene_identity,
+            backdrop_frame: backdrop_identity,
             blend_mode: identity_blend_mode,
             opacity_bits,
             ..
@@ -1270,8 +1267,11 @@ mod tests {
             panic!("display face identity should use the unified face identity");
         };
 
-        assert!(scene_frame.is_none());
-        assert!(scene_identity.is_none());
+        assert!(
+            backdrop_frame.is_none(),
+            "a face that replaces its backdrop should not carry one"
+        );
+        assert!(backdrop_identity.is_none());
         assert_eq!(
             stable_display_source_identity(published_face.as_ref()),
             stable_display_zone_source_identity(face_frame.as_ref())
@@ -1283,22 +1283,19 @@ mod tests {
     }
 
     #[test]
-    fn blended_display_face_uses_same_face_frame_source_with_scene() {
+    fn blended_display_face_uses_same_face_frame_source_with_its_backdrop() {
         let target = display_target(BlendMode::Alpha);
-        let scene_frame = canvas_frame(1);
-        let scene_identity =
-            stable_display_source_identity(scene_frame.as_ref()).expect("scene should be stable");
+        let backdrop_frame = zone_canvas_frame(1);
+        let backdrop_identity = stable_display_zone_source_identity(backdrop_frame.as_ref())
+            .expect("backdrop should be stable");
         let face_frame = zone_canvas_frame(2);
 
-        let (frames, identity) = build_display_worker_frame_set(
-            &target,
-            Some(&(scene_identity, scene_frame)),
-            Some(&face_frame),
-        )
-        .expect("blended face should build when scene and face are available");
+        let (frames, identity) =
+            build_display_worker_frame_set(&target, Some(&face_frame), Some(&backdrop_frame))
+                .expect("blended face should build when backdrop and face are available");
 
         let DisplayWorkerFrameSource::Face {
-            scene_frame,
+            backdrop_frame,
             face_frame: published_face,
             blend_mode,
             opacity,
@@ -1307,7 +1304,7 @@ mod tests {
             panic!("blended display face should use the unified face frame source");
         };
         let StableDisplayFrameSourceIdentity::Face {
-            scene_frame: identity_scene,
+            backdrop_frame: identity_backdrop,
             blend_mode: identity_blend_mode,
             opacity_bits,
             ..
@@ -1316,12 +1313,12 @@ mod tests {
             panic!("blended display face identity should use the unified face identity");
         };
 
-        assert!(scene_frame.is_some());
+        assert!(backdrop_frame.is_some());
         assert_eq!(
             stable_display_source_identity(published_face.as_ref()),
             stable_display_zone_source_identity(face_frame.as_ref())
         );
-        assert_eq!(identity_scene, Some(scene_identity));
+        assert_eq!(identity_backdrop, Some(backdrop_identity));
         assert_eq!(blend_mode, BlendMode::Alpha);
         assert_eq!(identity_blend_mode, BlendMode::Alpha);
         assert_eq!(opacity, 0.5);
@@ -1329,15 +1326,15 @@ mod tests {
     }
 
     #[test]
-    fn blended_display_face_composes_against_black_without_scene_frame() {
+    fn blended_display_face_composes_against_black_without_backdrop_frame() {
         let target = display_target(BlendMode::Alpha);
         let face_frame = zone_canvas_frame(1);
 
-        let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
-            .expect("blended face should not wait for a scene frame");
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&face_frame), None)
+            .expect("blended face should not wait for a backdrop frame");
 
         let DisplayWorkerFrameSource::Face {
-            scene_frame,
+            backdrop_frame,
             face_frame: published_face,
             blend_mode,
             opacity,
@@ -1346,7 +1343,7 @@ mod tests {
             panic!("blended display face should use the unified face frame source");
         };
         let StableDisplayFrameSourceIdentity::Face {
-            scene_frame: identity_scene,
+            backdrop_frame: identity_backdrop,
             blend_mode: identity_blend_mode,
             opacity_bits,
             ..
@@ -1355,8 +1352,8 @@ mod tests {
             panic!("blended display face identity should use the unified face identity");
         };
 
-        assert!(scene_frame.is_none());
-        assert!(identity_scene.is_none());
+        assert!(backdrop_frame.is_none());
+        assert!(identity_backdrop.is_none());
         assert_eq!(
             stable_display_source_identity(published_face.as_ref()),
             stable_display_zone_source_identity(face_frame.as_ref())
@@ -1368,13 +1365,13 @@ mod tests {
     }
 
     #[test]
-    fn finalized_display_face_uses_direct_frame_without_scene() {
+    fn finalized_display_face_uses_direct_frame_without_backdrop() {
         let mut target = display_target(BlendMode::Alpha);
-        target.finalized_face = true;
+        target.finalized = true;
         let face_frame = zone_canvas_frame(1);
 
-        let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
-            .expect("finalized face should not require a scene frame");
+        let (frames, identity) = build_display_worker_frame_set(&target, Some(&face_frame), None)
+            .expect("finalized face should not require a backdrop frame");
 
         let DisplayWorkerFrameSource::Direct(published_face) = frames.source else {
             panic!("finalized display face should use the direct frame source");
@@ -1399,7 +1396,7 @@ mod tests {
         let mut target = display_target(BlendMode::Alpha);
         let unfinalized = target.worker_config_signature();
 
-        target.finalized_face = true;
+        target.finalized = true;
 
         assert_eq!(target.worker_config_signature(), unfinalized);
     }
@@ -1414,9 +1411,10 @@ mod tests {
             (old_finalized, display_zone_target(device_id, true)),
         ]);
 
-        let resolved = display_face_targets_by_device(targets);
+        let resolved = display_lane_targets_by_device(targets);
 
         let binding = resolved
+            .faces
             .get(&device_id)
             .expect("device target should resolve");
         assert_eq!(binding.zone_id, old_finalized);
@@ -1433,12 +1431,41 @@ mod tests {
             (newer, display_zone_target(device_id, true)),
         ]);
 
-        let resolved = display_face_targets_by_device(targets);
+        let resolved = display_lane_targets_by_device(targets);
 
         let binding = resolved
+            .faces
             .get(&device_id)
             .expect("device target should resolve");
         assert_eq!(binding.zone_id, newer);
         assert!(binding.finalized);
+    }
+
+    #[test]
+    fn a_backdrop_lane_never_stands_in_for_a_face() {
+        let with_face = fixed_device_id(3);
+        let backdrop_only = fixed_device_id(4);
+        let face_zone = fixed_zone_id(7);
+        let targets = std::collections::HashMap::from([
+            (face_zone, display_zone_target(with_face, false)),
+            (
+                screen_backdrop_lane_id(with_face),
+                display_zone_target(with_face, false),
+            ),
+            (
+                screen_backdrop_lane_id(backdrop_only),
+                display_zone_target(backdrop_only, true),
+            ),
+        ]);
+
+        let resolved = display_lane_targets_by_device(targets);
+
+        assert_eq!(
+            resolved.faces.get(&with_face).map(|face| face.zone_id),
+            Some(face_zone)
+        );
+        assert!(!resolved.faces.contains_key(&backdrop_only));
+        assert!(resolved.finalized_backdrops.contains(&backdrop_only));
+        assert!(!resolved.finalized_backdrops.contains(&with_face));
     }
 }

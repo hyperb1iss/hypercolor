@@ -1591,6 +1591,36 @@ impl SparkleFlinger {
         }
     }
 
+    /// Finalize a screen's backdrop alone, in the route's frame format.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn begin_finalize_display_backdrop(
+        &mut self,
+        backdrop: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<DisplayFinalizeDispatch> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(DisplayFinalizeDispatch::Unsupported),
+            SparkleFlingerBackend::Gpu { gpu, .. } => Ok(map_gpu_display_finalize_dispatch(
+                if params.cache_key.frame_format == DisplayFrameFormat::Jpeg {
+                    gpu.begin_finalize_display_backdrop_yuv420(backdrop, params)?
+                } else {
+                    gpu.begin_finalize_display_backdrop(backdrop, params)?
+                },
+            )),
+        }
+    }
+
+    /// Whether this compositor finalizes display frames itself. One that
+    /// does not leaves the crop, the blend, and the encode to the display
+    /// workers.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn finalizes_display_frames(&self) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            SparkleFlingerBackend::Gpu { .. } => true,
+        }
+    }
+
     #[cfg(feature = "wgpu")]
     pub(crate) fn try_finish_pending_display_finalization(
         &mut self,
