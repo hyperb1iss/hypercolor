@@ -34,8 +34,8 @@ use crate::api::envelope;
 use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::scene_tree::{
-    AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
-    ZoneWritten,
+    AssignMembers, ClearScene, LayerScopeEdit, PatchLayerControls, PatchScene, ReplaceLayer,
+    TreeWritten, ZoneWritten,
 };
 use crate::domain::{DomainError, MutationContext, ResourceKind, scene_tree};
 
@@ -499,6 +499,7 @@ pub async fn replace_layer(
                 zone_id,
                 layer_id,
                 layer: replacement,
+                scope: LayerScopeEdit::Keep,
                 fence: expected,
             },
         )

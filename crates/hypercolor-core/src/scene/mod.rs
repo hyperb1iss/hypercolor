@@ -13,10 +13,12 @@
 
 pub mod automation;
 mod display_collisions;
+mod layer_scope;
 pub mod priority;
 pub mod transition;
 
 pub use automation::AutomationEngine;
+pub use layer_scope::{OutputMove, first_lighting_effect, plan_layer_carry};
 pub use priority::{PriorityStack, StackEntry};
 pub use transition::{
     TransitionIdentity, TransitionPlan, interpolate_color, interpolate_oklab, interpolate_srgb,
@@ -27,6 +29,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
+use hypercolor_types::api::scene::LayerMove;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlBinding, EffectId, EffectMetadata};
@@ -68,6 +71,17 @@ pub enum LayerMutationError {
     /// overwrite is an error, not a race. The caller either drops the
     /// key or clears its binding in the same request.
     ControlBound { keys: Vec<String> },
+    /// The layer's scope introduces an output its zone does not hold.
+    ///
+    /// Only ids a request brings in are checked. An id carried over from
+    /// the layer being replaced may name an output that has left the zone.
+    ScopeOutputMissing {
+        layer_id: SceneLayerId,
+        output: String,
+    },
+    /// A replayed layer move no longer matches the stack: the layer is
+    /// not at the slot the move names, or its scope has changed since.
+    LayerMoveStale { layer_id: SceneLayerId },
 }
 
 /// Error variants for structural render-zone mutations.
@@ -552,12 +566,7 @@ impl SceneManager {
 
         let mut structural_changed = false;
         if let Some(zone) = scene.primary_zone_mut() {
-            let effect_changed = effect_layer_id(zone) != Some(effect.id);
-            let control_bindings = if effect_changed {
-                HashMap::new()
-            } else {
-                effect_control_bindings(zone)
-            };
+            let control_bindings = carried_control_bindings(zone, effect.id);
             replace_effect_layer_stack(
                 zone,
                 effect.id,
@@ -626,12 +635,7 @@ impl SceneManager {
             .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
 
         if let Some(zone) = scene.display_zone_for_mut(device_id) {
-            let effect_changed = effect_layer_id(zone) != Some(effect.id);
-            let control_bindings = if effect_changed {
-                HashMap::new()
-            } else {
-                effect_control_bindings(zone)
-            };
+            let control_bindings = carried_control_bindings(zone, effect.id);
             replace_effect_layer_stack(zone, effect.id, controls, control_bindings, None);
             zone.layout = layout;
             zone.display_target = Some(DisplayFaceTarget::new(device_id));
@@ -954,13 +958,31 @@ impl SceneManager {
         Ok(zone)
     }
 
+    /// Move one output into a zone. See [`Self::assign_outputs_to_zone`].
     pub fn assign_output_to_zone(
         &mut self,
         scene_id: &SceneId,
         zone_id: ZoneId,
         device_zone: Output,
         placement: OutputPlacement,
-    ) -> Result<(), ZoneMutationError> {
+    ) -> Result<Vec<LayerMove>, ZoneMutationError> {
+        self.assign_outputs_to_zone(scene_id, zone_id, vec![device_zone], placement)
+    }
+
+    /// Move a set of outputs into a zone as one membership edit.
+    ///
+    /// Scoped layers follow their outputs: every layer of a zone that
+    /// loses outputs is handled against the whole set leaving it, as
+    /// [`plan_layer_carry`] describes, so a device moved with all its
+    /// outputs keeps a layer scoped to them. Returns each layer that
+    /// moved or was narrowed.
+    pub fn assign_outputs_to_zone(
+        &mut self,
+        scene_id: &SceneId,
+        zone_id: ZoneId,
+        outputs: Vec<Output>,
+        placement: OutputPlacement,
+    ) -> Result<Vec<LayerMove>, ZoneMutationError> {
         let active_scene_id = self.active_scene_id().copied();
         let scene = self
             .scenes
@@ -975,42 +997,59 @@ impl SceneManager {
             .position(|zone| zone.id == zone_id)
             .ok_or(ZoneMutationError::ZoneMissing)?;
 
-        let current_owner = scene.zones.iter().position(|zone| {
-            zone.layout
-                .zones
-                .iter()
-                .any(|zone| zone.id == device_zone.id)
-        });
+        let owner_of = |scene: &Scene, output_id: &str| {
+            scene.zones.iter().position(|zone| {
+                zone.layout
+                    .zones
+                    .iter()
+                    .any(|output| output.id == output_id)
+            })
+        };
+        let moves = outputs
+            .iter()
+            .filter_map(|output| {
+                let owner = owner_of(scene, &output.id)?;
+                (owner != target_index).then(|| OutputMove {
+                    output_id: output.id.clone(),
+                    from: scene.zones[owner].id,
+                    to: zone_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        let layer_moves = plan_layer_carry(scene, &moves);
 
-        if current_owner == Some(target_index) {
-            if let Some(zone) = scene.zones[target_index]
-                .layout
-                .zones
-                .iter_mut()
-                .find(|zone| zone.id == device_zone.id)
-            {
-                *zone = device_zone;
-            }
-        } else {
-            for zone in &mut scene.zones {
-                zone.layout.zones.retain(|zone| zone.id != device_zone.id);
-            }
-            let slot = scene.zones[target_index].layout.zones.len();
-            let mut moved = device_zone;
-            match placement {
-                OutputPlacement::AutoGrid => reset_device_zone_placement(&mut moved, slot),
-                OutputPlacement::Preserve => {
-                    moved.display_order = i32::try_from(slot).unwrap_or(0);
+        for device_zone in outputs {
+            if owner_of(scene, &device_zone.id) == Some(target_index) {
+                if let Some(zone) = scene.zones[target_index]
+                    .layout
+                    .zones
+                    .iter_mut()
+                    .find(|zone| zone.id == device_zone.id)
+                {
+                    *zone = device_zone;
                 }
+            } else {
+                for zone in &mut scene.zones {
+                    zone.layout.zones.retain(|zone| zone.id != device_zone.id);
+                }
+                let slot = scene.zones[target_index].layout.zones.len();
+                let mut moved = device_zone;
+                match placement {
+                    OutputPlacement::AutoGrid => reset_device_zone_placement(&mut moved, slot),
+                    OutputPlacement::Preserve => {
+                        moved.display_order = i32::try_from(slot).unwrap_or(0);
+                    }
+                }
+                scene.zones[target_index].layout.zones.push(moved);
             }
-            scene.zones[target_index].layout.zones.push(moved);
         }
+        layer_scope::execute_layer_moves(scene, &layer_moves);
 
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
             self.refresh_resolved_zones();
         }
-        Ok(())
+        Ok(layer_moves)
     }
 
     pub fn unassign_output(
@@ -1201,6 +1240,13 @@ impl SceneManager {
             .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
 
+    /// Insert a new layer into a zone's stack.
+    ///
+    /// # Errors
+    ///
+    /// Beside the stack's own refusals,
+    /// [`LayerMutationError::ScopeOutputMissing`] when the layer's scope
+    /// names an output the zone does not currently hold.
     pub fn insert_zone_layer(
         &mut self,
         scene_id: SceneId,
@@ -1217,6 +1263,7 @@ impl SceneManager {
             if let Err(errors) = layer.validate() {
                 return Err(LayerMutationError::InvalidLayer { errors });
             }
+            layer_scope::check_introduced_scope(zone, &layer, None)?;
             if let Some(index) = index {
                 if index > zone.layers.len() {
                     return Err(LayerMutationError::InvalidIndex {
@@ -1232,31 +1279,104 @@ impl SceneManager {
         })
     }
 
-    /// Replace only a zone's authored layer stack, preserving its other fields.
+    /// Replace one layer in place, keeping its slot in the stack.
+    ///
+    /// The replacement's scope is taken as given. Ids the replaced layer's
+    /// scope already held are carried without a membership check, so a
+    /// layer whose output has left the zone can still be edited; any other
+    /// id must be a current output of the zone.
     ///
     /// # Errors
     ///
-    /// Refuses missing targets, duplicate identities or invalid layer values
-    /// before changing the stack.
-    pub fn replace_zone_layer_stack(
+    /// [`LayerMutationError::LayerMissing`] for an unknown layer,
+    /// [`LayerMutationError::ScopeOutputMissing`] for a newly named output
+    /// the zone does not hold, and the stack's usual refusals.
+    pub fn replace_zone_layer(
         &mut self,
         scene_id: SceneId,
         zone_id: ZoneId,
-        layers: Vec<SceneLayer>,
+        layer_id: SceneLayerId,
+        layer: SceneLayer,
+        expected_version: Option<u64>,
     ) -> Result<(&Zone, u64), LayerMutationError> {
-        let mut ids = HashSet::new();
-        for layer in &layers {
-            if !ids.insert(layer.id) {
+        self.mutate_zone_layers(scene_id, zone_id, expected_version, |zone| {
+            let Some(index) = zone.layers.iter().position(|layer| layer.id == layer_id) else {
+                return Err(LayerMutationError::LayerMissing { layer_id });
+            };
+            if layer.id != layer_id && zone.layers.iter().any(|existing| existing.id == layer.id) {
                 return Err(LayerMutationError::DuplicateLayer { layer_id: layer.id });
             }
-            layer
-                .validate()
-                .map_err(|errors| LayerMutationError::InvalidLayer { errors })?;
-        }
-        self.mutate_zone_layers(scene_id, zone_id, None, |zone| {
-            zone.layers = layers;
+            let layer = layer.normalized();
+            if let Err(errors) = layer.validate() {
+                return Err(LayerMutationError::InvalidLayer { errors });
+            }
+            layer_scope::check_introduced_scope(zone, &layer, zone.layers[index].scope.as_ref())?;
+            zone.layers[index] = layer;
             Ok(())
         })
+    }
+
+    /// Replace a zone's whole-zone layers with one layer, keeping every
+    /// scoped layer above it: the same rule an effect apply follows, for
+    /// callers that bring their own base layer.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a missing target, an invalid or scoped base layer, and an
+    /// id a kept layer already uses, before changing the stack.
+    pub fn replace_zone_base_layer(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        base: SceneLayer,
+    ) -> Result<(&Zone, u64), LayerMutationError> {
+        if base.scope.is_some() {
+            return Err(LayerMutationError::InvalidLayer {
+                errors: vec!["a zone's base layer applies to the whole zone".to_owned()],
+            });
+        }
+        base.validate()
+            .map_err(|errors| LayerMutationError::InvalidLayer { errors })?;
+        self.mutate_zone_layers(scene_id, zone_id, None, |zone| {
+            if zone
+                .layers
+                .iter()
+                .any(|kept| kept.scope.is_some() && kept.id == base.id)
+            {
+                return Err(LayerMutationError::DuplicateLayer { layer_id: base.id });
+            }
+            layer_scope::replace_unscoped_layers(zone, base);
+            Ok(())
+        })
+    }
+
+    /// Apply caller-supplied layer moves, as a membership edit replays
+    /// them from a receipt, after that edit's outputs have moved.
+    ///
+    /// # Errors
+    ///
+    /// [`LayerMutationError::LayerMoveStale`] when a layer is not at the
+    /// slot its move names with the scope it names,
+    /// [`LayerMutationError::ScopeOutputMissing`] when a move introduces a
+    /// scope id its destination does not hold, and the stack's refusals
+    /// for an unknown zone, a repeated layer, or an index out of range.
+    /// Nothing changes when any move is refused.
+    pub fn apply_layer_moves(
+        &mut self,
+        scene_id: SceneId,
+        moves: &[LayerMove],
+    ) -> Result<Vec<ZoneId>, LayerMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(&scene_id)
+            .ok_or(LayerMutationError::SceneMissing)?;
+        layer_scope::validate_layer_moves(scene, moves)?;
+        let touched = layer_scope::execute_layer_moves(scene, moves);
+        if !touched.is_empty() && active_scene_id == Some(scene_id) {
+            self.refresh_resolved_zones();
+        }
+        Ok(touched)
     }
 
     pub fn remove_zone_layer(
@@ -1473,12 +1593,7 @@ impl SceneManager {
         if zone.role == ZoneRole::Display {
             anyhow::bail!("zone {zone_id:?} is a display face, not an LED zone");
         }
-        let effect_changed = effect_layer_id(zone) != Some(effect.id);
-        let control_bindings = if effect_changed {
-            HashMap::new()
-        } else {
-            effect_control_bindings(zone)
-        };
+        let control_bindings = carried_control_bindings(zone, effect.id);
         replace_effect_layer_stack(
             zone,
             effect.id,
@@ -1495,11 +1610,13 @@ impl SceneManager {
             .ok_or_else(|| anyhow::anyhow!("zone vanished after effect apply"))
     }
 
+    /// Stop a zone's lighting: remove every layer except those scoped
+    /// only to screens, so a screen's face survives the stop gesture the
+    /// way a display zone's does.
     pub fn clear_zone_effect(&mut self, zone_id: ZoneId) -> Option<&Zone> {
         let scene = self.active_scene_mut()?;
         let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;
-        if !zone.layers.is_empty() {
-            zone.layers.clear();
+        if layer_scope::clear_lighting_layers(zone) {
             zone.layers_version = zone.layers_version.saturating_add(1);
         }
         // Keep the internal generation aligned with the cleared source.
@@ -1889,7 +2006,9 @@ fn reset_device_zone_placement(zone: &mut Output, slot: usize) {
     zone.display_order = i32::try_from(slot).unwrap_or(0);
 }
 
-/// Replace a zone's whole stack with a freshly identified effect layer.
+/// Replace a zone's whole-zone layers with a freshly identified effect
+/// layer. Scoped layers stay above it: a keyboard's own layer or a
+/// screen's face survives a change of base effect.
 fn replace_effect_layer_stack(
     zone: &mut Zone,
     effect_id: EffectId,
@@ -1897,14 +2016,30 @@ fn replace_effect_layer_stack(
     control_bindings: HashMap<String, ControlBinding>,
     preset_id: Option<PresetId>,
 ) {
-    zone.layers = vec![SceneLayer::from_effect(
-        SceneLayerId::new(),
-        effect_id,
-        controls,
-        control_bindings,
-        preset_id,
-    )];
+    layer_scope::replace_unscoped_layers(
+        zone,
+        SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            controls,
+            control_bindings,
+            preset_id,
+        ),
+    );
     zone.layers_version = zone.layers_version.saturating_add(1);
+}
+
+/// The input bindings a re-applied effect keeps: those of the whole-zone
+/// effect layer it replaces, when that layer runs the same effect.
+fn carried_control_bindings(zone: &Zone, effect_id: EffectId) -> HashMap<String, ControlBinding> {
+    match layer_scope::base_effect_layer(zone).map(|layer| &layer.source) {
+        Some(LayerSource::Effect {
+            effect_id: current,
+            control_bindings,
+            ..
+        }) if *current == effect_id => control_bindings.clone(),
+        _ => HashMap::new(),
+    }
 }
 
 fn effect_layer_id(zone: &Zone) -> Option<EffectId> {
@@ -1912,18 +2047,6 @@ fn effect_layer_id(zone: &Zone) -> Option<EffectId> {
         LayerSource::Effect { effect_id, .. } => Some(effect_id),
         _ => None,
     })
-}
-
-fn effect_control_bindings(zone: &Zone) -> HashMap<String, ControlBinding> {
-    zone.layers
-        .iter()
-        .find_map(|layer| match &layer.source {
-            LayerSource::Effect {
-                control_bindings, ..
-            } => Some(control_bindings.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
 }
 
 impl Default for SceneManager {

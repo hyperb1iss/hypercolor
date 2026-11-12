@@ -49,6 +49,49 @@ fn membership_edit_declares_its_required_revision_header() {
 }
 
 #[test]
+fn membership_edit_documents_layer_moves_as_an_optional_receipt() {
+    let document = openapi_document();
+    let schemas = &document["components"]["schemas"];
+    let required = |schema: &str| {
+        schemas[schema]["required"]
+            .as_array()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    for schema in ["EditMembersRequest", "EditMembersResponse"] {
+        assert!(
+            schemas[schema]["properties"]["layer_moves"].is_object(),
+            "{schema} documents layer_moves"
+        );
+        assert!(
+            !required(schema).contains(&"layer_moves"),
+            "{schema}.layer_moves is additive: a client that predates it omits it and ignores it"
+        );
+    }
+    let mut move_fields = required("LayerMove");
+    move_fields.sort_unstable();
+    assert_eq!(
+        move_fields,
+        ["from", "layer_id", "scope_after", "scope_before", "to"]
+    );
+    let mut slot_fields = required("LayerSlot");
+    slot_fields.sort_unstable();
+    assert_eq!(slot_fields, ["index", "zone_id"]);
+    assert_eq!(required("LayerScope"), ["outputs"]);
+    assert!(
+        schemas["SceneLayer"]["properties"]["scope"].is_object()
+            && !required("SceneLayer").contains(&"scope"),
+        "a layer's scope is an optional response field"
+    );
+}
+
+#[test]
 fn keyed_writes_document_their_capacity_refusal() {
     let document = openapi_document();
     let mut keyed = 0;

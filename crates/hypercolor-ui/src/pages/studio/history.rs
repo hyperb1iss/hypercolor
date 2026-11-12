@@ -986,6 +986,7 @@ impl StudioHistory {
                 segments,
                 placements,
             }),
+            layer_moves: None,
         };
         Some((scene, request))
     }
@@ -1086,6 +1087,7 @@ impl StudioHistory {
                 scene_id: scene.id,
                 changes,
                 assignment: None,
+                layer_moves: None,
             },
             Fence::of(&scene),
             done,
@@ -1180,6 +1182,7 @@ impl StudioHistory {
                 scene_id,
                 changes: placed,
                 assignment: None,
+                layer_moves: None,
             };
             let through = writer::edit_mark();
             let result = edit_members(&request, &fence.at(landed)).await;
@@ -1373,6 +1376,7 @@ impl StudioHistory {
                 scene_id: scene.id,
                 changes,
                 assignment: None,
+                layer_moves: None,
             };
             let through = writer::edit_mark();
             let result = edit_members(&request, &Fence::of(&scene)).await;
@@ -2250,6 +2254,7 @@ mod replay_tests {
                         scene_id: scene.id,
                         changes: Vec::new(),
                         assignment: None,
+                        layer_moves: None,
                     },
                     through: 0,
                 },
@@ -2286,6 +2291,7 @@ mod replay_tests {
                     scene_id: scene.id,
                     changes: changes.clone(),
                     assignment: None,
+                    layer_moves: None,
                 };
                 let fence = Fence::of(&scene);
                 history.record_created_zone(

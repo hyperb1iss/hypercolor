@@ -540,7 +540,7 @@ pub enum DomainErrorDetails {
         /// Which member.
         member: String,
     },
-    /// A placement naming a member the zone does not hold.
+    /// A placement or a layer scope naming a member the zone does not hold.
     UnknownMember {
         /// The member id that missed.
         unknown_member: String,

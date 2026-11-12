@@ -222,6 +222,7 @@ async fn restore_outputs(
             })
             .collect(),
         assignment: None,
+        layer_moves: None,
     };
     match edit_members(&request, fence).await {
         Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => Wrote::Landed,
@@ -546,6 +547,7 @@ impl StudioHistory {
                         segments,
                         placements,
                     }),
+                    layer_moves: None,
                 };
                 self.send_members(generation, request, Fence::of(scene), point)
                     .await
@@ -559,6 +561,7 @@ impl StudioHistory {
                     scene_id: scene.id,
                     changes,
                     assignment: None,
+                    layer_moves: None,
                 };
                 self.send_members(generation, request, Fence::of(scene), None)
                     .await
@@ -744,6 +747,7 @@ impl StudioHistory {
                 scene_id: scene.id,
                 changes,
                 assignment: None,
+                layer_moves: None,
             };
             let through = writer::edit_mark();
             match edit_members(&request, &Fence::of(&scene)).await {
@@ -1355,6 +1359,7 @@ impl StudioHistory {
             scene_id: scene.id,
             changes,
             assignment: None,
+            layer_moves: None,
         };
         match self
             .send_members(generation, request, Fence::of(&scene), None)
@@ -1645,6 +1650,7 @@ impl StudioHistory {
                         scene_id: scene.id,
                         changes,
                         assignment: None,
+                        layer_moves: None,
                     };
                     match self
                         .send_members(generation, request, Fence::of(&scene), None)

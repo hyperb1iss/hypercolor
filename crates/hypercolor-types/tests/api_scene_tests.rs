@@ -349,11 +349,22 @@ fn membership_edit_contract_round_trips_offline_restore_receipts() {
     assert_eq!(after.index, 1);
     assert_eq!(after.output.led_mapping, Some(vec![3, 2, 1, 0]));
     assert_eq!(after.output.brightness, Some(0.7));
+    assert_eq!(
+        typed.layer_moves, None,
+        "a request without layer moves leaves the carry to the daemon"
+    );
+    assert_eq!(
+        serde_json::to_value(&typed).expect("serialize request")["layer_moves"],
+        serde_json::Value::Null,
+        "an omitted layer_moves stays omitted"
+    );
     let response = EditMembersResponse {
         document: serde_json::from_value(representative_document()).expect("scene"),
         changes: typed.changes,
+        layer_moves: Vec::new(),
     };
     let encoded = serde_json::to_value(&response).expect("serialize receipt");
+    assert_eq!(encoded["layer_moves"], json!([]));
     assert_eq!(
         serde_json::from_value::<EditMembersResponse>(encoded).expect("read receipt"),
         response
@@ -361,6 +372,80 @@ fn membership_edit_contract_round_trips_offline_restore_receipts() {
     let mut unknown = request;
     unknown["replace_layers"] = json!(true);
     assert!(serde_json::from_value::<EditMembersRequest>(unknown).is_err());
+}
+
+#[test]
+fn a_membership_receipt_carries_layer_moves_and_replays_them_reversed() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, LayerMove, LayerSlot,
+    };
+    use hypercolor_types::layer::LayerScope;
+
+    let receipt = json!({
+        "document": representative_document(),
+        "changes": [],
+        "layer_moves": [{
+            "layer_id": "0198c5b6-1111-7000-8000-00000000000a",
+            "from": {"zone_id": "0198c5b6-1111-7000-8000-000000000002", "index": 1},
+            "to": {"zone_id": "0198c5b6-1111-7000-8000-000000000003", "index": 0},
+            "scope_before": {"outputs": ["out-desk-1", "out-desk-2"]},
+            "scope_after": {"outputs": ["out-desk-1", "out-desk-2"]}
+        }]
+    });
+    let response: EditMembersResponse =
+        serde_json::from_value(receipt.clone()).expect("read receipt");
+    assert_eq!(
+        serde_json::to_value(&response).expect("serialize receipt")["layer_moves"],
+        receipt["layer_moves"]
+    );
+    let carried = &response.layer_moves[0];
+    assert_eq!(carried.from.index, 1);
+    assert_eq!(
+        carried.scope_after,
+        LayerScope {
+            outputs: vec!["out-desk-1".to_owned(), "out-desk-2".to_owned()],
+        }
+    );
+
+    let reversed = carried.reversed();
+    assert_eq!(
+        reversed,
+        LayerMove {
+            layer_id: carried.layer_id,
+            from: LayerSlot {
+                zone_id: carried.to.zone_id,
+                index: 0,
+            },
+            to: LayerSlot {
+                zone_id: carried.from.zone_id,
+                index: 1,
+            },
+            scope_before: carried.scope_after.clone(),
+            scope_after: carried.scope_before.clone(),
+        }
+    );
+    assert_eq!(&reversed.reversed(), carried);
+
+    let replay = json!({
+        "scene_id": "0198c5b6-1111-7000-8000-000000000001",
+        "changes": [],
+        "layer_moves": [serde_json::to_value(&reversed).expect("serialize move")]
+    });
+    let typed: EditMembersRequest = serde_json::from_value(replay).expect("replay request");
+    assert_eq!(typed.layer_moves, Some(vec![reversed]));
+
+    // A receipt written before layer moves existed still reads.
+    let mut older = receipt;
+    older
+        .as_object_mut()
+        .expect("receipt is an object")
+        .remove("layer_moves");
+    assert!(
+        serde_json::from_value::<EditMembersResponse>(older)
+            .expect("read older receipt")
+            .layer_moves
+            .is_empty()
+    );
 }
 
 #[test]

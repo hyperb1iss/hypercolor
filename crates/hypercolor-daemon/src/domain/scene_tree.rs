@@ -24,12 +24,12 @@ use hypercolor_types::api::scene::{
     ZoneMember, ZoneMemberId, ZoneResource,
 };
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use hypercolor_core::scene::{
-    LayerMutationError, OutputPlacement, primary_zone_follows_active_layout,
+    LayerMutationError, OutputPlacement, first_lighting_effect, primary_zone_follows_active_layout,
 };
 
 use crate::domain::commit::SceneCommit;
@@ -251,10 +251,12 @@ pub struct PatchScene {
     pub fence: Option<SceneFence>,
 }
 
-/// Empty layer stacks in one non-display zone or every non-display zone.
+/// Stop the lighting of one non-display zone or every non-display zone.
+///
+/// A layer scoped only to screens is not lighting and stays.
 #[derive(Debug, Clone, Default)]
 pub struct ClearScene {
-    /// Which non-display zone to empty; `None` empties every non-display zone.
+    /// Which non-display zone to clear; `None` clears every non-display zone.
     pub zone: Option<ZoneId>,
     /// The scene fence the caller last saw, when it sent one.
     pub fence: Option<SceneFence>,
@@ -271,6 +273,23 @@ pub struct AssignMembers {
     pub fence: Option<SceneFence>,
 }
 
+/// What a layer replacement does with the scope of the layer it replaces.
+///
+/// A client that predates layer scope replaces a layer by sending back the
+/// fields it knows, so saying nothing has to mean "leave the scope alone":
+/// the default keeps it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LayerScopeEdit {
+    /// Carry the replaced layer's scope over unchanged.
+    #[default]
+    Keep,
+    /// Apply the replacement to the whole zone.
+    Clear,
+    /// Limit the replacement to these outputs. Ids the replaced layer's
+    /// scope did not hold must be current outputs of the zone.
+    Set(LayerScope),
+}
+
 /// Replace one layer, minting a fresh identity (Spec 78 §1.4).
 #[derive(Debug, Clone)]
 pub struct ReplaceLayer {
@@ -278,8 +297,11 @@ pub struct ReplaceLayer {
     pub zone_id: ZoneId,
     /// Which layer is being replaced.
     pub layer_id: SceneLayerId,
-    /// The replacement, already validated and carrying its new id.
+    /// The replacement, already validated and carrying its new id. Its
+    /// own `scope` is ignored in favor of [`Self::scope`].
     pub layer: SceneLayer,
+    /// What becomes of the replaced layer's scope.
+    pub scope: LayerScopeEdit,
     /// The scene fence the caller last saw, when it sent one.
     pub fence: Option<SceneFence>,
 }
@@ -379,10 +401,12 @@ pub async fn patch_scene(
     })
 }
 
-/// Empty one non-display zone's stack, or every non-display zone's.
+/// Stop one non-display zone's lighting, or every non-display zone's.
 ///
-/// Clearing every non-display zone also quiesces output. Clearing one zone leaves the
-/// rest rendering and therefore leaves output alone.
+/// Every layer goes except those scoped only to screens: a face is not
+/// lighting, and it survives the stop gesture the way a display zone's
+/// does. Clearing every non-display zone also quiesces output. Clearing
+/// one zone leaves the rest rendering and therefore leaves output alone.
 ///
 /// # Errors
 ///
@@ -432,8 +456,7 @@ pub async fn clear_scene(
             .iter()
             .filter(|zone| zone.role != ZoneRole::Display)
             .filter_map(|zone| {
-                zone.effect_ids()
-                    .next()
+                first_lighting_effect(zone)
                     .and_then(|effect_id| effect_refs.get(&effect_id).cloned())
                     .map(|effect| (zone.id, effect))
             })
@@ -473,7 +496,8 @@ pub async fn clear_scene(
 /// # Errors
 ///
 /// [`DomainError::NotFound`] for an unknown zone or layer,
-/// [`DomainError::Validation`] for an invalid layer payload,
+/// [`DomainError::Validation`] for an invalid layer payload or a scope
+/// that newly names an output the zone does not hold,
 /// [`DomainError::PreconditionFailed`] for a stale revision.
 pub async fn replace_layer(
     ctx: &SceneTreeContext,
@@ -489,24 +513,25 @@ pub async fn replace_layer(
     let scene_id = mutation.active_scene_for_runtime_mutation("replacing a layer")?;
     ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
 
-    let index = active_scene(&mutation)?
-        .zones
-        .iter()
-        .find(|zone| zone.id == command.zone_id)
+    let replaced_scope = mutation
+        .scenes()
+        .active_scene()
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == command.zone_id))
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, command.zone_id))?
         .layers
         .iter()
-        .position(|layer| layer.id == command.layer_id)
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, command.layer_id))?;
+        .find(|layer| layer.id == command.layer_id)
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, command.layer_id))?
+        .scope
+        .clone();
+    command.layer.scope = match command.scope {
+        LayerScopeEdit::Keep => replaced_scope,
+        LayerScopeEdit::Clear => None,
+        LayerScopeEdit::Set(scope) => Some(scope),
+    };
 
     let zone = mutation
-        .replace_layer(
-            scene_id,
-            command.zone_id,
-            command.layer_id,
-            command.layer,
-            index,
-        )
+        .replace_layer(scene_id, command.zone_id, command.layer_id, command.layer)
         .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
     if let Some(media_admission) = media_admission {
         media_admission.validate(&active_scene(&mutation)?)?;
@@ -576,7 +601,9 @@ pub async fn patch_layer_controls(
 /// A segment the scene already holds is moved out of whatever zone owns
 /// it; a segment the scene has never seen is minted from the connected
 /// device through the same auto-layout factory discovery uses, so a
-/// hand-assigned output is shaped exactly like a discovered one.
+/// hand-assigned output is shaped exactly like a discovered one. The
+/// segments move as one edit, so a layer scoped to all of them follows
+/// them into the zone.
 ///
 /// # Errors
 ///
@@ -601,11 +628,14 @@ pub async fn assign_members(
     let previous_zones = scene.zones.clone();
     let outputs = resolve_members(&scene, &command.request, minted)?;
 
-    for output in outputs {
-        mutation
-            .assign_output(scene_id, command.zone_id, output, OutputPlacement::Preserve)
-            .map_err(|_| DomainError::not_found(ResourceKind::Zone, command.zone_id))?;
-    }
+    mutation
+        .assign_outputs(
+            scene_id,
+            command.zone_id,
+            outputs,
+            OutputPlacement::Preserve,
+        )
+        .map_err(|_| DomainError::not_found(ResourceKind::Zone, command.zone_id))?;
 
     let zone = zone_in_candidate(&mutation, command.zone_id)?;
     let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
@@ -972,6 +1002,15 @@ pub(crate) fn layer_error(
             let _ = layer_id;
             DomainError::ControlBound { keys }
         }
+        LayerMutationError::ScopeOutputMissing { output, .. } => DomainError::validation_details(
+            "a layer's scope may only name outputs its zone holds",
+            DomainErrorDetails::UnknownMember {
+                unknown_member: output,
+            },
+        ),
+        LayerMutationError::LayerMoveStale { layer_id } => DomainError::conflict(format!(
+            "layer {layer_id} is no longer where the membership receipt left it"
+        )),
     }
 }
 

@@ -23,7 +23,8 @@ use std::collections::HashMap;
 use crate::control::ControlValue;
 use crate::identity::LayoutId;
 use crate::layer::{
-    BlendMode, LayerAdjust, LayerBinding, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerBinding, LayerScope, LayerSource, LayerTransform, SceneLayer,
+    SceneLayerId,
 };
 use crate::library::PresetId;
 use crate::scene::{
@@ -622,6 +623,50 @@ pub struct MemberEdit {
     pub after: Option<MemberState>,
 }
 
+/// A layer's place in a scene: the zone that owns it and its position in
+/// that zone's bottom-to-top stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct LayerSlot {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
+    pub zone_id: ZoneId,
+    pub index: usize,
+}
+
+/// One scoped layer a membership edit carried with its outputs, or
+/// narrowed because some of them left.
+///
+/// `from.index` is the layer's position before the edit and `to.index`
+/// its position after it. A layer whose outputs all moved changes zone
+/// and keeps its scope; a layer that lost only some of them keeps its
+/// zone and loses those ids. [`Self::reversed`] is the record that undoes
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct LayerMove {
+    pub layer_id: SceneLayerId,
+    pub from: LayerSlot,
+    pub to: LayerSlot,
+    pub scope_before: LayerScope,
+    pub scope_after: LayerScope,
+}
+
+impl LayerMove {
+    /// The move that puts the layer back where this one found it.
+    #[must_use]
+    pub fn reversed(&self) -> Self {
+        Self {
+            layer_id: self.layer_id,
+            from: self.to,
+            to: self.from,
+            scope_before: self.scope_after.clone(),
+            scope_after: self.scope_before.clone(),
+        }
+    }
+}
+
 /// `POST /scene/members/edit`: one revision-fenced membership transaction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -635,6 +680,16 @@ pub struct EditMembersRequest {
     /// Mutually exclusive with explicit changes, which replay saved receipts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignment: Option<MemberAssignmentTarget>,
+    /// The scoped layers to move with the outputs, replayed from a
+    /// receipt's `layer_moves` beside its `changes`.
+    ///
+    /// Omitted, the daemon decides which scoped layers follow the moved
+    /// outputs. Present, exactly these moves are applied and nothing else
+    /// is carried, so replaying a receipt's reversed moves restores each
+    /// layer's zone, stack position, and scope. Only valid with explicit
+    /// `changes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_moves: Option<Vec<LayerMove>>,
 }
 
 /// Device segments to assign using daemon-owned layout construction.
@@ -676,4 +731,8 @@ pub struct MemberPlacementHint {
 pub struct EditMembersResponse {
     pub document: SceneDocument,
     pub changes: Vec<MemberEdit>,
+    /// Every scoped layer the edit moved or narrowed, in the order a
+    /// replay applies them.
+    #[serde(default)]
+    pub layer_moves: Vec<LayerMove>,
 }
