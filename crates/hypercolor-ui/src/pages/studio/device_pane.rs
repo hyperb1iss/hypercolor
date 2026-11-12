@@ -774,6 +774,7 @@ fn UnassignedPolicy(lights: Memo<Vec<Surface>>) -> impl IntoView {
                             options=Signal::derive(move || options.get())
                             on_change=on_change
                             disabled=Signal::derive(move || studio.history.busy.get())
+                            aria_label="Outputs in no zone"
                             fit_options=true
                             class="rounded-md border border-edge-subtle/60 bg-surface-overlay/40 px-2 py-1 text-[11px] text-fg-secondary"
                         />

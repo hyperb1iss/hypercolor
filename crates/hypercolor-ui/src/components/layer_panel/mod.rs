@@ -276,6 +276,7 @@ pub fn LayerPanel(
                         on_change=Callback::new(move |id: String| {
                             set_selected_zone_id.set((!id.is_empty()).then_some(id));
                         })
+                        aria_label="Zone"
                         placeholder="Select zone"
                         class="border border-edge-subtle bg-surface-sunken/55 px-3 py-2 text-xs text-fg-primary"
                         label_class="font-medium"

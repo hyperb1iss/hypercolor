@@ -92,6 +92,7 @@ pub fn MountingSelect(
                     value=value
                     options=Signal::derive(display_rotation_select_options)
                     on_change=on_change
+                    aria_label="Mounting"
                     placeholder="Mounting"
                     class=trigger_class.clone()
                     label_class="font-medium"
