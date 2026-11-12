@@ -101,6 +101,72 @@ pub fn effective_slot_name(
     ))
 }
 
+/// Whether a device's rail card lists its channels as rows. A device with
+/// one channel is its card, and the card's name is the output's.
+#[must_use]
+pub fn card_lists_channels(channel_count: usize) -> bool {
+    channel_count > 1
+}
+
+/// What the device rail calls an output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailOutputName {
+    /// The row's text: the channel on a card that lists channels, else
+    /// the card's own name.
+    pub name: String,
+    /// The card the row sits under, when `name` is a channel's.
+    pub card: Option<String>,
+}
+
+/// The rail's name for `zone`, for surfaces that have no room for the
+/// stored one. `None` when the rail has nothing shorter to offer: an
+/// unknown device, a component output, a channel the device no longer
+/// reports, or a stored name somebody chose.
+#[must_use]
+pub fn rail_output_name(zone: &Output, devices: &[api::DeviceSummary]) -> Option<RailOutputName> {
+    if zone.attachment.is_some() {
+        return None;
+    }
+    let device = devices
+        .iter()
+        .find(|device| device.layout_device_id == zone.device_id)?;
+    let segment = resolve_device_segment_summary(device, zone.zone_name.as_deref())?;
+    let channel = channel_names::effective_channel_name(&device.id, &segment.id, &segment.name);
+    let generated = zone.name == device.name
+        || [channel.as_str(), segment.name.as_str()]
+            .into_iter()
+            .any(|channel| names_channel_behind_device(&zone.name, channel));
+    if !generated {
+        return None;
+    }
+    Some(if card_lists_channels(device.segments.len()) {
+        RailOutputName {
+            name: channel,
+            card: Some(device.name.clone()),
+        }
+    } else {
+        RailOutputName {
+            name: device.name.clone(),
+            card: None,
+        }
+    })
+}
+
+/// Whether `name` is `channel` alone or behind a device prefix, in either
+/// form a generated output name takes: `Device: Channel` from the daemon's
+/// auto layout, `Device · Channel` from this UI. The prefix is not compared
+/// with the device's current name, which may have changed since.
+fn names_channel_behind_device(name: &str, channel: &str) -> bool {
+    let Some(split) = name.len().checked_sub(channel.len()) else {
+        return false;
+    };
+    let Some((prefix, suffix)) = name.split_at_checked(split) else {
+        return false;
+    };
+    suffix.eq_ignore_ascii_case(channel)
+        && (prefix.is_empty() || prefix.ends_with(": ") || prefix.ends_with(" · "))
+}
+
 pub fn sync_device_display_name_in_layout(
     layout: &mut SpatialLayout,
     layout_device_id: &str,

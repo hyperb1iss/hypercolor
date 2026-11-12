@@ -283,7 +283,7 @@ pub fn StudioDeviceCard(
             })
         })
         .collect();
-    let show_components = total_components > 1;
+    let show_components = layout_utils::card_lists_channels(total_components);
     let channels_id = format!("studio-channels-{zone_key}-{row_device_id}");
     // A placed card lists its outputs unless there are many; an Unassigned
     // card folds them until asked. The pane rebuilds its cards on scene

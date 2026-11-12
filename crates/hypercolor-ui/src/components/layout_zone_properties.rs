@@ -199,8 +199,15 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     crate::layout_utils::effective_zone_display(&zone, &devices, &attachment_profiles);
 
                 let zone_id = zone.id.clone();
-                let zone_name = zone_display.label.clone();
-                let zone_title = zone_name.clone();
+                // The rail's short name fits the bar; the stored one, with
+                // its device in front, is a hover away.
+                let rail_name = crate::layout_utils::rail_output_name(&zone, &devices);
+                let zone_title = zone_display.label.clone();
+                let detail_lead = rail_name
+                    .as_ref()
+                    .and_then(|rail| rail.card.clone())
+                    .or_else(|| zone.zone_name.clone());
+                let zone_name = rail_name.map_or_else(|| zone_title.clone(), |rail| rail.name);
                 let (cw, ch) = canvas_dims.get_untracked();
                 let transform_anchor = layout.with_untracked(|current| {
                     current.as_ref().and_then(|layout| {
@@ -214,7 +221,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let rotation_deg = zone.rotation.to_degrees();
                 let scale = zone.scale;
                 let meta_line = meta_line(
-                    zone.zone_name.as_deref(),
+                    detail_lead.as_deref(),
                     topology_name(&zone.topology),
                     zone.topology.led_count(),
                 );
@@ -628,13 +635,15 @@ fn zone_pixel_input(
     }
 }
 
-/// What the selection is, in words: its channel, its shape, its LEDs.
+/// What the selection is, in words: where it sits, its shape, its LEDs.
+/// `lead` is whichever of the channel and the device the name beside it
+/// does not already say.
 #[must_use]
-pub fn meta_line(channel: Option<&str>, topology: &str, led_count: u32) -> String {
+pub fn meta_line(lead: Option<&str>, topology: &str, led_count: u32) -> String {
     let leds = if led_count == 1 { "LED" } else { "LEDs" };
     let shape = format!("{topology} \u{00b7} {led_count} {leds}");
-    match channel.map(str::trim).filter(|channel| !channel.is_empty()) {
-        Some(channel) => format!("{channel} \u{00b7} {shape}"),
+    match lead.map(str::trim).filter(|lead| !lead.is_empty()) {
+        Some(lead) => format!("{lead} \u{00b7} {shape}"),
         None => shape,
     }
 }
