@@ -28,7 +28,10 @@ mod topology;
 mod viewport;
 
 pub use device_surface::{DeviceSurfaceMap, SurfaceCanvasPoint};
-pub use layer_placement::{LayerFrame, LayerFraming, LayerPlacement, SourceRepeat, scoped_outputs};
+pub use layer_placement::{
+    FrameEdge, LayerFrame, LayerFraming, LayerPlacement, LayerPlacementKey, SourceRepeat,
+    scoped_outputs,
+};
 pub use plan::{
     PreparedAreaSample, PreparedBilinearSample, PreparedNearestSample, PreparedZonePlan,
     PreparedZoneSamples,

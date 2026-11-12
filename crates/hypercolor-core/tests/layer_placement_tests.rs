@@ -11,8 +11,8 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use std::sync::Arc;
 
 use hypercolor_core::spatial::{
-    DeviceSurfaceMap, LayerFrame, LayerFraming, LayerPlacement, SourceRepeat, SpatialEngine,
-    scoped_outputs,
+    DeviceSurfaceMap, FrameEdge, LayerFrame, LayerFraming, LayerPlacement, SourceRepeat,
+    SpatialEngine, scoped_outputs,
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::layer::{LayerScope, LayerTransform};
@@ -185,8 +185,9 @@ fn an_unscoped_layer_with_no_transform_shows_each_zone_pixel_as_itself() {
         assert_near(source, zone_px, 1.0e-3, "identity placement");
     }
     assert_eq!(placement.source_texel([320.5, 240.5]), Some([320, 240]));
-    assert_eq!(placement.source_point([-1.0, 10.0]), None);
-    assert_eq!(placement.source_point([10.0, 480.5]), None);
+    assert_eq!(placement.edge, FrameEdge::Extend);
+    assert_eq!(placement.frame_point([-1.0, 10.0]), None);
+    assert_eq!(placement.frame_point([10.0, 480.5]), None);
 }
 
 #[test]
@@ -281,7 +282,7 @@ fn a_framed_source_fills_its_outputs_rotated_rectangle_on_a_canvas_that_is_not_s
 }
 
 #[test]
-fn a_frame_clips_a_source_scaled_past_it() {
+fn a_source_scaled_past_its_frame_shows_only_what_the_frame_holds() {
     let pad = output("pad", (0.5, 0.5), (0.25, 0.25), 0.0);
     let frame = LayerFrame::of_output(&pad).expect("placed output");
     let placement = LayerPlacement::new(
@@ -299,9 +300,78 @@ fn a_frame_clips_a_source_scaled_past_it() {
     assert_near(centre, [32.0, 32.0], 1.0e-3, "frame centre");
     let inside_edge = placement.source_point([240.5, 240.0]).expect("just inside");
     assert!((inside_edge[0] - 21.4).abs() < 0.2, "{inside_edge:?}");
-    // Just outside the frame the source would still have pixels to show.
-    assert_eq!(placement.source_point([239.0, 240.0]), None);
+    // Beyond the frame the source has more pixels, and none of them show:
+    // the frame's own edge runs on instead.
     assert_eq!(placement.frame_point([239.0, 240.0]), None);
+    for outside in [[239.0, 240.0], [100.0, 240.0], [0.5, 240.0]] {
+        let edge = placement.source_point(outside).expect("the edge runs on");
+        assert_near(edge, [64.0 / 3.0, 32.0], 1.0e-2, "the frame's left edge");
+    }
+    let corner = placement
+        .source_point([630.0, 5.0])
+        .expect("the edge runs on");
+    assert_near(
+        corner,
+        [64.0 * 2.0 / 3.0, 64.0 / 3.0],
+        1.0e-2,
+        "the frame's corner",
+    );
+}
+
+/// A device's LEDs sit on the border of its rectangle, and the sampler
+/// reads the pixel nearest each one, which can lie just outside the frame.
+/// The frame's edge runs on, so every LED of the output reads the layer.
+#[test]
+fn every_led_of_a_framed_output_reads_the_layer() {
+    let mut beyond_the_frame = 0;
+    for zone in [(640, 480), (641, 479), (320, 200)] {
+        for (position, size) in [((0.3, 0.4), (0.37, 0.23)), ((0.71, 0.62), (0.41, 0.33))] {
+            let keys = output("keys", position, size, 0.0);
+            let layout = layout(zone, vec![keys.clone()]);
+            let plan = SpatialEngine::new(layout).sampling_plan();
+            let frame = LayerFrame::of_output(&keys).expect("placed output");
+            let source = frame.render_extent(zone).expect("extent");
+            let placement = LayerPlacement::new(&frame, LayerTransform::default(), source, zone)
+                .expect("placement");
+            for sampled in &plan[0].sample_positions {
+                let (pixel_x, pixel_y) = sampled.to_pixel(zone.0, zone.1);
+                let pixel = [pixel_x.round() + 0.5, pixel_y.round() + 0.5];
+                assert!(
+                    placement.source_texel(pixel).is_some(),
+                    "an LED of the output read no layer at {pixel:?}"
+                );
+                if placement.frame_point(pixel).is_none() {
+                    beyond_the_frame += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        beyond_the_frame > 0,
+        "the cases should hold border LEDs that read past the frame"
+    );
+}
+
+#[test]
+fn a_window_shows_each_zone_pixel_as_itself_inside_its_frame_alone() {
+    let pad = output("pad", (0.5, 0.5), (0.25, 0.5), 0.4);
+    let frame = LayerFrame::of_output(&pad).expect("placed output");
+    let window = LayerPlacement::window(&frame, ZONE).expect("window");
+
+    assert_eq!(window.edge, FrameEdge::Clip);
+    assert_eq!(window.source_size, [640, 480]);
+    let centre = window
+        .source_point([320.0, 240.0])
+        .expect("the frame's centre");
+    assert_near(centre, [320.0, 240.0], 1.0e-2, "window centre");
+    assert_eq!(window.source_texel([300.5, 250.5]), Some([300, 250]));
+    assert!(window.covers([320.0, 240.0]));
+    // Outside the turned rectangle nothing shows.
+    assert!(!window.covers([150.0, 240.0]));
+    assert_eq!(window.source_point([150.0, 240.0]), None);
+    assert_eq!(window.source_point([320.0, 20.0]), None);
+    let [left, top, right, bottom] = window.frame_bounds().expect("bounds");
+    assert!(left < 300.0 && right > 340.0 && top < 140.0 && bottom > 340.0);
 }
 
 #[test]
@@ -341,7 +411,7 @@ fn tiled_and_mirrored_sources_repeat_in_source_pixels() {
     assert_eq!(tile.source_texel([160.5, 120.5]), Some([0, 0]));
     assert_eq!(tile.source_texel([175.5, 120.5]), Some([15, 0]));
     assert_eq!(tile.source_texel([176.5, 137.5]), Some([0, 1]));
-    assert_eq!(tile.source_texel([159.5, 120.5]), None);
+    assert_eq!(tile.frame_point([159.5, 120.5]), None);
 
     let mirror = LayerPlacement::new(
         &frame,
@@ -500,24 +570,16 @@ fn random_placements_round_trip_source_points_through_the_canvas() {
                 assert_near(via_output, zone_px, 5.0e-2, "frame point on the canvas");
                 frame_point
             };
-            let inside_frame = frame_units
+            // Inside the frame the pixel shows that source point. Beyond
+            // it the frame's edge runs on, and the point is not shown.
+            if frame_units
                 .iter()
-                .all(|unit| (0.001..=0.999).contains(unit));
-            match placement.source_point(zone_px) {
-                Some(back) => {
-                    assert!(
-                        frame_units
-                            .iter()
-                            .all(|unit| (-0.001..=1.001).contains(unit)),
-                        "case {case}: a point outside the frame was shown"
-                    );
-                    assert_near(back, source_px, 5.0e-2, "source point round trip");
-                }
-                None => assert!(
-                    !inside_frame,
-                    "case {case}: {source_px:?} lands inside the frame at {frame_units:?} \
-                     and was not shown"
-                ),
+                .all(|unit| (0.001..=0.999).contains(unit))
+            {
+                let back = placement
+                    .source_point(zone_px)
+                    .unwrap_or_else(|| panic!("case {case}: {source_px:?} was not shown"));
+                assert_near(back, source_px, 5.0e-2, "source point round trip");
             }
         }
     }

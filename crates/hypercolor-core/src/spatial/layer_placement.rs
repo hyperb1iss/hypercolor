@@ -3,10 +3,11 @@
 //! A layer with a scope fills the frame of its outputs instead of the zone
 //! canvas: one output's own placed rectangle, rotation included, or the
 //! bounding box of several. The layer's transform then places the source
-//! inside that frame. [`LayerPlacement`] is the product of both as one affine
-//! from zone pixels to source pixels, and it is the only description of that
-//! mapping: the compositor draws through it and input inverts a touch through
-//! it, so the point an effect is told about is the point its pixels land on.
+//! inside that frame. [`LayerPlacement`] carries both as two affines, zone
+//! pixels to frame units and frame units to source pixels, and it is the
+//! only description of that mapping: the compositor draws through it and
+//! input inverts a touch through it, so the point an effect is told about
+//! is the point its pixels land on.
 //!
 //! Spaces, in the order a source pixel travels: source pixels, frame pixels
 //! (the frame's own axes, sized in zone pixels), frame units (the unit
@@ -19,6 +20,12 @@ use hypercolor_types::viewport::FitMode;
 
 /// Shortest side a framed layer renders at, in pixels.
 const MIN_RENDER_SIDE: u32 = 16;
+
+/// How far outside the crop, in source pixels, a point still counts as on
+/// the source. The frame's edge maps onto the crop's edge exactly, and the
+/// arithmetic that gets there can land a hair past it. The compose shader
+/// holds the same number.
+const CROP_SLACK: f32 = 0.01;
 
 /// Row-major 2 by 3 affine: `x' = m[0] x + m[1] y + m[2]`,
 /// `y' = m[3] x + m[4] y + m[5]`.
@@ -245,7 +252,7 @@ impl LayerFraming {
 }
 
 /// How a source repeats beyond its own extent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceRepeat {
     /// The source shows once; beyond the crop nothing is drawn.
     None,
@@ -255,24 +262,42 @@ pub enum SourceRepeat {
     Mirror,
 }
 
+/// What a placed layer shows beyond its frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrameEdge {
+    /// The frame's edge runs on: a pixel outside the frame shows what the
+    /// nearest point of the frame's edge shows.
+    ///
+    /// A device's LEDs sit on the border of its rectangle, and a sampling
+    /// footprint wider than a point straddles that border. Running the edge
+    /// on lets a border LED read the layer and nothing of what lies around
+    /// it. Only outputs the layer applies to ever sample the canvas it is
+    /// drawn on, so the run-on reaches nothing else.
+    Extend,
+    /// Nothing shows outside the frame.
+    Clip,
+}
+
 /// Where one layer's source lands on its zone's canvas.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerPlacement {
-    /// Zone pixels to source pixels, row-major 2 by 3.
-    pub zone_to_source: [f32; 6],
     /// Zone pixels to frame units, row-major 2 by 3. A zone pixel is inside
     /// the frame when both results are within 0 and 1.
     pub zone_to_frame: [f32; 6],
+    /// Frame units to source pixels, row-major 2 by 3.
+    pub frame_to_source: [f32; 6],
     /// The source rectangle the fit mode shows, in source pixels: left, top,
     /// width, height.
     pub source_crop: [f32; 4],
     pub repeat: SourceRepeat,
     pub source_size: [u32; 2],
+    pub edge: FrameEdge,
 }
 
 impl LayerPlacement {
     /// The placement of a `source_size` source framed by `frame` and placed
-    /// inside it by `transform`, on a `zone_size` canvas.
+    /// inside it by `transform`, on a `zone_size` canvas. The frame's edge
+    /// runs on beyond it.
     ///
     /// `None` when the frame or the transform is degenerate.
     #[must_use]
@@ -327,23 +352,69 @@ impl LayerPlacement {
             gain[1].mul_add(-(-sin).mul_add(anchor[0], cos * anchor[1]), offset[1]),
         ];
         let frame_to_frame_px: Affine = [frame_width, 0.0, 0.0, 0.0, frame_height, 0.0];
-        let zone_to_source = compose(
-            frame_px_to_source,
-            compose(frame_to_frame_px, zone_to_frame),
-        );
-        let placement = Self {
-            zone_to_source,
+        Self {
             zone_to_frame,
+            frame_to_source: compose(frame_px_to_source, frame_to_frame_px),
             source_crop: fit.crop,
             repeat: fit.repeat,
             source_size: [source_size.0, source_size.1],
-        };
-        placement
-            .zone_to_source
+            edge: FrameEdge::Extend,
+        }
+        .finite()
+    }
+
+    /// The placement of a zone-sized source seen through `frame`: each zone
+    /// pixel inside the frame shows the source pixel at its own position,
+    /// and nothing shows outside it.
+    ///
+    /// `None` when the frame is degenerate.
+    #[must_use]
+    pub fn window(frame: &LayerFrame, zone_size: (u32, u32)) -> Option<Self> {
+        let zone_to_frame = frame.zone_to_frame(zone_size)?;
+        let (edge_x, edge_y) = frame.pixel_edges(zone_size)?;
+        let center = [
+            frame.center.x * to_f32(zone_size.0),
+            frame.center.y * to_f32(zone_size.1),
+        ];
+        Self {
+            zone_to_frame,
+            // Frame units back to the zone pixel they came from.
+            frame_to_source: [
+                edge_x[0],
+                edge_y[0],
+                center[0] - f32::midpoint(edge_x[0], edge_y[0]),
+                edge_x[1],
+                edge_y[1],
+                center[1] - f32::midpoint(edge_x[1], edge_y[1]),
+            ],
+            source_crop: [0.0, 0.0, to_f32(zone_size.0), to_f32(zone_size.1)],
+            repeat: SourceRepeat::None,
+            source_size: [zone_size.0, zone_size.1],
+            edge: FrameEdge::Clip,
+        }
+        .finite()
+    }
+
+    /// The placement by the bits of its numbers, for a key that must
+    /// compare exactly.
+    #[must_use]
+    pub fn key(&self) -> LayerPlacementKey {
+        LayerPlacementKey {
+            zone_to_frame: self.zone_to_frame.map(f32::to_bits),
+            frame_to_source: self.frame_to_source.map(f32::to_bits),
+            source_crop: self.source_crop.map(f32::to_bits),
+            repeat: self.repeat,
+            source_size: self.source_size,
+            edge: self.edge,
+        }
+    }
+
+    fn finite(self) -> Option<Self> {
+        self.zone_to_frame
             .iter()
-            .chain(&placement.zone_to_frame)
+            .chain(&self.frame_to_source)
             .all(|value| value.is_finite())
-            .then_some(placement)
+            .then_some(self)
     }
 
     /// Where a zone pixel falls in the frame, in frame units, or `None`
@@ -354,9 +425,18 @@ impl LayerPlacement {
         ((0.0..=1.0).contains(&point[0]) && (0.0..=1.0).contains(&point[1])).then_some(point)
     }
 
-    /// The source point a zone pixel shows, or `None` when the pixel is
-    /// outside the frame or the placed source. A repeating source answers
-    /// with the point of the copy the pixel shows.
+    /// Whether the layer draws on a zone pixel at all: everywhere when its
+    /// edge runs on, inside the frame when it is clipped.
+    #[must_use]
+    pub fn covers(&self, zone_px: [f32; 2]) -> bool {
+        self.edge == FrameEdge::Extend || self.frame_point(zone_px).is_some()
+    }
+
+    /// The source point a zone pixel shows, or `None` where the layer shows
+    /// nothing: outside a clipped frame, or where the placed source does
+    /// not reach. A pixel beyond a frame whose edge runs on shows the
+    /// nearest point of that edge. A repeating source answers with the
+    /// point of the copy the pixel shows.
     #[must_use]
     pub fn source_point(&self, zone_px: [f32; 2]) -> Option<[f32; 2]> {
         let point = self.unbounded_source_point(zone_px)?;
@@ -397,17 +477,26 @@ impl LayerPlacement {
         }
     }
 
-    /// The point of the unbounded source plane a zone pixel inside the
-    /// frame shows.
+    /// The point of the unbounded source plane a zone pixel shows.
     fn unbounded_source_point(&self, zone_px: [f32; 2]) -> Option<[f32; 2]> {
-        self.frame_point(zone_px)?;
-        let point = apply(self.zone_to_source, zone_px);
+        let frame = apply(self.zone_to_frame, zone_px);
+        let inside = (0.0..=1.0).contains(&frame[0]) && (0.0..=1.0).contains(&frame[1]);
+        if !inside && self.edge == FrameEdge::Clip {
+            return None;
+        }
+        let point = apply(
+            self.frame_to_source,
+            [frame[0].clamp(0.0, 1.0), frame[1].clamp(0.0, 1.0)],
+        );
         (point[0].is_finite() && point[1].is_finite()).then_some(point)
     }
 
     fn crop_contains(&self, point: [f32; 2]) -> bool {
         let [left, top, width, height] = self.source_crop;
-        point[0] >= left && point[0] <= left + width && point[1] >= top && point[1] <= top + height
+        point[0] >= left - CROP_SLACK
+            && point[0] <= left + width + CROP_SLACK
+            && point[1] >= top - CROP_SLACK
+            && point[1] <= top + height + CROP_SLACK
     }
 
     /// The axis-aligned box of zone pixels that holds the frame: left, top,
@@ -434,12 +523,12 @@ impl LayerPlacement {
         Some(bounds)
     }
 
-    /// The zone pixel a source point lands on, ignoring the frame's clip
-    /// and the crop: the inverse of the affine alone. `None` when the
+    /// The zone pixel a source point lands on, ignoring the frame's edge
+    /// and the crop: the inverse of the two affines alone. `None` when the
     /// mapping cannot be inverted.
     #[must_use]
     pub fn zone_point(&self, source_px: [f32; 2]) -> Option<[f32; 2]> {
-        invert(self.zone_to_source, source_px)
+        invert(self.zone_to_frame, invert(self.frame_to_source, source_px)?)
     }
 }
 
@@ -455,6 +544,17 @@ fn invert(affine: Affine, image: [f32; 2]) -> Option<[f32; 2]> {
         affine[0].mul_add(offset[1], -(affine[3] * offset[0])) / determinant,
     ];
     (point[0].is_finite() && point[1].is_finite()).then_some(point)
+}
+
+/// A [`LayerPlacement`] by the bits of its numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LayerPlacementKey {
+    zone_to_frame: [u32; 6],
+    frame_to_source: [u32; 6],
+    source_crop: [u32; 4],
+    repeat: SourceRepeat,
+    source_size: [u32; 2],
+    edge: FrameEdge,
 }
 
 /// What a fit mode draws of a source into a target, before the layer's own
