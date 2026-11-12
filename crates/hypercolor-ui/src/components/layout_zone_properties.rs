@@ -253,7 +253,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                         // The name has the identity block to itself until
                         // the bar is wide enough for the detail line too;
                         // sharing a narrow block cut both to a few letters.
-                        <div class="flex min-w-0 grow basis-32 items-baseline gap-2">
+                        // On a phone the block gives up its width so the
+                        // name shares the first row with position: a row
+                        // less of bar is a row more of canvas.
+                        <div class="flex min-w-0 grow basis-32 items-baseline gap-2 @max-md:basis-16">
                             <span class="min-w-0 max-w-56 truncate text-sm font-medium text-fg-primary" title=zone_title>
                                 {zone_name}
                             </span>
