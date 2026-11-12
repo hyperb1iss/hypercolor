@@ -7,7 +7,10 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
+from ..types import UNSET, Unset
+
 if TYPE_CHECKING:
+    from ..models.layer_move import LayerMove
     from ..models.member_edit import MemberEdit
     from ..models.scene_document import SceneDocument
 
@@ -25,10 +28,13 @@ class EditMembersResponse:
 
             Always present — an active scene always exists (Spec 78 §1.1), so
             there is no idle sentinel and no all-optional shape.
+        layer_moves (list[LayerMove] | Unset): Every scoped layer the edit moved or narrowed, in the order a
+            replay applies them.
     """
 
     changes: list[MemberEdit]
     document: SceneDocument
+    layer_moves: list[LayerMove] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -39,6 +45,13 @@ class EditMembersResponse:
 
         document = self.document.to_dict()
 
+        layer_moves: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.layer_moves, Unset):
+            layer_moves = []
+            for layer_moves_item_data in self.layer_moves:
+                layer_moves_item = layer_moves_item_data.to_dict()
+                layer_moves.append(layer_moves_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -47,11 +60,14 @@ class EditMembersResponse:
                 "document": document,
             }
         )
+        if layer_moves is not UNSET:
+            field_dict["layer_moves"] = layer_moves
 
         return field_dict
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.layer_move import LayerMove
         from ..models.member_edit import MemberEdit
         from ..models.scene_document import SceneDocument
 
@@ -65,9 +81,19 @@ class EditMembersResponse:
 
         document = SceneDocument.from_dict(d.pop("document"))
 
+        _layer_moves = d.pop("layer_moves", UNSET)
+        layer_moves: list[LayerMove] | Unset = UNSET
+        if _layer_moves is not UNSET:
+            layer_moves = []
+            for layer_moves_item_data in _layer_moves:
+                layer_moves_item = LayerMove.from_dict(layer_moves_item_data)
+
+                layer_moves.append(layer_moves_item)
+
         edit_members_response = cls(
             changes=changes,
             document=document,
+            layer_moves=layer_moves,
         )
 
         edit_members_response.additional_properties = d
