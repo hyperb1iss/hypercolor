@@ -1136,6 +1136,46 @@ async fn a_scene_replacement_checks_only_the_scope_ids_it_introduces() {
     assert_eq!(layers[1].scope, Some(scope(&[KEYS, LOGO])));
 }
 
+#[tokio::test]
+async fn a_layer_a_scene_replacement_moves_to_another_zone_keeps_its_scope_dormant() {
+    let rig = rig().await;
+    let (scene_id, keyboard, mut replacement) = studio_scene(&rig).await;
+    let zone_index = |zone_id| {
+        replacement
+            .zones
+            .iter()
+            .position(|zone| zone.id == Some(zone_id))
+            .expect("zone in the replacement")
+    };
+    let (main, desk) = (zone_index(rig.main), zone_index(rig.desk));
+    let moved = replacement.zones[main].layers.remove(1);
+    assert_eq!(moved.id, Some(keyboard));
+    replacement.zones[desk].layers.push(moved);
+
+    let response = put_scene(&rig, scene_id, &replacement).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored = rig.state.scene_manager.snapshot().await;
+    let desk = stored
+        .get(&scene_id)
+        .expect("named scene")
+        .zones
+        .iter()
+        .find(|zone| zone.id == rig.desk)
+        .expect("desk");
+    let layer = &desk.layers[0];
+    assert_eq!(layer.id, keyboard);
+    assert_eq!(
+        layer.scope,
+        Some(scope(&[KEYS, LOGO])),
+        "the scope travels with the layer and is never widened"
+    );
+    assert!(
+        desk.layer_is_dormant(layer),
+        "the outputs stayed behind, so the layer renders nothing where it landed"
+    );
+}
+
 // ── Persistence ──────────────────────────────────────────────────────────
 
 #[tokio::test]
