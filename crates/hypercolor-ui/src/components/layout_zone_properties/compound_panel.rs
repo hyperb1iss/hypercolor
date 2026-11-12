@@ -12,7 +12,13 @@ use crate::layout_geometry;
 use crate::pages::studio::move_menu::OutputMoveButton;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
-use super::{compound_op_button, zone_pixel_input};
+use super::{
+    FIELD_AFFIX, FIELD_BOX, FIELD_INPUT, GROUP, GROUP_LABEL, ICON_BUTTON, compound_op_button,
+    zone_pixel_input,
+};
+
+/// A cluster of one-shot operations, led by the word that names it.
+const OPS: &str = "flex shrink-0 items-center gap-0.5";
 
 #[component]
 pub(super) fn CompoundZoneProperties(
@@ -77,27 +83,17 @@ pub(super) fn CompoundZoneProperties(
     let dist_enabled = count >= 3;
 
     view! {
-        <div class="space-y-2">
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
-                <div class="flex items-center gap-1.5 min-w-0">
-                    <span
-                        class="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono tabular-nums"
-                        style="color: rgba(225, 53, 255, 0.8); background: rgba(225, 53, 255, 0.08)"
-                    >
-                        {format!("{count} outputs")}
-                    </span>
-                    <span class="text-[10px] text-fg-tertiary/40 font-mono">{depth_label}</span>
-                    <OutputMoveButton output_ids=move_ids />
-                </div>
-                <div class="flex-1" />
+        <div class="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+            <div class="flex min-w-0 grow basis-28 items-baseline gap-2">
+                <span class="shrink-0 text-sm font-medium tabular-nums text-fg-primary">
+                    {format!("{count} outputs")}
+                </span>
+                <span class="min-w-0 truncate text-xs text-fg-tertiary">{depth_label}</span>
             </div>
 
-            <div class="flex flex-wrap items-center gap-1.5">
                 <div
-                    class="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1"
-                    style="background: rgba(255, 255, 255, 0.02)"
+                    class=GROUP
                 >
-                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 w-5">"Pos"</span>
                     {zone_pixel_input("X", cx_px, "1", 0, cw, {
                         let ids = ids_pos_x;
                         move |px: f32| {
@@ -141,7 +137,7 @@ pub(super) fn CompoundZoneProperties(
                         }
                     })}
                     <button
-                        class="shrink-0 p-0.5 rounded text-fg-tertiary/30 hover:text-accent transition-colors btn-press"
+                        class=ICON_BUTTON
                         title="Center group horizontally"
                         on:click=move |_| {
                             let centroid = layout.with_untracked(|l| {
@@ -164,10 +160,10 @@ pub(super) fn CompoundZoneProperties(
                             }
                         }
                     >
-                        <Icon icon=LuAlignCenterHorizontal width="11px" height="11px" />
+                        <Icon icon=LuAlignCenterHorizontal width="14px" height="14px" />
                     </button>
                     <button
-                        class="shrink-0 p-0.5 rounded text-fg-tertiary/30 hover:text-accent transition-colors btn-press"
+                        class=ICON_BUTTON
                         title="Center group vertically"
                         on:click=move |_| {
                             let centroid = layout.with_untracked(|l| {
@@ -190,21 +186,21 @@ pub(super) fn CompoundZoneProperties(
                             }
                         }
                     >
-                        <Icon icon=LuAlignCenterVertical width="11px" height="11px" />
+                        <Icon icon=LuAlignCenterVertical width="14px" height="14px" />
                     </button>
                 </div>
 
                 <div
-                    class="flex items-center gap-1.5 flex-1 min-w-28 rounded-lg px-2 py-1"
-                    style="background: rgba(255, 255, 255, 0.02)"
+                    class=GROUP
                 >
-                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0">"Rot"</span>
                     <input
                         type="range"
                         min="-180"
                         max="180"
                         step="1"
-                        class="min-w-0 flex-1"
+                        class="w-20 min-w-0"
+                        aria-label="Rotation"
+                        title="Rotation"
                         prop:value=format!("{rot_offset:.0}")
                         on:input=move |ev| {
                             let event = Input::from_event(ev);
@@ -250,15 +246,13 @@ pub(super) fn CompoundZoneProperties(
                         on:blur=move |_| rotation_gesture.set_value(None)
                         on:pointercancel=move |_| rotation_gesture.set_value(None)
                     />
-                    <div class="flex items-center gap-0.5 shrink-0">
+                    <div class=FIELD_BOX>
                         <input
                             type="number"
                             min="-360"
                             max="360"
                             step="1"
-                            class="w-12 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
-                                   text-[11px] text-fg-primary font-mono tabular-nums text-right
-                                   focus:outline-none focus:border-accent-muted glow-ring transition-colors"
+                            class=format!("{FIELD_INPUT} w-9 text-right")
                             prop:value=format!("{rot_offset:.0}")
                             on:change=move |ev| {
                                 let event = Change::from_event(ev);
@@ -279,21 +273,21 @@ pub(super) fn CompoundZoneProperties(
                                 }
                             }
                         />
-                        <span class="text-[11px] font-mono text-fg-tertiary/30">{"\u{00b0}"}</span>
+                        <span class=FIELD_AFFIX>{"\u{00b0}"}</span>
                     </div>
                 </div>
 
                 <div
-                    class="flex items-center gap-1.5 flex-1 min-w-28 rounded-lg px-2 py-1"
-                    style="background: rgba(255, 255, 255, 0.02)"
+                    class=GROUP
                 >
-                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0">"Scale"</span>
                     <input
                         type="range"
                         min="0.2"
                         max="3.0"
                         step="0.05"
-                        class="min-w-0 flex-1"
+                        class="w-20 min-w-0"
+                        aria-label="Scale"
+                        title="Scale"
                         prop:value=format!("{scale_factor:.2}")
                         on:input=move |ev| {
                             let event = Input::from_event(ev);
@@ -316,15 +310,13 @@ pub(super) fn CompoundZoneProperties(
                             }
                         }
                     />
-                    <div class="flex items-center gap-0.5 shrink-0">
+                    <div class=FIELD_BOX>
                         <input
                             type="number"
                             min="0.2"
                             max="3.0"
                             step="0.05"
-                            class="w-12 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
-                                   text-[11px] text-fg-primary font-mono tabular-nums text-right
-                                   focus:outline-none focus:border-accent-muted glow-ring transition-colors"
+                            class=format!("{FIELD_INPUT} w-9 text-right")
                             prop:value=format!("{scale_factor:.2}")
                             on:change=move |ev| {
                                 let event = Change::from_event(ev);
@@ -347,17 +339,14 @@ pub(super) fn CompoundZoneProperties(
                                 }
                             }
                         />
-                        <span class="text-[11px] font-mono text-fg-tertiary/30">"x"</span>
+                        <span class=FIELD_AFFIX>{"\u{00d7}"}</span>
                     </div>
                 </div>
-            </div>
 
-            <div class="flex items-center gap-1.5 flex-wrap">
                 <div
-                    class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
-                    style="background: rgba(255, 255, 255, 0.02)"
+                    class=OPS
                 >
-                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Align"</span>
+                    <span class=format!("{GROUP_LABEL} pr-1")>"Align"</span>
                     {compound_op_button(LuAlignStartVertical, "Align left edges", move || {
                         let ids = ids_align_left.clone();
                         set_layout.update(|l| {
@@ -400,7 +389,7 @@ pub(super) fn CompoundZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    <div class="w-px h-3 bg-edge-subtle mx-0.5" />
+                    <div class="mx-0.5 h-4 w-px bg-edge-subtle" />
                     {compound_op_button(LuAlignStartHorizontal, "Align top edges", move || {
                         let ids = ids_align_top.clone();
                         set_layout.update(|l| {
@@ -446,19 +435,16 @@ pub(super) fn CompoundZoneProperties(
                 </div>
 
                 <div
-                    class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
-                    style=move || if dist_enabled {
-                        "background: rgba(255, 255, 255, 0.02)"
-                    } else {
-                        "background: rgba(255, 255, 255, 0.02); opacity: 0.35; pointer-events: none"
-                    }
+                    class=OPS
+                    class=("opacity-40", !dist_enabled)
+                    class=("pointer-events-none", !dist_enabled)
                     title=move || if dist_enabled {
                         ""
                     } else {
                         "Distribute needs 3+ outputs"
                     }
                 >
-                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Dist"</span>
+                    <span class=format!("{GROUP_LABEL} pr-1")>"Distribute"</span>
                     {compound_op_button(LuAlignHorizontalDistributeCenter, "Distribute horizontally (even gaps)", move || {
                         let ids = ids_dist_h.clone();
                         set_layout.update(|l| {
@@ -488,10 +474,9 @@ pub(super) fn CompoundZoneProperties(
                 </div>
 
                 <div
-                    class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
-                    style="background: rgba(255, 255, 255, 0.02)"
+                    class=OPS
                 >
-                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Pack"</span>
+                    <span class=format!("{GROUP_LABEL} pr-1")>"Pack"</span>
                     {compound_op_button(LuFoldHorizontal, "Pack horizontally (no gaps)", move || {
                         let ids = ids_pack_h.clone();
                         set_layout.update(|l| {
@@ -521,10 +506,9 @@ pub(super) fn CompoundZoneProperties(
                 </div>
 
                 <div
-                    class="flex items-center gap-0.5 shrink-0 rounded-lg px-2 py-1"
-                    style="background: rgba(255, 255, 255, 0.02)"
+                    class=OPS
                 >
-                    <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Mirror"</span>
+                    <span class=format!("{GROUP_LABEL} pr-1")>"Mirror"</span>
                     {compound_op_button(LuFlipHorizontal, "Mirror across vertical axis", move || {
                         let ids = ids_mirror_h.clone();
                         set_layout.update(|l| {
@@ -553,11 +537,9 @@ pub(super) fn CompoundZoneProperties(
                     })}
                 </div>
 
-                <div class="flex-1" />
-                <span class="text-[9px] text-fg-tertiary/30 shrink-0">
-                    "Transforms apply around group center"
-                </span>
-            </div>
+                <div class="flex shrink-0 items-center gap-0.5">
+                    <OutputMoveButton output_ids=move_ids />
+                </div>
         </div>
     }
 }

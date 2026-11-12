@@ -16,29 +16,9 @@ use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::layout_history::LayoutEditorSnapshot;
-use crate::pointer_gesture::{
-    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
-    suppress_press_defaults,
-};
-use crate::storage;
 use hypercolor_leptos_ext::events::target_is_text_entry;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
-
-// Zone-properties panel size default and constraints
-const BOTTOM_DEFAULT: f64 = 160.0;
-const BOTTOM_MIN: f64 = 96.0;
-const BOTTOM_MAX: f64 = 500.0;
-
-const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
-
-fn load_panel_size(key: &str, default: f64, min: f64, max: f64) -> f64 {
-    storage::get_clamped(key, default, min, max)
-}
-
-fn save_panel_size(key: &str, value: f64) {
-    storage::set(key, &format!("{value:.0}"));
-}
 
 fn keyboard_target_is_text_input(target: Option<web_sys::EventTarget>) -> bool {
     target_is_text_entry(target)
@@ -272,105 +252,6 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
         });
     on_cleanup(move || history_shortcuts.remove());
 
-    // --- Resizable zone-properties panel ---
-    let (bottom_height, set_bottom_height) = signal(load_panel_size(
-        LS_KEY_BOTTOM,
-        BOTTOM_DEFAULT,
-        BOTTOM_MIN,
-        BOTTOM_MAX,
-    ));
-
-    // The splitter's height at the press, so a cancelled drag can put it
-    // back.
-    #[derive(Clone, Copy, Debug)]
-    struct PanelGrip {
-        start_size: f64,
-    }
-    let (dragging, set_dragging) = signal(false);
-    let grip = StoredValue::new(PointerGesture::<PanelGrip>::new());
-    let container_ref = NodeRef::<leptos::html::Div>::new();
-    let bottom_grip_ref = NodeRef::<leptos::html::Div>::new();
-
-    let grip_element =
-        move || -> Option<web_sys::Element> { bottom_grip_ref.get_untracked().map(Into::into) };
-
-    let finish_grip = move |outcome: GestureEnd, state: PanelGrip| {
-        set_dragging.set(false);
-        match outcome {
-            GestureEnd::Cancel => set_bottom_height.set(state.start_size),
-            // Persist on release.
-            GestureEnd::Commit => {
-                if let Some(height) = bottom_height.try_get_untracked() {
-                    save_panel_size(LS_KEY_BOTTOM, height);
-                }
-            }
-        }
-    };
-
-    // The splitter captures its pointer on press, so the drag keeps
-    // tracking anywhere on screen without window listeners.
-    let start_grip = move |ev: web_sys::PointerEvent| {
-        suppress_press_defaults(&ev);
-        let Some(element) = grip_element() else {
-            return;
-        };
-        let pointer_id = ev.pointer_id();
-        let press = grip
-            .try_update_value(|g| {
-                g.press(pointer_id, |owner, _| {
-                    holds_capture(grip_element().as_ref(), owner)
-                })
-            })
-            .unwrap_or(Press::Busy);
-        match press {
-            Press::Busy => return,
-            Press::Stale(stale) => finish_grip(GestureEnd::Cancel, stale),
-            Press::Ready => {}
-        }
-        let start_size = bottom_height.get_untracked();
-        capture_pointer(&element, &ev);
-        let button = ev.button();
-        grip.update_value(|g| g.start(pointer_id, button, PanelGrip { start_size }));
-        set_dragging.set(true);
-    };
-
-    let end_grip = move |ev: web_sys::PointerEvent, how: PointerEnd| {
-        let ended = grip
-            .try_update_value(|g| g.end(ev.pointer_id(), how))
-            .flatten();
-        if let Some((outcome, state)) = ended {
-            finish_grip(outcome, state);
-        }
-    };
-
-    let move_grip = move |ev: web_sys::PointerEvent| {
-        if grip.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
-            end_grip(ev, PointerEnd::Up);
-            return;
-        }
-        if !grip.with_value(|g| g.state(ev.pointer_id()).is_some()) {
-            return;
-        }
-        let Some(container) = container_ref.try_get_untracked().flatten() else {
-            return;
-        };
-        ev.prevent_default();
-        let rect = container.get_bounding_client_rect();
-        let y = f64::from(ev.client_y()) - rect.top();
-        let panel_h = rect.height() - y;
-        let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
-        set_bottom_height.set(clamped);
-    };
-
-    // The splitter renders under `Show`, so it can leave the DOM mid-drag
-    // while this state lives on. A detached element's lost capture goes to
-    // the document, not the splitter, so a window listener ends the drag.
-    let detached_capture_loss = window_event_listener(ev::lostpointercapture, move |ev| {
-        end_grip(ev, PointerEnd::LostCapture);
-    });
-    on_cleanup(move || detached_capture_loss.remove());
-    let ambient_hue = crate::ambient::hue_style();
-
     view! {
         <Show
             when=move || has_layout.get()
@@ -386,17 +267,7 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
                 }
             }
         >
-            <div
-                class="relative flex min-h-0 flex-1 overflow-hidden"
-                node_ref=container_ref
-                style=move || {
-                    if dragging.get() {
-                        "cursor: row-resize; user-select: none"
-                    } else {
-                        ""
-                    }
-                }
-            >
+            <div class="relative flex min-h-0 flex-1 overflow-hidden">
                 // Main area: canvas above, zone properties below
                 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                     // Canvas viewport — flexes to fill remaining space.
@@ -407,28 +278,14 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
                         <LayoutCanvas />
                     </div>
 
-                    // Bottom panel resize handle
-                    <div
-                        node_ref=bottom_grip_ref
-                        class="shrink-0 h-1 cursor-row-resize group/handle relative touch-none touch-grab
-                               hover:bg-accent-muted/20 active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
-                        on:pointerdown=start_grip
-                        on:pointermove=move_grip
-                        on:pointerup=move |ev| end_grip(ev, PointerEnd::Up)
-                        on:pointercancel=move |ev| end_grip(ev, PointerEnd::Cancel)
-                        on:lostpointercapture=move |ev| end_grip(ev, PointerEnd::LostCapture)
-                    >
-                        <div class="absolute inset-x-0 -top-0.5 -bottom-0.5" />
-                        <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-0.5 w-8
-                                    rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
-                    </div>
-
-                    // Zone properties — resizable height
-                    <div
-                        class="ambient-scroll shrink-0 overflow-y-auto bg-surface-base/95 backdrop-blur-sm"
-                        style=move || format!("height: {:.0}px; --ambient-hue: {}", bottom_height.get(), ambient_hue())
-                    >
-                        <LayoutZoneProperties />
+                    // Output properties. The slot keeps one bar of height
+                    // whatever is selected, so a click on the canvas never
+                    // resizes it under the pointer; a taller bar (a group, a
+                    // narrow window) grows upward over the canvas margin.
+                    <div class="relative z-10 h-12 shrink-0">
+                        <div class="absolute inset-x-0 bottom-0 border-t border-edge-subtle bg-surface-base">
+                            <LayoutZoneProperties />
+                        </div>
                     </div>
                 </div>
             </div>

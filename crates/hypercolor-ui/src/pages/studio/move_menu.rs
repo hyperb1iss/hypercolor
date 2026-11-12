@@ -313,7 +313,7 @@ pub(crate) fn OutputMoveButton(output_ids: Vec<String>) -> impl IntoView {
         <button
             type="button"
             id=dom_id
-            class="shrink-0 rounded-md p-1 text-fg-tertiary/50 transition-colors btn-press hover:bg-accent/8 hover:text-accent disabled:opacity-40"
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-tertiary transition-colors btn-press hover:bg-surface-overlay hover:text-fg-primary disabled:opacity-40"
             title="Move to"
             aria-label="Move to"
             aria-haspopup="menu"
@@ -339,7 +339,7 @@ pub(crate) fn OutputMoveButton(output_ids: Vec<String>) -> impl IntoView {
                 )));
             }
         >
-            <Icon icon=LuArrowRightLeft width="12px" height="12px" />
+            <Icon icon=LuArrowRightLeft width="14px" height="14px" />
         </button>
     }
     .into_any()
