@@ -1738,3 +1738,15 @@ html {
         );
     }
 }
+
+/* Numbers in the Studio properties bar sit in their own labelled boxes, so
+   the browser's spin buttons would only crowd them. Arrow keys still step. */
+.prop-number {
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+.prop-number::-webkit-inner-spin-button,
+.prop-number::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+}

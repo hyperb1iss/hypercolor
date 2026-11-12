@@ -203,7 +203,6 @@ Studio specs do.
 | Studio canvas, handles | Grab margin on coarse pointers only | Pass | Pass |
 | Studio canvas, handles | Escape mid-resize removes the handles and cancels; later moves paint nothing | | Pass |
 | Studio zone-tree splitter | Drag resizes (touch cancel restores) | Pass | Pass |
-| Studio bottom-panel splitter | Drag resizes (touch cancel restores; mouse release persists) | Pass | Pass |
 | Studio zone properties | Range slider drag is one undoable edit | Pass | |
 | Color wheel | Ring drag changes the color (touch also square, with no page scroll) | Pass | Pass |
 | Color wheel | Drag keeps tracking outside the canvas and popover | Pass | Pass |
