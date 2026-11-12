@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::components::canvas_preview::CanvasPreview;
+use crate::display_rotation::MountedPreview;
 use crate::media::{MediaUse, use_media_source};
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 use hypercolor_leptos_ext::canvas::{
@@ -39,9 +40,17 @@ pub fn DisplayPreviewSurface(
     /// Daemon route of the display's latest composited still.
     fallback_route: String,
     aspect_ratio: String,
+    /// How the panel is mounted, for hosts that show the frame the way
+    /// its viewer sees it. Without it the frame shows as sent.
+    #[prop(optional)]
+    mounted: Option<MountedPreview>,
     #[prop(into)] aria_label: String,
     #[prop(into)] container_class: String,
 ) -> impl IntoView {
+    let (host_style, frame_style) = mounted.map_or_else(
+        || (format!("aspect-ratio: {aspect_ratio};"), String::new()),
+        |mounted| (mounted.host_style, mounted.frame_style),
+    );
     let prefer_canvas_presenter = supports_display_preview_canvas();
     let canvas_aspect_ratio = aspect_ratio.clone();
     let fallback_alt = aria_label.clone();
@@ -75,12 +84,23 @@ pub fn DisplayPreviewSurface(
             revoke_blob_url(&url);
         }
     });
+    // Only a picture turns with the mount. The empty state is words, and
+    // they read upright however the panel hangs.
+    let shows_picture = Memo::new(move |_| {
+        let live = if prefer_canvas_presenter {
+            frame.with(Option::is_some)
+        } else {
+            live_blob_url.with(Option::is_some)
+        };
+        live || !fallback_missing.get()
+    });
 
     view! {
-        <div
-            class=container_class
-            style=move || format!("aspect-ratio: {aspect_ratio};")
-        >
+        <div class=container_class style=host_style>
+            <div
+                class="h-full w-full"
+                style=move || shows_picture.get().then(|| frame_style.clone())
+            >
             {move || {
                 if prefer_canvas_presenter {
                     let fallback_alt = fallback_alt_for_canvas.clone();
@@ -149,6 +169,7 @@ pub fn DisplayPreviewSurface(
                 }
                 .into_any()
             }}
+            </div>
         </div>
     }
 }
