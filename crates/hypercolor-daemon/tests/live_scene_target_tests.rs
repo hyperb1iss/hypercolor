@@ -38,6 +38,7 @@ fn color_layer(id: SceneLayerId, channel: usize) -> SceneLayer {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }
 

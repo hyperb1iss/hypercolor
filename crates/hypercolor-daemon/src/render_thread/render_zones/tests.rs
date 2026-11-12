@@ -291,6 +291,7 @@ fn make_color_fill_zone(zone: &mut Zone) {
         adjust: hypercolor_types::layer::LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }];
 }
 

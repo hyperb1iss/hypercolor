@@ -1832,6 +1832,7 @@ impl SceneMutation {
             adjust: hypercolor_types::layer::LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         };
         let (zone, _) = self
             .candidate
@@ -3101,6 +3102,7 @@ fn replacement_layer(request: ReplaceSceneLayerRequest) -> SceneLayer {
         adjust: request.adjust,
         bindings: request.bindings,
         enabled: request.enabled,
+        scope: None,
     }
 }
 

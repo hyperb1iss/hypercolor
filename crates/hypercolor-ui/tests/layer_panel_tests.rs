@@ -41,6 +41,7 @@ fn layer_editor_identity_survives_values_but_retires_replaced_sources() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     };
     let original = layer_mount_key(&layer);
     layer.opacity = 0.5;
@@ -74,6 +75,7 @@ fn layer_replacement_uses_the_canonical_creation_shape() {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: false,
+        scope: None,
     };
 
     let request = hypercolor_ui::api::update_request_from_layer(&layer);
@@ -426,6 +428,7 @@ fn layer_with_source(source: LayerSource, name: Option<&str>) -> SceneLayer {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }
 

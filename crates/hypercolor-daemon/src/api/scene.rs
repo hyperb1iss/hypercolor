@@ -682,6 +682,7 @@ fn build_layer(request: CreateLayerRequest) -> Result<SceneLayer, DomainError> {
         adjust: request.adjust.unwrap_or_default(),
         bindings: request.bindings.unwrap_or_default(),
         enabled: request.enabled.unwrap_or(true),
+        scope: None,
     }
     .normalized();
     layer.validate().map_err(|errors| {

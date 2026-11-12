@@ -182,6 +182,7 @@ fn layer(name: &str, rgba: [f32; 4], blend: BlendMode, opacity: f32) -> SceneLay
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: false,
+        scope: None,
     }
 }
 

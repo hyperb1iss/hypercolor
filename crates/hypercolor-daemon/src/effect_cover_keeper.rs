@@ -297,6 +297,7 @@ mod tests {
             adjust: LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         }
     }
 

@@ -1158,5 +1158,6 @@ fn scene_layer(source: LayerSource) -> SceneLayer {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }

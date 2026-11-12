@@ -1202,6 +1202,7 @@ mod tests {
             adjust: LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         }];
         let scene_runtime = SceneRuntimeSnapshot {
             active_scene_id: None,

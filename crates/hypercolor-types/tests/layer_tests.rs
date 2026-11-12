@@ -153,6 +153,7 @@ fn layer_normalization_clamps_runtime_safe_scalars() {
         },
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     };
 
     let normalized = layer.normalized();
@@ -192,6 +193,7 @@ fn layer_validation_rejects_non_finite_values_and_empty_binding_ranges() {
             },
         }],
         enabled: true,
+        scope: None,
     };
 
     let errors = layer.validate().expect_err("invalid layer should fail");
@@ -225,6 +227,7 @@ fn layer_validation_rejects_out_of_range_scalars() {
         },
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     };
 
     let errors = layer

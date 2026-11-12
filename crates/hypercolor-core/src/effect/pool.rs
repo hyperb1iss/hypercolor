@@ -2163,6 +2163,7 @@ mod tests {
             adjust: LayerAdjust::default(),
             bindings: Vec::new(),
             enabled: true,
+            scope: None,
         };
 
         let source = layer_effect_source(&layer).expect("web viewport should map to effect");

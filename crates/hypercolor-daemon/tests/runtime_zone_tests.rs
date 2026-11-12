@@ -30,6 +30,7 @@ fn layer() -> SceneLayer {
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
+        scope: None,
     }
 }
 
