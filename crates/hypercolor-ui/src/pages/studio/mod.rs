@@ -19,6 +19,7 @@ mod moves;
 mod offline_device_card;
 pub mod pane_model;
 pub mod phone_summary;
+pub mod phone_view;
 pub mod placement;
 mod screen_list;
 mod stage;
@@ -49,6 +50,7 @@ use crate::zones::surface::{selected_screen_device_id, surfaces_from_zones};
 use composition_panel::CompositionPanel;
 use device_pane::DevicePane;
 use drag::{DragController, DragLayer};
+use phone_view::{StudioPhoneView, VIEW_PARAM};
 use stage::Stage;
 use undo_notice::{UndoNotice, UndoNoticeHost};
 use zone_strip::{ZONE_PANEL_ID, ZoneStrip, active_tab_dom_id};
@@ -194,15 +196,21 @@ pub(crate) fn keyed_disclosure(slot: RwSignal<Option<String>>, key: String) -> R
     open
 }
 
-/// `/studio`: the spatial workspace on tablet and desktop widths, and a
-/// zone summary with per-zone effect switching on phones, where a canvas
-/// editor has no room to work.
+/// `/studio`: the spatial workspace. Phones open on a zone summary with
+/// per-zone effect switching and reach the workspace at `?view=editor`
+/// (see [`phone_view`]).
 #[component]
 pub fn StudioPage() -> impl IntoView {
     let phone = crate::viewport::is_phone_layout();
+    let query = leptos_router::hooks::use_query_map();
+    let summary = Memo::new(move |_| {
+        phone.get()
+            && StudioPhoneView::from_query(query.with(|query| query.get(VIEW_PARAM)).as_deref())
+                == StudioPhoneView::Summary
+    });
     view! {
         {move || {
-            if phone.get() {
+            if summary.get() {
                 view! { <phone_summary::StudioPhoneSummary /> }.into_any()
             } else {
                 view! { <StudioWorkspace /> }.into_any()
@@ -630,15 +638,24 @@ fn StudioWorkspace() -> impl IntoView {
             </PageHeader>
             // Narrow-viewport drawer toggle; the pane sits beside the Stage
             // on `lg` and up, so this strip is hidden there.
-            <div class="flex shrink-0 items-center border-b border-edge-subtle/70 bg-surface-raised/40 px-3 py-2 lg:hidden">
+            <div class="flex shrink-0 items-center justify-between gap-2 border-b border-edge-subtle/70 bg-surface-raised/40 px-3 py-2 lg:hidden">
                 <button
                     type="button"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary btn-press"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary btn-press max-md:min-h-11 max-md:px-3.5 max-md:text-xs"
                     on:click=move |_| pane_drawer.set(true)
                 >
                     <Icon icon=LuLightbulb width="13px" height="13px" />
                     "Devices"
                 </button>
+                // Phones entered the editor from the zone summary; this is
+                // the way back without reaching for the browser.
+                <a
+                    href=crate::route_ui::route_href(StudioPhoneView::Summary.href())
+                    class="hidden min-h-11 items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-3.5 text-xs font-medium text-fg-secondary btn-press max-md:inline-flex"
+                >
+                    <Icon icon=LuLayers width="13px" height="13px" />
+                    "Zone summary"
+                </a>
             </div>
 
             <div
@@ -654,7 +671,7 @@ fn StudioWorkspace() -> impl IntoView {
                     // deliberately covers the bar instead of stacking above
                     // it. Keep bracket class syntax out of comments; the
                     // Tailwind scanner reads them and emits dead rules.
-                    class="studio-device-drawer w-80 shrink-0 overflow-hidden lg:w-[var(--pane-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-[45] max-lg:border-r max-lg:border-edge-subtle/70 max-md:pb-[env(safe-area-inset-bottom)]"
+                    class="studio-device-drawer w-80 shrink-0 overflow-hidden lg:w-[var(--pane-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-[45] max-lg:max-w-[85vw] max-lg:bg-surface-base max-lg:border-r max-lg:border-edge-subtle/70 max-md:pb-[env(safe-area-inset-bottom)]"
                     class=("max-lg:-translate-x-full", move || !pane_drawer.get())
                     style:--pane-w=move || format!("{}px", pane_width.get())
                 >

@@ -4,7 +4,8 @@
 //! the bottom tab bar replaces the sidebar. Most phone styling is plain
 //! `max-md:` CSS, but some surfaces must not *mount* on the wrong side of
 //! the boundary: a hidden live preview still streams frames, and the Studio
-//! editor is heavy enough that phones get a separate summary instead.
+//! editor is heavy enough that phones land on a summary and mount it on
+//! request.
 //! Those read [`is_phone_layout`].
 //!
 //! The signal is evaluated synchronously when the app mounts, so a phone
