@@ -10,8 +10,8 @@ use std::collections::HashSet;
 
 use hypercolor_core::scene::{LayerMutationError, OutputMove, plan_layer_carry};
 use hypercolor_types::api::scene::{
-    EditMembersRequest, EditMembersResponse, MemberAssignmentTarget, MemberEdit, MemberState,
-    SceneFence,
+    EditMembersRequest, EditMembersResponse, LayerMove, MemberAssignmentTarget, MemberEdit,
+    MemberState, SceneFence,
 };
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
@@ -152,7 +152,17 @@ pub async fn edit_members(
                 ensure_live_zone_mutable(&mutation, moved.from.zone_id)?;
                 ensure_live_zone_mutable(&mutation, moved.to.zone_id)?;
             }
+            // Scopes are stored sorted and unique. Normalizing here makes
+            // the moves this edit reports the moves it committed, so the
+            // receipt reverses cleanly however the request spelled them.
             replayed
+                .into_iter()
+                .map(|moved| LayerMove {
+                    scope_before: moved.scope_before.normalized(),
+                    scope_after: moved.scope_after.normalized(),
+                    ..moved
+                })
+                .collect()
         }
         None => plan_layer_carry(&previous, &output_moves(&changes)),
     };

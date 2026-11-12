@@ -645,6 +645,75 @@ async fn a_replayed_layer_move_cannot_widen_a_scope_to_a_non_member() {
 }
 
 #[tokio::test]
+async fn a_replay_with_an_unsorted_scope_returns_a_receipt_that_undoes_it() {
+    let rig = rig().await;
+    let keyboard = rig.add(rig.main, &[KEYS, LOGO]).await;
+    let before = rig.scene().await;
+    let mut changes = Vec::new();
+    for (index, id) in [KEYS, LOGO].into_iter().enumerate() {
+        let from = rig.member(rig.main, id).await;
+        let mut to = from.clone();
+        to.zone_id = rig.desk;
+        to.index = index;
+        changes.push(MemberEdit {
+            before: Some(from),
+            after: Some(to),
+        });
+    }
+    let unsorted = |outputs: &[&str]| LayerScope {
+        outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+    };
+
+    let replayed = rig
+        .edit(&EditMembersRequest {
+            scene_id: SceneId::DEFAULT,
+            changes,
+            assignment: None,
+            layer_moves: Some(vec![LayerMove {
+                layer_id: keyboard,
+                from: LayerSlot {
+                    zone_id: rig.main,
+                    index: 1,
+                },
+                to: LayerSlot {
+                    zone_id: rig.desk,
+                    index: 0,
+                },
+                scope_before: unsorted(&[LOGO, KEYS]),
+                scope_after: unsorted(&[LOGO, KEYS, KEYS]),
+            }]),
+        })
+        .await;
+
+    assert_eq!(replayed.status(), StatusCode::OK);
+    let receipt: EditMembersResponse =
+        serde_json::from_value(body_json(replayed).await["data"].clone()).expect("receipt");
+    assert_eq!(
+        (
+            &receipt.layer_moves[0].scope_before,
+            &receipt.layer_moves[0].scope_after
+        ),
+        (&scope(&[KEYS, LOGO]), &scope(&[KEYS, LOGO])),
+        "the receipt names the scopes as they were committed"
+    );
+    assert_eq!(
+        rig.zone(rig.desk).await.layers[0].scope,
+        Some(receipt.layer_moves[0].scope_after.clone())
+    );
+
+    let undone = rig.edit(&reversed(&receipt)).await;
+    assert_eq!(
+        undone.status(),
+        StatusCode::OK,
+        "a receipt from any response reverses cleanly"
+    );
+    let after = rig.scene().await;
+    for (restored, original) in after.zones.iter().zip(&before.zones) {
+        assert_eq!(restored.layers, original.layers, "{}", original.name);
+    }
+}
+
+#[tokio::test]
 async fn layer_moves_are_refused_beside_an_assignment_target() {
     let rig = rig().await;
 
