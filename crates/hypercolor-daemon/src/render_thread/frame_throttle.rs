@@ -12,7 +12,8 @@ use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish
 use super::frame_metrics::{ThrottleFrameMetricsInput, build_throttle_frame_metrics};
 use super::frame_policy::{FrameExecution, FramePolicy};
 use super::pipeline_runtime::{
-    OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ThrottleState,
+    OutputArtifactsState, PublicationCadenceState, RenderSurfaceSnapshot, ScreenPlacementRevision,
+    ThrottleState,
 };
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
@@ -25,7 +26,8 @@ pub(crate) enum IdleGate {
     /// Nothing renders, and the loop idles after this frame unless it held
     /// the previous frame's outputs, in which case the next frame enters
     /// again. Nothing publishes once the loop idles, so these frames'
-    /// previews cannot wait for the cadence.
+    /// previews cannot wait for the cadence. An idle loop enters again when
+    /// the screens it has to show black on change.
     EnterIdle,
     /// The loop is idle, and the frame ends here.
     Throttled(FrameExecution),
@@ -37,6 +39,7 @@ pub(crate) async fn maybe_idle_throttle(
     effect_running: bool,
     screen_capture_active: bool,
     throttle: &mut ThrottleState,
+    screens: ScreenPlacementRevision,
 ) -> IdleGate {
     let should_idle_throttle =
         frame_policy.should_idle_throttle(effect_running, screen_capture_active);
@@ -50,7 +53,7 @@ pub(crate) async fn maybe_idle_throttle(
         return IdleGate::Render;
     }
 
-    if !throttle.idle_black_pushed() {
+    if !throttle.idle_black_pushed(screens) {
         debug!(
             "No active effect or capture input; layout changes render black until an effect or input source starts"
         );

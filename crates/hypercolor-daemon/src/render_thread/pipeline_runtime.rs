@@ -1273,28 +1273,41 @@ impl PublicationCadenceState {
     }
 }
 
+/// What decides which screens an idle frame hands a backdrop: the screens
+/// display output drives, and the zones that place them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScreenPlacementRevision {
+    pub(crate) routes: u64,
+    pub(crate) zones: u64,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ThrottleState {
-    pub(crate) idle_black_pushed: bool,
+    /// The screens the idle frame was published for. The loop publishes
+    /// nothing while it idles, so a screen that connects, or that a scene
+    /// edit places, after that frame would wait for a backdrop until
+    /// something rendered again.
+    idle_black_pushed_for: Option<ScreenPlacementRevision>,
     pub(crate) sleep_black_pushed: bool,
 }
 
 impl ThrottleState {
     pub(crate) fn reset_for_canvas_resize(&mut self) {
-        self.idle_black_pushed = false;
+        self.idle_black_pushed_for = None;
         self.sleep_black_pushed = false;
     }
 
     pub(crate) fn note_effect_running(&mut self) {
-        self.idle_black_pushed = false;
+        self.idle_black_pushed_for = None;
     }
 
-    pub(crate) fn idle_black_pushed(&self) -> bool {
-        self.idle_black_pushed
+    /// Whether the idle frame is out, and still covers `screens`.
+    pub(crate) fn idle_black_pushed(&self, screens: ScreenPlacementRevision) -> bool {
+        self.idle_black_pushed_for == Some(screens)
     }
 
-    pub(crate) fn note_idle_frame_without_effect(&mut self) {
-        self.idle_black_pushed = true;
+    pub(crate) fn note_idle_frame_without_effect(&mut self, screens: ScreenPlacementRevision) {
+        self.idle_black_pushed_for = Some(screens);
     }
 
     pub(crate) fn clear_sleep(&mut self) {

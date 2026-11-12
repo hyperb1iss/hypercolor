@@ -1463,6 +1463,51 @@ async fn gpu_still_scene_sends_its_screen_one_frame() {
     still_scene_sends_its_screen_one_frame(RenderAccelerationMode::Gpu).await;
 }
 
+/// A screen that connects while nothing renders is driven to black like the
+/// screens that were there when the loop went idle. The idle loop composes
+/// nothing, so a new screen has to bring it back for one frame.
+async fn screen_connected_while_idle_gets_its_backdrop(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let early = rig.add_screen("early").await;
+    let late = Screen::named("late");
+    let zones = vec![scene_zone(
+        "Idle",
+        ZoneRole::Primary,
+        Vec::new(),
+        vec![
+            early.output((0.3, 0.5), (0.3, 0.3)),
+            late.output((0.7, 0.5), (0.3, 0.3)),
+        ],
+    )];
+
+    let running = rig.run(zones).await;
+    rig.writes
+        .wait_for(early.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    // Let the loop settle into idling before the second panel appears.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    rig.connect_screen(&late, DisplayFrameFormat::Rgb, 30).await;
+    rig.writes
+        .wait_for(late.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_screen_connected_while_idle_gets_its_backdrop() {
+    screen_connected_while_idle_gets_its_backdrop(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_screen_connected_while_idle_gets_its_backdrop() {
+    screen_connected_while_idle_gets_its_backdrop(RenderAccelerationMode::Gpu).await;
+}
+
 // ── Viewports: the owning zone against the spatial service ────────────────
 
 /// The layout ids a physical device goes by, the way the display output

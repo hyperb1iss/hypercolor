@@ -24,7 +24,7 @@ use super::output_gate::{GateDecision, ProducerSignature};
 use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
     FrameLoopState, OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
-    PreparedLayoutActivation, RenderCaches, SceneSnapshotState,
+    PreparedLayoutActivation, RenderCaches, SceneSnapshotState, ScreenPlacementRevision,
 };
 use super::scene_snapshot::{
     FrameSceneSnapshot, apply_zone_layout_previews, build_frame_scene_snapshot,
@@ -475,12 +475,19 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
 
+    // Read before the idle frame composes: a screen that arrives while it
+    // does is a change the next poll still sees.
+    let placed_screens = ScreenPlacementRevision {
+        routes: state.event_bus.screen_backdrop_routes_revision(),
+        zones: scene_snapshot.scene_runtime.resolved_zones_revision,
+    };
     let entering_idle = match maybe_idle_throttle(
         state,
         &mut runtime.frame_policy,
         scene_snapshot.effect_demand.effect_running || frame_loop.has_active_input_demand(),
         scene_snapshot.effect_demand.screen_capture_active,
         &mut frame_loop.throttle,
+        placed_screens,
     )
     .await
     {
@@ -998,7 +1005,9 @@ pub(crate) async fn execute_frame(
         scene_snapshot.effect_demand.screen_capture_active,
         reuses_published_frame,
     ) {
-        frame_loop.throttle.note_idle_frame_without_effect();
+        frame_loop
+            .throttle
+            .note_idle_frame_without_effect(placed_screens);
     }
 
     FrameExecution {
