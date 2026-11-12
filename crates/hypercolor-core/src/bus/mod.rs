@@ -608,6 +608,37 @@ impl From<&DisplayFaceTarget> for DisplayZoneTarget {
     }
 }
 
+/// Where one screen's backdrop comes from, authored by the display output
+/// thread for every screen a zone places.
+///
+/// A screen's backdrop is the frame of the zone that places it, seen through
+/// that zone's placement of the screen (Spec 95 §5.10). Each screen resolves
+/// its own, so two screens whose boxes overlap in different zones never read
+/// each other's pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScreenBackdropRoute {
+    /// The zone whose layout places the screen.
+    pub zone_id: ZoneId,
+    /// The screen's surface, with the owning zone's viewport for it.
+    pub output: DisplayZoneOutputRoute,
+    /// Frame rate cap for the screen while it shows its backdrop alone.
+    pub target_fps: u32,
+}
+
+/// The display lane id of a screen's backdrop.
+///
+/// A screen without a face has no display zone, so its backdrop travels the
+/// per-zone display channels under an id derived from the screen's device.
+/// The id is stable for the device and distinct from every scene zone's.
+#[must_use]
+pub fn screen_backdrop_lane_id(device_id: DeviceId) -> ZoneId {
+    const NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0x7363_7265_656e_2d62_6163_6b64_726f_7073);
+    ZoneId(uuid::Uuid::new_v5(
+        &NAMESPACE,
+        device_id.as_uuid().as_bytes(),
+    ))
+}
+
 #[derive(Debug, Default)]
 struct DisplayZoneTargetRegistry {
     revision: u64,
@@ -618,6 +649,12 @@ struct DisplayZoneTargetRegistry {
 struct DisplayZoneOutputRouteRegistry {
     revision: u64,
     routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
+}
+
+#[derive(Debug, Default)]
+struct ScreenBackdropRouteRegistry {
+    revision: u64,
+    routes: Arc<HashMap<DeviceId, ScreenBackdropRoute>>,
 }
 
 /// Immutable counters for one latest-value bus lane.
@@ -855,6 +892,9 @@ pub struct HypercolorBus {
     /// Display-output-authored final display surface metadata keyed by zone id.
     display_zone_output_routes: Arc<Mutex<DisplayZoneOutputRouteRegistry>>,
 
+    /// Display-output-authored backdrop source of every placed screen.
+    screen_backdrop_routes: Arc<Mutex<ScreenBackdropRouteRegistry>>,
+
     /// Notified when output demand appears or observable state changes.
     output_demand: Arc<OutputDemandSignal>,
 
@@ -887,6 +927,7 @@ impl HypercolorBus {
             display_zone_output_routes: Arc::new(Mutex::new(
                 DisplayZoneOutputRouteRegistry::default(),
             )),
+            screen_backdrop_routes: Arc::new(Mutex::new(ScreenBackdropRouteRegistry::default())),
             output_demand,
             clock,
         }
@@ -1350,6 +1391,34 @@ impl HypercolorBus {
         if routes.routes.remove(&id).is_some() {
             routes.revision = routes.revision.saturating_add(1);
         }
+    }
+
+    /// Replace the backdrop source of every placed screen.
+    ///
+    /// The display output thread owns this set and publishes it whole, so a
+    /// screen that leaves every layout drops out with the next publication.
+    /// An unchanged set keeps its revision.
+    pub fn replace_screen_backdrop_routes(&self, routes: HashMap<DeviceId, ScreenBackdropRoute>) {
+        let mut registry = self
+            .screen_backdrop_routes
+            .lock()
+            .expect("screen backdrop route registry should not be poisoned");
+        if *registry.routes != routes {
+            registry.routes = Arc::new(routes);
+            registry.revision = registry.revision.saturating_add(1);
+        }
+    }
+
+    /// Snapshot the backdrop source of every placed screen.
+    #[must_use]
+    pub fn screen_backdrop_routes_snapshot(
+        &self,
+    ) -> (u64, Arc<HashMap<DeviceId, ScreenBackdropRoute>>) {
+        let registry = self
+            .screen_backdrop_routes
+            .lock()
+            .expect("screen backdrop route registry should not be poisoned");
+        (registry.revision, Arc::clone(&registry.routes))
     }
 
     /// Remove the render-thread-authored display-face route for a zone.

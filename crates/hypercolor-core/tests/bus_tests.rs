@@ -4,19 +4,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_core::bus::{
-    CanvasFrame, DisplayZoneFrame, DisplayZoneTarget, EventFilter, EventTimestamp, HypercolorBus,
-    INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, PreviewKind, PublicationClock,
-    TimestampedEvent, WatchLane, ZonePreviewFrame,
+    CanvasFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget, DisplayZoneViewport,
+    EventFilter, EventTimestamp, HypercolorBus, INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE,
+    PreviewKind, PublicationClock, ScreenBackdropRoute, TimestampedEvent, WatchLane,
+    ZonePreviewFrame, screen_backdrop_lane_id,
 };
 use hypercolor_core::input::{SourceKind, SourceState, SourceStatusReporter};
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
+use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin, DisplayFrameFormat};
 use hypercolor_types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::ZoneId;
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};
 
@@ -1633,4 +1635,111 @@ async fn output_demand_waiter_that_is_not_triggered_stays_asleep() {
     let bus = HypercolorBus::new();
 
     assert!(!output_demand_wakes_on(&bus, || {}).await);
+}
+
+fn screen_backdrop_route(device_id: DeviceId, zone_id: ZoneId) -> ScreenBackdropRoute {
+    ScreenBackdropRoute {
+        zone_id,
+        output: DisplayZoneOutputRoute {
+            device_id,
+            width: 480,
+            height: 480,
+            circular: true,
+            brightness: 1.0,
+            frame_format: DisplayFrameFormat::Jpeg,
+            viewport: DisplayZoneViewport {
+                position: NormalizedPosition::new(0.25, 0.5),
+                size: NormalizedPosition::new(0.5, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                edge_behavior: EdgeBehavior::Clamp,
+            },
+        },
+        target_fps: 15,
+    }
+}
+
+#[test]
+fn screen_backdrop_routes_replace_as_a_set_and_keep_their_revision_when_unchanged() {
+    let bus = HypercolorBus::new();
+    let kept = DeviceId::new();
+    let dropped = DeviceId::new();
+    let zone_id = ZoneId::new();
+    let (initial_revision, initial) = bus.screen_backdrop_routes_snapshot();
+    assert!(initial.is_empty());
+
+    bus.replace_screen_backdrop_routes(std::collections::HashMap::from([
+        (kept, screen_backdrop_route(kept, zone_id)),
+        (dropped, screen_backdrop_route(dropped, zone_id)),
+    ]));
+    let (published_revision, published) = bus.screen_backdrop_routes_snapshot();
+    assert_ne!(published_revision, initial_revision);
+    assert_eq!(published.len(), 2);
+
+    bus.replace_screen_backdrop_routes(std::collections::HashMap::from([
+        (kept, screen_backdrop_route(kept, zone_id)),
+        (dropped, screen_backdrop_route(dropped, zone_id)),
+    ]));
+    assert_eq!(
+        bus.screen_backdrop_routes_snapshot().0,
+        published_revision,
+        "an unchanged set should keep its revision"
+    );
+
+    bus.replace_screen_backdrop_routes(std::collections::HashMap::from([(
+        kept,
+        screen_backdrop_route(kept, zone_id),
+    )]));
+    let (replaced_revision, replaced) = bus.screen_backdrop_routes_snapshot();
+    assert_ne!(replaced_revision, published_revision);
+    assert_eq!(
+        replaced.get(&kept),
+        Some(&screen_backdrop_route(kept, zone_id))
+    );
+    assert!(
+        !replaced.contains_key(&dropped),
+        "a screen left out of the next publication should drop out"
+    );
+}
+
+#[test]
+fn render_thread_pruning_leaves_screen_backdrop_routes_alone() {
+    let bus = HypercolorBus::new();
+    let device_id = DeviceId::new();
+    bus.replace_screen_backdrop_routes(std::collections::HashMap::from([(
+        device_id,
+        screen_backdrop_route(device_id, ZoneId::new()),
+    )]));
+
+    // The render thread prunes face routes to the display lanes it renders.
+    // A backdrop route names a screen it has not adopted yet, so that
+    // pruning must not reach it.
+    let _ = bus.retain_zone_canvases_and_collect_senders(&[]);
+    bus.retain_display_zone_targets(&[]);
+
+    assert!(
+        bus.screen_backdrop_routes_snapshot()
+            .1
+            .contains_key(&device_id)
+    );
+}
+
+#[test]
+fn screen_backdrop_lane_ids_are_stable_per_device_and_distinct_across_devices() {
+    let first = DeviceId::new();
+    let second = DeviceId::new();
+
+    assert_eq!(
+        screen_backdrop_lane_id(first),
+        screen_backdrop_lane_id(first)
+    );
+    assert_ne!(
+        screen_backdrop_lane_id(first),
+        screen_backdrop_lane_id(second)
+    );
+    assert_ne!(
+        screen_backdrop_lane_id(first).0,
+        first.as_uuid(),
+        "a backdrop lane must not reuse the device's own id"
+    );
 }
