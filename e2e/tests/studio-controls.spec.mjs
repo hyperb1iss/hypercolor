@@ -56,7 +56,11 @@ test("Studio layer edits retain current controls and use each replacement's revi
   expect(fixture.writes[0].body.source.controls.lower.value).toBeCloseTo(0.81, 6);
   await expect(opacity).toHaveValue("0.5");
   expect(await scrollState(fixture.control("lower"))).toEqual(beforeScroll);
-  const blend = fixture.inspector.locator("article").getByRole("button", { name: "Replace", exact: true });
+  // The blend dropdown is a combobox, which takes its name from a label and
+  // its value from its text, so the current mode is matched as text.
+  const blendMode = (mode) =>
+    fixture.inspector.locator("article").getByRole("combobox", { name: "Blend mode", exact: true }).filter({ hasText: mode });
+  const blend = blendMode("Replace");
   await blend.scrollIntoViewIfNeeded();
   await settle(page);
   await blend.click();
@@ -68,7 +72,7 @@ test("Studio layer edits retain current controls and use each replacement's revi
   expect(fixture.writes[1].pathname).toContain(replacementId(48));
   expect(fixture.writes[1].body.opacity).toBe(0.5);
   expect(fixture.writes[1].body.source.controls.lower.value).toBeCloseTo(0.81, 6);
-  await expect(fixture.inspector.locator("article").getByRole("button", { name: "Add", exact: true })).toBeVisible();
+  await expect(blendMode("Add")).toBeVisible();
   expect(fixture.unexpectedWrites).toEqual([]);
 });
 

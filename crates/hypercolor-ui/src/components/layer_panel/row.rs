@@ -183,6 +183,7 @@ pub fn LayerRow(
                 // ── Blend ─────────────────────────────────────────────
                 <div class="min-w-0">
                         <SilkSelect
+                            aria_label="Blend mode"
                             value=Signal::derive(move || blend_value(layer.get().blend).to_owned())
                             options=Signal::derive(blend_options)
                             on_change=Callback::new({
@@ -290,6 +291,7 @@ pub fn LayerRow(
                     </summary>
                     <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
                         <SilkSelect
+                            aria_label="Fit"
                             value=Signal::derive(move || fit_value(layer.get().transform.fit).to_owned())
                             options=Signal::derive(fit_options)
                             on_change=Callback::new({
