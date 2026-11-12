@@ -78,6 +78,10 @@ async fn status_advertises_multi_zone_backend_capabilities() {
     assert!(capabilities.contains(&"zone-layout-edit"));
     assert!(capabilities.contains(&"zone-preview-frames"));
     assert!(capabilities.contains(&"scene-unassigned-behavior-write"));
+    assert!(
+        capabilities.contains(&"layer-scope"),
+        "the layer routes accept a scope, so a client may offer one"
+    );
 }
 
 #[tokio::test]
