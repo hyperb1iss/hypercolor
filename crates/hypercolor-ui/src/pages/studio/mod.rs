@@ -720,12 +720,20 @@ fn StudioWorkspace() -> impl IntoView {
                     />
                 </div>
                 <div class="relative min-w-0 flex-1 overflow-hidden">
-                    <ZoneLayoutProvider
-                        selected_zone_id=selected_surface_id
-                        refresh_scene=refresh_scene
+                    // On wide layouts the open composition panel takes its
+                    // width from the Stage instead of covering it, so the
+                    // canvas or face being tuned stays whole and in view.
+                    <div
+                        class="h-full transition-[padding] duration-200 motion-reduce:transition-none"
+                        class=("xl:pr-[420px]", move || composition_open.get())
                     >
-                        <Stage />
-                    </ZoneLayoutProvider>
+                        <ZoneLayoutProvider
+                            selected_zone_id=selected_surface_id
+                            refresh_scene=refresh_scene
+                        >
+                            <Stage />
+                        </ZoneLayoutProvider>
+                    </div>
                     <CompositionPanel
                         active_scene=active_scene
                         selected_zone_id=selected_surface_id.read_only()

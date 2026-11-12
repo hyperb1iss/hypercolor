@@ -97,7 +97,10 @@ pub fn CompositionPanel(
 
     view! {
         <div
-            class="studio-composition-scrim absolute inset-0 z-30 bg-black/45"
+            // Wide layouts dock the panel beside the Stage, which stays
+            // live and clickable; narrower ones overlay it, and the scrim
+            // is the way out without dimming what is being tuned much.
+            class="studio-composition-scrim absolute inset-0 z-30 bg-black/25 xl:hidden"
             class=("opacity-0", move || !open.get())
             class=("pointer-events-none", move || !open.get())
             on:click=move |_| close()
