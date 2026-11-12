@@ -103,6 +103,7 @@ chmod +x "$SANDBOX/bin/read-stdin"
 cat >"$SANDBOX/bin/read-loop" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+[ -z "${READ_LOOP_PID_FILE:-}" ] || printf '%s\n' "$$" >"$READ_LOOP_PID_FILE"
 [ -z "${READ_LOOP_READY:-}" ] || : >"$READ_LOOP_READY"
 printf 'loop-ready\n'
 while IFS= read -r value; do
@@ -307,6 +308,22 @@ test "$second_trunk_cargo_path" != "$trunk_cargo_path"
 test -f "$trunk_cargo_path"
 test -f "$second_trunk_cargo_path"
 
+# The terminal tests below type into a shell and wait for what each
+# keystroke causes. Every wait is a condition with a generous ceiling, so a
+# slow runner makes them slower and never makes them fail.
+wait_until() {
+  local _
+  for _ in {1..3000}; do
+    "$@" 2>/dev/null && return 0
+    sleep 0.01
+  done
+  return 1
+}
+process_gone() { ! kill -0 "$1" 2>/dev/null; }
+process_stopped() { [ "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" = T ]; }
+process_running() { kill -0 "$1" 2>/dev/null && ! process_stopped "$1"; }
+output_has() { grep -Fq -- "$2" "$1"; }
+
 if script --version 2>&1 | grep -Fq 'util-linux'; then
   printf 'hello\n' | script -qec \
     "env HYPERCOLOR_CACHE_DIR=$SANDBOX/pty-cache HYPERCOLOR_NO_SCCACHE=1 CARGO_TARGET_DIR=$SANDBOX/pty-target PATH=$SANDBOX/bin:$PATH $WRAPPER read-stdin" \
@@ -323,15 +340,11 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
   redirected_status=0
   {
     printf '%s\n' "$redirected_command"
-    for _ in {1..300}; do
-      [ -s "$SANDBOX/redirected-child.pid" ] && break
-      sleep 0.01
-    done
-    test -s "$SANDBOX/redirected-child.pid"
+    wait_until test -s "$SANDBOX/redirected-child.pid"
     printf '\003'
-    sleep 0.3
+    wait_until process_gone "$(<"$SANDBOX/redirected-child.pid")"
     printf 'exit\n'
-  } | timeout 5 script -qec 'bash --noprofile --norc -i' /dev/null \
+  } | timeout 120 script -qec 'bash --noprofile --norc -i' /dev/null \
     >"$SANDBOX/redirected-pty-output" || redirected_status=$?
   test "$redirected_status" -eq 0 || test "$redirected_status" -eq 130
   grep -Fq '^C' "$SANDBOX/redirected-pty-output"
@@ -340,27 +353,24 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
     exit 1
   fi
 
-  pty_command="env HYPERCOLOR_CACHE_DIR=$SANDBOX/job-cache HYPERCOLOR_NO_SCCACHE=1 CARGO_TARGET_DIR=$SANDBOX/job-target READ_LOOP_READY=$SANDBOX/read-loop.ready PATH=$SANDBOX/bin:$PATH $WRAPPER read-loop"
+  pty_command="env HYPERCOLOR_CACHE_DIR=$SANDBOX/job-cache HYPERCOLOR_NO_SCCACHE=1 CARGO_TARGET_DIR=$SANDBOX/job-target READ_LOOP_READY=$SANDBOX/read-loop.ready READ_LOOP_PID_FILE=$SANDBOX/read-loop.pid PATH=$SANDBOX/bin:$PATH $WRAPPER read-loop"
   pty_status=0
   {
     printf '%s\n' "$pty_command"
-    for _ in {1..300}; do
-      [ -e "$SANDBOX/read-loop.ready" ] && break
-      sleep 0.01
-    done
-    test -e "$SANDBOX/read-loop.ready"
+    wait_until test -e "$SANDBOX/read-loop.ready"
+    read_loop_pid="$(<"$SANDBOX/read-loop.pid")"
     printf '\032'
-    sleep 0.3
+    wait_until process_stopped "$read_loop_pid"
+    wait_until output_has "$SANDBOX/job-output" 'Stopped'
     printf 'jobs\n'
-    sleep 0.2
     printf 'fg\n'
-    sleep 0.2
+    wait_until process_running "$read_loop_pid"
     printf 'resumed\n'
-    sleep 0.2
+    wait_until output_has "$SANDBOX/job-output" 'loop:resumed'
     printf '\003'
-    sleep 0.2
+    wait_until process_gone "$read_loop_pid"
     printf 'exit\n'
-  } | timeout 5 script -qec 'bash --noprofile --norc -i' /dev/null \
+  } | timeout 120 script -qec 'bash --noprofile --norc -i' /dev/null \
     >"$SANDBOX/job-output" || pty_status=$?
   test "$pty_status" -eq 0 || test "$pty_status" -eq 130
   grep -Fq 'Stopped' "$SANDBOX/job-output"
@@ -394,21 +404,35 @@ FAKE_CARGO_LOG="$SANDBOX/handoff" \
   HYPERCOLOR_CACHE_DIR="$SANDBOX/handoff-cache" \
   HYPERCOLOR_NO_SCCACHE=1 \
   HYPERCOLOR_LOCK_HANDOFF_READY="$handoff_ready" \
-  HYPERCOLOR_LOCK_HANDOFF_DELAY_MS=300 \
+  HYPERCOLOR_LOCK_HANDOFF_DELAY_MS=1000 \
   CARGO_TARGET_DIR="$handoff_target" \
   PATH="$SANDBOX/bin:$PATH" \
   "$WRAPPER" cargo build >/dev/null &
 handoff_wrapper_pid=$!
-for _ in {1..100}; do
+for _ in {1..3000}; do
   [ -e "$handoff_ready" ] && break
   sleep 0.01
 done
-for _ in {1..20}; do
+test -e "$handoff_ready"
+# The helper holds the lock for a second after it writes the ready file.
+# A probe counts only while that second is provably not over, measured
+# from the file's own timestamp after the probe returns, so a slow runner
+# gets fewer probes and never a false failure.
+handoff_ready_ns="$(stat -c %.9Y "$handoff_ready" | tr -d .)"
+while :; do
+  handoff_lock_free=0
   exec 9<>"$handoff_target/.cargo-build-lock"
   if flock -n 9; then
-    exit 1
+    handoff_lock_free=1
   fi
   exec 9>&-
+  if [ $(($(date +%s%N) - handoff_ready_ns)) -ge 700000000 ]; then
+    break
+  fi
+  if [ "$handoff_lock_free" -eq 1 ]; then
+    echo "the build lock was free during the handoff window" >&2
+    exit 1
+  fi
   sleep 0.01
 done
 wait "$handoff_wrapper_pid"
@@ -470,7 +494,7 @@ HYPERCOLOR_FORCE_PORTABLE_LOCK=1 FAKE_SCCACHE_STOP_READY="$ready" \
   FAKE_SCCACHE_STOP_DELAY=0.4 \
   run_refresh_wrapper refresh-lock refresh-lock-first cargo build &
 first_refresh_pid=$!
-for _ in {1..50}; do
+for _ in {1..3000}; do
   [ -e "$ready" ] && break
   sleep 0.01
 done
@@ -547,7 +571,7 @@ FAKE_CARGO_LOG="$SANDBOX/kill" \
     'printf "%s\n" "$$" >"$SIGNAL_CHILD_PID_FILE"; exec sleep 30' \
   >/dev/null &
 kill_wrapper_pid=$!
-for _ in {1..100}; do
+for _ in {1..3000}; do
   [ -s "$SIGNAL_CHILD_PID_FILE" ] && break
   sleep 0.01
 done
@@ -721,7 +745,7 @@ cat >"$SANDBOX/prune-bin/rm" <<'EOF'
 case "$*" in
   *.hypercolor-prune.*)
     : >"$SLOW_RM_STARTED"
-    for _ in {1..1000}; do
+    for _ in {1..3000}; do
       [ -e "$SLOW_RM_RELEASE" ] && break
       sleep 0.01
     done
@@ -918,14 +942,14 @@ touch -t "$old_stamp" "$gone_target/debug/incremental/old-gone" \
 run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$gone_target" \
   SLOW_RM_STARTED="$SANDBOX/gone-rm.started" \
   SLOW_RM_RELEASE="$SANDBOX/gone-rm.release" >/dev/null
-for _ in {1..300}; do
+for _ in {1..3000}; do
   [ -e "$SANDBOX/gone-rm.started" ] && break
   sleep 0.01
 done
 test -e "$SANDBOX/gone-rm.started"
 rm -rf "$gone_target/debug"
 : >"$SANDBOX/gone-rm.release"
-for _ in {1..1000}; do
+for _ in {1..3000}; do
   grep -q '^finished' "$(prune_claim "$gone_target")/prune.log" 2>/dev/null && break
   sleep 0.01
 done
@@ -945,7 +969,7 @@ touch -t "$old_stamp" "$busy_target/debug/incremental/old-busy" \
 run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$busy_target" \
   SLOW_RM_STARTED="$SANDBOX/busy-rm.started" \
   SLOW_RM_RELEASE="$SANDBOX/busy-rm.release" >/dev/null
-for _ in {1..300}; do
+for _ in {1..3000}; do
   [ -e "$SANDBOX/busy-rm.started" ] && break
   sleep 0.01
 done
@@ -953,7 +977,7 @@ test -e "$SANDBOX/busy-rm.started"
 test ! "$busy_target/debug" -nt "$SANDBOX/old-marker"
 : >"$busy_target/debug/fresh-artifact"
 : >"$SANDBOX/busy-rm.release"
-for _ in {1..1000}; do
+for _ in {1..3000}; do
   grep -q '^finished' "$(prune_claim "$busy_target")/prune.log" 2>/dev/null && break
   sleep 0.01
 done
@@ -975,7 +999,7 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
   loop_status=0
   {
     printf '%s\n' "$loop_command"
-    for _ in {1..500}; do
+    for _ in {1..3000}; do
       [ -e "$SANDBOX/loop-mv.started" ] && break
       sleep 0.01
     done
@@ -1004,7 +1028,7 @@ env -u CI FAKE_CARGO_LOG="$SANDBOX/trap" FAKE_SCCACHE_LOG="$SANDBOX/trap.sccache
   CARGO_TARGET_DIR="$trap_target" PATH="$SANDBOX/bin:$PATH" \
   "$WRAPPER" cargo build >"$SANDBOX/trap.out" 2>&1 &
 trap_wrapper_pid=$!
-for _ in {1..500}; do
+for _ in {1..3000}; do
   [ -e "$SANDBOX/trap-version.started" ] && break
   sleep 0.01
 done
@@ -1029,7 +1053,7 @@ prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
 # never race them.
 test "$(<"$SANDBOX/prune.gone")" = absent
 grep -Fq 'incremental prune: moved 3 entries idle for 3+ days to trash, found 1 stale trash dirs; deleting in the background' <<<"$prune_output"
-for _ in {1..300}; do
+for _ in {1..3000}; do
   [ -e "$SANDBOX/slow-rm.started" ] && break
   sleep 0.01
 done
@@ -1054,7 +1078,7 @@ flock -n 9
 exec 9>&-
 : >"$SANDBOX/slow-rm.release"
 prune_log="$(prune_claim "$prune_target")/prune.log"
-for _ in {1..1000}; do
+for _ in {1..3000}; do
   grep -q '^finished' "$prune_log" 2>/dev/null && break
   sleep 0.01
 done
