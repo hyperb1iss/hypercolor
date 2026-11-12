@@ -74,7 +74,8 @@ pub(crate) struct LayerTargets {
     /// The open zone's outputs, as targets name them. Empty on a Screen.
     pub outputs: Memo<Vec<TargetOutput>>,
     /// A target chosen for the next added layer, with the zone it was
-    /// chosen in. Unset, or another zone's, the next layer follows the
+    /// chosen in. It lasts until that layer is added or the selection
+    /// changes. Unset, or another zone's, the next layer follows the
     /// canvas selection.
     pub chosen: RwSignal<Option<(String, Target)>>,
     /// What the next added layer applies to.
@@ -173,12 +174,24 @@ impl LayerTargets {
             })
         });
         let emphasis_off = RwSignal::new(false);
-        // The emphasis follows the selection: a new one brings it back.
-        Effect::new(move |_| {
-            selected_output_ids.track();
+        // A new selection is the newest word on what is being worked on:
+        // it brings the emphasis back, and it replaces a target chosen for
+        // the next layer before it, unless that target is the selection.
+        Effect::new(move |previous: Option<HashSet<String>>| {
+            let selected = selected_output_ids.get();
             if emphasis_off.get_untracked() {
                 emphasis_off.set(false);
             }
+            let moved_on = previous.is_some_and(|previous| previous != selected)
+                && chosen.with_untracked(|chosen| {
+                    chosen
+                        .as_ref()
+                        .is_some_and(|(_, target)| target.ids() != selected)
+                });
+            if moved_on {
+                chosen.set(None);
+            }
+            selected
         });
         let emphasis = Memo::new(move |_| {
             if !enabled.get() || emphasis_off.get() {
