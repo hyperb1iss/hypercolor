@@ -16,6 +16,7 @@ use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
@@ -2544,6 +2545,131 @@ async fn add_layer_targets_a_named_zone_and_checks_its_own_outputs() {
     assert_eq!(
         unknown_zone.details().expect("selector details")["parameter"],
         "zone"
+    );
+}
+
+#[tokio::test]
+async fn add_layer_gathers_a_device_split_into_logical_devices() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let base = insert_test_effect(&state, "Current").await;
+    insert_test_effect(&state, "Aurora").await;
+    let (controller_id, _) = insert_test_led_device(&state, "Fan Hub").await;
+    {
+        let mut logical = state.logical_devices.write().await;
+        for (id, led_start) in [("hub:front", 0), ("hub:rear", 16)] {
+            logical.insert(
+                id.to_owned(),
+                LogicalDevice {
+                    id: id.to_owned(),
+                    physical_device_id: controller_id,
+                    name: id.to_owned(),
+                    led_start,
+                    led_count: 16,
+                    enabled: true,
+                    kind: LogicalDeviceKind::Segment,
+                },
+            );
+        }
+    }
+    let layout = test_layout(
+        "hub-layout",
+        vec![
+            scope_output("out-front", "Front Fans", "hub:front"),
+            scope_output("out-rear", "Rear Fan", "hub:rear"),
+            scope_output(STRIP, "Shelf Strip", "mock:strip"),
+        ],
+    );
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &base,
+            HashMap::new(),
+            None,
+            layout,
+            ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should be seeded");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("hub rig should commit");
+
+    for (outputs, expected) in [
+        (json!(["fan hub"]), json!(["out-front", "out-rear"])),
+        (json!(["hub:rear"]), json!(["out-rear"])),
+    ] {
+        let zone = execute_tool_with_state(
+            "add_layer",
+            &json!({ "effect": "aurora", "outputs": outputs }),
+            state.as_ref(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("outputs {outputs} should resolve: {error}"));
+        let top = zone["layers"]
+            .as_array()
+            .and_then(|layers| layers.last())
+            .expect("the new layer is on top");
+        assert_eq!(top["scope"]["outputs"], expected, "outputs {outputs}");
+    }
+}
+
+#[tokio::test]
+async fn add_layer_is_for_lighting_and_refuses_faces_and_display_zones() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    seed_scope_rig(&state).await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let assigned = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": display_id.to_string(),
+            "effect_id": face.id.to_string(),
+            "scope": "scene"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("display face assignment should succeed");
+    let display_zone = assigned["zone"]["id"].as_str().expect("display zone id");
+
+    let face_error =
+        execute_tool_with_state("add_layer", &json!({ "effect": face.name }), state.as_ref())
+            .await
+            .expect_err("a display face is not a lighting layer");
+    assert_eq!(
+        face_error.details().expect("details")["parameter"],
+        "effect"
+    );
+    assert!(format!("{face_error}").contains("display face"));
+
+    let zone_error = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": "aurora", "zone": display_zone }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("a display zone takes its layers through the display tools");
+    assert_eq!(zone_error.details().expect("details")["parameter"], "zone");
+
+    let manager = state.scene_manager.snapshot().await;
+    let scene = manager.active_scene().expect("active scene");
+    assert_eq!(
+        scene.primary_zone().expect("primary zone").layers.len(),
+        1,
+        "the lighting zone is untouched"
+    );
+    assert_eq!(
+        scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == display_zone)
+            .expect("display zone")
+            .layers
+            .len(),
+        1,
+        "the display zone keeps only its face"
     );
 }
 

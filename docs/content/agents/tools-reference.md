@@ -122,6 +122,8 @@ Stack one effect on top of a zone's layers without replacing anything. Name outp
 - **Required:** `effect` (string): effect ID, exact name, or unique name substring.
 - **Optional:** `zone` (string): zone ID, exact name, or unique name substring, defaulting to the primary zone; `outputs` (string array, at least one entry): the outputs the layer is limited to; `blend` (enum, default `alpha`): one of `replace`, `alpha`, `add`, `screen`, `multiply`, `overlay`, `soft_light`, `color_dodge`, `difference`, `tint`, `luma_reveal`; `opacity` (number, default `1.0`, range 0-1); `controls` (object): parameter overrides keyed by control ID.
 
+`add_layer` is for lighting. A display-face effect and a display zone are both refused, as they are by [`set_effect`](#set-effect) and [`adjust_controls`](#adjust-controls); a face goes on a screen through [`set_display_face`](#set-display-face).
+
 Each `outputs` entry names either one output of the zone or one device. An output resolves by its member ID or name, as the zone's `members` list them. A device resolves by the ID or name [`get_devices`](#get-devices) reports, or by the `device_id` its members carry, and stands for every output of that device the zone holds. Entries use the shared selector policy, and a query that matches several candidates is ambiguous only when they select different outputs: a one-output strip and its device are the same target. An output that belongs to another zone does not resolve; move it first or name its zone.
 
 ```json

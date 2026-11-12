@@ -265,6 +265,15 @@ pub(super) async fn handle_add_layer_with_state(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect".into()))?;
     let effect = resolve_effect_selector(state, "effect", query).await?;
+    if effect.category == EffectCategory::Display {
+        return Err(ToolError::InvalidParam {
+            param: "effect".into(),
+            reason: format!(
+                "effect '{}' is a display face and must be assigned to a display device, not stacked on a lighting zone",
+                effect.name
+            ),
+        });
+    }
     let controls = admitted_controls(params, &effect)?;
     let blend = match params.get("blend") {
         Some(value) => decode_argument::<BlendMode>("blend", value)?,
@@ -297,6 +306,12 @@ pub(super) async fn handle_add_layer_with_state(
                     .into(),
             })?,
     };
+    if zone.role == ZoneRole::Display {
+        return Err(ToolError::InvalidParam {
+            param: "zone".into(),
+            reason: "display zones take their layers through the display-face tools".into(),
+        });
+    }
     let scope = match params.get("outputs").and_then(Value::as_array) {
         Some(queries) => Some(resolve_scope(state, &zone, queries).await?),
         None => None,
@@ -315,8 +330,8 @@ pub(super) async fn handle_add_layer_with_state(
     let zone_id = zone.id;
 
     // The zone and outputs were resolved against one read of the scene, so
-    // the write is fenced to it and retried with the same ids when another
-    // writer lands first.
+    // the write is fenced to that revision. A fence that went stale before
+    // the write began is refreshed and the same ids tried again.
     let written = retry_resolved_scene_target(
         document.revision,
         || async {

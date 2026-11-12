@@ -24,9 +24,10 @@ daemon config carries `[mcp] enabled = true`. Until that flag is set the endpoin
 and the CLI is the only route in.
 
 Twenty-two tools, five resources, four prompt templates. Selector arguments (`query`,
-`name`, `zone`, `layer`, `device`, `effect_id`) all resolve in one fixed order: exact
-serialized ID, then exact case-insensitive name, then a unique case-insensitive name
-substring. An ambiguous substring fails with the candidate list instead of guessing.
+`name`, `zone`, `layer`, `device`, `effect`, `effect_id`, and each entry of `outputs`)
+all resolve in one fixed order: exact serialized ID, then exact case-insensitive name,
+then a unique case-insensitive name substring. An ambiguous substring fails with the
+candidate list instead of guessing.
 
 Read-only:
 
@@ -56,7 +57,7 @@ before calling them:
 
 - `set_effect` (`query` required, plus `controls` and `transition`) replaces the primary zone's whole-zone layers with one effect. Layers that `add_layer` limited to some outputs stay on top. `transition` is an object, `{"type": "cut"}`, never the bare string.
 - `set_color` (`color` required, plus `brightness`) sets a solid color across the LED pipeline. `color` accepts CSS names, hex, `rgb()`, `hsl()`, or a natural-language description.
-- `clear_zone` (`zone` optional) clears one non-display zone's layer stack, scoped layers included. Omitting `zone` clears every non-display zone and quiesces output.
+- `clear_zone` (`zone` optional) clears one non-display zone's layer stack, scoped layers included, except a layer scoped only to screens. Omitting `zone` clears every non-display zone and quiesces output.
 - `activate_scene` (`name` required, plus `transition_ms` default 1000)
 - `set_display_face` (`device` required, plus `effect_id`, `clear`, `scope` one of `default`, `scene`, and `controls`)
 - `install_effect` (`html` required, plus `file_name`) validates and installs one HTML page, replacing an installed effect with the same file name in place. It returns `console_after`, the console cursor to read the new page's output from. Writing or debugging an effect is its own loop: follow the `effect-livecoding` skill
