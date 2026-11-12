@@ -1,11 +1,11 @@
 +++
 title = "Tools reference"
-description = "All 21 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
+description = "All 22 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
 weight = 20
 template = "page.html"
 +++
 
-The Hypercolor MCP server exposes **21 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
+The Hypercolor MCP server exposes **22 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
 
 {% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404. Turn it on first in [MCP setup](@/agents/mcp-setup.md), then come back here.
@@ -24,9 +24,9 @@ Every tool carries four annotations the daemon reports to MCP clients.
 | `destructive` | The tool overwrites state you cannot get back. Reported per tool, not as a blanket value.                      |
 | `open_world`  | Always `false`; the tool set is closed and known.                                                              |
 
-Of the 21 tools, **11 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`, and `capture_canvas`. The other 10 mutate state. Six tools are non-idempotent: `set_effect` and `set_color` mint fresh layer identities, `create_scene` mints a scene, `set_display_face` replaces an assignment, `install_effect` restarts the running page and returns a new console cursor, and `capture_canvas` returns a new frame on every call even though it changes nothing.
+Of the 22 tools, **11 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`, and `capture_canvas`. The other 11 mutate state. Seven tools are non-idempotent: `set_effect`, `set_color`, and `add_layer` mint fresh layer identities, `create_scene` mints a scene, `set_display_face` replaces an assignment, `install_effect` restarts the running page and returns a new console cursor, and `capture_canvas` returns a new frame on every call even though it changes nothing.
 
-Six of the ten mutating tools are destructive: `set_effect`, `set_color`, `clear_zone`, `activate_scene`, and `set_display_face` each discard state the caller did not supply and cannot recover, and `install_effect` overwrites any installed page that shares its file name. The other four are not: `set_brightness` and `set_output_power` are reversible value writes, `adjust_controls` patches named values and bindings, and `create_scene` only adds.
+Six of the eleven mutating tools are destructive: `set_effect`, `set_color`, `clear_zone`, `activate_scene`, and `set_display_face` each discard state the caller did not supply and cannot recover, and `install_effect` overwrites any installed page that shares its file name. The other five are not: `set_brightness` and `set_output_power` are reversible value writes, `adjust_controls` patches named values and bindings, and `create_scene` and `add_layer` only add.
 
 {% <callout type="tip"> %}
 Read-then-act is the through-line. The server's own instructions tell every client to call `get_status` or read `hypercolor://state` before making changes, to call `list_effects` before applying visuals, and to call `capture_canvas` after a change instead of assuming it looks right. Follow that order and your calls land predictably.
@@ -73,7 +73,7 @@ Named resources use one deterministic selector policy: exact serialized ID, exac
 
 ### set_effect
 
-Replace the primary zone's layer stack with one lighting effect. The `query` argument resolves by exact effect ID, exact case-insensitive name, or a unique case-insensitive name substring. Use [`list_effects`](#list-effects) before applying when the catalog name is unknown.
+Replace the primary zone's whole-zone layers with one lighting effect. Layers limited to some of the zone's outputs (see [`add_layer`](#add-layer)) stay above the new layer, so changing the base effect keeps a keyboard's own layer. The `query` argument resolves by exact effect ID, exact case-insensitive name, or a unique case-insensitive name substring. Use [`list_effects`](#list-effects) before applying when the catalog name is unknown.
 
 - **Mutates state.** `read_only: false`, `destructive: true`, `idempotent: false`.
 - **Required:** `query` (string): effect ID, exact name, or unique name substring.
@@ -115,6 +115,51 @@ Response (abridged):
 
 The returned zone carries the freshly minted layer ID. Use that zone and layer identity with [`adjust_controls`](#adjust-controls) for later tuning. Reapplying the effect would replace the stack and mint another layer, so it is not a retry-safe adjustment path.
 
+### add_layer
+
+Stack one effect on top of a zone's layers without replacing anything. Name outputs to limit the layer to part of the zone, such as one keyboard; leave them out and the layer covers the whole zone. Mutates state, non-destructive, and non-idempotent: every call adds another layer with a fresh ID.
+
+- **Required:** `effect` (string): effect ID, exact name, or unique name substring.
+- **Optional:** `zone` (string): zone ID, exact name, or unique name substring, defaulting to the primary zone; `outputs` (string array, at least one entry): the outputs the layer is limited to; `blend` (enum, default `alpha`): one of `replace`, `alpha`, `add`, `screen`, `multiply`, `overlay`, `soft_light`, `color_dodge`, `difference`, `tint`, `luma_reveal`; `opacity` (number, default `1.0`, range 0-1); `controls` (object): parameter overrides keyed by control ID.
+
+Each `outputs` entry names either one output of the zone or one device. An output resolves by its member ID or name, as the zone's `members` list them. A device resolves by the ID or name [`get_devices`](#get-devices) reports, or by the `device_id` its members carry, and stands for every output of that device the zone holds. Entries use the shared selector policy, and a query that matches several candidates is ambiguous only when they select different outputs: a one-output strip and its device are the same target. An output that belongs to another zone does not resolve; move it first or name its zone.
+
+```json
+{
+  "name": "add_layer",
+  "arguments": {
+    "effect": "Touch Ripple",
+    "outputs": ["Huntsman"],
+    "blend": "screen",
+    "opacity": 0.8
+  }
+}
+```
+
+Response (abridged):
+
+```json
+{
+  "id": "...",
+  "name": "Primary",
+  "members": [
+    { "id": "keyboard-left", "device_id": "razer:huntsman-v3", "segment": "left", "name": "Keyboard left" }
+  ],
+  "layers": [
+    { "id": "...", "source": { "type": "effect", "effect_id": "...", "controls": {} } },
+    {
+      "id": "...",
+      "source": { "type": "effect", "effect_id": "...", "controls": {} },
+      "blend": "screen",
+      "opacity": 0.8,
+      "scope": { "outputs": ["keyboard-left"] }
+    }
+  ]
+}
+```
+
+The response is the updated zone resource, with the new layer on top. Its `scope` lists the member IDs the selectors resolved to; a whole-zone layer has no `scope` key. A scoped layer survives [`set_effect`](#set-effect) and [`set_color`](#set-color), which replace only the whole-zone layers beneath it, and goes dark with the rest of the zone on [`clear_zone`](#clear-zone). To change the layer's controls afterwards, use [`adjust_controls`](#adjust-controls) with the returned layer ID.
+
 ### list_effects
 
 Browse the effect catalog with optional filters. Read-only, idempotent. Returns effect names, descriptions, categories, tags, and each effect's control schema.
@@ -131,7 +176,7 @@ The response carries `effects`, `total`, `has_more`, `limit`, and `offset`. The 
 
 ### set_color
 
-Set a solid color globally. Under the hood this replaces the primary zone's layer stack with the `solid_color` effect; it is not a separate device mode. Mutates state, destructive, and non-idempotent.
+Set a solid color globally. Under the hood this replaces the primary zone's whole-zone layers with the `solid_color` effect, keeping scoped layers above it as [`set_effect`](#set-effect) does; it is not a separate device mode. Mutates state, destructive, and non-idempotent.
 
 The `color` argument accepts CSS color names (`coral`, `dodgerblue`), hex (`#ff6ac1`), `rgb()`, `hsl()`, and natural-language descriptions (`warm sunset orange`, `deep ocean blue`), all resolved by the daemon's fuzzy color resolver.
 
@@ -241,7 +286,7 @@ The response returns `scene_id`, `name`, `enabled`, and `mutation_mode`.
 
 ### clear_zone
 
-Clear one non-display zone's layer stack, or every non-display zone when `zone` is omitted. Mutates state, destructive, and idempotent. Clearing the whole scene also quiesces output. Display zones are refused because display assignments have their own tool.
+Clear one non-display zone's layer stack, or every non-display zone when `zone` is omitted. Whole-zone and scoped layers both go; the one exception is a layer scoped only to screens, which is a face and stays. Mutates state, destructive, and idempotent. Clearing the whole scene also quiesces output. Display zones are refused because display assignments have their own tool.
 
 - **Optional:** `zone` (string): zone ID, exact name, or unique name substring.
 

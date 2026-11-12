@@ -240,7 +240,7 @@ hypercolor effects install dist/aurora.html --activate
 ## Where to go next
 
 - [MCP setup](@/agents/mcp-setup.md): the typed, schema-validated alternative to shell scripting.
-- [Tools reference](@/agents/tools-reference.md): all 21 MCP tools with arguments and return shapes.
+- [Tools reference](@/agents/tools-reference.md): all 22 MCP tools with arguments and return shapes.
 - [Prompt templates](@/agents/prompt-templates.md): the four shipped prompts agents can invoke.
 - [CLI reference](@/api/cli.md): the complete command tree, human-facing.
 - [REST API reference](@/api/rest.md): the daemon contract the CLI sits on top of.
