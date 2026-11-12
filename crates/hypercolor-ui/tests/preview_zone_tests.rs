@@ -31,6 +31,7 @@ fn zone(id: &str, role: ZoneRole, effect_id: &str) -> ZoneEffectState {
         preset_id: None,
         revision: 1,
         layer_labels: vec![effect_id.to_owned()],
+        featured_layer: None,
     }
 }
 

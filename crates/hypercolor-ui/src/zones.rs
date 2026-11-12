@@ -155,6 +155,33 @@ pub struct ZoneEffectState {
     pub revision: u64,
     /// Labels of the zone's enabled layers, bottom to top.
     pub layer_labels: Vec<String>,
+    /// The place in `layer_labels` of the layer the zone is known by: the
+    /// topmost that covers the whole zone (see
+    /// [`surface::featured_layer`]). `None` reads as the top.
+    pub featured_layer: Option<usize>,
+}
+
+/// The labels of `zone`'s enabled layers, bottom to top, and the place
+/// among them of the layer the zone is known by. `effect_name` resolves
+/// an effect id to its name.
+#[must_use]
+pub fn zone_layer_labels(
+    zone: &api::ZoneResource,
+    effect_name: impl Fn(&str) -> Option<String>,
+) -> (Vec<String>, Option<usize>) {
+    let enabled = || zone.layers.iter().filter(|layer| layer.enabled);
+    let labels = enabled()
+        .map(|layer| {
+            let effect = match &layer.source {
+                hypercolor_types::layer::LayerSource::Effect { effect_id, .. } => {
+                    effect_name(&effect_id.to_string())
+                }
+                _ => None,
+            };
+            surface::layer_label(layer, effect.as_deref())
+        })
+        .collect();
+    (labels, surface::featured_position(enabled()))
 }
 
 impl ZoneEffectState {
@@ -167,20 +194,23 @@ impl ZoneEffectState {
             .or_else(|| self.zone.top_layer.clone())
     }
 
-    /// What the zone shows, in one short line: its top layer plus how
-    /// many layers sit under it ("Touch Ripple +1").
+    /// What the zone shows, in one short line: the layer it is known by
+    /// plus how many more it stacks ("Touch Ripple +1"). A layer limited
+    /// to some outputs plays on part of the zone, so the line names the
+    /// top layer that covers all of it, as every other caption does.
     #[must_use]
     pub fn stack_label(&self) -> Option<String> {
-        let top = self
-            .layer_labels
-            .last()
+        let known_by = self
+            .featured_layer
+            .and_then(|index| self.layer_labels.get(index))
+            .or_else(|| self.layer_labels.last())
             .cloned()
             .or_else(|| self.display_label())?;
-        let below = self.layer_labels.len().saturating_sub(1);
-        Some(if below == 0 {
-            top
+        let others = self.layer_labels.len().saturating_sub(1);
+        Some(if others == 0 {
+            known_by
         } else {
-            format!("{top} +{below}")
+            format!("{known_by} +{others}")
         })
     }
 

@@ -785,26 +785,13 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                     let indexed = effect_id
                         .as_ref()
                         .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
-                    let layer_labels = zone
-                        .layers
-                        .iter()
-                        .filter(|layer| layer.enabled)
-                        .map(|layer| {
-                            let effect_name = match &layer.source {
-                                hypercolor_types::layer::LayerSource::Effect {
-                                    effect_id, ..
-                                } => {
-                                    let effect_id = effect_id.to_string();
-                                    effects
-                                        .iter()
-                                        .find(|entry| entry.effect.id == effect_id)
-                                        .map(|entry| entry.effect.name.as_str())
-                                }
-                                _ => None,
-                            };
-                            crate::zones::surface::layer_label(layer, effect_name)
-                        })
-                        .collect();
+                    let (layer_labels, featured_layer) =
+                        crate::zones::zone_layer_labels(zone, |effect_id| {
+                            effects
+                                .iter()
+                                .find(|entry| entry.effect.id == effect_id)
+                                .map(|entry| entry.effect.name.clone())
+                        });
                     crate::zones::ZoneEffectState {
                         effect_name: indexed.map(|entry| entry.effect.name.clone()),
                         effect_category: indexed
@@ -817,6 +804,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                             .map(|preset_id| preset_id.to_string()),
                         revision: scene.revision,
                         layer_labels,
+                        featured_layer,
                         effect_id,
                         zone: surface,
                     }

@@ -39,6 +39,7 @@ fn zone(name: &str, effect: Option<&str>) -> ZoneEffectState {
         layer_labels: effect
             .map(|effect| vec![effect.to_owned()])
             .unwrap_or_default(),
+        featured_layer: None,
     }
 }
 

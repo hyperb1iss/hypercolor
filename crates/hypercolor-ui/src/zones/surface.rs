@@ -128,11 +128,22 @@ pub fn surfaces_from_zones(zones: &[ZoneResource]) -> Vec<Surface> {
 /// so it stands for the zone only when nothing covers all of it.
 #[must_use]
 pub fn featured_layer(layers: &[SceneLayer]) -> Option<&SceneLayer> {
-    layers
-        .iter()
-        .rev()
-        .find(|layer| layer.scope.is_none())
-        .or_else(|| layers.last())
+    featured_position(layers).and_then(|index| layers.get(index))
+}
+
+/// The place of the layer [`featured_layer`] picks among `layers`, given
+/// bottom to top: the topmost that covers the whole zone, else the top.
+#[must_use]
+pub fn featured_position<'a>(layers: impl IntoIterator<Item = &'a SceneLayer>) -> Option<usize> {
+    let mut whole_zone = None;
+    let mut top = None;
+    for (index, layer) in layers.into_iter().enumerate() {
+        top = Some(index);
+        if layer.scope.is_none() {
+            whole_zone = Some(index);
+        }
+    }
+    whole_zone.or(top)
 }
 
 /// Display label of the layer a zone is known by (see

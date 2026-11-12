@@ -551,14 +551,17 @@ pub fn StudioDeviceCard(
                                 {device_name}
                             </span>
                         </div>
-                        <div class="flex items-center gap-1.5 font-mono text-[10px] text-fg-tertiary/70">
-                            <span class="tabular-nums">{leds}</span>
+                        // The count and its unit stay on one line, and so does
+                        // the transport: a long driver label is what gives
+                        // way, by truncating.
+                        <div class="flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-fg-tertiary/70">
+                            <span class="shrink-0 whitespace-nowrap tabular-nums">{leds}</span>
                             {transport
                                 .map(|t| {
                                     view! {
                                         <>
-                                            <span class="text-fg-tertiary/30">"\u{b7}"</span>
-                                            <span>{t}</span>
+                                            <span class="shrink-0 text-fg-tertiary/30">"\u{b7}"</span>
+                                            <span class="shrink-0 whitespace-nowrap">{t}</span>
                                         </>
                                     }
                                 })}
@@ -566,8 +569,8 @@ pub fn StudioDeviceCard(
                                 .map(|label| {
                                     view! {
                                         <>
-                                            <span class="text-fg-tertiary/30">"\u{b7}"</span>
-                                            <span class="truncate uppercase tracking-wide">
+                                            <span class="shrink-0 text-fg-tertiary/30">"\u{b7}"</span>
+                                            <span class="min-w-0 truncate uppercase tracking-wide">
                                                 {label}
                                             </span>
                                         </>
