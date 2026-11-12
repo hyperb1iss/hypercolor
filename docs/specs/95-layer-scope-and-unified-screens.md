@@ -9,7 +9,7 @@
 > breaking the base effect underneath, and then makes a screen's face nothing
 > more than a layer scoped to that screen.
 
-**Status:** Draft rev 2. Design only; nothing in this spec is built. Rev 2 folds in two independent reviews (engine and rendering; compatibility, migration, and UX). Section 13 records every finding and what became of it.
+**Status:** Draft rev 2. W1 (per-screen backdrops, section 5.10) is implemented on the `nova/screen-backdrops` branch and is not merged; nothing else in this spec is built. Rev 2 folds in two independent reviews (engine and rendering; compatibility, migration, and UX). Section 13 records every finding and what became of it.
 **Crates:** `hypercolor-types` (layer and scene types, API contracts), `hypercolor-core` (scene manager, spatial, effect pool), `hypercolor-daemon` (scene domain, render zones, SparkleFlinger, display lane and output, REST, MCP, stores), `hypercolor-ui` (Studio)
 **Supersedes:** Design 73 §6.2 "Screens" and the Screens rows of §6.3 and §9; Spec 65 §4 (the Screen row), §6.6, §6.7, §8; Spec 60 §5.2.1 "Per-layer canvas dimensions"; Spec 69 §8 W4.2. Section 3 lists each one with its reason.
 **Amends:** Spec 60 §5.1 and §8.2; Spec 64 §6.1 and §9.6; Spec 69 §3.6; Spec 86 §3.1, §3.2, §5.1, §5.2
@@ -944,6 +944,37 @@ that output's placement in that zone's layout.
   the layout the class frame is drawn in. Today it comes from the spatial
   service's layout (`display_output/mod.rs:722`, `:945-1007`). §9 confirms the
   two agree for every screen on the evidence rig before the source changes.
+
+**As built in W1.** Four things the proposal above left open are settled by
+the implementation:
+
+- **Placement belongs to the frame.** Display output publishes, per screen,
+  only what the device is: its layout ids, its surface, and how the panel is
+  mounted. The render thread finds the zone that places each screen in the
+  zones of the frame it is rendering. Where the display worker does the crop,
+  the zone's canvas travels with its viewport. A placement resolved on another
+  thread could describe the previous scene by the time its frame arrived, and
+  did: a scene switch could flash a lit screen black.
+- **A screen no zone places has no backdrop.** With no face either it is not
+  driven, and keeps what it last showed.
+- **A backdrop is held by its zone's content.** The zone runtime keeps a
+  content revision per zone that stands while the layers drawing the zone are
+  the ones that drew its last frame. A still zone costs each screen one
+  finalize pass, or one published canvas on the CPU backend, whatever the
+  screen's cadence.
+- **Frames that compose no scene still carry the screens.** The idle frame
+  gives every placed screen black and is composed again when the set of
+  screens or the scene's zones change, and the frame that releases output
+  carries a black backdrop for every placed screen.
+
+The viewport check §9 asks for was run against the evidence rig's live scene.
+The owning zone and the spatial service agree for every screen but one. The
+scene's primary zone holds the pump LCD's box at (0.75668, 0.59697) and the
+spatial layout holds it at (0.75523, 0.60085), the same size: about one pixel
+right and two pixels up on a 640 by 480 canvas. The scene has custom zones, so
+its primary zone keeps its own placements instead of following the layout, and
+this one was moved there. The zone's value is the right one, since the zone's
+frame is drawn in the zone's layout.
 
 **Scene transitions.** A screen never reads the composed scene crossfade. That
 crossfade is one flattened picture, so a screen that read it would show
