@@ -15,7 +15,7 @@ use crate::icons::*;
 
 const ROW: &str = "flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left \
      text-[12px] text-fg-secondary transition-colors hover:bg-surface-hover/40 \
-     hover:text-fg-primary pointer-coarse:min-h-11";
+     hover:text-fg-primary pointer-coarse:min-h-11 max-md:py-2.5 max-md:text-sm";
 
 /// The checklist. `on_change` hears each new draft; `on_hover` the
 /// outputs the row under the pointer stands for, and none when it leaves.

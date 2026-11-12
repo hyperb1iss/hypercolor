@@ -7,9 +7,10 @@ use hypercolor_types::api::effects::EffectSourceKind;
 use hypercolor_types::api::scene::ZoneResource;
 use hypercolor_types::effect::EffectCategory;
 use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
+use hypercolor_ui::components::layer_panel::scope::{TargetWords, zone_target_outputs};
 use hypercolor_ui::effect_search::IndexedEffect;
 use hypercolor_ui::pages::studio::phone_summary::{
-    MemberCounts, member_counts, member_summary, zone_effect_choices,
+    MemberCounts, limited_layers, member_counts, member_summary, zone_effect_choices,
 };
 
 fn zone(members: &[(&str, &str)]) -> ZoneResource {
@@ -169,4 +170,69 @@ fn the_screens_address_asks_for_the_editor_and_the_screens() {
     assert!(wants_screens(value("surface")));
     assert!(!wants_screens(None));
     assert!(!wants_screens(Some("lights")));
+}
+
+const RIPPLES_EFFECT: &str = "0192f5a0-1234-7890-abcd-ef0123456789";
+
+/// A zone with a keyboard and a mouse under three layers: a base on the
+/// whole zone, an effect on the keyboard, and a named fill on an output
+/// that has left.
+fn layered_zone() -> ZoneResource {
+    let layer =
+        |id: &str, name: Option<&str>, source: serde_json::Value, scope: Option<&[&str]>| {
+            let mut layer = serde_json::json!({
+                "id": id, "name": name, "source": source,
+                "blend": "screen", "opacity": 1.0, "enabled": true,
+            });
+            if let Some(ids) = scope {
+                layer["scope"] = serde_json::json!({ "outputs": ids });
+            }
+            layer
+        };
+    let fill = serde_json::json!({ "type": "color_fill", "rgba": [0.1, 0.2, 0.3, 1.0] });
+    let effect =
+        serde_json::json!({ "type": "effect", "effect_id": RIPPLES_EFFECT, "controls": {} });
+    serde_json::from_value(serde_json::json!({
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "Desk", "role": "custom", "enabled": true, "brightness": 1.0,
+        "members": [
+            { "id": "keys", "device_id": "usb:k70", "name": "K70" },
+            { "id": "mouse", "device_id": "usb:basilisk", "name": "Basilisk" },
+        ],
+        "layers": [
+            layer("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Some("Base"), fill.clone(), None),
+            layer("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", None, effect, Some(&["keys"])),
+            layer("cccccccc-cccc-4ccc-8ccc-cccccccccccc", Some("Glow"), fill, Some(&["strip"])),
+        ],
+    }))
+    .expect("zone fixture parses")
+}
+
+#[test]
+fn a_zone_card_lists_its_limited_layers_top_first_with_their_chips() {
+    let zone = layered_zone();
+    let outputs = zone_target_outputs(&zone, |member| (member.name.clone(), member.name.clone()));
+
+    let layers = limited_layers(&zone, &outputs, |effect_id| {
+        (effect_id == RIPPLES_EFFECT).then(|| "Ripples".to_owned())
+    });
+
+    let rows: Vec<(&str, &str)> = layers
+        .iter()
+        .map(|layer| (layer.name.as_str(), layer.words.label()))
+        .collect();
+    assert_eq!(
+        rows,
+        [("Glow", "Not in this zone"), ("Ripples", "K70")],
+        "the whole-zone base is the card's effect button, not a row here"
+    );
+    assert_eq!(layers[0].words, TargetWords::Dormant);
+}
+
+#[test]
+fn a_zone_with_no_limited_layer_lists_none() {
+    let mut zone = layered_zone();
+    zone.layers.truncate(1);
+    let outputs = zone_target_outputs(&zone, |member| (member.name.clone(), member.name.clone()));
+    assert!(limited_layers(&zone, &outputs, |_| None).is_empty());
 }

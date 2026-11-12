@@ -8,8 +8,14 @@
 //! is the landing view because switching effects is the common job on a
 //! phone and it needs no canvas.
 //!
+//! A layer limited to some of a zone's outputs is listed under the zone's
+//! effect with a chip naming them; the chip opens a checklist of the
+//! zone's outputs in a bottom sheet. Picking them on the canvas belongs to
+//! the editor.
+//!
 //! The counting and filtering rules are pure ([`member_counts`],
-//! [`member_summary`], [`zone_effect_choices`]) and tested without a DOM.
+//! [`member_summary`], [`zone_effect_choices`], [`limited_layers`]) and
+//! tested without a DOM.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,9 +24,13 @@ use hypercolor_types::effect::EffectCategory;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
+use super::layer_target::{LAYER_SCOPE_CAPABILITY, target_outputs_for};
 use super::phone_view::StudioPhoneView;
+use crate::api;
 use crate::app::EffectsContext;
 use crate::components::bottom_sheet::BottomSheet;
+use crate::components::layer_panel::scope::{Target, TargetOutput, TargetWords, target_words};
+use crate::components::layer_panel::target_checklist::TargetChecklist;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::scene_picker::ScenePicker;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -29,9 +39,11 @@ use crate::components::zone_tabs::{PAUSED_DIM, ZoneDot};
 use crate::effect_search::IndexedEffect;
 use crate::icons::*;
 use crate::style_utils::category_accent_rgb;
-use crate::zones::surface::{Surface, SurfaceKind, apply_zone_id};
+use crate::toasts;
+use crate::zones::surface::{Surface, SurfaceKind, apply_zone_id, layer_label};
 use crate::zones::{ZoneEffectState, ZonesContext};
 use hypercolor_leptos_ext::events::Input;
+use hypercolor_types::layer::{LayerSource, SceneLayerId};
 
 /// How many outputs a zone holds, across how many devices.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -115,12 +127,57 @@ pub fn zone_effect_choices(
     favorite
 }
 
+/// A layer limited to some of its zone's outputs, as a zone card lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitedLayer {
+    pub id: SceneLayerId,
+    /// The layer's own name, else its effect's, else its kind in words.
+    pub name: String,
+    /// What it applies to, in the words its chip shows.
+    pub words: TargetWords,
+}
+
+/// The layers of `zone` that are limited to some of its outputs, top of
+/// the stack first. `effect_name` resolves an effect id to its name.
+#[must_use]
+pub fn limited_layers(
+    zone: &ZoneResource,
+    outputs: &[TargetOutput],
+    effect_name: impl Fn(&str) -> Option<String>,
+) -> Vec<LimitedLayer> {
+    zone.layers
+        .iter()
+        .rev()
+        .filter(|layer| layer.scope.is_some())
+        .map(|layer| {
+            let effect = match &layer.source {
+                LayerSource::Effect { effect_id, .. } => effect_name(&effect_id.to_string()),
+                _ => None,
+            };
+            LimitedLayer {
+                id: layer.id,
+                name: layer_label(layer, effect.as_deref()),
+                words: target_words(layer.scope.as_ref(), outputs),
+            }
+        })
+        .collect()
+}
+
+/// A layer whose target is being edited on the phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditedLayer {
+    zone_id: String,
+    layer_id: SceneLayerId,
+    name: String,
+}
+
 /// Studio's phone layout.
 #[component]
 pub fn StudioPhoneSummary() -> impl IntoView {
     let zones_ctx = expect_context::<ZonesContext>();
     let fx = expect_context::<EffectsContext>();
     let (picker_zone, set_picker_zone) = signal(None::<Surface>);
+    let (edited_layer, set_edited_layer) = signal(None::<EditedLayer>);
 
     let counts = Memo::new(move |_| {
         zones_ctx.active_scene.with(|scene| {
@@ -234,6 +291,7 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                                             state=state
                                             summary=summary
                                             on_pick=Callback::new(move |zone| set_picker_zone.set(Some(zone)))
+                                            on_target=Callback::new(move |layer| set_edited_layer.set(Some(layer)))
                                         />
                                     }
                                 }
@@ -269,6 +327,9 @@ pub fn StudioPhoneSummary() -> impl IntoView {
             {move || picker_zone.get().map(|zone| view! {
                 <ZoneEffectPicker zone=zone on_close=Callback::new(move |()| set_picker_zone.set(None)) />
             })}
+            {move || edited_layer.get().map(|layer| view! {
+                <LayerTargetSheet layer=layer on_close=Callback::new(move |()| set_edited_layer.set(None)) />
+            })}
         </div>
     }
 }
@@ -279,9 +340,44 @@ fn ZoneCard(
     state: ZoneEffectState,
     #[prop(into)] summary: Signal<String>,
     on_pick: Callback<Surface>,
+    on_target: Callback<EditedLayer>,
 ) -> impl IntoView {
     let zones_ctx = expect_context::<ZonesContext>();
+    let fx = expect_context::<EffectsContext>();
+    let caps = expect_context::<crate::app::CapabilitiesContext>();
+    let devices = expect_context::<crate::app::DevicesContext>().devices_resource;
     let zone = state.zone.clone();
+    // The zone's layers that play on only some of its outputs. A daemon
+    // that cannot limit a layer has none to list.
+    let limited = Memo::new({
+        let zone_id = zone.id.clone();
+        move |_| {
+            if !caps.has(LAYER_SCOPE_CAPABILITY) {
+                return Vec::new();
+            }
+            let devices = devices.get().and_then(Result::ok).unwrap_or_default();
+            zones_ctx.active_scene.with(|scene| {
+                let Some(zone) = scene.as_ref().and_then(|scene| {
+                    scene
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == zone_id)
+                }) else {
+                    return Vec::new();
+                };
+                let outputs = target_outputs_for(zone, &devices);
+                limited_layers(zone, &outputs, |effect_id| {
+                    fx.effects_index.with(|effects| {
+                        effects
+                            .iter()
+                            .find(|entry| entry.effect.id == effect_id)
+                            .map(|entry| entry.effect.name.clone())
+                    })
+                })
+            })
+        }
+    });
+    let target_zone_id = StoredValue::new(zone.id.clone());
     let zone_id = zone.id.clone();
     let enabled = zone.enabled;
     let effect_label = state.display_label();
@@ -351,7 +447,154 @@ fn ZoneCard(
                     <Icon icon=LuChevronRight width="14px" height="14px" />
                 </span>
             </button>
+            <Show when=move || !limited.with(Vec::is_empty)>
+                <div class="mt-3" data-zone-limited-layers="">
+                    <div class=label_class(LabelSize::Micro, LabelTone::Default)>"Also playing"</div>
+                    <ul class="mt-1 divide-y divide-edge-subtle/40">
+                        <For
+                            each=move || limited.get()
+                            key=|layer| (layer.id, layer.name.clone(), layer.words.label().to_owned())
+                            children=move |layer| {
+                                let dormant = layer.words == TargetWords::Dormant;
+                                let chip_label = format!("{} applies to {}", layer.name, layer.words.label());
+                                let edited = EditedLayer {
+                                    zone_id: target_zone_id.get_value(),
+                                    layer_id: layer.id,
+                                    name: layer.name.clone(),
+                                };
+                                view! {
+                                    <li class="flex min-h-11 items-center gap-3 py-1">
+                                        <span class="min-w-0 flex-1 truncate text-sm text-fg-primary">
+                                            {layer.name.clone()}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            class="inline-flex min-h-9 min-w-0 max-w-[60%] shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs font-medium btn-press"
+                                            class=("border-edge-subtle", !dormant)
+                                            class=("bg-surface-overlay", !dormant)
+                                            class=("text-fg-secondary", !dormant)
+                                            class=("border-status-warning/30", dormant)
+                                            class=("bg-status-warning/10", dormant)
+                                            class=("text-status-warning", dormant)
+                                            aria-haspopup="dialog"
+                                            aria-label=chip_label
+                                            on:click=move |_| on_target.run(edited.clone())
+                                        >
+                                            {if dormant {
+                                                view! { <Icon icon=LuTriangleAlert width="12px" height="12px" /> }.into_any()
+                                            } else {
+                                                view! {
+                                                    <span class="flex shrink-0 text-accent">
+                                                        <Icon icon=LuScan width="12px" height="12px" />
+                                                    </span>
+                                                }.into_any()
+                                            }}
+                                            <span class="min-w-0 truncate">{layer.words.label().to_owned()}</span>
+                                        </button>
+                                    </li>
+                                }
+                            }
+                        />
+                    </ul>
+                </div>
+            </Show>
         </article>
+    }
+}
+
+/// The checklist that chooses what one layer applies to, in a bottom
+/// sheet. It edits a draft and writes once, on "Done".
+#[component]
+fn LayerTargetSheet(layer: EditedLayer, on_close: Callback<()>) -> impl IntoView {
+    let zones_ctx = expect_context::<ZonesContext>();
+    let devices = expect_context::<crate::app::DevicesContext>().devices_resource;
+    let layer = StoredValue::new(layer);
+    // The zone and layer as the scene has them now.
+    let found = move || {
+        zones_ctx.active_scene.with_untracked(|scene| {
+            let scene = scene.as_ref()?;
+            let (zone_id, layer_id) =
+                layer.with_value(|layer| (layer.zone_id.clone(), layer.layer_id));
+            let zone = scene
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == zone_id)?;
+            let stored = zone.layers.iter().find(|stored| stored.id == layer_id)?;
+            Some((api::Fence::of(scene), zone.clone(), stored.clone()))
+        })
+    };
+    let outputs = Memo::new(move |_| {
+        let devices = devices.get().and_then(Result::ok).unwrap_or_default();
+        let zone_id = layer.with_value(|layer| layer.zone_id.clone());
+        zones_ctx.active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .and_then(|scene| {
+                    scene
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == zone_id)
+                })
+                .map(|zone| target_outputs_for(zone, &devices))
+                .unwrap_or_default()
+        })
+    });
+    let draft = RwSignal::new(found().map_or_else(Target::default, |(_, _, stored)| {
+        Target::of(stored.scope.as_ref())
+    }));
+    let (saving, set_saving) = signal(false);
+    let title = layer.with_value(|layer| format!("{} applies to", layer.name));
+
+    let done = move |_| {
+        let target = draft.get_untracked();
+        let Some((fence, zone, stored)) = found() else {
+            on_close.run(());
+            return;
+        };
+        if !target.is_complete() {
+            return;
+        }
+        let scope = target.scope();
+        if scope == stored.scope {
+            on_close.run(());
+            return;
+        }
+        set_saving.set(true);
+        let request = api::scope_request(&stored, scope);
+        leptos::task::spawn_local(async move {
+            let zone_id = zone.id.to_string();
+            let layer_id = stored.id.to_string();
+            match api::update_layer(&zone_id, &layer_id, &request, Some(&fence)).await {
+                Ok(api::LayerStackOutcome::Applied(_)) => {}
+                Ok(api::LayerStackOutcome::Stale { .. }) => {
+                    toasts::toast_error("The scene changed elsewhere. Reloaded, try again.");
+                }
+                Err(error) => toasts::toast_error(&format!(
+                    "Couldn't change what the layer applies to: {error}"
+                )),
+            }
+            zones_ctx.refresh.run(());
+            let _ = set_saving.try_set(false);
+            let _ = on_close.try_run(());
+        });
+    };
+
+    view! {
+        <BottomSheet on_close=on_close title=title>
+            <TargetChecklist
+                draft=draft
+                outputs=outputs
+                on_change=Callback::new(move |next| draft.set(next))
+            />
+            <button
+                type="button"
+                class="mt-3 flex min-h-12 w-full items-center justify-center rounded-lg border border-accent-muted bg-accent/10 text-sm font-semibold text-accent btn-press disabled:cursor-not-allowed disabled:opacity-45"
+                disabled=move || saving.get() || !draft.with(Target::is_complete)
+                on:click=done
+            >
+                "Done"
+            </button>
+        </BottomSheet>
     }
 }
 
