@@ -47,10 +47,7 @@ pub mod polygons;
 mod render;
 pub(crate) mod stacking;
 
-use interaction::{
-    DragRuntime, InteractionKind, collect_zone_elements, pointer_to_normalized,
-    update_canvas_slot_size,
-};
+use interaction::{DragRuntime, InteractionKind, collect_zone_elements, pointer_to_normalized};
 use labels::{LabelBox, LabelRoom, visibility_class};
 use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
 use picking::HitBox;
@@ -152,7 +149,13 @@ pub fn LayoutCanvas() -> impl IntoView {
 
     let canvas_slot_ref = NodeRef::<leptos::html::Div>::new();
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
-    let (canvas_slot_size, set_canvas_slot_size) = signal((0.0_f64, 0.0_f64));
+    // The slot is measured as an element, not on window resize: a dragged
+    // splitter or a docked panel changes its shape with the window still.
+    let UseElementSizeReturn {
+        width: slot_width,
+        height: slot_height,
+    } = use_element_size(canvas_slot_ref);
+    let canvas_slot_size = Signal::derive(move || (slot_width.get(), slot_height.get()));
 
     // Active drag/resize runtime, owned by the pressing pointer —
     // non-reactive, accessed by pointer handlers and the RAF scheduler.
@@ -466,19 +469,6 @@ pub fn LayoutCanvas() -> impl IntoView {
     });
 
     let has_zones = Signal::derive(move || !zone_ids.get().is_empty());
-
-    canvas_slot_ref.on_load({
-        move |_| {
-            update_canvas_slot_size(canvas_slot_ref, set_canvas_slot_size);
-        }
-    });
-
-    // Leptos 0.8 never removes a window listener on its own: dropping the
-    // handle leaves the listener attached, so each mount must remove its own.
-    let resize_listener = window_event_listener(ev::resize, move |_| {
-        update_canvas_slot_size(canvas_slot_ref, set_canvas_slot_size);
-    });
-    on_cleanup(move || resize_listener.remove());
 
     // Settle an interaction the gesture has already handed back. A commit
     // writes the in-flight zones to the layout signal; a cancel repaints the

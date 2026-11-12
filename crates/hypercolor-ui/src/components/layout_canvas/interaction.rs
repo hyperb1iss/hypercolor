@@ -1,7 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::layout_geometry::{self, ResizeHandle, ResizeStart};
@@ -291,14 +290,4 @@ pub(super) fn pointer_to_normalized(
         ((f64::from(client_x) - rect.left()) / cw) as f32,
         ((f64::from(client_y) - rect.top()) / ch) as f32,
     ))
-}
-
-pub(super) fn update_canvas_slot_size(
-    canvas_slot_ref: NodeRef<leptos::html::Div>,
-    set_canvas_slot_size: WriteSignal<(f64, f64)>,
-) {
-    if let Some(slot) = canvas_slot_ref.try_get_untracked().flatten() {
-        let rect = slot.get_bounding_client_rect();
-        set_canvas_slot_size.set((rect.width(), rect.height()));
-    }
 }
