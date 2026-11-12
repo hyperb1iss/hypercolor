@@ -118,13 +118,17 @@ pub enum RuntimeSessionError {
         #[source]
         source: serde_json::Error,
     },
+    /// The file declares a schema a newer release wrote. It is a valid
+    /// session this build cannot read, not a damaged one, so a caller that
+    /// would go on to save a session of its own must stop instead.
     #[error(
-        "runtime snapshot at {path} declares schema {found}; this release reads schemas 0 \
-         through {newest}"
+        "runtime snapshot at {path} declares schema {found}, which a newer Hypercolor wrote; \
+         this release reads schemas 0 through {newest}. Upgrade Hypercolor, or restore the \
+         state directory from before the newer release ran. The file was not modified"
     )]
     UnsupportedSchema {
         path: PathBuf,
-        found: String,
+        found: u64,
         newest: u32,
     },
     #[error("failed to serialize runtime snapshot: {0}")]
@@ -221,13 +225,23 @@ fn read_document(path: &Path) -> Result<RuntimeSessionDocument, RuntimeSessionEr
     if let Some(object) = decoded.as_object_mut() {
         object.remove("global_brightness");
         if let Some(declared) = object.remove(SCHEMA_FIELD) {
-            schema = declared
+            // A version that is not a count is damage, the same as any
+            // other field of the wrong type. A count past this build's is
+            // a newer release's file.
+            let found = declared
                 .as_u64()
-                .and_then(|schema| u32::try_from(schema).ok())
+                .ok_or_else(|| RuntimeSessionError::Parse {
+                    path: path.to_path_buf(),
+                    source: serde::de::Error::custom(format!(
+                        "schema_version must be a non-negative integer, found {declared}"
+                    )),
+                })?;
+            schema = u32::try_from(found)
+                .ok()
                 .filter(|schema| *schema <= RUNTIME_SESSION_SCHEMA_VERSION)
                 .ok_or_else(|| RuntimeSessionError::UnsupportedSchema {
                     path: path.to_path_buf(),
-                    found: declared.to_string(),
+                    found,
                     newest: RUNTIME_SESSION_SCHEMA_VERSION,
                 })?;
         }
@@ -771,32 +785,67 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_from_a_newer_release_is_refused_and_left_alone() {
+    fn a_snapshot_from_a_newer_release_is_refused_by_name_and_left_alone() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("runtime-state.json");
-        for (declared, named) in [
-            (serde_json::json!(2), "schema 2"),
-            (serde_json::json!("1"), "schema \"1\""),
-            (serde_json::json!(-1), "schema -1"),
-            (serde_json::json!(1.5), "schema 1.5"),
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 2,
+            "active_scene_id": null,
+            "default_scene_zones": [],
+            "a_field_from_the_future": true,
+        }))
+        .expect("snapshot should serialize");
+        std::fs::write(&path, &payload).expect("snapshot should be written");
+
+        let error = load(&path).expect_err("a newer schema must be refused");
+        assert!(
+            matches!(
+                error,
+                RuntimeSessionError::UnsupportedSchema {
+                    found: 2,
+                    newest: 1,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("schema 2"), "{message}");
+        assert!(message.contains("newer Hypercolor"), "{message}");
+        assert!(message.contains("schemas 0 through 1"), "{message}");
+        assert_eq!(
+            std::fs::read(&path).expect("snapshot should read"),
+            payload,
+            "a refused snapshot is never rewritten"
+        );
+    }
+
+    #[test]
+    fn a_schema_version_that_is_not_a_count_is_damage_not_a_newer_release() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        for declared in [
+            serde_json::json!("1"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(null),
         ] {
             let payload = serde_json::to_vec(&serde_json::json!({
                 "schema_version": declared,
-                "active_scene_id": null,
                 "default_scene_zones": [],
-                "a_field_from_the_future": true,
             }))
             .expect("snapshot should serialize");
             std::fs::write(&path, &payload).expect("snapshot should be written");
 
-            let error = load(&path).expect_err("an unreadable schema must be refused");
+            let error = load(&path).expect_err("a malformed version must be refused");
             assert!(
-                matches!(error, RuntimeSessionError::UnsupportedSchema { .. }),
-                "{error:?}"
+                matches!(error, RuntimeSessionError::Parse { .. }),
+                "{declared}: {error:?}"
             );
-            let message = error.to_string();
-            assert!(message.contains(named), "{message}");
-            assert!(message.contains("schemas 0 through 1"), "{message}");
+            assert!(
+                error.to_string().contains("non-negative integer"),
+                "{error}"
+            );
             assert_eq!(
                 std::fs::read(&path).expect("snapshot should read"),
                 payload,

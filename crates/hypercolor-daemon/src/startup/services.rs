@@ -754,6 +754,17 @@ impl DaemonState {
                     );
                 snapshot
             }
+            // A session a newer release wrote is intact, and this daemon
+            // would replace it with its own at the next save. Refusing to
+            // start is the only way to leave it for the release that can
+            // read it, the same answer a newer scene store gets.
+            Err(error @ crate::runtime_state::RuntimeSessionError::UnsupportedSchema { .. }) => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "failed to load the runtime session from {}",
+                    runtime_state_path.display()
+                )));
+            }
+            // A damaged session costs one restore and never a startup.
             Err(error) => {
                 warn!(
                     path = %runtime_state_path.display(),

@@ -1872,6 +1872,97 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
 }
 
 #[tokio::test]
+async fn initialize_refuses_a_session_from_a_newer_release_without_overwriting_it() {
+    let guard = TestDataDirGuard::new();
+    std::fs::create_dir_all(
+        guard
+            .runtime_state_path()
+            .parent()
+            .expect("runtime state path has a parent"),
+    )
+    .expect("state directory should be created");
+    let newer = serde_json::json!({
+        "schema_version": 2,
+        "active_scene_id": null,
+        "default_scene_zones": [],
+        "written_by_a_newer_release": true,
+    })
+    .to_string();
+    std::fs::write(guard.runtime_state_path(), &newer).expect("newer session should be written");
+    let mut config = default_config();
+    config.daemon.start_scene = "last".into();
+    let temp = temp_config_file();
+
+    let Err(error) = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+        guard.host(),
+    ) else {
+        panic!("a daemon that would save over a newer session must not start");
+    };
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("failed to load the runtime session"),
+        "the startup error identifies the session: {message}"
+    );
+    assert!(message.contains("schema 2"), "{message}");
+    assert!(message.contains("newer Hypercolor"), "{message}");
+    assert_eq!(
+        std::fs::read_to_string(guard.runtime_state_path())
+            .expect("newer session should remain readable"),
+        newer,
+        "startup must leave the newer release's session for that release"
+    );
+}
+
+#[tokio::test]
+async fn a_session_with_a_malformed_schema_version_never_blocks_startup() {
+    let guard = TestDataDirGuard::new();
+    std::fs::create_dir_all(
+        guard
+            .runtime_state_path()
+            .parent()
+            .expect("runtime state path has a parent"),
+    )
+    .expect("state directory should be created");
+    // A version that is not a count is damage, like any unreadable field:
+    // the daemon logs it and starts fresh.
+    std::fs::write(
+        guard.runtime_state_path(),
+        serde_json::json!({
+            "schema_version": "two",
+            "active_scene_id": null,
+            "default_scene_zones": [],
+            "manual_paused": true,
+        })
+        .to_string(),
+    )
+    .expect("damaged session should be written");
+    let mut config = default_config();
+    config.daemon.start_scene = "last".into();
+    let temp = temp_config_file();
+
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+        guard.host(),
+    )
+    .expect("a damaged session must not block initialization");
+    state
+        .start()
+        .await
+        .expect("a damaged session must not block startup");
+
+    assert!(
+        !state.output_power.snapshot().manually_paused(),
+        "nothing from the damaged session was restored"
+    );
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn daemon_start_restores_persisted_active_layout_from_disk() {
     let guard = TestDataDirGuard::new();
     let mut layouts = std::collections::HashMap::new();
