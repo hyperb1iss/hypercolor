@@ -322,18 +322,42 @@ against the whole set:
 | --- | --- |
 | No scope | Stays in A, unchanged |
 | Every live id is in *M* | The layer moves to the top of B's stack, keeping its id, its relative order among moved layers, and its scope |
-| Some ids in *M*, some not | Stays in A; the ids in *M* are removed from its scope |
+| Some live ids in *M*, some not | Stays in A; the ids in *M* are removed from its scope |
 | No id in *M* | Unchanged |
+| No live id at all (the layer is already dormant) | Unchanged. An edit that moves other outputs never carries it |
+| Every live id leaves in the one edit, but to more than one zone | Stays in A with its scope intact and goes dormant. No one zone holds what it named, and removing every id would leave an empty scope |
+| Every live id is in *M*, but B already holds a layer with the same id, or an earlier layer with that id is carried to B by the same edit | Stays in A with its scope intact and goes dormant. Layer ids are unique within a zone, not across a scene, and a carry never overwrites or drops a layer |
 
 The rule is evaluated per edit, not per output: a two-output device moved
 together must carry a layer scoped to both. It runs in the member-edit
-transaction (`hypercolor-daemon/src/domain/scene_tree/member_edits.rs`), with
-`SceneManager::assign_output_to_zone` (`core/src/scene/mod.rs:957-1014`) as the
-one-output case. `EditMembersResponse`
-(`hypercolor-types/src/api/scene.rs:676-679`) gains an optional `layer_moves`
-list (layer id, source zone and index, destination zone and index, scope before
-and after), and `EditMembersRequest` accepts it back when replaying a receipt,
-so Studio's undo restores stack position and scope exactly.
+transaction (`hypercolor-daemon/src/domain/scene_tree/member_edits.rs`) and in
+`SceneManager::assign_outputs_to_zone`, which the device-segment route
+(`POST /scene/zones/{zone}/members`) calls once for all of a request's
+segments; `assign_output_to_zone` (`core/src/scene/mod.rs:957-1014`) is the
+one-output case.
+
+`EditMembersResponse` (`hypercolor-types/src/api/scene.rs:676-679`) gains a
+`layer_moves` list: one record per layer the edit moved or narrowed, with the
+layer id, its zone and index before and after, and its scope before and after.
+The response always carries the list, empty when nothing was carried, and its
+scopes are the sorted, unique scopes the edit committed.
+
+`EditMembersRequest` accepts `layer_moves` back when replaying a receipt, and
+the field's absence and its emptiness mean different things:
+
+- **Omitted:** the daemon applies the rule above.
+- **Present, including an empty list:** exactly those moves are applied and
+  the rule does not run. An empty list carries nothing. This is what lets an
+  undo restore a stack position and a narrowed scope, which the rule run in
+  reverse cannot do.
+
+A replayed move must find its layer at the slot it names with the scope it
+names, or the edit is refused as a conflict. It may widen a scope only to
+outputs its destination zone holds once the edit's outputs have moved, and it
+may not land a layer id a zone already uses. `layer_moves` is valid only beside
+explicit `changes`, never beside an `assignment` target. Reversing every
+record of a receipt (swap the two slots and the two scopes) and sending it
+with the reversed membership changes undoes the edit exactly.
 
 **R5. Leaving every zone keeps the scope.** When an output is unassigned
 (`core/src/scene/mod.rs:1016-1043`), when its device is forgotten, or when a
@@ -370,12 +394,21 @@ scoped layers.
   (`core/src/scene/mod.rs:561`, `:1482`, `:1893-1908`). It changes to replace
   the zone's **unscoped** layers with the one new layer and keep every scoped
   layer above it in its existing order, dormant ones included. For a zone with
-  no scoped layer this is today's behavior exactly.
-- **Clear** (`POST /scene/clear`) removes every layer except those whose scope
-  holds only screens. Clear is the "stop" gesture
+  no scoped layer this is today's behavior exactly. Setting a zone's color
+  (`SceneMutation::set_runtime_zone_color`) follows the same rule: the color
+  fill replaces the zone's unscoped layers and every scoped layer stays above
+  it.
+- **Clear** (`POST /scene/clear`) keeps a layer only when every id in its scope
+  is a live output of the zone and a screen. Every other layer is lighting and
+  is removed: an unscoped layer, a layer scoped to LED outputs, a layer scoped
+  to a screen and an LED output together, and a layer whose scope names an
+  output that has left the zone, whatever else it names. Which outputs are
+  screens is read from the zone's own layout. Clear is the "stop" gesture
   (`hypercolor-types/src/api/scene.rs:331`) and today it skips display zones
   (`scene_tree.rs:421-426`), so faces already survive it. A keyboard layer is
-  lighting and goes dark with the rest.
+  lighting and goes dark with the rest. The cost of one rule with no
+  exceptions is accepted: a face whose screen has been unassigned is dormant,
+  cannot be shown to be a face, and is removed by a clear.
 
 ### 4.5 REST, OpenAPI, MCP, events
 
@@ -431,6 +464,14 @@ covers every container that holds scene layers:
 
 This is one coordinated storage migration. It changes version numbers and no
 scene content.
+
+A restore left pending across a downgrade is outside this boundary: the
+restore journal holds the setup being restored, scene layers included, under
+its own version, and an older build recovers it without the scope. That is
+accepted because the only way to reach it is a crash inside one restore
+followed by a downgrade before the next start. A staged backup record is
+inside the boundary: it carries the backup's manifest, and an older build
+validates that manifest's schema before applying it.
 
 - **Downgrade.** An older build refuses all three files. Going back to it
   means restoring the data directory, or a backup, taken before the upgrade.
