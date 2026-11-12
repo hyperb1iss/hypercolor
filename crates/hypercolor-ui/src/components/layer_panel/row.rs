@@ -204,7 +204,7 @@ pub fn LayerRow(
     view! {
         <article
             class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 transition-[border-color,opacity] duration-150 hover:border-edge-subtle"
-            class=("opacity-45", move || recedes.get())
+            class=("opacity-50", move || recedes.get())
             class=("hover:opacity-100", move || recedes.get())
             style:border-color=move || {
                 answers_pointer
@@ -215,19 +215,21 @@ pub fn LayerRow(
             data-layer-recedes=move || recedes.get().to_string()
         >
             // ── Header: identity + ordering + delete ──────────────────
+            // A grid, so the line under the name runs the card's full width
+            // beneath the ordering buttons: a target's words need the room
+            // more than the buttons need the height.
             <div
-                class="flex items-center gap-2.5 px-3 py-2.5"
+                class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 px-3 py-2.5"
                 on:mouseenter=move |_| light(true)
                 on:mouseleave=move |_| light(false)
             >
                 <span
-                    class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+                    class="row-span-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
                     style=chip_style
                 >
                     <Icon icon=icon width="15px" height="15px" style=icon_style />
                 </span>
-                <div class="min-w-0 flex-1">
-                    <div class="flex items-center gap-1.5">
+                    <div class="flex min-w-0 items-center gap-1.5">
                         // A row the selection does not reach keeps its place
                         // and is marked, so the stack still reads in order.
                         <Show when=move || recedes.get()>
@@ -241,7 +243,7 @@ pub fn LayerRow(
                         </span>
                         {move || health_pill(health.get())}
                     </div>
-                    <div class="mt-0.5 flex min-w-0 items-center gap-1.5">
+                    <div class="col-span-2 col-start-2 row-start-2 flex min-w-0 items-center gap-1.5">
                         <span class="shrink-0 text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary/65">
                             {kind_word}
                         </span>
@@ -335,8 +337,7 @@ pub fn LayerRow(
                             })
                         }}
                     </div>
-                </div>
-                <div class="flex shrink-0 items-center gap-1">
+                <div class="col-start-3 row-start-1 flex shrink-0 items-center gap-1">
                     {let zone_id = zone_id.clone(); move || show_reorder()
                         .then(|| {
                             let zone_up = zone_id.clone();
