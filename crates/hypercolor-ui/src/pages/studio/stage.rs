@@ -32,7 +32,9 @@ use crate::ws::messages::zone_has_degraded_layer;
 
 use super::composition_panel::{COMPOSITION_PANEL_ID, COMPOSITION_TRIGGER_ID};
 use super::layer_target::PickBanner;
-use super::surface::{Surface, SurfaceKind, layer_label, now_playing, surfaces_from_zones};
+use super::surface::{
+    Surface, SurfaceKind, featured_layer, layer_label, now_playing, surfaces_from_zones,
+};
 use super::{StudioContext, hidden_outputs_storage_key};
 
 /// The longer side of a Screen's face preview on the Stage, in CSS pixels.
@@ -453,13 +455,14 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
         // the bare word "Effect".
         if let Some(current) = surface.as_mut()
             && let Some(caption) = studio.active_scene.with(|scene| {
-                let top = scene
-                    .as_ref()?
-                    .zones
-                    .iter()
-                    .find(|zone| zone.id.to_string() == current.id)?
-                    .layers
-                    .last()?;
+                let top = featured_layer(
+                    &scene
+                        .as_ref()?
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == current.id)?
+                        .layers,
+                )?;
                 let effect_name = match &top.source {
                     LayerSource::Effect { effect_id, .. } => {
                         let effect_id = effect_id.to_string();

@@ -257,3 +257,61 @@ fn selected_screen_device_id_resolves_only_bound_display_zones() {
     );
     assert_eq!(selected_screen_device_id(&zones, "missing"), None);
 }
+
+// ── The layer a zone is known by ─────────────────────────────────────────
+
+fn effect_layer(name: &str, scope: Option<&[&str]>) -> hypercolor_types::layer::SceneLayer {
+    let mut layer = hypercolor_types::layer::SceneLayer::from_effect(
+        hypercolor_types::layer::SceneLayerId::new(),
+        hypercolor_types::effect::EffectId::new(uuid::Uuid::new_v4()),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+        None,
+    );
+    layer.name = Some(name.to_owned());
+    layer.scope = scope.map(|ids| hypercolor_types::layer::LayerScope {
+        outputs: ids.iter().map(|id| (*id).to_owned()).collect(),
+    });
+    layer
+}
+
+#[test]
+fn a_zone_is_known_by_its_whole_zone_layer_not_one_on_a_single_device() {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    zone.layers = vec![
+        effect_layer("Bubbles", None),
+        effect_layer("Ripples", Some(&["keys"])),
+    ];
+
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer.as_deref(), Some("Bubbles"));
+
+    let bubbles = zone.layers[0].clone();
+    let known = hypercolor_ui::api::zone_effect(&zone).expect("the zone plays an effect");
+    match &bubbles.source {
+        hypercolor_types::layer::LayerSource::Effect { effect_id, .. } => {
+            assert_eq!(known.effect_id, *effect_id);
+        }
+        other => panic!("expected an effect layer, found {other:?}"),
+    }
+}
+
+#[test]
+fn stacked_whole_zone_layers_are_still_known_by_the_top_one() {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    zone.layers = vec![effect_layer("Bubbles", None), effect_layer("Haze", None)];
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer.as_deref(), Some("Haze"));
+}
+
+#[test]
+fn a_zone_with_only_limited_layers_is_known_by_the_top_of_them() {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    zone.layers = vec![
+        effect_layer("Ripples", Some(&["keys"])),
+        effect_layer("Glow", Some(&["mouse"])),
+    ];
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer.as_deref(), Some("Glow"));
+    assert!(hypercolor_ui::api::zone_effect(&zone).is_some());
+}

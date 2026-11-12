@@ -337,7 +337,7 @@ fn effect_target(scene: &SceneDocument) -> Option<EffectTarget> {
 fn effect_target_in_zone(
     zone: &hypercolor_types::api::scene::ZoneResource,
 ) -> Option<EffectTarget> {
-    zone.layers.iter().rev().find_map(|layer| {
+    super::zone_effect_layer(&zone.layers).and_then(|layer| {
         let LayerSource::Effect {
             effect_id: current_effect_id,
             controls,

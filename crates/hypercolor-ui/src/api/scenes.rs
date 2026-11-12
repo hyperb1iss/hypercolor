@@ -3,7 +3,7 @@
 pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::LayerSource;
+use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::SceneMutationMode;
 use hypercolor_types::spatial::Output;
@@ -16,7 +16,7 @@ pub use hypercolor_types::api::scenes::{
     SnapshotSceneRequest,
 };
 
-/// The selected topmost effect layer inside one canonical zone resource.
+/// The effect layer a zone is known by (see [`zone_effect`]).
 #[derive(Debug, Clone, Copy)]
 pub struct ZoneEffectRef<'a> {
     pub effect_id: EffectId,
@@ -40,9 +40,13 @@ pub async fn deactivate_scene() -> ApiResult<()> {
     client::post_empty("/api/v1/scene/deactivate").await
 }
 
+/// The effect a zone plays: its topmost effect layer that covers the
+/// whole zone, which is the one an apply replaces. A layer limited to some
+/// outputs sits above it and is not the zone's effect; only a zone with no
+/// whole-zone effect at all is known by its topmost effect layer.
 #[must_use]
 pub fn zone_effect(zone: &ZoneResource) -> Option<ZoneEffectRef<'_>> {
-    zone.layers.iter().rev().find_map(|layer| {
+    zone_effect_layer(&zone.layers).and_then(|layer| {
         let LayerSource::Effect {
             effect_id,
             controls,
@@ -58,6 +62,20 @@ pub fn zone_effect(zone: &ZoneResource) -> Option<ZoneEffectRef<'_>> {
             preset_id: *preset_id,
         })
     })
+}
+
+/// The layer [`zone_effect`] reads.
+#[must_use]
+pub fn zone_effect_layer(layers: &[SceneLayer]) -> Option<&SceneLayer> {
+    let effects = || {
+        layers
+            .iter()
+            .rev()
+            .filter(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    };
+    effects()
+        .find(|layer| layer.scope.is_none())
+        .or_else(|| effects().next())
 }
 
 /// Select editor-facing outputs from canonical members and placements.
