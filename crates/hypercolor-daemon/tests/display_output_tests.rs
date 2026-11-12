@@ -4649,6 +4649,84 @@ async fn automatic_display_output_turns_with_the_device_mount_rotation() {
     thread.shutdown().await.expect("display thread should stop");
 }
 
+/// A screen turned down to zero goes black whatever its lane holds. A frame
+/// the render thread finalized carries the brightness it was finalized at,
+/// and one from before the panel was turned down is still bright.
+#[tokio::test]
+async fn zero_brightness_screen_goes_black_over_a_frame_finalized_bright() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+    let _ = device_registry
+        .update_user_settings(&device_id, None, None, Some(0.0), None)
+        .await;
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    // The lane holds a backdrop finalized while the panel was still lit.
+    let lane = screen_backdrop_lane_id(device_id);
+    event_bus.upsert_display_zone_target(
+        lane,
+        DisplayZoneTarget {
+            device_id,
+            blend_mode: BlendMode::Replace,
+            opacity: 1.0,
+            finalized: true,
+        },
+    );
+    let bright = solid_canvas(Rgba::new(255, 255, 255, 255));
+    event_bus
+        .zone_canvas_sender(lane)
+        .send_replace(DisplayZoneFrame::Canvas(CanvasFrame::from_canvas(
+            &bright, 1, 16,
+        )));
+
+    let writes = wait_for_display_write_count(&display_writes, 1).await;
+    let shown = decode_jpeg(&writes[0]);
+    let brightest = shown
+        .pixels()
+        .map(|pixel| pixel.0[0].max(pixel.0[1]).max(pixel.0[2]))
+        .max()
+        .unwrap_or(0);
+    assert!(
+        brightest <= 8,
+        "a screen at zero brightness was sent a lit frame: brightest channel {brightest}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
 #[tokio::test]
 async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let _guard = display_output_test_guard().await;

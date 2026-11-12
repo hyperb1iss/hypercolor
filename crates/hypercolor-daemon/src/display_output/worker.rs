@@ -452,6 +452,9 @@ async fn run_display_worker(
     let mut delivered_frame_number = 0_u64;
     let mut last_delivered_payload = None::<Arc<OwnedDisplayFramePayload>>;
     let mut last_delivered_preview_jpeg = None::<Arc<Vec<u8>>>;
+    // Whether a screen at zero brightness has been sent its black frame.
+    // Until it has, nothing is skipped: the panel may still be lit.
+    let mut dark_delivered = false;
 
     'worker: loop {
         if pending.is_none() {
@@ -558,7 +561,7 @@ async fn run_display_worker(
         let input_matches = last_delivered_input
             .as_ref()
             .is_some_and(|previous| previous.matches(&frames, &target));
-        if zero_brightness_output && !force_send && last_delivered_payload.is_some() {
+        if zero_brightness_output && !force_send && dark_delivered {
             trace!(
                 device = %target.name,
                 backend_id = %backend_key,
@@ -568,7 +571,7 @@ async fn run_display_worker(
             );
             continue;
         }
-        if input_matches && !force_send {
+        if input_matches && !force_send && (!zero_brightness_output || dark_delivered) {
             trace!(
                 device = %target.name,
                 backend_id = %backend_key,
@@ -580,6 +583,7 @@ async fn run_display_worker(
         }
         if force_send
             && (input_matches || zero_brightness_output)
+            && (!zero_brightness_output || dark_delivered)
             && let Some(payload) = last_delivered_payload.as_ref()
         {
             if let Some(preview_jpeg) =
@@ -619,14 +623,27 @@ async fn run_display_worker(
         let encode_started = Instant::now();
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
-            let encoded = encode_source_frame(
-                encode_source,
-                &geometry,
-                brightness,
-                frame_format,
-                include_preview_jpeg,
-                &mut encode_state,
-            );
+            // A frame finalized for the panel carries the brightness it was
+            // finalized at, and a lane can still hold one from before the
+            // panel was turned down. At zero brightness the answer is black
+            // whatever arrived.
+            let encoded = if zero_brightness_output {
+                super::encode::encode_black_frame(
+                    &geometry,
+                    frame_format,
+                    include_preview_jpeg,
+                    &mut encode_state,
+                )
+            } else {
+                encode_source_frame(
+                    encode_source,
+                    &geometry,
+                    brightness,
+                    frame_format,
+                    include_preview_jpeg,
+                    &mut encode_state,
+                )
+            };
             (encode_state, encoded)
         })
         .await;
@@ -707,6 +724,7 @@ async fn run_display_worker(
             continue;
         }
         record_display_write_success(&display_frames).await;
+        dark_delivered = zero_brightness_output;
         last_delivered_input = Some(DisplayFrameInputState::capture(&frames, &target));
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,

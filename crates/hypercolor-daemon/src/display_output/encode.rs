@@ -286,6 +286,18 @@ pub(super) fn encode_finalized_yuv420_frame(
     })
 }
 
+/// Encode a black frame for the panel: what a screen at zero brightness
+/// shows, whatever its lane holds.
+pub(super) fn encode_black_frame(
+    geometry: &DisplayGeometry,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    prepare_black_frame(geometry, &mut encode_state.rgb_buffer);
+    finish_rgb_frame(geometry, frame_format, include_preview_jpeg, encode_state)
+}
+
 fn render_canvas_frame_rgba(
     source: &CanvasFrame,
     viewport: &DisplayViewport,
