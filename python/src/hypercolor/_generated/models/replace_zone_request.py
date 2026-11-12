@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     )
     from ..models.zone_layout_resource import ZoneLayoutResource
     from ..models.zone_member import ZoneMember
+    from ..models.zone_view_of import ZoneViewOf
 
 
 T = TypeVar("T", bound="ReplaceZoneRequest")
@@ -35,6 +36,7 @@ class ReplaceZoneRequest:
         layout (None | Unset | ZoneLayoutResource):
         members (list[ZoneMember] | Unset):
         role (str | Unset):
+        view_of (None | Unset | ZoneViewOf):
     """
 
     brightness: float
@@ -48,12 +50,14 @@ class ReplaceZoneRequest:
     layout: None | Unset | ZoneLayoutResource = UNSET
     members: list[ZoneMember] | Unset = UNSET
     role: str | Unset = UNSET
+    view_of: None | Unset | ZoneViewOf = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.replace_zone_request_display_target_type_0 import (
             ReplaceZoneRequestDisplayTargetType0,
         )
         from ..models.zone_layout_resource import ZoneLayoutResource
+        from ..models.zone_view_of import ZoneViewOf
 
         brightness = self.brightness
 
@@ -111,6 +115,14 @@ class ReplaceZoneRequest:
 
         role = self.role
 
+        view_of: dict[str, Any] | None | Unset
+        if isinstance(self.view_of, Unset):
+            view_of = UNSET
+        elif isinstance(self.view_of, ZoneViewOf):
+            view_of = self.view_of.to_dict()
+        else:
+            view_of = self.view_of
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -136,6 +148,8 @@ class ReplaceZoneRequest:
             field_dict["members"] = members
         if role is not UNSET:
             field_dict["role"] = role
+        if view_of is not UNSET:
+            field_dict["view_of"] = view_of
 
         return field_dict
 
@@ -149,6 +163,7 @@ class ReplaceZoneRequest:
         )
         from ..models.zone_layout_resource import ZoneLayoutResource
         from ..models.zone_member import ZoneMember
+        from ..models.zone_view_of import ZoneViewOf
 
         d = dict(src_dict)
         brightness = d.pop("brightness")
@@ -242,6 +257,23 @@ class ReplaceZoneRequest:
 
         role = d.pop("role", UNSET)
 
+        def _parse_view_of(data: object) -> None | Unset | ZoneViewOf:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                view_of_type_0 = ZoneViewOf.from_dict(data)
+
+                return view_of_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | ZoneViewOf, data)
+
+        view_of = _parse_view_of(d.pop("view_of", UNSET))
+
         replace_zone_request = cls(
             brightness=brightness,
             enabled=enabled,
@@ -254,6 +286,7 @@ class ReplaceZoneRequest:
             layout=layout,
             members=members,
             role=role,
+            view_of=view_of,
         )
 
         return replace_zone_request

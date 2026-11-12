@@ -249,10 +249,11 @@ display API.
 
 {% <api_endpoint method="PUT" path="/api/v1/displays/{id}/face"> %}
 Assign or clear an HTML face on a display device. The `scope` field is
-`"default"` (the default) or `"scene"`. A `default` assignment persists
-across scene switches; a `scene` assignment writes the active scene's
-display zone, which always wins over the stored default while that scene
-is active. See the [REST reference](@/api/rest.md) for the request body
+`"default"` (the default) or `"scene"`. A `scene` assignment makes the
+face a layer of the active scene, scoped to the screen, in the zone that
+places it. A `default` assignment is a kept face that shows in every scene
+that leaves the screen alone; it is deprecated in favor of screen layers
+and keeps working through 1.x. See the [REST reference](@/api/rest.md) for the request body
 and the envelope.
 {% </api_endpoint> %}
 
