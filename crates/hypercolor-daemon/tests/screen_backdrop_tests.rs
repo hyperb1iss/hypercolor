@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::bus::{DisplayZoneViewport, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -1590,6 +1590,28 @@ struct FixtureScreen {
     device_id: DeviceId,
     /// Whether the device also drives LEDs.
     has_led_segments: bool,
+    /// The viewport display output took from the spatial service's layout
+    /// for this screen while every screen cropped one scene canvas. It is
+    /// written out as numbers, not computed, so the resolver under test is
+    /// never checked against itself.
+    expected: Option<DisplayZoneViewport>,
+}
+
+/// A frozen viewport: position, size, rotation, scale and edge behavior.
+fn frozen(
+    position: (f32, f32),
+    size: (f32, f32),
+    rotation: f32,
+    scale: f32,
+    edge_behavior: EdgeBehavior,
+) -> DisplayZoneViewport {
+    DisplayZoneViewport {
+        position: NormalizedPosition::new(position.0, position.1),
+        size: NormalizedPosition::new(size.0, size.1),
+        rotation,
+        scale,
+        edge_behavior,
+    }
 }
 
 /// A layout with the screens it should be asked about, placed or not.
@@ -1629,6 +1651,13 @@ fn layout_fixtures() -> Vec<LayoutFixture> {
         screens: vec![FixtureScreen {
             device_id: pump.device_id,
             has_led_segments: false,
+            expected: Some(frozen(
+                (0.755, 0.6),
+                (0.115, 0.117),
+                0.0,
+                1.0,
+                EdgeBehavior::Clamp,
+            )),
         }],
     });
 
@@ -1661,13 +1690,45 @@ fn layout_fixtures() -> Vec<LayoutFixture> {
             logical("lcd-2", two.device_id),
             logical("lcd-3", three.device_id),
         ]),
-        screens: [&one, &two, &three]
-            .into_iter()
-            .map(|screen| FixtureScreen {
-                device_id: screen.device_id,
-                has_led_segments: false,
-            })
-            .collect(),
+        screens: [
+            (
+                &one,
+                Some(frozen(
+                    (0.2, 0.25),
+                    (0.125, 0.127),
+                    std::f32::consts::FRAC_PI_2,
+                    1.0,
+                    EdgeBehavior::Clamp,
+                )),
+            ),
+            (
+                &two,
+                Some(frozen(
+                    (0.2, 0.5),
+                    (0.125, 0.127),
+                    0.3,
+                    1.5,
+                    EdgeBehavior::Mirror,
+                )),
+            ),
+            (
+                &three,
+                Some(frozen(
+                    (0.2, 0.75),
+                    (0.125, 0.127),
+                    -0.7,
+                    0.5,
+                    EdgeBehavior::FadeToBlack { falloff: 0.25 },
+                )),
+            ),
+        ]
+        .into_iter()
+        .map(|(screen, expected)| FixtureScreen {
+            device_id: screen.device_id,
+            has_led_segments: false,
+            expected,
+        })
+        .collect(),
     });
 
     // A device laid out as one whole-device box, with no screen box.
@@ -1681,6 +1742,13 @@ fn layout_fixtures() -> Vec<LayoutFixture> {
         screens: vec![FixtureScreen {
             device_id: whole,
             has_led_segments: false,
+            expected: Some(frozen(
+                (0.4, 0.4),
+                (0.3, 0.2),
+                0.0,
+                1.0,
+                EdgeBehavior::Clamp,
+            )),
         }],
     });
 
@@ -1699,10 +1767,24 @@ fn layout_fixtures() -> Vec<LayoutFixture> {
             FixtureScreen {
                 device_id: mixed,
                 has_led_segments: true,
+                expected: Some(frozen(
+                    (0.5, 0.5),
+                    (1.0, 1.0),
+                    0.0,
+                    1.0,
+                    EdgeBehavior::Clamp,
+                )),
             },
             FixtureScreen {
                 device_id: mixed,
                 has_led_segments: false,
+                expected: Some(frozen(
+                    (0.3, 0.7),
+                    (0.2, 0.2),
+                    0.0,
+                    1.0,
+                    EdgeBehavior::Clamp,
+                )),
             },
         ],
     });
@@ -1716,6 +1798,7 @@ fn layout_fixtures() -> Vec<LayoutFixture> {
         screens: vec![FixtureScreen {
             device_id: absent,
             has_led_segments: false,
+            expected: None,
         }],
     });
     fixtures.push(LayoutFixture {
@@ -1725,6 +1808,7 @@ fn layout_fixtures() -> Vec<LayoutFixture> {
         screens: vec![FixtureScreen {
             device_id: DeviceId::new(),
             has_led_segments: false,
+            expected: None,
         }],
     });
 
@@ -1747,11 +1831,13 @@ fn split_zones(layout: &SpatialLayout, claimed: &[String]) -> Vec<Zone> {
 }
 
 /// For every fixture layout, the viewport taken from the zone that places a
-/// screen equals the one taken from the spatial service's layout: in a
-/// scene whose one zone follows the layout, and in a scene that splits the
-/// layout's outputs between two zones.
+/// screen is the one display output took from the spatial service's layout
+/// before: in a scene whose one zone follows the layout, and in scenes that
+/// split the layout's outputs between two zones. Both are held to the
+/// frozen numbers, so a mistake the two share cannot pass.
 #[test]
 fn owning_zone_viewport_equals_the_spatial_service_viewport_for_every_fixture_layout() {
+    let mut placed = 0;
     for fixture in layout_fixtures() {
         let spatial = SpatialService::new(SpatialEngine::new(fixture.layout.clone()));
         // A scene with no custom zone: its primary zone follows the layout.
@@ -1779,21 +1865,24 @@ fn owning_zone_viewport_equals_the_spatial_service_viewport_for_every_fixture_la
         ];
 
         for screen in &fixture.screens {
-            let from_spatial = screen_viewport_in_layout(
-                spatial.layout().as_ref(),
-                &layout_ids(&fixture.logical_devices, screen.device_id),
-                screen.has_led_segments,
-            );
-            for (scene, zones) in &scenes {
-                let placement = screen_placement(
-                    zones,
-                    &layout_ids(&fixture.logical_devices, screen.device_id),
+            let layout_ids = layout_ids(&fixture.logical_devices, screen.device_id);
+            assert_eq!(
+                screen_viewport_in_layout(
+                    spatial.layout().as_ref(),
+                    &layout_ids,
                     screen.has_led_segments,
-                );
+                ),
+                screen.expected,
+                "{}: the spatial service's layout gives another viewport",
+                fixture.name
+            );
+            placed += usize::from(screen.expected.is_some());
+            for (scene, zones) in &scenes {
+                let placement = screen_placement(zones, &layout_ids, screen.has_led_segments);
                 assert_eq!(
                     placement.map(|placement| placement.viewport),
-                    from_spatial,
-                    "{} ({scene}): the owning zone and the spatial service disagree",
+                    screen.expected,
+                    "{} ({scene}): the owning zone gives another viewport",
                     fixture.name
                 );
                 if let Some(placement) = placement {
@@ -1801,13 +1890,13 @@ fn owning_zone_viewport_equals_the_spatial_service_viewport_for_every_fixture_la
                         .iter()
                         .find(|zone| zone.id == placement.zone_id)
                         .expect("the placing zone is one of the scene's zones");
-                    assert!(
+                    assert_eq!(
                         screen_viewport_in_layout(
                             &owner.layout,
-                            &layout_ids(&fixture.logical_devices, screen.device_id),
+                            &layout_ids,
                             screen.has_led_segments
-                        )
-                        .is_some(),
+                        ),
+                        screen.expected,
                         "{} ({scene}): the placing zone should hold the screen",
                         fixture.name
                     );
@@ -1815,6 +1904,7 @@ fn owning_zone_viewport_equals_the_spatial_service_viewport_for_every_fixture_la
             }
         }
     }
+    assert_eq!(placed, 7, "the fixtures place seven screens");
 }
 
 /// The two differ in exactly one situation: a zone moves a screen on its own
