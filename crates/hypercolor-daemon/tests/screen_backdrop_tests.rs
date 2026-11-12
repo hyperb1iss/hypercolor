@@ -419,7 +419,7 @@ struct Rig {
     writes: PanelWrites,
     effects: Effects,
     /// The power policy. Display workers stop when its sender goes away.
-    _power: watch::Sender<OutputPowerState>,
+    power: watch::Sender<OutputPowerState>,
 }
 
 impl Rig {
@@ -492,7 +492,7 @@ impl Rig {
             logical_devices: Arc::new(RwLock::new(HashMap::new())),
             writes,
             effects,
-            _power: power,
+            power,
         }
     }
 
@@ -1506,6 +1506,50 @@ async fn cpu_screen_connected_while_idle_gets_its_backdrop() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gpu_screen_connected_while_idle_gets_its_backdrop() {
     screen_connected_while_idle_gets_its_backdrop(RenderAccelerationMode::Gpu).await;
+}
+
+/// Output stopped for the session takes a placed screen dark with the LEDs.
+/// The frame that clears the output composes no scene, so it has to carry
+/// the screens' black itself.
+async fn stopped_output_takes_a_placed_screen_dark(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("stopped").await;
+    let zones = vec![scene_zone(
+        "Red",
+        ZoneRole::Primary,
+        vec![rig.effects.solid(RED)],
+        vec![
+            strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
+            screen.output((0.5, 0.5), (0.4, 0.4)),
+        ],
+    )];
+
+    let running = rig.run(zones).await;
+    rig.writes
+        .wait_for(screen.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    rig.power.send_modify(|power| {
+        power.output_override = hypercolor_daemon::output_power::OutputOverride::Stopped;
+    });
+    rig.writes
+        .wait_for(screen.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_stopped_output_takes_a_placed_screen_dark() {
+    stopped_output_takes_a_placed_screen_dark(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_stopped_output_takes_a_placed_screen_dark() {
+    stopped_output_takes_a_placed_screen_dark(RenderAccelerationMode::Gpu).await;
 }
 
 // ── Viewports: the owning zone against the spatial service ────────────────

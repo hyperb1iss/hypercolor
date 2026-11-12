@@ -87,6 +87,36 @@ pub(super) fn place_screens(
     screens
 }
 
+/// The display lanes of a frame that composes no scene: every screen `zones`
+/// place shows `black`, and no face is live.
+pub(super) fn dark_backdrop_lanes(
+    routes: &HashMap<DeviceId, ScreenBackdropRoute>,
+    zones: &[Zone],
+    black: &PublishedSurface,
+) -> MaterializedDisplayLanes {
+    let screens = place_screens(routes, zones);
+    MaterializedDisplayLanes {
+        active_lane_ids: screens
+            .iter()
+            .map(|screen| screen_backdrop_lane_id(screen.device_id))
+            .collect(),
+        // Black is the same picture at any size, so it goes out as a
+        // finished frame for each worker to fit to its panel.
+        frames: screens
+            .iter()
+            .map(|screen| {
+                (
+                    screen_backdrop_lane_id(screen.device_id),
+                    DisplayZoneCanvasFrame {
+                        frame: DisplayZoneFrame::from_surface(black.clone()),
+                        display_target: backdrop_lane_target(screen.device_id, true),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 /// Where each placed screen's backdrop comes from this frame.
 ///
 /// A screen's backdrop is the frame of the zone that places it, seen through

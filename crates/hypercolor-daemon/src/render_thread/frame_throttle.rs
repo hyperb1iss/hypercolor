@@ -8,6 +8,7 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
+use super::display_lane::dark_backdrop_lanes;
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ThrottleFrameMetricsInput, build_throttle_frame_metrics};
 use super::frame_policy::{FrameExecution, FramePolicy};
@@ -102,6 +103,15 @@ pub(crate) async fn maybe_sleep_throttle(
         // The sleep renders nothing after this frame, so the scene previews
         // take it now rather than when their cadence next comes due.
         publication_cadence.make_scene_previews_due();
+        // No scene composes here, so this frame carries the screens' black
+        // itself. Publishing no lanes would drop them and leave each placed
+        // screen on its last picture.
+        let (_, screen_routes) = state.event_bus.screen_backdrop_routes_snapshot();
+        let dark_lanes = dark_backdrop_lanes(
+            &screen_routes,
+            &scene_snapshot.scene_runtime.resolved_zones,
+            &surface,
+        );
         let publish_stats = publish_frame_updates(
             state,
             publication_cadence,
@@ -117,9 +127,9 @@ pub(crate) async fn maybe_sleep_throttle(
                     screen_capture_active: false,
                 },
                 scene_id: scene_snapshot.scene_runtime.active_scene_id,
-                display_zone_frames: &[],
+                display_zone_frames: &dark_lanes.frames,
                 zone_canvases: &[],
-                active_display_zone_ids: &[],
+                active_display_zone_ids: &dark_lanes.active_lane_ids,
                 frame_number: frame_num_u32,
                 elapsed_ms: scene_snapshot.elapsed_ms,
                 reuse_existing_frame: false,
