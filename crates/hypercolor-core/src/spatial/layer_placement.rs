@@ -390,22 +390,28 @@ impl LayerPlacement {
         .finite()
     }
 
-    /// The placement of a zone-sized source seen through `frame`: each zone
-    /// pixel inside the frame shows the source pixel at its own position,
-    /// and nothing shows outside it.
+    /// The placement of a picture of the whole canvas seen through `frame`:
+    /// each pixel of a `target_size` canvas inside the frame shows the
+    /// source at its own normalized position, and nothing shows outside it.
+    /// The source may be another size than the target; the frame sits at
+    /// the same normalized place on both.
     ///
     /// `None` when the frame is degenerate.
     #[must_use]
-    pub fn window(frame: &LayerFrame, zone_size: (u32, u32)) -> Option<Self> {
-        let zone_to_frame = frame.zone_to_frame(zone_size)?;
-        let (edge_x, edge_y) = frame.pixel_edges(zone_size)?;
+    pub fn window(
+        frame: &LayerFrame,
+        source_size: (u32, u32),
+        target_size: (u32, u32),
+    ) -> Option<Self> {
+        let zone_to_frame = frame.zone_to_frame(target_size)?;
+        let (edge_x, edge_y) = frame.pixel_edges(source_size)?;
         let center = [
-            frame.center.x * to_f32(zone_size.0),
-            frame.center.y * to_f32(zone_size.1),
+            frame.center.x * to_f32(source_size.0),
+            frame.center.y * to_f32(source_size.1),
         ];
         Self {
             zone_to_frame,
-            // Frame units back to the zone pixel they came from.
+            // Frame units to the source pixel at the same normalized point.
             frame_to_source: [
                 edge_x[0],
                 edge_y[0],
@@ -414,9 +420,9 @@ impl LayerPlacement {
                 edge_y[1],
                 center[1] - f32::midpoint(edge_x[1], edge_y[1]),
             ],
-            source_crop: [0.0, 0.0, to_f32(zone_size.0), to_f32(zone_size.1)],
+            source_crop: [0.0, 0.0, to_f32(source_size.0), to_f32(source_size.1)],
             repeat: SourceRepeat::None,
-            source_size: [zone_size.0, zone_size.1],
+            source_size: [source_size.0, source_size.1],
             edge: FrameEdge::Clip,
         }
         .finite()

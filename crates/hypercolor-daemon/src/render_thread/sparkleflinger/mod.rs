@@ -105,7 +105,6 @@ pub(crate) struct CompositionTransform {
     pub(crate) scale: [f32; 2],
     pub(crate) rotation: f32,
     pub(crate) fit: FitMode,
-    pub(crate) sample_target_space: bool,
 }
 
 impl CompositionTransform {
@@ -121,7 +120,6 @@ impl Default for CompositionTransform {
             scale: [1.0, 1.0],
             rotation: 0.0,
             fit: FitMode::Cover,
-            sample_target_space: false,
         }
     }
 }
@@ -134,7 +132,6 @@ impl From<LayerTransform> for CompositionTransform {
             scale: value.scale,
             rotation: value.rotation,
             fit: value.fit,
-            sample_target_space: false,
         }
     }
 }

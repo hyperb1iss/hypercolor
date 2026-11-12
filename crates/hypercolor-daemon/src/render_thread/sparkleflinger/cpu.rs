@@ -84,7 +84,6 @@ struct CachedCpuCompositionTransform {
     scale_y_bits: u32,
     rotation_bits: u32,
     fit: hypercolor_types::viewport::FitMode,
-    sample_target_space: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,7 +541,6 @@ fn cached_transform(transform: super::CompositionTransform) -> CachedCpuComposit
         scale_y_bits: transform.scale[1].to_bits(),
         rotation_bits: transform.rotation.to_bits(),
         fit: transform.fit,
-        sample_target_space: transform.sample_target_space,
     }
 }
 

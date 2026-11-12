@@ -1,16 +1,17 @@
 use std::collections::{HashMap, TryReserveError};
 use std::sync::Arc;
 
-use hypercolor_core::spatial::{is_led_sampled_zone, sample_canvas_position};
+use hypercolor_core::spatial::{
+    LayerFrame, LayerPlacement, is_led_sampled_zone, sample_canvas_position,
+};
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::scene::{Zone, ZoneId};
 use hypercolor_types::spatial::{
     EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
-use hypercolor_types::viewport::FitMode;
 
 use super::super::producer_queue::ProducerFrame;
-use super::super::sparkleflinger::{CompositionLayer, CompositionTransform};
+use super::super::sparkleflinger::CompositionLayer;
 use super::scope_classes::{ZoneClassKey, ZoneScopeClasses, multi_class};
 use super::zone_state::zone_contributes_to_scene_canvas;
 
@@ -27,6 +28,11 @@ pub(super) struct CachedOutputProjection {
     sampling_mode: SamplingMode,
     edge_behavior: EdgeBehavior,
     pub(super) bounds: Option<ProjectionBounds>,
+    /// Where the output's box sits on the scene canvas, and the point of
+    /// its zone's frame each pixel of it shows. Both rasters draw through
+    /// it: the compositor takes the placement, and the CPU raster steps the
+    /// same affine across its rows.
+    window: Option<LayerPlacement>,
     affine: Option<ProjectionAffine>,
 }
 
@@ -89,13 +95,14 @@ impl ProjectionStratum {
     }
 }
 
+/// A window's affine from scene pixels to the output's own unit square,
+/// laid out for stepping along a row: the value at the first pixel's
+/// centre, and what one pixel across or down adds.
 #[derive(Debug, Clone, Copy)]
 struct ProjectionAffine {
-    local_origin: [f32; 2],
-    local_x_step: [f32; 2],
-    local_y_step: [f32; 2],
-    cos: f32,
-    sin: f32,
+    origin: [f32; 2],
+    x_step: [f32; 2],
+    y_step: [f32; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,26 +310,16 @@ pub(super) fn append_projection_composition_layers_for_zone<'frame>(
         "display layers must start within the projected scene layers"
     );
     let mut led_insert_at = (*display_layer_start).min(layers.len());
-    for (index, output) in projection
+    for (index, output, window) in projection
         .zones
         .iter()
         .enumerate()
-        .filter(|(_, output)| output.affine.is_some())
+        .filter_map(|(index, output)| Some((index, output, output.window?)))
     {
         let Some(frame) = output_frame(index) else {
             continue;
         };
-        let layer =
-            CompositionLayer::alpha(frame.clone(), 1.0).with_transform(CompositionTransform {
-                anchor: output.zone.position,
-                scale: [
-                    output.zone.size.x * output.zone.scale,
-                    output.zone.size.y * output.zone.scale,
-                ],
-                rotation: output.zone.rotation,
-                fit: FitMode::Stretch,
-                sample_target_space: true,
-            });
+        let layer = CompositionLayer::replace(frame.clone()).with_placement(window);
         match output.stratum {
             ProjectionStratum::Led => {
                 layers.insert(led_insert_at, layer);
@@ -454,14 +451,21 @@ fn build_output_projection(
         .clone()
         .unwrap_or_else(|| layout.default_sampling_mode.clone());
     let edge_behavior = zone.edge_behavior.unwrap_or(layout.default_edge_behavior);
-    let affine = ProjectionAffine::new(zone, target_width, target_height);
+    let window = LayerFrame::of_output(zone).and_then(|frame| {
+        LayerPlacement::window(
+            &frame,
+            (layout.canvas_width, layout.canvas_height),
+            (target_width, target_height),
+        )
+    });
+    let affine = window.as_ref().map(ProjectionAffine::of);
     CachedOutputProjection {
         zone: zone.clone(),
         stratum: ProjectionStratum::of(zone),
         sampling_mode,
         edge_behavior,
-        bounds: affine
-            .and_then(|affine| zone_projection_bounds(zone, target_width, target_height, affine)),
+        bounds: affine.and_then(|_| zone_projection_bounds(zone, target_width, target_height)),
+        window,
         affine,
     }
 }
@@ -514,8 +518,8 @@ fn rasterize_zone_projection(
                     ),
                 );
             }
-            local.x += affine.local_x_step[0];
-            local.y += affine.local_x_step[1];
+            local.x += affine.x_step[0];
+            local.y += affine.x_step[1];
             source_x += source_x_step;
         }
         source_y += 1.0 / target.height() as f32;
@@ -523,42 +527,16 @@ fn rasterize_zone_projection(
 }
 
 impl ProjectionAffine {
-    #[expect(
-        clippy::cast_precision_loss,
-        clippy::as_conversions,
-        reason = "scene raster coordinates are represented as normalized f32 values"
-    )]
-    fn new(zone: &Output, target_width: u32, target_height: u32) -> Option<Self> {
-        let span_x = zone.size.x * zone.scale;
-        let span_y = zone.size.y * zone.scale;
-        if target_width == 0
-            || target_height == 0
-            || !span_x.is_finite()
-            || !span_y.is_finite()
-            || span_x <= 0.0
-            || span_y <= 0.0
-            || !zone.position.x.is_finite()
-            || !zone.position.y.is_finite()
-            || !zone.rotation.is_finite()
-        {
-            return None;
-        }
-
-        let (sin, cos) = zone.rotation.sin_cos();
-        let inverse_width = 1.0 / target_width as f32;
-        let inverse_height = 1.0 / target_height as f32;
-        let delta_x = 0.5f32.mul_add(inverse_width, -zone.position.x);
-        let delta_y = 0.5f32.mul_add(inverse_height, -zone.position.y);
-        Some(Self {
-            local_origin: [
-                delta_x.mul_add(cos, delta_y * sin) / span_x + 0.5,
-                delta_y.mul_add(cos, -delta_x * sin) / span_y + 0.5,
+    fn of(window: &LayerPlacement) -> Self {
+        let [x_per_x, x_per_y, x_at_zero, y_per_x, y_per_y, y_at_zero] = window.zone_to_frame;
+        Self {
+            origin: [
+                (x_per_x + x_per_y).mul_add(0.5, x_at_zero),
+                (y_per_x + y_per_y).mul_add(0.5, y_at_zero),
             ],
-            local_x_step: [cos * inverse_width / span_x, -sin * inverse_width / span_y],
-            local_y_step: [sin * inverse_height / span_x, cos * inverse_height / span_y],
-            cos,
-            sin,
-        })
+            x_step: [x_per_x, y_per_x],
+            y_step: [x_per_y, y_per_y],
+        }
     }
 
     #[expect(
@@ -569,12 +547,12 @@ impl ProjectionAffine {
     fn local_position(self, x: u32, y: u32) -> NormalizedPosition {
         NormalizedPosition::new(
             (x as f32).mul_add(
-                self.local_x_step[0],
-                (y as f32).mul_add(self.local_y_step[0], self.local_origin[0]),
+                self.x_step[0],
+                (y as f32).mul_add(self.y_step[0], self.origin[0]),
             ),
             (x as f32).mul_add(
-                self.local_x_step[1],
-                (y as f32).mul_add(self.local_y_step[1], self.local_origin[1]),
+                self.x_step[1],
+                (y as f32).mul_add(self.y_step[1], self.origin[1]),
             ),
         )
     }
@@ -591,7 +569,6 @@ fn zone_projection_bounds(
     zone: &Output,
     target_width: u32,
     target_height: u32,
-    affine: ProjectionAffine,
 ) -> Option<ProjectionBounds> {
     let span_x = zone.size.x * zone.scale;
     let span_y = zone.size.y * zone.scale;
@@ -601,8 +578,7 @@ fn zone_projection_bounds(
 
     let half_x = span_x * 0.5;
     let half_y = span_y * 0.5;
-    let cos_t = affine.cos;
-    let sin_t = affine.sin;
+    let (sin_t, cos_t) = zone.rotation.sin_cos();
     let corners = [
         (-half_x, -half_y),
         (half_x, -half_y),
@@ -649,7 +625,11 @@ pub(super) fn zone_local_position_for_scene_pixel(
     target_height: u32,
     zone: &Output,
 ) -> Option<NormalizedPosition> {
-    let local = ProjectionAffine::new(zone, target_width, target_height)?.local_position(x, y);
+    let window = LayerFrame::of_output(zone).and_then(|frame| {
+        let target = (target_width, target_height);
+        LayerPlacement::window(&frame, target, target)
+    })?;
+    let local = ProjectionAffine::of(&window).local_position(x, y);
     if !(0.0..=1.0).contains(&local.x) || !(0.0..=1.0).contains(&local.y) {
         return None;
     }

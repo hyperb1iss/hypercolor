@@ -513,7 +513,7 @@ impl ZoneRuntime {
                     continue;
                 }
                 let Some(window) = LayerFrame::of_output(output)
-                    .and_then(|frame| LayerPlacement::window(&frame, zone_size))
+                    .and_then(|frame| LayerPlacement::window(&frame, zone_size, zone_size))
                 else {
                     continue;
                 };

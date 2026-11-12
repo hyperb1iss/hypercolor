@@ -388,7 +388,7 @@ fn every_led_of_a_framed_output_reads_the_layer() {
 fn a_window_shows_each_zone_pixel_as_itself_inside_its_frame_alone() {
     let pad = output("pad", (0.5, 0.5), (0.25, 0.5), 0.4);
     let frame = LayerFrame::of_output(&pad).expect("placed output");
-    let window = LayerPlacement::window(&frame, ZONE).expect("window");
+    let window = LayerPlacement::window(&frame, ZONE, ZONE).expect("window");
 
     assert_eq!(window.edge, FrameEdge::Clip);
     assert_eq!(window.source_size, [640, 480]);
@@ -404,6 +404,37 @@ fn a_window_shows_each_zone_pixel_as_itself_inside_its_frame_alone() {
     assert_eq!(window.source_point([320.0, 20.0]), None);
     let [left, top, right, bottom] = window.frame_bounds().expect("bounds");
     assert!(left < 300.0 && right > 340.0 && top < 140.0 && bottom > 340.0);
+}
+
+/// A window onto a picture of another size than the canvas it is drawn on
+/// shows each pixel the picture's point at the same normalized position,
+/// inside the frame as the sampler places it: turned in normalized units,
+/// so on a canvas that is not square it is a parallelogram in pixels.
+#[test]
+fn a_window_onto_a_source_of_another_size_keeps_normalized_positions() {
+    let pad = output("pad", (0.5, 0.5), (0.4, 0.2), FRAC_PI_4);
+    let frame = LayerFrame::of_output(&pad).expect("placed output");
+    let window = LayerPlacement::window(&frame, (320, 630), ZONE).expect("window");
+
+    assert_eq!(window.source_size, [320, 630]);
+    assert_near(
+        window.source_point([320.0, 240.0]).expect("the centre"),
+        [160.0, 315.0],
+        1.0e-2,
+        "window centre",
+    );
+    assert_near(
+        window
+            .source_point([330.0, 250.0])
+            .expect("inside the frame"),
+        [165.0, 328.125],
+        1.0e-2,
+        "a point off centre",
+    );
+    // A rectangle turned in pixels would hold the first point and miss the
+    // second.
+    assert!(!window.covers([375.5, 360.5]));
+    assert!(window.covers([442.5, 270.5]));
 }
 
 #[test]

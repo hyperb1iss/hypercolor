@@ -5,6 +5,10 @@ use hypercolor_types::viewport::FitMode;
 
 use super::{CompositionAdjust, CompositionTransform};
 
+/// The smallest scale a layer's transform draws at, as a fraction of the
+/// target. The compose shader holds the same number.
+const MINIMUM_SCALE: f32 = 0.01;
+
 pub(super) fn process_layer_canvas(
     source: Canvas,
     target_width: u32,
@@ -136,14 +140,8 @@ fn sample_transformed_layer(
                     prepared.sample_repeated(source, local_x, local_y)
                 }
                 FitMode::Contain | FitMode::Cover | FitMode::Stretch => prepared
-                    .source_normalized_for(x, y, local_x, local_y)
-                    .map_or(Rgba::TRANSPARENT, |(nx, ny)| {
-                        let mut color = source.sample_nearest(nx, ny);
-                        if transform.sample_target_space {
-                            color.a = 255;
-                        }
-                        color
-                    }),
+                    .source_normalized_for(local_x, local_y)
+                    .map_or(Rgba::TRANSPARENT, |(nx, ny)| source.sample_nearest(nx, ny)),
             };
             target.set_pixel(x, y, color);
             local_x += prepared.step_x.0;
@@ -172,13 +170,8 @@ impl LayerSampler {
     }
 
     fn prepare(self, transform: CompositionTransform) -> PreparedLayerSampler {
-        let minimum_scale = if transform.sample_target_space {
-            0.000_000_1
-        } else {
-            0.01
-        };
-        let scale_x = transform.scale[0].max(minimum_scale);
-        let scale_y = transform.scale[1].max(minimum_scale);
+        let scale_x = transform.scale[0].max(MINIMUM_SCALE);
+        let scale_y = transform.scale[1].max(MINIMUM_SCALE);
         let (sin, cos) = transform.rotation.sin_cos();
         let step_x = (cos / scale_x, -sin / scale_y);
         let step_y = (sin / scale_x, cos / scale_y);
@@ -282,13 +275,7 @@ impl PreparedLayerSampler {
         )
     }
 
-    fn source_normalized_for(
-        self,
-        x: u32,
-        y: u32,
-        local_x: f32,
-        local_y: f32,
-    ) -> Option<(f32, f32)> {
+    fn source_normalized_for(self, local_x: f32, local_y: f32) -> Option<(f32, f32)> {
         if !local_x.is_finite() || !local_y.is_finite() {
             return None;
         }
@@ -296,13 +283,6 @@ impl PreparedLayerSampler {
         let v = local_y / self.geometry.draw_height + 0.5;
         if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
             return None;
-        }
-
-        if self.transform.sample_target_space {
-            return Some((
-                (x as f32 + 0.5) / self.sampler.target_width,
-                (y as f32 + 0.5) / self.sampler.target_height,
-            ));
         }
 
         let source_x = self.geometry.crop_x + u.mul_add(self.geometry.crop_width, -0.5);

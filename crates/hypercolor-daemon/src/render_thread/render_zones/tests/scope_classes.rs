@@ -1264,6 +1264,84 @@ fn a_zone_preview_paints_unscoped_outputs_in_their_turn() {
     }
 }
 
+/// An output turned on a canvas that is not square is drawn in the scene
+/// canvas where its LEDs are, on both backends: the turn happens in
+/// normalized units, as it does for the sampler, so the box is a
+/// parallelogram in pixels and not a turned rectangle.
+#[test]
+fn a_turned_output_is_drawn_where_it_sits_on_a_canvas_that_is_not_square() {
+    let mut pad = matrix("pad", (0.5, 0.5), (0.4, 0.2), (2, 2));
+    pad.rotation = std::f32::consts::FRAC_PI_4;
+    let window = hypercolor_core::spatial::LayerFrame::of_output(&pad)
+        .and_then(|frame| hypercolor_core::spatial::LayerPlacement::window(&frame, SCENE, SCENE))
+        .expect("the pad is placed");
+    let scene = zone(
+        SCENE,
+        vec![pad],
+        vec![
+            color_fill_layer(BLUE),
+            scoped(color_fill_layer(RED), &["pad"]),
+        ],
+    );
+    // A grid of pixel centres, and two that a turn in pixels gets wrong:
+    // one it draws outside the pad, one inside the pad it leaves out.
+    let mut pixels = vec![(375_u32, 360_u32), (442, 270)];
+    pixels
+        .extend((0..30).flat_map(|row| (0..40).map(move |column| (column * 16 + 8, row * 16 + 8))));
+    // How far inside the pad a pixel centre is, in frame units: beyond the
+    // margin either way its color is not a matter of rounding.
+    let margin = 0.03;
+    let depth = |&(x, y): &(u32, u32)| {
+        let frame = [
+            window.zone_to_frame[0] * (x as f32 + 0.5)
+                + window.zone_to_frame[1] * (y as f32 + 0.5)
+                + window.zone_to_frame[2],
+            window.zone_to_frame[3] * (x as f32 + 0.5)
+                + window.zone_to_frame[4] * (y as f32 + 0.5)
+                + window.zone_to_frame[5],
+        ];
+        frame
+            .iter()
+            .map(|unit| unit.min(1.0 - unit))
+            .fold(f32::INFINITY, f32::min)
+    };
+    assert!(
+        depth(&pixels[0]) < -margin,
+        "the first pixel is outside the pad"
+    );
+    assert!(
+        depth(&pixels[1]) > margin,
+        "the second pixel is inside the pad"
+    );
+    let positions = pixels
+        .iter()
+        .map(|&(x, y)| ((x as f32 + 0.5) / 640.0, (y as f32 + 0.5) / 480.0))
+        .collect::<Vec<_>>();
+
+    for backend in BACKENDS {
+        let Some(mut rig) = Rig::new(backend) else {
+            continue;
+        };
+        let result = rig.render(std::slice::from_ref(&scene), 1);
+        let colors = rig.frame_colors(&result.scene_frame, &positions);
+        let mut inside = 0;
+        for (pixel, color) in pixels.iter().zip(&colors) {
+            let depth = depth(pixel);
+            if depth > margin {
+                inside += 1;
+                assert_eq!(*color, rgb(RED), "{backend:?}: {pixel:?} is inside the pad");
+            } else if depth < -margin {
+                assert_eq!(
+                    *color,
+                    rgb(BLUE),
+                    "{backend:?}: {pixel:?} is outside the pad"
+                );
+            }
+        }
+        assert!(inside > 20, "{backend:?}: the grid should cover the pad");
+    }
+}
+
 // ── Admission ────────────────────────────────────────────────────────────
 
 /// Zone previews made while the GPU refuses class textures are each a

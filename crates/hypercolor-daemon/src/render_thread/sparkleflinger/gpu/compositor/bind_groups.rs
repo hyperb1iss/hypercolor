@@ -461,12 +461,6 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn encode_compose_params(
     bytes[48..52].copy_from_slice(&transform.scale[1].to_le_bytes());
     bytes[52..56].copy_from_slice(&transform.rotation.cos().to_le_bytes());
     bytes[56..60].copy_from_slice(&transform.rotation.sin().to_le_bytes());
-    let sample_target_space = if transform.sample_target_space {
-        1.0_f32
-    } else {
-        0.0_f32
-    };
-    bytes[60..64].copy_from_slice(&sample_target_space.to_le_bytes());
     bytes[64..68].copy_from_slice(&adjust.brightness.to_le_bytes());
     bytes[68..72].copy_from_slice(&adjust.saturation.to_le_bytes());
     bytes[72..76].copy_from_slice(&adjust.hue_shift.to_le_bytes());

@@ -263,7 +263,7 @@ fn a_placed_replace_covers_what_it_draws_on_and_nothing_else() {
         fit: FitMode::Stretch,
     };
     let framed = LayerPlacement::new(&frame, half_size, (256, 256), zone).expect("placement");
-    let window = LayerPlacement::window(&frame, zone).expect("window");
+    let window = LayerPlacement::window(&frame, zone, zone).expect("window");
     let pixel = |x: u32, y: u32| [x as f32 + 0.5, y as f32 + 0.5];
     let base_rgb = [base.r, base.g, base.b];
 

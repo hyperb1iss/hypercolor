@@ -506,7 +506,6 @@ fn cached_transform(transform: CompositionTransform) -> CachedReadbackTransform 
         scale_y_bits: transform.scale[1].to_bits(),
         rotation_bits: transform.rotation.to_bits(),
         fit: transform.fit,
-        sample_target_space: transform.sample_target_space,
     }
 }
 
