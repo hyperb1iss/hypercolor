@@ -2381,6 +2381,71 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     thread.shutdown().await.expect("display thread should stop");
 }
 
+/// A simulator somebody previews has no lane until the render thread makes
+/// it one, and a render thread with nothing else to render is parked. The
+/// preview is the demand: display output holds it while the lane is
+/// pending, or the two would wait on each other for good.
+#[tokio::test]
+async fn previewed_simulator_awaiting_its_lane_holds_render_demand() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "simulator:test-display")
+        .await
+        .expect("backend should connect");
+    let tracked_id = device_registry
+        .add_with_fingerprint_and_metadata(
+            simulated_display_device_info(device_id, 320, 200),
+            DeviceFingerprint::from_persisted(format!("simulator:{device_id}")),
+            simulated_display_metadata(),
+        )
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
+        display_frames: Arc::clone(&display_frames),
+    });
+
+    // Nobody previews it: nothing asks the render thread for frames.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(event_bus.output_demand().hold_count(), 0);
+
+    let _preview_rx = display_frames.write().await.subscribe(device_id);
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
+    timeout(DISPLAY_TEST_TIMEOUT, async {
+        while event_bus.output_demand().hold_count() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a previewed simulator with no lane yet should hold render demand");
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
 #[tokio::test]
 async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let _guard = display_output_test_guard().await;

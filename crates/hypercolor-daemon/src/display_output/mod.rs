@@ -143,6 +143,7 @@ struct DisplayTargetCache {
     version: u64,
     cache_key: Option<DisplayTargetCacheKey>,
     targets: Arc<[Arc<DisplayTarget>]>,
+    awaiting_lanes: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +215,10 @@ struct DisplayViewportSignature {
 struct DisplayTargetsSnapshot {
     version: u64,
     targets: Arc<[Arc<DisplayTarget>]>,
+    /// Whether a previewed simulator is routed but has no lane yet. The
+    /// render thread makes its lane, and a parked render thread makes
+    /// nothing: nobody but the preview is asking for frames.
+    awaiting_lanes: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -404,7 +409,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     sync_output_demand_hold(
         &mut output_demand_hold,
         &state.event_bus,
-        !initial_targets.targets.is_empty(),
+        !initial_targets.targets.is_empty() || initial_targets.awaiting_lanes,
     );
     reconcile_display_workers(&state, &mut workers, initial_targets.targets.as_ref()).await;
     let mut last_reconciled_target_version = Some(initial_targets.version);
@@ -441,7 +446,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         sync_output_demand_hold(
             &mut output_demand_hold,
             &state.event_bus,
-            !targets.targets.is_empty(),
+            !targets.targets.is_empty() || targets.awaiting_lanes,
         );
         if targets.targets.is_empty() {
             last_dispatched_sources.clear();
@@ -598,7 +603,8 @@ fn build_display_worker_frame_set(
     }
 }
 
-/// Hold render output demand while any display target exists.
+/// Hold render output demand while any display target exists, or a
+/// previewed simulator waits for the lane that would make it one.
 ///
 /// A screen's frames are read from its lane's sender, not through a
 /// receiver, so the render loop would not count the screen as a consumer.
@@ -720,12 +726,14 @@ async fn display_targets(
         return DisplayTargetsSnapshot {
             version: cache.version,
             targets: Arc::clone(&cache.targets),
+            awaiting_lanes: cache.awaiting_lanes,
         };
     }
 
     let lane_targets = display_lane_targets_by_device(published_display_zone_targets);
     let mut targets = Vec::new();
     let mut screen_routes = HashMap::new();
+    let mut awaiting_lanes = false;
     for tracked in registry
         .list()
         .await
@@ -802,7 +810,10 @@ async fn display_targets(
                 face.zone_id,
             ),
             None if has_backdrop_lane => (backdrop_source, backdrop_lane),
-            None => continue,
+            None => {
+                awaiting_lanes |= is_simulator;
+                continue;
+            }
         };
         debug!(
             %device_id,
@@ -849,9 +860,11 @@ async fn display_targets(
     cache.version = cache.version.saturating_add(1);
     cache.cache_key = Some(cache_key);
     cache.targets = Arc::from(targets);
+    cache.awaiting_lanes = awaiting_lanes;
     DisplayTargetsSnapshot {
         version: cache.version,
         targets: Arc::clone(&cache.targets),
+        awaiting_lanes,
     }
 }
 

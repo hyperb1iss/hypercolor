@@ -31,6 +31,7 @@ use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
+use hypercolor_daemon::simulators::SIMULATED_DISPLAY_BACKEND_ID;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveredDevice};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::control::ControlValue;
@@ -145,6 +146,9 @@ fn near(actual: [u8; 3], expected: [u8; 3]) -> bool {
 
 /// A backend whose devices are panels that record what they are sent.
 struct PanelBackend {
+    /// The backend's id: the rig's panel backend, or the simulator backend,
+    /// whose devices are nobody's output until somebody previews them.
+    id: &'static str,
     writes: PanelWrites,
 }
 
@@ -152,7 +156,7 @@ struct PanelBackend {
 impl DeviceBackend for PanelBackend {
     fn info(&self) -> BackendInfo {
         BackendInfo {
-            id: BACKEND_ID.to_owned(),
+            id: self.id.to_owned(),
             name: "Recording panels".to_owned(),
             description: "Test backend that records display frames".to_owned(),
         }
@@ -425,6 +429,8 @@ struct Rig {
     effects: Effects,
     /// The power policy. Display workers stop when its sender goes away.
     power: watch::Sender<OutputPowerState>,
+    /// What each panel last showed, for whoever previews it.
+    display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 }
 
 impl Rig {
@@ -457,9 +463,12 @@ impl Rig {
         };
         let writes = PanelWrites::default();
         let mut backend_manager = BackendManager::new();
-        backend_manager.register_backend(Arc::new(PanelBackend {
-            writes: writes.clone(),
-        }));
+        for id in [BACKEND_ID, SIMULATED_DISPLAY_BACKEND_ID] {
+            backend_manager.register_backend(Arc::new(PanelBackend {
+                id,
+                writes: writes.clone(),
+            }));
+        }
         let state = RenderThreadState {
             effect_registry: Arc::new(RwLock::new(registry)),
             asset_library: Arc::new(RwLock::new(
@@ -498,6 +507,7 @@ impl Rig {
             writes,
             effects,
             power,
+            display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
         }
     }
 
@@ -532,6 +542,25 @@ impl Rig {
         max_fps: u32,
         circular: bool,
     ) {
+        self.connect_panel_as(screen, format, max_fps, circular, false)
+            .await;
+    }
+
+    /// Connect a simulated panel: one that display output drives only
+    /// while somebody previews it, and that is nobody's physical output.
+    async fn connect_simulator(&self, screen: &Screen) {
+        self.connect_panel_as(screen, DisplayFrameFormat::Rgb, 30, false, true)
+            .await;
+    }
+
+    async fn connect_panel_as(
+        &self,
+        screen: &Screen,
+        format: DisplayFrameFormat,
+        max_fps: u32,
+        circular: bool,
+        simulator: bool,
+    ) {
         let device_id = screen.device_id;
         let layout_id = screen.layout_id.clone();
         let name = layout_id.as_str();
@@ -547,18 +576,34 @@ impl Rig {
                 kind: LogicalDeviceKind::Default,
             },
         );
+        let backend_id = if simulator {
+            SIMULATED_DISPLAY_BACKEND_ID
+        } else {
+            BACKEND_ID
+        };
         self.state
             .backend_manager
             .lock()
             .await
-            .connect_device(BACKEND_ID, device_id, &layout_id)
+            .connect_device(backend_id, device_id, &layout_id)
             .await
             .expect("panel should connect");
-        let tracked = self
-            .state
-            .device_registry
-            .add(panel_info(device_id, format, max_fps, circular))
-            .await;
+        let mut info = panel_info(device_id, format, max_fps, circular);
+        info.origin = DeviceOrigin::native("corsair", backend_id, ConnectionType::Usb);
+        let tracked = if simulator {
+            self.state
+                .device_registry
+                .add_with_fingerprint_and_metadata(
+                    info,
+                    hypercolor_types::device::DeviceFingerprint::from_persisted(format!(
+                        "simulator:{device_id}"
+                    )),
+                    HashMap::from([("simulator".to_owned(), "true".to_owned())]),
+                )
+                .await
+        } else {
+            self.state.device_registry.add(info).await
+        };
         assert_eq!(tracked, device_id);
         assert!(
             self.state
@@ -612,7 +657,7 @@ impl Rig {
             power_state: self.state.power_state.clone(),
             static_hold_refresh_interval:
                 hypercolor_daemon::display_output::DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
-            display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+            display_frames: Arc::clone(&self.display_frames),
             face_fps_cap: self.state.face_fps_cap,
         });
         self.state.render_loop.write().await.start();
@@ -2200,6 +2245,54 @@ async fn gpu_screen_connected_while_output_is_paused_goes_dark() {
         hypercolor_daemon::output_power::OutputOverride::Paused,
     )
     .await;
+}
+
+/// A simulated panel is nobody's output until somebody previews it, so a
+/// rig with nothing else to drive parks its render loop. The preview is
+/// then the only demand there is: the loop has to wake for it, place the
+/// simulator, and give it the lane display output is waiting for.
+async fn previewed_simulator_wakes_a_parked_render_loop(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let simulator = Screen::named("simulator");
+    rig.connect_simulator(&simulator).await;
+    let zones = vec![scene_zone(
+        "Red",
+        ZoneRole::Primary,
+        vec![rig.effects.solid(RED)],
+        vec![
+            strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
+            simulator.output((0.5, 0.5), (0.4, 0.4)),
+        ],
+    )];
+
+    let running = rig.run(zones).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        rig.writes.of(simulator.device_id).is_empty(),
+        "nobody previews the simulator yet"
+    );
+    let _preview = rig
+        .display_frames
+        .write()
+        .await
+        .subscribe(simulator.device_id);
+    rig.writes
+        .wait_for(simulator.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_previewed_simulator_wakes_a_parked_render_loop() {
+    previewed_simulator_wakes_a_parked_render_loop(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_previewed_simulator_wakes_a_parked_render_loop() {
+    previewed_simulator_wakes_a_parked_render_loop(RenderAccelerationMode::Gpu).await;
 }
 
 // ── Viewports: the owning zone against the spatial service ────────────────
