@@ -115,13 +115,13 @@ struct DisplayFrameInputState {
     source: CapturedDisplayFrameSource,
     brightness_factor: u16,
     geometry: DisplayGeometry,
-    viewport: DisplayViewportSignature,
+    viewport: Option<DisplayViewportSignature>,
 }
 
 impl CapturedDisplayFrameSource {
     fn matches(&self, source: &DisplayWorkerFrameSource) -> bool {
         match (self, source) {
-            (Self::Backdrop(captured), DisplayWorkerFrameSource::Backdrop(frame)) => {
+            (Self::Backdrop(captured), DisplayWorkerFrameSource::Backdrop { frame, .. }) => {
                 display_source_matches(Some(captured), Some(frame))
             }
             (Self::Direct(captured), DisplayWorkerFrameSource::Direct(frame)) => {
@@ -139,6 +139,7 @@ impl CapturedDisplayFrameSource {
                     face_frame,
                     blend_mode: current_blend_mode,
                     opacity,
+                    ..
                 },
             ) => {
                 display_source_matches(backdrop_source.as_ref(), backdrop_frame.as_ref())
@@ -152,7 +153,7 @@ impl CapturedDisplayFrameSource {
 
     fn capture(source: &DisplayWorkerFrameSource) -> Self {
         match source {
-            DisplayWorkerFrameSource::Backdrop(frame) => Self::Backdrop(
+            DisplayWorkerFrameSource::Backdrop { frame, .. } => Self::Backdrop(
                 capture_display_source(Some(frame))
                     .expect("display worker should only capture a valid backdrop frame"),
             ),
@@ -165,6 +166,7 @@ impl CapturedDisplayFrameSource {
                 face_frame,
                 blend_mode,
                 opacity,
+                ..
             } => Self::Face {
                 backdrop_source: capture_display_source(backdrop_frame.as_ref()),
                 face_source: capture_display_source(Some(face_frame))
@@ -181,7 +183,7 @@ impl DisplayFrameInputState {
         self.source.matches(&frames.source)
             && self.brightness_factor == display_brightness_factor(target.brightness)
             && self.geometry == target.geometry
-            && self.viewport == display_viewport_signature(&target.viewport)
+            && self.viewport == source_viewport_signature(&frames.source)
     }
 
     fn capture(frames: &DisplayWorkerFrameSet, target: &DisplayTarget) -> Self {
@@ -189,8 +191,27 @@ impl DisplayFrameInputState {
             source: CapturedDisplayFrameSource::capture(&frames.source),
             brightness_factor: display_brightness_factor(target.brightness),
             geometry: target.geometry,
-            viewport: display_viewport_signature(&target.viewport),
+            viewport: source_viewport_signature(&frames.source),
         }
+    }
+}
+
+/// The viewport the worker applies to a frame, when it applies one. A frame
+/// finalized for the panel has had its viewport applied already.
+fn source_viewport_signature(
+    source: &DisplayWorkerFrameSource,
+) -> Option<DisplayViewportSignature> {
+    match source {
+        DisplayWorkerFrameSource::Backdrop { viewport, .. }
+        | DisplayWorkerFrameSource::Face { viewport, .. } => {
+            Some(display_viewport_signature(viewport))
+        }
+        DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
+            DisplayZoneFrame::Backdrop(backdrop) => {
+                Some(display_viewport_signature(&backdrop.viewport))
+            }
+            DisplayZoneFrame::Canvas(_) | DisplayZoneFrame::Yuv420(_) => None,
+        },
     }
 }
 
@@ -259,6 +280,7 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
 fn display_zone_source_identity(source: &DisplayZoneFrame) -> DisplaySourceIdentity {
     match source {
         DisplayZoneFrame::Canvas(source) => display_source_identity(source),
+        DisplayZoneFrame::Backdrop(source) => display_source_identity(&source.frame),
         DisplayZoneFrame::Yuv420(source) => DisplaySourceIdentity::Yuv420 {
             storage: source.storage_identity(),
             width: source.width,
@@ -287,6 +309,9 @@ fn display_zone_source_content_matches(
 ) -> bool {
     match source {
         DisplayZoneFrame::Canvas(source) => display_source_content_matches(captured, source),
+        DisplayZoneFrame::Backdrop(source) => {
+            display_source_content_matches(captured, &source.frame)
+        }
         DisplayZoneFrame::Yuv420(_) => false,
     }
 }
@@ -309,6 +334,7 @@ fn display_source_content_hash(source: &CanvasFrame) -> u64 {
 fn display_zone_source_content_hash(source: &DisplayZoneFrame) -> u64 {
     match source {
         DisplayZoneFrame::Canvas(source) => display_source_content_hash(source),
+        DisplayZoneFrame::Backdrop(source) => display_source_content_hash(&source.frame),
         DisplayZoneFrame::Yuv420(source) => source.storage_identity().id,
     }
 }
@@ -576,7 +602,6 @@ async fn run_display_worker(
         }
 
         let encode_source = frames.source.clone();
-        let viewport = target.viewport;
         let geometry = target.geometry;
         let brightness = target.brightness;
         let frame_format = target.frame_format;
@@ -586,8 +611,8 @@ async fn run_display_worker(
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = match encode_source {
-                DisplayWorkerFrameSource::Backdrop(backdrop) => encode_canvas_frame(
-                    backdrop.as_ref(),
+                DisplayWorkerFrameSource::Backdrop { frame, viewport } => encode_canvas_frame(
+                    frame.as_ref(),
                     &viewport,
                     &geometry,
                     brightness,
@@ -609,10 +634,20 @@ async fn run_display_worker(
                         include_preview_jpeg,
                         &mut encode_state,
                     ),
+                    DisplayZoneFrame::Backdrop(backdrop) => encode_canvas_frame(
+                        &backdrop.frame,
+                        &backdrop.viewport,
+                        &geometry,
+                        brightness,
+                        frame_format,
+                        include_preview_jpeg,
+                        &mut encode_state,
+                    ),
                 },
                 DisplayWorkerFrameSource::Face {
                     backdrop_frame,
                     face_frame,
+                    viewport,
                     blend_mode,
                     opacity,
                 } => encode_face_backdrop_blend(

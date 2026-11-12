@@ -10,8 +10,8 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tokio::time::timeout;
 
 use hypercolor_core::bus::{
-    CanvasFrame, DisplayZoneFrame, DisplayZoneTarget, HypercolorBus, PreviewKind,
-    screen_backdrop_lane_id,
+    CanvasFrame, DisplayBackdropFrame, DisplayZoneFrame, DisplayZoneTarget, DisplayZoneViewport,
+    HypercolorBus, PreviewKind, screen_backdrop_lane_id,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::scene::SceneManager;
@@ -36,9 +36,11 @@ use hypercolor_types::spatial::{
 
 use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
-use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
+use hypercolor_daemon::display_output::{
+    DisplayOutputState, DisplayOutputThread, screen_placement,
+};
 use hypercolor_daemon::domain::layout::LayoutContext;
-use hypercolor_daemon::domain::scene::{ScenePlanReader, SceneService};
+use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::output_power::OutputPowerState;
@@ -709,8 +711,36 @@ struct TestPlacement {
 }
 
 impl TestPlacement {
-    fn scene_plan(&self) -> ScenePlanReader {
-        self.scenes.plan_reader()
+    /// The viewport the scene's owning zone gives the screen on
+    /// `device_id`, turned the way the panel is mounted: what the render
+    /// thread sends with the zone's canvas. A screen the scene does not
+    /// place has no backdrop on a live rig; a test that publishes one anyway
+    /// is driving the worker directly, and gets the whole canvas.
+    fn screen_viewport(
+        &self,
+        event_bus: &HypercolorBus,
+        device_id: DeviceId,
+    ) -> DisplayZoneViewport {
+        let (_, routes) = event_bus.screen_backdrop_routes_snapshot();
+        let route = routes.get(&device_id);
+        let layout_ids = route.map_or_else(
+            || vec![format!("display:{device_id}")],
+            |route| route.layout_device_ids.clone(),
+        );
+        let has_led_segments = route.is_some_and(|route| route.has_led_segments);
+        let plan = self.scenes.plan_reader().load();
+        let mut viewport = screen_placement(&plan.zones, &layout_ids, has_led_segments).map_or(
+            DisplayZoneViewport {
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                edge_behavior: EdgeBehavior::Clamp,
+            },
+            |placed| placed.viewport,
+        );
+        viewport.rotation += route.map_or(0.0, |route| route.output.viewport.rotation);
+        viewport
     }
 }
 
@@ -775,9 +805,16 @@ async fn full_canvas_placement(
 
 /// Publish `frame` as the backdrop of the screen on `device_id`, the way a
 /// render thread whose compositor leaves the crop to the display worker
-/// publishes the owning zone's canvas.
-fn publish_screen_backdrop(event_bus: &HypercolorBus, device_id: DeviceId, frame: CanvasFrame) {
+/// publishes it: the owning zone's canvas with that zone's viewport for the
+/// screen, read from the scene the frame belongs to.
+fn publish_screen_backdrop(
+    event_bus: &HypercolorBus,
+    placement: &TestPlacement,
+    device_id: DeviceId,
+    frame: CanvasFrame,
+) {
     let lane = screen_backdrop_lane_id(device_id);
+    let viewport = placement.screen_viewport(event_bus, device_id);
     event_bus.upsert_display_zone_target(
         lane,
         DisplayZoneTarget {
@@ -789,11 +826,14 @@ fn publish_screen_backdrop(event_bus: &HypercolorBus, device_id: DeviceId, frame
     );
     event_bus
         .zone_canvas_sender(lane)
-        .send_replace(DisplayZoneFrame::Canvas(frame));
+        .send_replace(DisplayZoneFrame::Backdrop(DisplayBackdropFrame {
+            frame,
+            viewport,
+        }));
 }
 
-/// Wait until the display output thread has resolved the zone that places
-/// the screen on `device_id`.
+/// Wait until the display output thread has routed the screen on
+/// `device_id`.
 async fn wait_for_screen_backdrop_route(event_bus: &HypercolorBus, device_id: DeviceId) {
     timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
@@ -1095,7 +1135,6 @@ async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> D
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1107,6 +1146,7 @@ async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> D
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(1, 0, 0, 255)), 1, 16),
     );
@@ -1119,6 +1159,7 @@ async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> D
         let red = u8::try_from(frame.saturating_add(2)).unwrap_or(u8::MAX);
         publish_screen_backdrop(
             &event_bus,
+            &placement,
             device_id,
             CanvasFrame::from_canvas(
                 &solid_canvas(Rgba::new(red, 0, 0, 255)),
@@ -1263,7 +1304,6 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1277,6 +1317,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let canvas = sample_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -1349,7 +1390,6 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1364,6 +1404,7 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     for device_id in [slow_device_id, fast_device_id] {
         publish_screen_backdrop(
             &event_bus,
+            &placement,
             device_id,
             CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 64, 96, 255)), 1, 16),
         );
@@ -1453,7 +1494,6 @@ async fn automatic_display_output_aborts_stale_waiter_without_cancelling_transpo
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1468,6 +1508,7 @@ async fn automatic_display_output_aborts_stale_waiter_without_cancelling_transpo
     for device_id in [slow_device_id, fast_device_id] {
         publish_screen_backdrop(
             &event_bus,
+            &placement,
             device_id,
             CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 64, 96, 255)), 1, 16),
         );
@@ -1484,6 +1525,7 @@ async fn automatic_display_output_aborts_stale_waiter_without_cancelling_transpo
     for device_id in [slow_device_id, fast_device_id] {
         publish_screen_backdrop(
             &event_bus,
+            &placement,
             device_id,
             CanvasFrame::from_canvas(&solid_canvas(Rgba::new(96, 32, 160, 255)), 2, 32),
         );
@@ -1561,7 +1603,6 @@ async fn display_thread_shutdown_is_bounded_while_actor_delivery_is_blocked() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::clone(&backend_manager),
         device_registry,
-        scene_plan: placement.scene_plan(),
         logical_devices,
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1573,6 +1614,7 @@ async fn display_thread_shutdown_is_bounded_while_actor_delivery_is_blocked() {
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 64, 96, 255)), 1, 16),
     );
@@ -1651,7 +1693,6 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1663,6 +1704,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(96, 64, 32, 255)), 1, 16),
     );
@@ -1675,6 +1717,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     );
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(64, 96, 32, 255)), 2, 32),
     );
@@ -1694,6 +1737,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     tokio::time::sleep(Duration::from_millis(300)).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(32, 96, 64, 255)), 3, 48),
     );
@@ -1712,6 +1756,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(64, 32, 96, 255)), 4, 64),
     );
@@ -1769,7 +1814,6 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1781,6 +1825,7 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(48, 48, 128, 255)), 1, 16),
     );
@@ -1800,6 +1845,7 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(128, 48, 48, 255)), 2, 32),
     );
@@ -1820,6 +1866,7 @@ async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_afte
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(48, 128, 48, 255)), 3, 48),
     );
@@ -1882,7 +1929,6 @@ async fn automatic_display_output_reconciles_replaced_backend_generation() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::clone(&backend_manager),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1894,6 +1940,7 @@ async fn automatic_display_output_reconciles_replaced_backend_generation() {
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -1922,6 +1969,7 @@ async fn automatic_display_output_reconciles_replaced_backend_generation() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(0, 255, 0, 255)), 2, 32),
     );
@@ -1983,7 +2031,6 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -1997,6 +2044,7 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     let canvas = sample_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -2055,7 +2103,6 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2067,6 +2114,7 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -2078,6 +2126,7 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     assert!(preview_rx.borrow_and_update().is_none());
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(0, 255, 0, 255)), 2, 32),
     );
@@ -2146,7 +2195,6 @@ async fn automatic_display_output_drives_a_screen_without_reading_any_scene_canv
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2160,6 +2208,7 @@ async fn automatic_display_output_drives_a_screen_without_reading_any_scene_canv
     let canvas = sample_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -2228,7 +2277,6 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2239,6 +2287,7 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&sample_canvas(), 1, 16),
     );
@@ -2298,7 +2347,6 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2309,6 +2357,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -2319,6 +2368,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(0, 255, 0, 255)), 2, 32),
     );
@@ -2359,7 +2409,6 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2371,6 +2420,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let canvas = sample_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -2381,12 +2431,14 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     thread.shutdown().await.expect("display thread should stop");
 }
 
+/// The render thread decides what a screen shows and publishes it on a lane.
+/// A screen no zone places and no face targets has no lane, and display
+/// output leaves it alone however long it stays connected.
 #[tokio::test]
-async fn automatic_display_output_skips_display_devices_that_are_not_in_layout() {
+async fn automatic_display_output_leaves_a_screen_with_no_lane_alone() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2414,7 +2466,6 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2423,12 +2474,10 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    let canvas = sample_canvas();
-    publish_screen_backdrop(
-        &event_bus,
-        device_id,
-        CanvasFrame::from_canvas(&canvas, 1, 16),
-    );
+    // Routed means display output has seen the screen and told the render
+    // thread about it; the render thread, placing it nowhere, publishes
+    // nothing for it.
+    wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(display_writes.lock().await.is_empty());
@@ -2475,7 +2524,6 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2489,6 +2537,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let canvas = split_color_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -2564,7 +2613,6 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2576,6 +2624,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     let canvas = split_color_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -2636,7 +2685,6 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2648,6 +2696,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let canvas = split_color_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -2705,7 +2754,6 @@ async fn display_zone_canvas_routes_to_device_worker() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2723,6 +2771,7 @@ async fn display_zone_canvas_routes_to_device_worker() {
         )));
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -2748,7 +2797,6 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2779,7 +2827,6 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2828,7 +2875,6 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let placement = placement_with_zones(Vec::new());
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
@@ -2860,7 +2906,6 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2964,7 +3009,6 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -2977,6 +3021,7 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -3050,7 +3095,6 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3084,6 +3128,7 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 2, 32),
     );
@@ -3133,7 +3178,6 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3154,6 +3198,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -3223,7 +3268,6 @@ async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3234,6 +3278,7 @@ async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -3306,7 +3351,6 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3324,6 +3368,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
         )));
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -3344,6 +3389,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
                 u8::try_from((frame % 12).saturating_add(1).saturating_mul(20)).unwrap_or(u8::MAX);
             publish_screen_backdrop(
                 &event_bus,
+                &placement,
                 device_id,
                 CanvasFrame::from_canvas(
                     &solid_canvas(Rgba::new(red, 0, 0, 255)),
@@ -3414,7 +3460,6 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3427,6 +3472,7 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -3500,7 +3546,6 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3513,6 +3558,7 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 255, 255, 255)), 1, 16),
     );
@@ -3586,7 +3632,6 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3599,6 +3644,7 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16),
     );
@@ -3667,7 +3713,6 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3680,15 +3725,22 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let green = solid_canvas(Rgba::new(0, 255, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
     tokio::time::sleep(Duration::from_millis(20)).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&green, 2, 32),
     );
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&blue, 3, 48),
     );
@@ -3763,7 +3815,6 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3776,7 +3827,12 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let green = solid_canvas(Rgba::new(0, 255, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(
         writes
@@ -3791,12 +3847,14 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&green, 2, 32),
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&blue, 3, 48),
     );
@@ -3857,7 +3915,6 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3875,6 +3932,7 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
         let canvas = solid_canvas(Rgba::new(channel, 0, 255_u8.saturating_sub(channel), 255));
         publish_screen_backdrop(
             &event_bus,
+            &placement,
             device_id,
             CanvasFrame::from_canvas(&canvas, frame_number, frame_number.saturating_mul(16)),
         );
@@ -3930,7 +3988,6 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -3942,7 +3999,12 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
 
     let frame = wait_for_display_frame_snapshot(&display_frames, device_id).await;
     let image = decode_jpeg(frame.jpeg_data.as_slice());
@@ -4002,7 +4064,6 @@ async fn automatic_display_output_routes_failures_through_the_core_lifecycle_fen
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::clone(&backend_manager),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4014,7 +4075,12 @@ async fn automatic_display_output_routes_failures_through_the_core_lifecycle_fen
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
 
     wait_for_display_attempt_count(&display_write_attempt_times, 1).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -4037,7 +4103,12 @@ async fn automatic_display_output_routes_failures_through_the_core_lifecycle_fen
         ErrorRecoverability::Reconnect
     );
 
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 2, 32),
+    );
 
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let attempt_times = wait_for_display_attempt_count(&display_write_attempt_times, 2).await;
@@ -4116,7 +4187,6 @@ async fn static_hold_refresh_recovers_without_a_private_retry_pipeline() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state,
@@ -4128,12 +4198,22 @@ async fn static_hold_refresh_recovers_without_a_private_retry_pipeline() {
     wait_for_screen_backdrop_route(event_bus.as_ref(), device_id).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
     wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
 
     sink.failures_remaining.store(1, Ordering::SeqCst);
     wait_for_atomic_count(sink.entered_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 2, 32),
+    );
 
     let metrics = tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
@@ -4192,7 +4272,6 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4206,11 +4285,21 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 2, 32),
+    );
     tokio::time::sleep(Duration::from_millis(140)).await;
     assert_eq!(
         display_writes.lock().await.len(),
@@ -4220,6 +4309,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&blue, 3, 48),
     );
@@ -4275,7 +4365,6 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4290,6 +4379,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
         PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16);
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_surface(surface.clone()),
     );
@@ -4298,6 +4388,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_surface(surface.with_frame_metadata(2, 32)),
     );
@@ -4350,7 +4441,6 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4366,7 +4456,12 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.0), None)
         .await;
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let black_image = decode_jpeg(
         writes
@@ -4382,7 +4477,12 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.5), None)
         .await;
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 2, 32));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 2, 32),
+    );
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let dimmed_image = decode_jpeg(
         writes
@@ -4449,7 +4549,6 @@ async fn automatic_display_output_turns_with_the_device_mount_rotation() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4463,6 +4562,7 @@ async fn automatic_display_output_turns_with_the_device_mount_rotation() {
     let canvas = split_color_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -4522,7 +4622,6 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4537,12 +4636,18 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.0), None)
         .await;
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&blue, 2, 32),
     );
@@ -4595,7 +4700,6 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4607,6 +4711,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let canvas = split_color_canvas();
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 1, 16),
     );
@@ -4630,6 +4735,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
 
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&canvas, 2, 32),
     );
@@ -4684,7 +4790,6 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state: default_power_state_rx(),
@@ -4696,7 +4801,12 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 1, 16));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 1, 16),
+    );
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(writes.first().expect("expected initial display frame"));
     let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
@@ -4709,7 +4819,12 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     event_bus
         .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(&blue, 2, 32)));
-    publish_screen_backdrop(&event_bus, device_id, CanvasFrame::from_canvas(&red, 3, 48));
+    publish_screen_backdrop(
+        &event_bus,
+        &placement,
+        device_id,
+        CanvasFrame::from_canvas(&red, 3, 48),
+    );
 
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected refreshed direct-face frame"));
@@ -4762,7 +4877,6 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        scene_plan: placement.scene_plan(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         power_state,
@@ -4776,6 +4890,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let black = solid_canvas(Rgba::BLACK);
     publish_screen_backdrop(
         &event_bus,
+        &placement,
         device_id,
         CanvasFrame::from_canvas(&black, 1, 16),
     );

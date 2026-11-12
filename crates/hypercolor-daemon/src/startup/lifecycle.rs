@@ -237,7 +237,6 @@ impl DaemonState {
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
-            scene_plan: self.scene_manager.plan_reader(),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
             power_state: self.output_power.subscribe(),

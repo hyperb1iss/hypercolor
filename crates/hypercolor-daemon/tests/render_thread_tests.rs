@@ -3850,6 +3850,7 @@ async fn gpu_gaussian_zone_reaches_scene_consumers_that_arrive_late() {
     let mut scene = make_scene("Gaussian Beside Bilinear");
     scene.transition.duration_ms = 0;
     scene.zones = vec![ambient, accent, face];
+    place_screen_in_zone(&mut scene.zones[0], display_id);
     scene.unassigned_behavior = UnassignedBehavior::Off;
     install_render_scenes(&state, vec![scene.clone()], scene.id).await;
     {
@@ -3968,7 +3969,7 @@ async fn gpu_gaussian_zone_reaches_scene_consumers_that_arrive_late() {
         state
             .event_bus
             .upsert_display_zone_output_route(face_id, left_half_face_route(display_id));
-        place_screen_in_zone(&state, display_id, scene.zones[0].id);
+        route_screen(&state, display_id);
         let mut face_rx = state.event_bus.zone_canvas_sender(face_id).subscribe();
         // The face mixes its blue half and half over the Gaussian zone,
         // the zone that places its screen.
@@ -4947,6 +4948,7 @@ fn blended_face_scene(
     );
     left_zone.layout.canvas_width = 320;
     left_zone.layout.canvas_height = 200;
+    place_screen_in_zone(&mut left_zone, display_id);
     let mut right_zone = custom_zone(
         "Right",
         rainbow_id,
@@ -5006,17 +5008,42 @@ fn left_half_face_route(display_id: DeviceId) -> DisplayZoneOutputRoute {
     }
 }
 
-/// Name `zone_id` as the zone that places the screen, the way the display
-/// output thread resolves it from the zone's layout.
+/// The layout id these tests give a screen's device.
 #[cfg(feature = "wgpu")]
-fn place_screen_in_zone(state: &RenderThreadState, display_id: DeviceId, zone_id: ZoneId) {
+fn screen_layout_id(display_id: DeviceId) -> String {
+    format!("screen:{display_id}")
+}
+
+/// Have `zone` place the screen on `display_id` over the left half of its
+/// canvas.
+#[cfg(feature = "wgpu")]
+fn place_screen_in_zone(zone: &mut Zone, display_id: DeviceId) {
+    let mut output = region_zone(
+        "screen",
+        &screen_layout_id(display_id),
+        (0.25, 0.5),
+        (0.5, 1.0),
+    );
+    output.zone_name = Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned());
+    zone.layout.zones.push(output);
+}
+
+/// Route the screen the way the display output thread does: by its device's
+/// layout ids and its surface. Which zone places it is the render thread's
+/// to read from the scene it renders.
+#[cfg(feature = "wgpu")]
+fn route_screen(state: &RenderThreadState, display_id: DeviceId) {
+    let mut output = left_half_face_route(display_id);
+    output.viewport.position = NormalizedPosition { x: 0.5, y: 0.5 };
+    output.viewport.size = NormalizedPosition { x: 1.0, y: 1.0 };
     state
         .event_bus
         .replace_screen_backdrop_routes(HashMap::from([(
             display_id,
             ScreenBackdropRoute {
-                zone_id,
-                output: left_half_face_route(display_id),
+                layout_device_ids: vec![screen_layout_id(display_id)],
+                has_led_segments: false,
+                output,
                 target_fps: 15,
             },
         )]));
@@ -5102,12 +5129,12 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
         .map(|zone| zone.id)
         .collect::<Vec<_>>();
     // The display output worker publishes a route for each live face; the
-    // render thread prunes the routes of faces whose scene is not live. It
-    // also names the zone that places the screen, here the solid left one.
+    // render thread prunes the routes of faces whose scene is not live. The
+    // screen is placed by each scene's solid left zone.
     state
         .event_bus
         .upsert_display_zone_output_route(red_face, left_half_face_route(display_id));
-    place_screen_in_zone(&state, display_id, red_scene.zones[0].id);
+    route_screen(&state, display_id);
     install_render_scenes(
         &state,
         vec![red_scene.clone(), blue_scene.clone()],
@@ -5193,7 +5220,7 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
     state
         .event_bus
         .upsert_display_zone_output_route(blue_face, left_half_face_route(display_id));
-    place_screen_in_zone(&state, display_id, blue_scene.zones[0].id);
+    route_screen(&state, display_id);
     tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             if display_center(&blue_face_rx.borrow_and_update())

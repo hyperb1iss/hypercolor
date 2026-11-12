@@ -197,6 +197,14 @@ struct Screen {
 }
 
 impl Screen {
+    /// A screen's identity, before its panel is connected.
+    fn named(name: &str) -> Self {
+        Self {
+            device_id: DeviceId::new(),
+            layout_id: format!("panel:{name}"),
+        }
+    }
+
     /// The screen's box on its zone's canvas.
     fn output(&self, position: (f32, f32), size: (f32, f32)) -> Output {
         Output {
@@ -330,6 +338,15 @@ fn blending_face_zone(screen: &Screen, layers: Vec<SceneLayer>) -> Zone {
     zone
 }
 
+/// A scene of `zones` that fades in over `transition_ms`.
+fn test_scene(name: &str, zones: Vec<Zone>, transition_ms: u64) -> Scene {
+    let mut scene: Scene = make_scene(name);
+    scene.zones = zones;
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    scene.transition.duration_ms = transition_ms;
+    scene
+}
+
 /// The effects a test scene is built from.
 struct Effects {
     solid: EffectId,
@@ -386,7 +403,7 @@ struct Rig {
     logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     writes: PanelWrites,
     effects: Effects,
-    /// Display workers stop when the power policy's sender goes away.
+    /// The power policy. Display workers stop when its sender goes away.
     _power: watch::Sender<OutputPowerState>,
 }
 
@@ -394,8 +411,11 @@ impl Rig {
     fn new(mode: RenderAccelerationMode) -> Self {
         let (power, power_state) = watch::channel(OutputPowerState::default());
         let event_bus = Arc::new(HypercolorBus::new());
-        let scene_manager =
-            SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
+        let scene_manager = SceneService::with_temporary_store(
+            SceneManager::with_default(),
+            Arc::clone(&event_bus),
+        )
+        .expect("temporary scene store should open");
         let scene_plan = scene_manager.plan_reader();
         let asset_dir = tempfile::tempdir()
             .expect("test asset tempdir should be created")
@@ -473,8 +493,16 @@ impl Rig {
         format: DisplayFrameFormat,
         max_fps: u32,
     ) -> Screen {
-        let device_id = DeviceId::new();
-        let layout_id = format!("panel:{name}");
+        let screen = Screen::named(name);
+        self.connect_screen(&screen, format, max_fps).await;
+        screen
+    }
+
+    /// Connect a panel whose box a layout may already hold.
+    async fn connect_screen(&self, screen: &Screen, format: DisplayFrameFormat, max_fps: u32) {
+        let device_id = screen.device_id;
+        let layout_id = screen.layout_id.clone();
+        let name = layout_id.as_str();
         self.logical_devices.write().await.insert(
             layout_id.clone(),
             LogicalDevice {
@@ -506,28 +534,47 @@ impl Rig {
                 .set_state(&device_id, DeviceState::Active)
                 .await
         );
-        Screen {
-            device_id,
-            layout_id,
-        }
+    }
+
+    /// Make `scene` the live scene of a running rig.
+    async fn activate(&self, scene: &Scene) {
+        let mut mutation = self.state.scene_manager.begin_mutation().await;
+        // A scene the rig has shown before is already registered.
+        let _ = mutation.create_scene(scene.clone());
+        mutation
+            .activate(
+                scene.id,
+                None,
+                hypercolor_types::event::SceneChangeReason::UserActivate,
+            )
+            .expect("scene should activate");
+        self.state
+            .scene_manager
+            .commit_mutation(mutation)
+            .await
+            .expect("scene activation should commit");
     }
 
     /// Make `zones` the live scene and start both threads.
     async fn run(&mut self, zones: Vec<Zone>) -> RunningRig {
-        let mut scene: Scene = make_scene("Screen Backdrops");
-        scene.zones = zones;
-        scene.unassigned_behavior = UnassignedBehavior::Off;
+        self.run_scene(test_scene("Screen Backdrops", zones, 0))
+            .await
+    }
+
+    /// Make `scene` the live scene and start both threads.
+    async fn run_scene(&mut self, scene: Scene) -> RunningRig {
         let mut manager = self.state.scene_manager.snapshot().await;
         manager.create(scene.clone()).expect("create scene");
         manager.activate(&scene.id, None).expect("activate scene");
-        let scene_manager = SceneService::in_memory(manager, Arc::clone(&self.state.event_bus));
+        let scene_manager =
+            SceneService::with_temporary_store(manager, Arc::clone(&self.state.event_bus))
+                .expect("temporary scene store should open");
         self.state.scene_plan = scene_manager.plan_reader();
         self.state.scene_manager = scene_manager;
 
         let display = DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.state.backend_manager),
             device_registry: self.state.device_registry.clone(),
-            scene_plan: self.state.scene_plan.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.state.event_bus),
             power_state: self.state.power_state.clone(),
@@ -771,9 +818,12 @@ async fn lone_zone_screens_show_their_crop_of_the_scene_canvas(
     // The crop every screen took before: the scene canvas through the
     // spatial layout's box for the screen, checked away from column edges.
     let logical_devices = rig.logical_devices.read().await;
-    let viewport =
-        screen_viewport_in_layout(&layout, &logical_devices, split_screen.device_id, false)
-            .expect("the layout places the split screen");
+    let viewport = screen_viewport_in_layout(
+        &layout,
+        &layout_ids(&logical_devices, split_screen.device_id),
+        false,
+    )
+    .expect("the layout places the split screen");
     let panel = Panel(&split.data);
     for (x, y) in [
         (1, 2),
@@ -1034,7 +1084,124 @@ async fn gpu_screens_hold_their_cadence() {
     screens_hold_their_cadence(RenderAccelerationMode::Gpu).await;
 }
 
+/// Switching between two scenes that light a screen the same way never
+/// shows the screen black. A screen's zone is found in the scene its frame
+/// renders, so no frame is resolved against another scene's zones.
+async fn scene_switch_never_shows_a_lit_screen_black(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("lit").await;
+    let scene = |name: &str| {
+        test_scene(
+            name,
+            vec![scene_zone(
+                "Red",
+                ZoneRole::Primary,
+                vec![rig.effects.solid(RED)],
+                vec![
+                    strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
+                    screen.output((0.5, 0.5), (0.4, 0.4)),
+                ],
+            )],
+            0,
+        )
+    };
+    let (first, second) = (scene("First"), scene("Second"));
+
+    let running = rig.run_scene(first.clone()).await;
+    rig.writes
+        .wait_for(screen.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    let seen = rig.writes.of(screen.device_id).len();
+    for round in 0..24 {
+        rig.activate(if round % 2 == 0 { &second } else { &first })
+            .await;
+        tokio::time::sleep(Duration::from_millis(45)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    running.stop().await;
+
+    for write in rig.writes.of(screen.device_id).iter().skip(seen) {
+        assert!(
+            near(Panel(&write.data).center(), [255, 0, 0]),
+            "a scene switch showed the screen {:?}",
+            Panel(&write.data).center()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_scene_switch_never_shows_a_lit_screen_black() {
+    scene_switch_never_shows_a_lit_screen_black(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_scene_switch_never_shows_a_lit_screen_black() {
+    scene_switch_never_shows_a_lit_screen_black(RenderAccelerationMode::Gpu).await;
+}
+
+/// A screen no zone of the scene places has no backdrop, and with no face
+/// either it is not driven: placing a screen is the scene's decision, read
+/// by the render thread from the scene it renders.
+async fn unplaced_screen_is_not_driven(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let placed = rig.add_screen("placed").await;
+    let unplaced = rig.add_screen("unplaced").await;
+    let zones = vec![scene_zone(
+        "Red",
+        ZoneRole::Primary,
+        vec![rig.effects.solid(RED)],
+        vec![
+            strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
+            placed.output((0.5, 0.5), (0.4, 0.4)),
+        ],
+    )];
+
+    let running = rig.run(zones).await;
+    rig.writes
+        .wait_for(placed.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    running.stop().await;
+
+    assert!(
+        rig.writes.of(unplaced.device_id).is_empty(),
+        "a screen no zone places was sent {} frames",
+        rig.writes.of(unplaced.device_id).len()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_unplaced_screen_is_not_driven() {
+    unplaced_screen_is_not_driven(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_unplaced_screen_is_not_driven() {
+    unplaced_screen_is_not_driven(RenderAccelerationMode::Gpu).await;
+}
+
 // ── Viewports: the owning zone against the spatial service ────────────────
+
+/// The layout ids a physical device goes by, the way the display output
+/// thread reads them from the logical-device store.
+fn layout_ids(
+    logical_devices: &HashMap<String, LogicalDevice>,
+    device_id: DeviceId,
+) -> Vec<String> {
+    let mut ids = logical_devices
+        .iter()
+        .filter(|(_, entry)| entry.physical_device_id == device_id)
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids
+}
 
 /// A layout device and the physical device it maps to.
 fn logical(layout_id: &str, device_id: DeviceId) -> (String, LogicalDevice) {
@@ -1248,15 +1415,13 @@ fn owning_zone_viewport_equals_the_spatial_service_viewport_for_every_fixture_la
         for screen in &fixture.screens {
             let from_spatial = screen_viewport_in_layout(
                 spatial.layout().as_ref(),
-                &fixture.logical_devices,
-                screen.device_id,
+                &layout_ids(&fixture.logical_devices, screen.device_id),
                 screen.has_led_segments,
             );
             for (scene, zones) in &scenes {
                 let placement = screen_placement(
                     zones,
-                    &fixture.logical_devices,
-                    screen.device_id,
+                    &layout_ids(&fixture.logical_devices, screen.device_id),
                     screen.has_led_segments,
                 );
                 assert_eq!(
@@ -1273,9 +1438,8 @@ fn owning_zone_viewport_equals_the_spatial_service_viewport_for_every_fixture_la
                     assert!(
                         screen_viewport_in_layout(
                             &owner.layout,
-                            &fixture.logical_devices,
-                            screen.device_id,
-                            screen.has_led_segments,
+                            &layout_ids(&fixture.logical_devices, screen.device_id),
+                            screen.has_led_segments
                         )
                         .is_some(),
                         "{} ({scene}): the placing zone should hold the screen",
@@ -1319,12 +1483,15 @@ fn a_zone_that_moves_its_screen_overrides_the_spatial_service_viewport() {
     // primary zone's own placements alone.
     manager.sync_primary_zone_layout(&layout);
 
-    let from_spatial = screen_viewport_in_layout(&layout, &logical_devices, pump.device_id, false)
-        .expect("the layout places the screen");
+    let from_spatial = screen_viewport_in_layout(
+        &layout,
+        &layout_ids(&logical_devices, pump.device_id),
+        false,
+    )
+    .expect("the layout places the screen");
     let placement = screen_placement(
         &manager.resolved_zones(),
-        &logical_devices,
-        pump.device_id,
+        &layout_ids(&logical_devices, pump.device_id),
         false,
     )
     .expect("the primary zone places the screen");
@@ -1364,8 +1531,9 @@ fn the_zone_holding_a_screens_box_places_it_over_a_zone_holding_its_leds() {
         vec![pads_zone.clone(), screen_zone.clone()],
         vec![screen_zone, pads_zone],
     ] {
-        let placement = screen_placement(&zones, &logical_devices, push.device_id, true)
-            .expect("a zone places the screen");
+        let placement =
+            screen_placement(&zones, &layout_ids(&logical_devices, push.device_id), true)
+                .expect("a zone places the screen");
         assert_eq!(placement.zone_id, screen_zone_id);
         assert_eq!(
             placement.viewport.position,

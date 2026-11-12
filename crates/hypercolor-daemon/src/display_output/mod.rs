@@ -2,7 +2,8 @@
 //!
 //! This task delivers each screen's frames, a face or the backdrop of the
 //! zone that places the screen, without disturbing the LED frame routing
-//! path.
+//! path. The render thread decides what each screen shows; this task says
+//! which screens exist and carries their frames to the panels.
 
 mod encode;
 mod placement;
@@ -33,11 +34,9 @@ use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
-use self::placement::screen_placement_signature;
 pub use self::placement::{ScreenPlacement, screen_placement, screen_viewport_in_layout};
 use self::render::display_viewport_signature;
 use crate::display_frames::DisplayFrameRuntime;
-use crate::domain::scene::ScenePlanReader;
 use crate::logical_devices::LogicalDevice;
 use crate::output_power::OutputPowerState;
 use worker::DisplayWorkerHandle;
@@ -65,9 +64,7 @@ pub struct DisplayOutputState {
     pub backend_manager: Arc<Mutex<BackendManager>>,
     /// Live registry used to discover currently renderable display devices.
     pub device_registry: DeviceRegistry,
-    /// Active scene plan: the zones whose layouts place each LCD.
-    pub scene_plan: ScenePlanReader,
-    /// Logical-device mappings used to match physical devices to layout zones.
+    /// Logical-device mappings that name each physical device's layout ids.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     /// Event bus carrying the display frames the render thread produces.
     pub event_bus: Arc<HypercolorBus>,
@@ -107,12 +104,15 @@ struct DisplayTarget {
     canvas_source: DisplayCanvasSource,
     /// The display lane this screen's frames arrive on.
     lane_sender: watch::Sender<DisplayZoneFrame>,
-    /// The screen's backdrop lane, for a face the worker blends over it.
+    /// The screen's backdrop lane, for a face the worker finishes itself:
+    /// it carries the backdrop to blend over and the viewport to turn with.
     backdrop_sender: Option<watch::Sender<DisplayZoneFrame>>,
     display_target: Option<DisplayFaceTarget>,
-    /// Whether the lane's frames arrive finalized by the render thread.
+    /// Whether the face lane's frames arrive finalized by the render thread.
     finalized: bool,
-    viewport: DisplayViewport,
+    /// The whole canvas, turned the way the panel is mounted: what a face
+    /// turns with on a screen no zone places.
+    mount_viewport: DisplayViewport,
 }
 
 type DisplayWorkerKey = (String, DeviceId);
@@ -134,15 +134,13 @@ pub(super) struct DisplayWorkerConfigSignature {
     canvas_source: DisplayCanvasSourceSignature,
     face_blend_mode: BlendMode,
     face_opacity_bits: u32,
-    viewport: DisplayViewportSignature,
+    mount_viewport: DisplayViewportSignature,
 }
 
 #[derive(Default)]
 struct DisplayTargetCache {
     version: u64,
     cache_key: Option<DisplayTargetCacheKey>,
-    /// The zones revision `placement_signature` was computed for.
-    placement_signature: Option<(u64, u64)>,
     targets: Arc<[Arc<DisplayTarget>]>,
 }
 
@@ -164,7 +162,6 @@ impl DisplayTargetDependencyKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplayTargetCacheKey {
     dependency_key: DisplayTargetDependencyKey,
-    placement_signature: u64,
     logical_signature: u64,
     display_preview_signature: u64,
 }
@@ -172,13 +169,11 @@ struct DisplayTargetCacheKey {
 impl DisplayTargetCacheKey {
     const fn new(
         dependency_key: DisplayTargetDependencyKey,
-        placement_signature: u64,
         logical_signature: u64,
         display_preview_signature: u64,
     ) -> Self {
         Self {
             dependency_key,
-            placement_signature,
             logical_signature,
             display_preview_signature,
         }
@@ -222,14 +217,20 @@ struct DisplayTargetsSnapshot {
 
 #[derive(Clone, Debug)]
 pub(super) enum DisplayWorkerFrameSource {
-    /// The owning zone's frame, for the worker to crop to the screen.
-    Backdrop(Arc<CanvasFrame>),
+    /// The owning zone's frame, for the worker to crop to the screen
+    /// through the viewport it arrived with.
+    Backdrop {
+        frame: Arc<CanvasFrame>,
+        viewport: DisplayViewport,
+    },
     /// A frame the render thread finalized for the screen.
     Direct(Arc<DisplayZoneFrame>),
     /// A face for the worker to blend over the screen's backdrop.
+    /// `viewport` crops the backdrop and turns the face.
     Face {
         backdrop_frame: Option<Arc<CanvasFrame>>,
         face_frame: Arc<CanvasFrame>,
+        viewport: DisplayViewport,
         blend_mode: BlendMode,
         opacity: f32,
     },
@@ -262,11 +263,15 @@ struct StableDisplayFrameSetIdentity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StableDisplayFrameSourceIdentity {
-    Backdrop(DisplaySourceIdentity),
+    Backdrop {
+        frame: DisplaySourceIdentity,
+        viewport: DisplayViewportSignature,
+    },
     Direct(DisplaySourceIdentity),
     Face {
         backdrop_frame: Option<DisplaySourceIdentity>,
         face_frame: DisplaySourceIdentity,
+        viewport: DisplayViewportSignature,
         blend_mode: BlendMode,
         opacity_bits: u32,
     },
@@ -283,7 +288,7 @@ impl DisplayTarget {
             canvas_source: self.canvas_source.signature(),
             face_blend_mode: self.face_blend_mode(),
             face_opacity_bits: self.face_opacity().to_bits(),
-            viewport: display_viewport_signature(&self.viewport),
+            mount_viewport: display_viewport_signature(&self.mount_viewport),
         }
     }
 
@@ -381,7 +386,6 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     let mut targets_cache = DisplayTargetCache::default();
     let initial_targets = display_targets(
         &state.device_registry,
-        &state.scene_plan,
         &state.logical_devices,
         &state.event_bus,
         &state.display_frames,
@@ -414,7 +418,6 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
 
         let targets = display_targets(
             &state.device_registry,
-            &state.scene_plan,
             &state.logical_devices,
             &state.event_bus,
             &state.display_frames,
@@ -482,6 +485,7 @@ fn stable_display_source_identity(frame: &CanvasFrame) -> Option<DisplaySourceId
 fn stable_display_zone_source_identity(frame: &DisplayZoneFrame) -> Option<DisplaySourceIdentity> {
     match frame {
         DisplayZoneFrame::Canvas(frame) => stable_display_source_identity(frame),
+        DisplayZoneFrame::Backdrop(backdrop) => stable_display_source_identity(&backdrop.frame),
         DisplayZoneFrame::Yuv420(frame) => {
             (frame.width > 0 && frame.height > 0).then_some(DisplaySourceIdentity::Yuv420 {
                 storage: frame.storage_identity(),
@@ -499,50 +503,71 @@ fn build_display_worker_frame_set(
 ) -> Option<(DisplayWorkerFrameSet, StableDisplayFrameSetIdentity)> {
     let lane_frame = lane_frame?;
     let lane_identity = stable_display_zone_source_identity(lane_frame.as_ref())?;
-    if target.finalized {
-        return Some((
-            DisplayWorkerFrameSet {
-                source: DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
-            },
-            StableDisplayFrameSetIdentity {
-                source: StableDisplayFrameSourceIdentity::Direct(lane_identity),
-            },
-        ));
-    }
-    // A frame the render thread did not finalize is the owning zone's canvas
-    // or a face at panel size, for the worker to crop or blend.
-    let DisplayZoneFrame::Canvas(lane_canvas_frame) = lane_frame.as_ref() else {
-        return None;
-    };
     match &target.canvas_source {
-        DisplayCanvasSource::Backdrop => Some((
-            DisplayWorkerFrameSet {
-                source: DisplayWorkerFrameSource::Backdrop(Arc::new(lane_canvas_frame.clone())),
-            },
-            StableDisplayFrameSetIdentity {
-                source: StableDisplayFrameSourceIdentity::Backdrop(lane_identity),
-            },
-        )),
+        // A backdrop lane's frame says what it is: a zone canvas with its
+        // viewport for the worker to crop, or a finished picture.
+        DisplayCanvasSource::Backdrop => Some(match lane_frame.as_ref() {
+            DisplayZoneFrame::Backdrop(backdrop) => (
+                DisplayWorkerFrameSet {
+                    source: DisplayWorkerFrameSource::Backdrop {
+                        frame: Arc::new(backdrop.frame.clone()),
+                        viewport: backdrop.viewport,
+                    },
+                },
+                StableDisplayFrameSetIdentity {
+                    source: StableDisplayFrameSourceIdentity::Backdrop {
+                        frame: lane_identity,
+                        viewport: display_viewport_signature(&backdrop.viewport),
+                    },
+                },
+            ),
+            DisplayZoneFrame::Canvas(_) | DisplayZoneFrame::Yuv420(_) => (
+                DisplayWorkerFrameSet {
+                    source: DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
+                },
+                StableDisplayFrameSetIdentity {
+                    source: StableDisplayFrameSourceIdentity::Direct(lane_identity),
+                },
+            ),
+        }),
         DisplayCanvasSource::ZoneDirect { .. } => {
-            let backdrop = target
+            if target.finalized {
+                return Some((
+                    DisplayWorkerFrameSet {
+                        source: DisplayWorkerFrameSource::Direct(Arc::clone(lane_frame)),
+                    },
+                    StableDisplayFrameSetIdentity {
+                        source: StableDisplayFrameSourceIdentity::Direct(lane_identity),
+                    },
+                ));
+            }
+            // A face the render thread did not finalize arrives at panel
+            // size for the worker to blend over the screen's backdrop.
+            let DisplayZoneFrame::Canvas(face_canvas_frame) = lane_frame.as_ref() else {
+                return None;
+            };
+            let backdrop = backdrop_frame.and_then(|frame| match frame.as_ref() {
+                DisplayZoneFrame::Backdrop(backdrop) => Some(backdrop),
+                DisplayZoneFrame::Canvas(_) | DisplayZoneFrame::Yuv420(_) => None,
+            });
+            let viewport = backdrop.map_or(target.mount_viewport, |backdrop| backdrop.viewport);
+            let blended = target
                 .blends_with_effect()
-                .then_some(backdrop_frame)
+                .then_some(backdrop)
                 .flatten()
-                .and_then(|frame| match frame.as_ref() {
-                    DisplayZoneFrame::Canvas(frame) => {
-                        let identity = stable_display_source_identity(frame)?;
-                        Some((identity, Arc::new(frame.clone())))
-                    }
-                    DisplayZoneFrame::Yuv420(_) => None,
+                .and_then(|backdrop| {
+                    let identity = stable_display_source_identity(&backdrop.frame)?;
+                    Some((identity, Arc::new(backdrop.frame.clone())))
                 });
-            let (backdrop_identity, backdrop_frame) = backdrop
+            let (backdrop_identity, backdrop_frame) = blended
                 .map(|(identity, frame)| (Some(identity), Some(frame)))
                 .unwrap_or((None, None));
             Some((
                 DisplayWorkerFrameSet {
                     source: DisplayWorkerFrameSource::Face {
                         backdrop_frame,
-                        face_frame: Arc::new(lane_canvas_frame.clone()),
+                        face_frame: Arc::new(face_canvas_frame.clone()),
+                        viewport,
                         blend_mode: target.face_blend_mode(),
                         opacity: target.face_opacity(),
                     },
@@ -551,6 +576,7 @@ fn build_display_worker_frame_set(
                     source: StableDisplayFrameSourceIdentity::Face {
                         backdrop_frame: backdrop_identity,
                         face_frame: lane_identity,
+                        viewport: display_viewport_signature(&viewport),
                         blend_mode: target.face_blend_mode(),
                         opacity_bits: target.face_opacity().to_bits(),
                     },
@@ -660,25 +686,12 @@ fn retire_display_worker(
 
 async fn display_targets(
     registry: &DeviceRegistry,
-    scene_plan: &ScenePlanReader,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
     event_bus: &Arc<HypercolorBus>,
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     cache: &mut DisplayTargetCache,
     face_fps_cap: u32,
 ) -> DisplayTargetsSnapshot {
-    let (zones, zones_revision) = {
-        let plan = scene_plan.load();
-        (Arc::clone(&plan.zones), plan.zones_revision)
-    };
-    let placement_signature = match cache.placement_signature {
-        Some((revision, signature)) if revision == zones_revision => signature,
-        _ => {
-            let signature = screen_placement_signature(&zones);
-            cache.placement_signature = Some((zones_revision, signature));
-            signature
-        }
-    };
     let (display_zone_targets_revision, published_display_zone_targets) =
         event_bus.display_zone_targets_snapshot();
     let logical_store = logical_devices.read().await;
@@ -688,12 +701,8 @@ async fn display_targets(
     let display_preview_signature = device_id_set_signature(&display_preview_subscribers);
     let dependency_key =
         DisplayTargetDependencyKey::new(registry_generation, display_zone_targets_revision);
-    let cache_key = DisplayTargetCacheKey::new(
-        dependency_key,
-        placement_signature,
-        logical_signature,
-        display_preview_signature,
-    );
+    let cache_key =
+        DisplayTargetCacheKey::new(dependency_key, logical_signature, display_preview_signature);
 
     if cache.cache_key == Some(cache_key) {
         return DisplayTargetsSnapshot {
@@ -704,7 +713,7 @@ async fn display_targets(
 
     let lane_targets = display_lane_targets_by_device(published_display_zone_targets);
     let mut targets = Vec::new();
-    let mut backdrop_routes = HashMap::new();
+    let mut screen_routes = HashMap::new();
     for tracked in registry
         .list()
         .await
@@ -730,77 +739,67 @@ async fn display_targets(
             circular: surface.circular,
         };
         let frame_format = surface.format;
-        let has_non_display_led_segments = tracked.info.segments.iter().any(|segment| {
-            segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
-        });
-        let placement = screen_placement(
-            &zones,
-            &logical_store,
-            device_id,
-            has_non_display_led_segments,
-        );
-        let face = lane_targets.faces.get(&device_id);
-        // A screen no zone places shows nothing of its own, so it is driven
-        // only while a face is.
-        let Some(mut viewport) = placement
-            .map(|placement| placement.viewport)
-            .or_else(|| face.is_some().then_some(default_display_viewport()))
-        else {
-            continue;
-        };
-        // The owning zone says where the screen sits on its canvas; the
-        // device's user settings say how the panel is mounted. Both turns
-        // fold into the viewport, which the finalize pass applies to the
-        // backdrop and the face alike, so a screen with no face turns too.
+        // How the panel is mounted is the device's own setting. It turns
+        // the screen's viewport wherever a zone places it, and it is all
+        // the viewport a face has on a screen no zone places.
         let mount_rotation = tracked.user_settings.display_rotation;
-        viewport.rotation += mount_rotation.radians();
+        let mut mount_viewport = default_display_viewport();
+        mount_viewport.rotation += mount_rotation.radians();
+        let mut layout_device_ids = logical_store
+            .iter()
+            .filter(|(_, entry)| entry.physical_device_id == device_id)
+            .map(|(layout_id, _)| layout_id.clone())
+            .collect::<Vec<_>>();
+        layout_device_ids.sort_unstable();
+        let backdrop_source = DisplayCanvasSource::Backdrop;
+        screen_routes.insert(
+            device_id,
+            ScreenBackdropRoute {
+                layout_device_ids,
+                has_led_segments: tracked.info.segments.iter().any(|segment| {
+                    segment.led_count > 0
+                        && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
+                }),
+                output: display_zone_output_route(
+                    device_id,
+                    geometry,
+                    tracked.user_settings.brightness,
+                    frame_format,
+                    mount_viewport,
+                ),
+                target_fps: capped_display_target_fps(
+                    tracked.info.capabilities.max_fps,
+                    &backdrop_source,
+                    frame_format,
+                    face_fps_cap,
+                ),
+            },
+        );
+
+        // The render thread decides what a screen shows and publishes it on
+        // a lane: a face, or the backdrop of the zone that places the
+        // screen. A screen with neither is not driven.
         let backdrop_lane = screen_backdrop_lane_id(device_id);
-        let (canvas_source, lane_id, finalized) = match face {
+        let face = lane_targets.faces.get(&device_id);
+        let has_backdrop_lane = lane_targets.backdrops.contains(&device_id);
+        let (canvas_source, lane_id) = match face {
             Some(face) => (
                 DisplayCanvasSource::ZoneDirect {
                     zone_id: face.zone_id,
                 },
                 face.zone_id,
-                face.finalized,
             ),
-            None => (
-                DisplayCanvasSource::Backdrop,
-                backdrop_lane,
-                lane_targets.finalized_backdrops.contains(&device_id),
-            ),
+            None if has_backdrop_lane => (backdrop_source, backdrop_lane),
+            None => continue,
         };
         debug!(
             %device_id,
             face_zone = ?face.map(|binding| binding.zone_id),
-            backdrop_zone = ?placement.map(|placement| placement.zone_id),
+            has_backdrop_lane,
             ?mount_rotation,
-            viewport_rotation = viewport.rotation,
             face_bindings = lane_targets.faces.len(),
-            "display target viewport resolved"
+            "display target resolved"
         );
-
-        let backdrop_fps = capped_display_target_fps(
-            tracked.info.capabilities.max_fps,
-            &DisplayCanvasSource::Backdrop,
-            frame_format,
-            face_fps_cap,
-        );
-        if let Some(placement) = placement {
-            backdrop_routes.insert(
-                device_id,
-                ScreenBackdropRoute {
-                    zone_id: placement.zone_id,
-                    output: display_zone_output_route(
-                        device_id,
-                        geometry,
-                        tracked.user_settings.brightness,
-                        frame_format,
-                        viewport,
-                    ),
-                    target_fps: backdrop_fps,
-                },
-            );
-        }
 
         let backend_id = tracked.info.output_backend_id().to_owned();
         targets.push(Arc::new(DisplayTarget {
@@ -819,12 +818,12 @@ async fn display_targets(
             frame_format,
             max_frame_len: tracked.info.capabilities.features.max_display_frame_len,
             lane_sender: event_bus.zone_canvas_sender(lane_id),
-            backdrop_sender: (face.is_some() && placement.is_some())
+            backdrop_sender: (face.is_some() && has_backdrop_lane)
                 .then(|| event_bus.zone_canvas_sender(backdrop_lane)),
             canvas_source,
             display_target: face.map(|binding| binding.target.clone()),
-            finalized,
-            viewport,
+            finalized: face.is_some_and(|binding| binding.finalized),
+            mount_viewport,
         }));
     }
 
@@ -834,7 +833,7 @@ async fn display_targets(
             .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
     });
     publish_display_zone_output_routes(event_bus, &targets);
-    event_bus.replace_screen_backdrop_routes(backdrop_routes);
+    event_bus.replace_screen_backdrop_routes(screen_routes);
     cache.version = cache.version.saturating_add(1);
     cache.cache_key = Some(cache_key);
     cache.targets = Arc::from(targets);
@@ -876,7 +875,7 @@ fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<
                 target.geometry,
                 target.brightness,
                 target.frame_format,
-                target.viewport,
+                target.mount_viewport,
             ),
         );
     }
@@ -888,8 +887,8 @@ fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<
 struct DisplayLaneTargets {
     /// The face lane each screen shows.
     faces: HashMap<DeviceId, DisplayFaceTargetBinding>,
-    /// Screens whose backdrop lane carries frames finalized for the panel.
-    finalized_backdrops: HashSet<DeviceId>,
+    /// Screens with a backdrop lane.
+    backdrops: HashSet<DeviceId>,
 }
 
 /// Sort the published lanes into faces and backdrops, and pick one face per
@@ -901,9 +900,7 @@ fn display_lane_targets_by_device(
     let mut lanes = DisplayLaneTargets::default();
     for (zone_id, target) in targets {
         if zone_id == screen_backdrop_lane_id(target.device_id) {
-            if target.finalized {
-                lanes.finalized_backdrops.insert(target.device_id);
-            }
+            lanes.backdrops.insert(target.device_id);
             continue;
         }
         let binding = DisplayFaceTargetBinding {
@@ -1101,7 +1098,32 @@ mod tests {
                 opacity: 0.5,
             }),
             finalized: false,
-            viewport: default_display_viewport(),
+            mount_viewport: default_display_viewport(),
+        }
+    }
+
+    /// A zone canvas the way a compositor that leaves the crop to the
+    /// worker publishes it: with the owning zone's viewport for the screen.
+    fn zone_backdrop_frame(frame_number: u32, viewport: DisplayViewport) -> Arc<DisplayZoneFrame> {
+        Arc::new(DisplayZoneFrame::Backdrop(
+            hypercolor_core::bus::DisplayBackdropFrame {
+                frame: CanvasFrame::from_owned_canvas(
+                    Canvas::new(2, 2),
+                    frame_number,
+                    frame_number,
+                ),
+                viewport,
+            },
+        ))
+    }
+
+    /// A screen's box somewhere other than the whole canvas.
+    fn placed_viewport() -> DisplayViewport {
+        DisplayViewport {
+            position: hypercolor_types::spatial::NormalizedPosition::new(0.25, 0.75),
+            size: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.25),
+            rotation: 0.5,
+            ..default_display_viewport()
         }
     }
 
@@ -1189,8 +1211,7 @@ mod tests {
 
     #[test]
     fn finalized_backdrop_goes_to_the_worker_as_it_is() {
-        let mut target = backdrop_target();
-        target.finalized = true;
+        let target = backdrop_target();
         let frame = zone_canvas_frame(1);
 
         let (frames, identity) = build_display_worker_frame_set(&target, Some(&frame), None)
@@ -1209,25 +1230,41 @@ mod tests {
         ));
     }
 
+    /// A zone canvas is cropped through the viewport it arrived with, and a
+    /// viewport that moves is a new picture even over the same canvas.
     #[test]
-    fn unfinalized_backdrop_is_cropped_by_the_worker() {
+    fn zone_canvas_backdrop_is_cropped_by_the_worker_through_its_own_viewport() {
         let target = backdrop_target();
-        let frame = zone_canvas_frame(1);
+        let frame = zone_backdrop_frame(1, placed_viewport());
 
         let (frames, identity) = build_display_worker_frame_set(&target, Some(&frame), None)
-            .expect("an unfinalized backdrop should build a frame set");
+            .expect("a zone canvas backdrop should build a frame set");
 
-        let DisplayWorkerFrameSource::Backdrop(published) = frames.source else {
-            panic!("an unfinalized backdrop should use the backdrop frame source");
+        let DisplayWorkerFrameSource::Backdrop {
+            frame: published,
+            viewport,
+        } = frames.source
+        else {
+            panic!("a zone canvas backdrop should use the backdrop frame source");
         };
         assert_eq!(
             stable_display_source_identity(published.as_ref()),
             stable_display_zone_source_identity(frame.as_ref())
         );
-        assert!(matches!(
-            identity.source,
-            StableDisplayFrameSourceIdentity::Backdrop(_)
+        assert_eq!(viewport, placed_viewport());
+
+        let DisplayZoneFrame::Backdrop(backdrop) = frame.as_ref() else {
+            unreachable!("the helper builds a backdrop frame");
+        };
+        let moved = Arc::new(DisplayZoneFrame::Backdrop(
+            hypercolor_core::bus::DisplayBackdropFrame {
+                frame: backdrop.frame.clone(),
+                viewport: default_display_viewport(),
+            },
         ));
+        let (_, moved_identity) = build_display_worker_frame_set(&target, Some(&moved), None)
+            .expect("the moved backdrop should build a frame set");
+        assert_ne!(identity, moved_identity);
     }
 
     #[test]
@@ -1253,6 +1290,7 @@ mod tests {
             face_frame: published_face,
             blend_mode,
             opacity,
+            ..
         } = frames.source
         else {
             panic!("display face should use the unified face frame source");
@@ -1285,7 +1323,7 @@ mod tests {
     #[test]
     fn blended_display_face_uses_same_face_frame_source_with_its_backdrop() {
         let target = display_target(BlendMode::Alpha);
-        let backdrop_frame = zone_canvas_frame(1);
+        let backdrop_frame = zone_backdrop_frame(1, placed_viewport());
         let backdrop_identity = stable_display_zone_source_identity(backdrop_frame.as_ref())
             .expect("backdrop should be stable");
         let face_frame = zone_canvas_frame(2);
@@ -1297,12 +1335,18 @@ mod tests {
         let DisplayWorkerFrameSource::Face {
             backdrop_frame,
             face_frame: published_face,
+            viewport,
             blend_mode,
             opacity,
         } = frames.source
         else {
             panic!("blended display face should use the unified face frame source");
         };
+        assert_eq!(
+            viewport,
+            placed_viewport(),
+            "a face turns with the viewport its screen's backdrop arrived with"
+        );
         let StableDisplayFrameSourceIdentity::Face {
             backdrop_frame: identity_backdrop,
             blend_mode: identity_blend_mode,
@@ -1338,6 +1382,7 @@ mod tests {
             face_frame: published_face,
             blend_mode,
             opacity,
+            ..
         } = frames.source
         else {
             panic!("blended display face should use the unified face frame source");
@@ -1465,7 +1510,10 @@ mod tests {
             Some(face_zone)
         );
         assert!(!resolved.faces.contains_key(&backdrop_only));
-        assert!(resolved.finalized_backdrops.contains(&backdrop_only));
-        assert!(!resolved.finalized_backdrops.contains(&with_face));
+        assert!(resolved.backdrops.contains(&backdrop_only));
+        assert!(
+            resolved.backdrops.contains(&with_face),
+            "a face's screen keeps its backdrop lane beside the face"
+        );
     }
 }

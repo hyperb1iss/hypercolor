@@ -16,7 +16,7 @@ use self::preview_policy::{
 };
 use super::display_lane::{
     ComposedSceneBackdrop, DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
-    MaterializedDisplayLanes, ScreenBackdrops, screen_faces,
+    MaterializedDisplayLanes, ScreenBackdrops, faced_screens, place_screens,
 };
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
@@ -729,7 +729,8 @@ impl ComposeContext<'_> {
             self.state.canvas_dims.height(),
             [0, 0, 0],
         ));
-        let faces = screen_faces(&scene_runtime.resolved_zones, active_display_zone_ids);
+        let screens = place_screens(&backdrop_routes, &scene_runtime.resolved_zones);
+        let faced = faced_screens(&scene_runtime.resolved_zones, active_display_zone_ids);
         let context = DisplayLaneContext {
             elapsed_ms: self.scene_snapshot.elapsed_ms,
             dependency_key,
@@ -739,7 +740,7 @@ impl ComposeContext<'_> {
                 fallback: &scene_runtime.active_display_zone_output_routes,
             },
             backdrops: ScreenBackdrops {
-                routes: &backdrop_routes,
+                screens: &screens,
                 zone_frames,
                 composed,
                 black: &black,
@@ -747,7 +748,7 @@ impl ComposeContext<'_> {
         };
         DisplayLaneMaterializer::new(&mut self.compose, context).materialize(
             active_display_zone_ids,
-            &faces,
+            &faced,
             display_zone_frames,
         )
     }

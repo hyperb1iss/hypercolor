@@ -1637,9 +1637,10 @@ async fn output_demand_waiter_that_is_not_triggered_stays_asleep() {
     assert!(!output_demand_wakes_on(&bus, || {}).await);
 }
 
-fn screen_backdrop_route(device_id: DeviceId, zone_id: ZoneId) -> ScreenBackdropRoute {
+fn screen_backdrop_route(device_id: DeviceId, layout_id: &str) -> ScreenBackdropRoute {
     ScreenBackdropRoute {
-        zone_id,
+        layout_device_ids: vec![layout_id.to_owned()],
+        has_led_segments: false,
         output: DisplayZoneOutputRoute {
             device_id,
             width: 480,
@@ -1664,21 +1665,20 @@ fn screen_backdrop_routes_replace_as_a_set_and_keep_their_revision_when_unchange
     let bus = HypercolorBus::new();
     let kept = DeviceId::new();
     let dropped = DeviceId::new();
-    let zone_id = ZoneId::new();
     let (initial_revision, initial) = bus.screen_backdrop_routes_snapshot();
     assert!(initial.is_empty());
 
     bus.replace_screen_backdrop_routes(std::collections::HashMap::from([
-        (kept, screen_backdrop_route(kept, zone_id)),
-        (dropped, screen_backdrop_route(dropped, zone_id)),
+        (kept, screen_backdrop_route(kept, "kept")),
+        (dropped, screen_backdrop_route(dropped, "dropped")),
     ]));
     let (published_revision, published) = bus.screen_backdrop_routes_snapshot();
     assert_ne!(published_revision, initial_revision);
     assert_eq!(published.len(), 2);
 
     bus.replace_screen_backdrop_routes(std::collections::HashMap::from([
-        (kept, screen_backdrop_route(kept, zone_id)),
-        (dropped, screen_backdrop_route(dropped, zone_id)),
+        (kept, screen_backdrop_route(kept, "kept")),
+        (dropped, screen_backdrop_route(dropped, "dropped")),
     ]));
     assert_eq!(
         bus.screen_backdrop_routes_snapshot().0,
@@ -1688,13 +1688,14 @@ fn screen_backdrop_routes_replace_as_a_set_and_keep_their_revision_when_unchange
 
     bus.replace_screen_backdrop_routes(std::collections::HashMap::from([(
         kept,
-        screen_backdrop_route(kept, zone_id),
+        screen_backdrop_route(kept, "kept"),
     )]));
     let (replaced_revision, replaced) = bus.screen_backdrop_routes_snapshot();
     assert_ne!(replaced_revision, published_revision);
+    assert_eq!(bus.screen_backdrop_routes_revision(), replaced_revision);
     assert_eq!(
         replaced.get(&kept),
-        Some(&screen_backdrop_route(kept, zone_id))
+        Some(&screen_backdrop_route(kept, "kept"))
     );
     assert!(
         !replaced.contains_key(&dropped),
@@ -1708,12 +1709,12 @@ fn render_thread_pruning_leaves_screen_backdrop_routes_alone() {
     let device_id = DeviceId::new();
     bus.replace_screen_backdrop_routes(std::collections::HashMap::from([(
         device_id,
-        screen_backdrop_route(device_id, ZoneId::new()),
+        screen_backdrop_route(device_id, "screen"),
     )]));
 
     // The render thread prunes face routes to the display lanes it renders.
-    // A backdrop route names a screen it has not adopted yet, so that
-    // pruning must not reach it.
+    // A screen route names a screen it has not adopted yet, so that pruning
+    // must not reach it.
     let _ = bus.retain_zone_canvases_and_collect_senders(&[]);
     bus.retain_display_zone_targets(&[]);
 

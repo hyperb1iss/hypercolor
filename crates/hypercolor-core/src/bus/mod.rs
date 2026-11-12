@@ -502,10 +502,24 @@ impl DisplayYuv420Frame {
     }
 }
 
+/// A backdrop the display worker crops for its screen: the canvas of the
+/// zone that places the screen, with that zone's viewport for it.
+///
+/// The viewport travels with the pixels it applies to, so a worker never
+/// crops one scene's canvas through another scene's placement.
+#[derive(Clone, Debug)]
+pub struct DisplayBackdropFrame {
+    pub frame: CanvasFrame,
+    pub viewport: DisplayZoneViewport,
+}
+
 #[derive(Clone, Debug)]
 pub enum DisplayZoneFrame {
     Canvas(CanvasFrame),
     Yuv420(DisplayYuv420Frame),
+    /// A zone canvas for the display worker to crop, where the render
+    /// thread's compositor does not finalize display frames itself.
+    Backdrop(DisplayBackdropFrame),
 }
 
 impl DisplayZoneFrame {
@@ -524,6 +538,7 @@ impl DisplayZoneFrame {
         match self {
             Self::Canvas(frame) => frame.width,
             Self::Yuv420(frame) => frame.width,
+            Self::Backdrop(backdrop) => backdrop.frame.width,
         }
     }
 
@@ -532,6 +547,7 @@ impl DisplayZoneFrame {
         match self {
             Self::Canvas(frame) => frame.height,
             Self::Yuv420(frame) => frame.height,
+            Self::Backdrop(backdrop) => backdrop.frame.height,
         }
     }
 
@@ -540,6 +556,7 @@ impl DisplayZoneFrame {
         match self {
             Self::Canvas(frame) => frame.rgba_bytes(),
             Self::Yuv420(_) => &[],
+            Self::Backdrop(backdrop) => backdrop.frame.rgba_bytes(),
         }
     }
 
@@ -554,6 +571,15 @@ impl DisplayZoneFrame {
             Self::Yuv420(frame) => {
                 Self::Yuv420(frame.with_frame_metadata(frame_number, timestamp_ms))
             }
+            Self::Backdrop(backdrop) => Self::Backdrop(DisplayBackdropFrame {
+                frame: CanvasFrame::from_surface(
+                    backdrop
+                        .frame
+                        .surface()
+                        .with_frame_metadata(frame_number, timestamp_ms),
+                ),
+                viewport: backdrop.viewport,
+            }),
         }
     }
 }
@@ -608,18 +634,21 @@ impl From<&DisplayFaceTarget> for DisplayZoneTarget {
     }
 }
 
-/// Where one screen's backdrop comes from, authored by the display output
-/// thread for every screen a zone places.
+/// One screen the display output thread drives, authored by that thread.
 ///
 /// A screen's backdrop is the frame of the zone that places it, seen through
-/// that zone's placement of the screen (Spec 95 §5.10). Each screen resolves
-/// its own, so two screens whose boxes overlap in different zones never read
-/// each other's pixels.
+/// that zone's placement of the screen (Spec 95 §5.10). The render thread
+/// finds that zone in the scene it is rendering, from the layout ids named
+/// here, so the placement always belongs to the frame it is applied to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScreenBackdropRoute {
-    /// The zone whose layout places the screen.
-    pub zone_id: ZoneId,
-    /// The screen's surface, with the owning zone's viewport for it.
+    /// The layout device ids whose outputs belong to the screen's device.
+    pub layout_device_ids: Vec<String>,
+    /// Whether the device also drives LEDs.
+    pub has_led_segments: bool,
+    /// The screen's surface. Its viewport is the one a screen no zone
+    /// places shows a face through: the whole canvas, turned the way the
+    /// panel is mounted.
     pub output: DisplayZoneOutputRoute,
     /// Frame rate cap for the screen while it shows its backdrop alone.
     pub target_fps: u32,
@@ -892,7 +921,7 @@ pub struct HypercolorBus {
     /// Display-output-authored final display surface metadata keyed by zone id.
     display_zone_output_routes: Arc<Mutex<DisplayZoneOutputRouteRegistry>>,
 
-    /// Display-output-authored backdrop source of every placed screen.
+    /// Display-output-authored set of the screens it drives.
     screen_backdrop_routes: Arc<Mutex<ScreenBackdropRouteRegistry>>,
 
     /// Notified when output demand appears or observable state changes.
@@ -1393,11 +1422,11 @@ impl HypercolorBus {
         }
     }
 
-    /// Replace the backdrop source of every placed screen.
+    /// Replace the set of screens the display output thread drives.
     ///
     /// The display output thread owns this set and publishes it whole, so a
-    /// screen that leaves every layout drops out with the next publication.
-    /// An unchanged set keeps its revision.
+    /// screen that goes away drops out with the next publication. An
+    /// unchanged set keeps its revision.
     pub fn replace_screen_backdrop_routes(&self, routes: HashMap<DeviceId, ScreenBackdropRoute>) {
         let mut registry = self
             .screen_backdrop_routes
@@ -1409,7 +1438,16 @@ impl HypercolorBus {
         }
     }
 
-    /// Snapshot the backdrop source of every placed screen.
+    /// The revision of the screen set, without the set.
+    #[must_use]
+    pub fn screen_backdrop_routes_revision(&self) -> u64 {
+        self.screen_backdrop_routes
+            .lock()
+            .expect("screen backdrop route registry should not be poisoned")
+            .revision
+    }
+
+    /// Snapshot every screen the display output thread drives.
     #[must_use]
     pub fn screen_backdrop_routes_snapshot(
         &self,

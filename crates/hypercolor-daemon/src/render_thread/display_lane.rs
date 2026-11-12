@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use tracing::debug;
 
 use hypercolor_core::bus::{
-    DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget, ScreenBackdropRoute,
-    screen_backdrop_lane_id,
+    DisplayBackdropFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget,
+    ScreenBackdropRoute, screen_backdrop_lane_id,
 };
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::device::DeviceId;
@@ -24,6 +24,7 @@ use super::scene_dependency::SceneDependencyKey;
 use super::sparkleflinger::{
     DisplayFinalizeCacheKey, DisplayFinalizeDispatch, DisplayFinalizeFrame, DisplayFinalizeParams,
 };
+use crate::display_output::screen_placement;
 
 pub(super) struct DisplayLaneRoutes<'a> {
     pub(super) current: &'a HashMap<ZoneId, DisplayZoneOutputRoute>,
@@ -50,6 +51,52 @@ pub(super) enum ComposedSceneBackdrop<'a> {
     Zone(ZoneId, &'a ProducerFrame),
 }
 
+/// A screen the display output thread drives, placed in the scene this
+/// frame renders.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PlacedScreen {
+    pub(crate) device_id: DeviceId,
+    /// The zone whose layout places the screen.
+    pub(crate) zone_id: ZoneId,
+    /// The screen's surface, with the placing zone's viewport for it,
+    /// turned the way the panel is mounted.
+    pub(crate) output: DisplayZoneOutputRoute,
+    /// Frame rate cap for the screen while it shows its backdrop alone.
+    pub(crate) target_fps: u32,
+}
+
+/// Place every screen the display output thread drives in `zones`, the
+/// zones of the frame being rendered.
+///
+/// A route only names a screen's device; the zone that places it and that
+/// zone's viewport are read here, from the scene whose frames the screen is
+/// about to show. A placement resolved anywhere else could describe another
+/// scene by the time its frame arrived. A screen no zone places is left out.
+pub(super) fn place_screens(
+    routes: &HashMap<DeviceId, ScreenBackdropRoute>,
+    zones: &[Zone],
+) -> Vec<PlacedScreen> {
+    let mut screens = routes
+        .iter()
+        .filter_map(|(device_id, route)| {
+            let placement =
+                screen_placement(zones, &route.layout_device_ids, route.has_led_segments)?;
+            let mut output = route.output.clone();
+            let mount_rotation = output.viewport.rotation;
+            output.viewport = placement.viewport;
+            output.viewport.rotation += mount_rotation;
+            Some(PlacedScreen {
+                device_id: *device_id,
+                zone_id: placement.zone_id,
+                output,
+                target_fps: route.target_fps,
+            })
+        })
+        .collect::<Vec<_>>();
+    screens.sort_by_key(|screen| screen.device_id.as_uuid());
+    screens
+}
+
 /// Where each placed screen's backdrop comes from this frame.
 ///
 /// A screen's backdrop is the frame of the zone that places it, seen through
@@ -58,9 +105,8 @@ pub(super) enum ComposedSceneBackdrop<'a> {
 /// each other's zone.
 #[derive(Clone, Copy)]
 pub(super) struct ScreenBackdrops<'a> {
-    /// The zone that places each screen, authored by the display output
-    /// thread.
-    pub(super) routes: &'a HashMap<DeviceId, ScreenBackdropRoute>,
+    /// The screens the frame's scene places, by device.
+    pub(super) screens: &'a [PlacedScreen],
     /// Each scene zone's frame this pass.
     pub(super) zone_frames: &'a [(ZoneId, ProducerFrame)],
     pub(super) composed: Option<ComposedSceneBackdrop<'a>>,
@@ -69,6 +115,12 @@ pub(super) struct ScreenBackdrops<'a> {
 }
 
 impl<'a> ScreenBackdrops<'a> {
+    fn screen(&self, device_id: DeviceId) -> Option<&'a PlacedScreen> {
+        self.screens
+            .iter()
+            .find(|screen| screen.device_id == device_id)
+    }
+
     /// The frame a zone gives its screens, or `None` for a zone that
     /// renders nothing this pass.
     fn zone_frame(&self, zone_id: ZoneId) -> Option<&'a ProducerFrame> {
@@ -88,33 +140,18 @@ impl<'a> ScreenBackdrops<'a> {
     /// The backdrop of the screen on `device_id`. A screen no zone places,
     /// or one whose zone renders nothing, shows black.
     fn frame_for_screen(&self, device_id: DeviceId) -> &'a ProducerFrame {
-        self.routes
-            .get(&device_id)
-            .and_then(|route| self.zone_frame(route.zone_id))
+        self.screen(device_id)
+            .and_then(|screen| self.zone_frame(screen.zone_id))
             .unwrap_or(self.black)
     }
 }
 
-/// A screen's face this frame, as far as its backdrop is concerned.
-#[derive(Clone, Copy)]
-pub(super) struct ScreenFace {
-    pub(super) device_id: DeviceId,
-    /// Whether the face lets its backdrop show through.
-    pub(super) blends_with_backdrop: bool,
-}
-
-/// The faces the active display zones put on their screens.
-pub(super) fn screen_faces(zones: &[Zone], active_zone_ids: &[ZoneId]) -> Vec<ScreenFace> {
+/// The screens the active display zones put a face on.
+pub(super) fn faced_screens(zones: &[Zone], active_zone_ids: &[ZoneId]) -> Vec<DeviceId> {
     zones
         .iter()
         .filter(|zone| active_zone_ids.contains(&zone.id))
-        .filter_map(|zone| {
-            let target = zone.display_target.as_ref()?;
-            Some(ScreenFace {
-                device_id: target.device_id,
-                blends_with_backdrop: target.blends_with_effect(),
-            })
-        })
+        .filter_map(|zone| Some(zone.display_target.as_ref()?.device_id))
         .collect()
 }
 
@@ -149,14 +186,12 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
     /// Materialize the frame's display lanes: each face over its screen's
     /// backdrop, and a backdrop alone for each placed screen with no face.
     ///
-    /// `faces` are the faces of the active display zones, with or without a
-    /// frame this pass. A screen with a face gets no backdrop lane, unless
-    /// the display workers do the blending and the face lets its backdrop
-    /// through.
+    /// `faced` are the screens the active display zones put a face on, with
+    /// or without a frame this pass.
     pub(super) fn materialize(
         &mut self,
         active_zone_ids: &[ZoneId],
-        faces: &[ScreenFace],
+        faced: &[DeviceId],
         zone_canvases: Vec<(ZoneId, PendingDisplayZoneFrame)>,
     ) -> MaterializedDisplayLanes {
         #[cfg(feature = "wgpu")]
@@ -167,20 +202,18 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         #[cfg(not(feature = "wgpu"))]
         let finalizes = false;
         let backdrops = self.context.backdrops;
-        let mut backdrop_screens = backdrops
-            .routes
+        // A compositor that finalizes shows a face over its backdrop in one
+        // pass. One that does not hands the worker the backdrop of every
+        // placed screen: to crop alone, or for a face to blend over and
+        // turn with.
+        let backdrop_screens = backdrops
+            .screens
             .iter()
-            .filter(|(device_id, _)| {
-                faces
-                    .iter()
-                    .find(|face| face.device_id == **device_id)
-                    .is_none_or(|face| !finalizes && face.blends_with_backdrop)
-            })
+            .filter(|screen| !finalizes || !faced.contains(&screen.device_id))
             .collect::<Vec<_>>();
-        backdrop_screens.sort_by_key(|(device_id, _)| device_id.as_uuid());
         let backdrop_devices = backdrop_screens
             .iter()
-            .map(|(device_id, _)| **device_id)
+            .map(|screen| screen.device_id)
             .collect::<Vec<_>>();
         let mut active_lane_ids = active_zone_ids.to_vec();
         active_lane_ids.extend(
@@ -197,9 +230,9 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             .retain_backdrop_frames_for(&backdrop_devices);
 
         let mut frames = self.materialize_zone_canvases(zone_canvases, finalizes);
-        for (device_id, route) in backdrop_screens {
-            if let Some(frame) = self.materialize_backdrop_lane(*device_id, route, finalizes) {
-                frames.push((screen_backdrop_lane_id(*device_id), frame));
+        for screen in backdrop_screens {
+            if let Some(frame) = self.materialize_backdrop_lane(screen, finalizes) {
+                frames.push((screen_backdrop_lane_id(screen.device_id), frame));
             }
         }
         MaterializedDisplayLanes {
@@ -216,8 +249,23 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         zone_canvases
             .into_iter()
             .filter_map(|(zone_id, frame)| {
-                let display_route = self.context.routes.route_for_zone(&zone_id).cloned();
                 let display_target = frame.display_target.clone();
+                // The face's route says what its panel is. Where the scene
+                // places the screen is this frame's to say.
+                let placed = self.context.backdrops.screen(display_target.device_id);
+                let display_route =
+                    self.context
+                        .routes
+                        .route_for_zone(&zone_id)
+                        .cloned()
+                        .map(|mut route| {
+                            if let Some(screen) =
+                                placed.filter(|screen| screen.device_id == route.device_id)
+                            {
+                                route.viewport = screen.output.viewport;
+                            }
+                            route
+                        });
                 let empty_direct_shell = frame.empty_direct_shell;
                 if let Some(route) = display_route.as_ref()
                     && let Some(frame) = self
@@ -325,42 +373,49 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         })
     }
 
-    /// Materialize the backdrop a screen shows alone: finalized for the
-    /// panel where the compositor finalizes, and otherwise the owning zone's
-    /// frame for the screen's worker to crop.
+    /// Materialize the backdrop lane of a placed screen: its backdrop
+    /// finalized for the panel where the compositor finalizes, and otherwise
+    /// the owning zone's frame for the screen's worker to crop.
     fn materialize_backdrop_lane(
         &mut self,
-        device_id: DeviceId,
-        route: &ScreenBackdropRoute,
+        screen: &PlacedScreen,
         finalizes: bool,
     ) -> Option<DisplayZoneCanvasFrame> {
+        let device_id = screen.device_id;
         let lane_id = screen_backdrop_lane_id(device_id);
         let backdrops = self.context.backdrops;
-        let Some(backdrop) = backdrops.zone_frame(route.zone_id) else {
-            // Black needs no finalize pass, and a render loop that is about
-            // to idle would not come back to collect one. It is the same
-            // picture at any size, so the worker fits it to the panel under
-            // the target the lane's finalized frames carry.
-            self.discard_pending_display_finalize_work(lane_id);
-            return Some(DisplayZoneCanvasFrame {
-                frame: DisplayZoneFrame::from_surface(self.cpu_surface(backdrops.black.clone())?),
-                display_target: backdrop_lane_target(device_id, finalizes),
-            });
-        };
+        let backdrop = backdrops.zone_frame(screen.zone_id);
         if !finalizes {
+            // The viewport travels with the canvas it applies to, so the
+            // worker never crops one scene's canvas through another's box.
+            let frame = backdrop.unwrap_or(backdrops.black).clone();
             return Some(DisplayZoneCanvasFrame {
-                frame: DisplayZoneFrame::from_surface(self.cpu_surface(backdrop.clone())?),
+                frame: DisplayZoneFrame::Backdrop(DisplayBackdropFrame {
+                    frame: hypercolor_core::bus::CanvasFrame::from_surface(
+                        self.cpu_surface(frame)?,
+                    ),
+                    viewport: screen.output.viewport,
+                }),
                 display_target: backdrop_lane_target(device_id, false),
             });
         }
+        let Some(backdrop) = backdrop else {
+            // Black needs no finalize pass, and a render loop that is about
+            // to idle would not come back to collect one. It is the same
+            // picture at any size, so the worker fits it to the panel.
+            self.discard_pending_display_finalize_work(lane_id);
+            return Some(DisplayZoneCanvasFrame {
+                frame: DisplayZoneFrame::from_surface(self.cpu_surface(backdrops.black.clone())?),
+                display_target: backdrop_lane_target(device_id, true),
+            });
+        };
 
         match self
             .compose
             .render_zone_runtime
             .reuse_retained_backdrop_frame(
-                device_id,
                 self.context.elapsed_ms,
-                route,
+                screen,
                 backdrop.stable_identity(),
             ) {
             Some(RetainedBackdrop::Unchanged(frame)) => {
@@ -378,13 +433,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             backdrop,
             None,
             &backdrop_finalize_target(device_id),
-            Some(&route.output),
+            Some(&screen.output),
         );
         let Some(finalized) = finalized else {
             let retained = self
                 .compose
                 .render_zone_runtime
-                .reuse_latest_backdrop_frame(device_id, route)?;
+                .reuse_latest_backdrop_frame(screen)?;
             #[cfg(feature = "wgpu")]
             crate::render_thread::sparkleflinger::gpu::record_gpu_display_finalize_latch();
             return Some(retained);
@@ -394,9 +449,8 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             display_target: backdrop_lane_target(device_id, true),
         };
         self.compose.render_zone_runtime.retain_backdrop_frame(
-            device_id,
             self.context.elapsed_ms,
-            route,
+            screen,
             finalized.backdrop,
             &frame,
         );
@@ -722,7 +776,7 @@ mod tests {
     use hypercolor_core::bus::screen_backdrop_lane_id;
     #[cfg(feature = "wgpu")]
     use hypercolor_core::bus::{DisplayYuv420Frame, DisplayZoneFrame, DisplayZoneTarget};
-    use hypercolor_core::bus::{DisplayZoneOutputRoute, DisplayZoneViewport, ScreenBackdropRoute};
+    use hypercolor_core::bus::{DisplayZoneOutputRoute, DisplayZoneViewport};
     use hypercolor_types::canvas::{Canvas, Rgba};
     #[cfg(feature = "wgpu")]
     use hypercolor_types::config::RenderAccelerationMode;
@@ -731,10 +785,10 @@ mod tests {
     use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
-    use super::{ComposedSceneBackdrop, DisplayLaneRoutes, ScreenBackdrops};
+    use super::{ComposedSceneBackdrop, DisplayLaneRoutes, PlacedScreen, ScreenBackdrops};
     #[cfg(feature = "wgpu")]
     use super::{
-        DisplayLaneContext, DisplayLaneMaterializer, MaterializedDisplayLanes, ScreenFace,
+        DisplayLaneContext, DisplayLaneMaterializer, MaterializedDisplayLanes,
         display_finalize_dispatch_reuses_retained_frame, display_finalize_frame_to_zone,
     };
     #[cfg(feature = "wgpu")]
@@ -819,11 +873,11 @@ mod tests {
             DeviceId::new(),
             DeviceId::new(),
         );
-        let routes = HashMap::from([
-            (left_screen, backdrop_route(left_screen, left_zone, 15)),
-            (right_screen, backdrop_route(right_screen, right_zone, 15)),
-            (idle_screen, backdrop_route(idle_screen, idle_zone, 15)),
-        ]);
+        let screens = [
+            placed_screen(left_screen, left_zone, 15),
+            placed_screen(right_screen, right_zone, 15),
+            placed_screen(idle_screen, idle_zone, 15),
+        ];
         let zone_frames = [
             (left_zone, solid_frame([255, 0, 0])),
             (right_zone, solid_frame([0, 0, 255])),
@@ -832,7 +886,7 @@ mod tests {
         let black = black_frame();
         let composed = solid_frame([255, 255, 255]);
         let backdrops = |composed| ScreenBackdrops {
-            routes: &routes,
+            screens: &screens,
             zone_frames: &zone_frames,
             composed,
             black: &black,
@@ -878,16 +932,16 @@ mod tests {
         let mut harness = DisplayLaneHarness::new();
         let (left_zone, right_zone) = (ZoneId::new(), ZoneId::new());
         let (left_screen, right_screen) = (DeviceId::new(), DeviceId::new());
-        let backdrop_routes = HashMap::from([
-            (left_screen, backdrop_route(left_screen, left_zone, 15)),
-            (right_screen, backdrop_route(right_screen, right_zone, 15)),
+        let screens = HashMap::from([
+            (left_screen, placed_screen(left_screen, left_zone, 15)),
+            (right_screen, placed_screen(right_screen, right_zone, 15)),
         ]);
         let zone_frames = [
             (left_zone, solid_frame([255, 0, 0])),
             (right_zone, solid_frame([0, 0, 255])),
         ];
 
-        let lanes = harness.materialize(100, &backdrop_routes, &zone_frames, Vec::new());
+        let lanes = harness.materialize(100, &screens, &zone_frames, Vec::new());
 
         for (screen, expected) in [
             (left_screen, [255, 0, 0, 255]),
@@ -904,24 +958,27 @@ mod tests {
             );
         }
 
-        // A face that replaces its backdrop needs none; one that blends does.
+        // Both faces' workers take the screen's backdrop lane: it carries
+        // the viewport a face turns with, and what a blending face shows
+        // through.
         let replacing = display_face(left_screen, BlendMode::Replace, [0, 255, 0]);
         let blending = display_face(right_screen, BlendMode::Alpha, [0, 255, 0]);
         let (replacing_zone, blending_zone) = (ZoneId::new(), ZoneId::new());
         let lanes = harness.materialize(
             133,
-            &backdrop_routes,
+            &screens,
             &zone_frames,
             vec![(replacing_zone, replacing), (blending_zone, blending)],
         );
 
-        assert!(
-            lane_frame(&lanes, screen_backdrop_lane_id(left_screen)).is_none(),
-            "a replacing face should not keep a backdrop lane alive"
-        );
-        let backdrop = lane_frame(&lanes, screen_backdrop_lane_id(right_screen))
-            .expect("a blending face's worker needs the backdrop");
-        assert_eq!(first_pixel(&backdrop.frame), [0, 0, 255, 255]);
+        for (screen, expected) in [
+            (left_screen, [255, 0, 0, 255]),
+            (right_screen, [0, 0, 255, 255]),
+        ] {
+            let backdrop = lane_frame(&lanes, screen_backdrop_lane_id(screen))
+                .expect("a face's worker needs its screen's backdrop lane");
+            assert_eq!(first_pixel(&backdrop.frame), expected);
+        }
         for face_zone in [replacing_zone, blending_zone] {
             let face = lane_frame(&lanes, face_zone).expect("each face is handed to its worker");
             assert_eq!(first_pixel(&face.frame), [0, 255, 0, 255]);
@@ -944,16 +1001,16 @@ mod tests {
         let (left_zone, right_zone) = (ZoneId::new(), ZoneId::new());
         let (left_screen, right_screen) = (DeviceId::new(), DeviceId::new());
         // Both routes carry the same viewport: the boxes overlap entirely.
-        let backdrop_routes = HashMap::from([
-            (left_screen, backdrop_route(left_screen, left_zone, 15)),
-            (right_screen, backdrop_route(right_screen, right_zone, 15)),
+        let screens = HashMap::from([
+            (left_screen, placed_screen(left_screen, left_zone, 15)),
+            (right_screen, placed_screen(right_screen, right_zone, 15)),
         ]);
         let zone_frames = [
             (left_zone, solid_frame([255, 0, 0])),
             (right_zone, solid_frame([0, 0, 255])),
         ];
 
-        let lanes = harness.materialize_until(&backdrop_routes, &zone_frames, Vec::new, |lanes| {
+        let lanes = harness.materialize_until(&screens, &zone_frames, Vec::new, |lanes| {
             lanes.frames.len() == 2
         });
         for (screen, expected) in [
@@ -979,7 +1036,7 @@ mod tests {
                 ),
             ]
         };
-        let lanes = harness.materialize_until(&backdrop_routes, &zone_frames, faces, |lanes| {
+        let lanes = harness.materialize_until(&screens, &zone_frames, faces, |lanes| {
             lane_frame(lanes, left_face).is_some() && lane_frame(lanes, right_face).is_some()
         });
         assert!(
@@ -1016,10 +1073,10 @@ mod tests {
         let zone = ZoneId::new();
         let screen = DeviceId::new();
         let lane = screen_backdrop_lane_id(screen);
-        let backdrop_routes = HashMap::from([(screen, backdrop_route(screen, zone, 15))]);
+        let screens = HashMap::from([(screen, placed_screen(screen, zone, 15))]);
         let red = [(zone, surface_frame([255, 0, 0]))];
 
-        let first = harness.materialize_until(&backdrop_routes, &red, Vec::new, |lanes| {
+        let first = harness.materialize_until(&screens, &red, Vec::new, |lanes| {
             lane_frame(lanes, lane).is_some()
         });
         let first = lane_frame(&first, lane)
@@ -1031,7 +1088,7 @@ mod tests {
         for _ in 0..4 {
             harness.display_sparkleflinger.wait_for_gpu_idle_for_test();
             harness.elapsed_ms += 100;
-            let lanes = harness.materialize(harness.elapsed_ms, &backdrop_routes, &red, Vec::new());
+            let lanes = harness.materialize(harness.elapsed_ms, &screens, &red, Vec::new());
             let held = lane_frame(&lanes, lane).expect("the backdrop frame should be held");
             assert_eq!(surface_identity(&held.frame), surface_identity(&first));
         }
@@ -1042,7 +1099,7 @@ mod tests {
         );
 
         let blue = [(zone, surface_frame([0, 0, 255]))];
-        let changed = harness.materialize_until(&backdrop_routes, &blue, Vec::new, |lanes| {
+        let changed = harness.materialize_until(&screens, &blue, Vec::new, |lanes| {
             lane_frame(lanes, lane)
                 .is_some_and(|frame| first_pixel(&frame.frame) == [0, 0, 255, 255])
         });
@@ -1070,9 +1127,9 @@ mod tests {
         let (bare_screen, face_screen) = (DeviceId::new(), DeviceId::new());
         let face_zone = ZoneId::new();
         let backdrop_lane = screen_backdrop_lane_id(bare_screen);
-        let backdrop_routes = HashMap::from([
-            (bare_screen, backdrop_route(bare_screen, zone, BACKDROP_FPS)),
-            (face_screen, backdrop_route(face_screen, zone, BACKDROP_FPS)),
+        let screens = HashMap::from([
+            (bare_screen, placed_screen(bare_screen, zone, BACKDROP_FPS)),
+            (face_screen, placed_screen(face_screen, zone, BACKDROP_FPS)),
         ]);
 
         // One second of a 60 fps render loop over a backdrop and a face that
@@ -1087,7 +1144,7 @@ mod tests {
             let zone_frames = [(zone, surface_frame([shade, 0, 0]))];
             let lanes = harness.materialize(
                 elapsed_ms,
-                &backdrop_routes,
+                &screens,
                 &zone_frames,
                 vec![(
                     face_zone,
@@ -1138,7 +1195,6 @@ mod tests {
         let current_routes = HashMap::from([(zone_id, display_route)]);
         let fallback_routes = HashMap::new();
         let target_fps = HashMap::from([(zone_id, 30)]);
-        let backdrop_routes = HashMap::new();
         let black = black_frame();
         let context = DisplayLaneContext {
             elapsed_ms: 120,
@@ -1149,7 +1205,7 @@ mod tests {
                 fallback: &fallback_routes,
             },
             backdrops: ScreenBackdrops {
-                routes: &backdrop_routes,
+                screens: &[],
                 zone_frames: &[],
                 composed: None,
                 black: &black,
@@ -1485,18 +1541,16 @@ mod tests {
         ProducerFrame::Surface(lease.submit(0, 0))
     }
 
-    /// A raw RGB screen of two by two pixels showing its zone's whole canvas.
-    fn backdrop_route(
-        device_id: DeviceId,
-        zone_id: ZoneId,
-        target_fps: u32,
-    ) -> ScreenBackdropRoute {
+    /// A raw RGB screen of two by two pixels, placed in `zone_id` and showing
+    /// the zone's whole canvas.
+    fn placed_screen(device_id: DeviceId, zone_id: ZoneId, target_fps: u32) -> PlacedScreen {
         let mut output = display_route(device_id, 1.0);
         output.width = 2;
         output.height = 2;
         output.circular = false;
         output.frame_format = DisplayFrameFormat::Rgb;
-        ScreenBackdropRoute {
+        PlacedScreen {
+            device_id,
             zone_id,
             output,
             target_fps,
@@ -1537,6 +1591,7 @@ mod tests {
     ) -> hypercolor_types::canvas::PublishedSurfaceStorageIdentity {
         match frame {
             DisplayZoneFrame::Canvas(frame) => frame.surface().storage_identity(),
+            DisplayZoneFrame::Backdrop(backdrop) => backdrop.frame.surface().storage_identity(),
             DisplayZoneFrame::Yuv420(_) => panic!("expected RGBA display frame"),
         }
     }
@@ -1604,6 +1659,9 @@ mod tests {
             DisplayZoneFrame::Canvas(frame) => frame.rgba_bytes()[0..4]
                 .try_into()
                 .expect("canvas frame should have at least one pixel"),
+            DisplayZoneFrame::Backdrop(backdrop) => backdrop.frame.rgba_bytes()[0..4]
+                .try_into()
+                .expect("backdrop frame should have at least one pixel"),
             DisplayZoneFrame::Yuv420(_) => panic!("expected RGBA display frame"),
         }
     }
@@ -1621,7 +1679,6 @@ mod tests {
         let current_routes = HashMap::from([(zone_id, display_route.clone())]);
         let fallback_routes = HashMap::new();
         let target_fps = HashMap::from([(zone_id, 30)]);
-        let backdrop_routes = HashMap::new();
         let black = black_frame();
         let context = DisplayLaneContext {
             elapsed_ms,
@@ -1632,7 +1689,7 @@ mod tests {
                 fallback: &fallback_routes,
             },
             backdrops: ScreenBackdrops {
-                routes: &backdrop_routes,
+                screens: &[],
                 zone_frames: &[],
                 composed: None,
                 black: &black,
@@ -1722,7 +1779,7 @@ mod tests {
         fn materialize(
             &mut self,
             elapsed_ms: u64,
-            backdrop_routes: &HashMap<DeviceId, ScreenBackdropRoute>,
+            screens: &HashMap<DeviceId, PlacedScreen>,
             zone_frames: &[(ZoneId, ProducerFrame)],
             faces: Vec<(ZoneId, PendingDisplayZoneFrame)>,
         ) -> MaterializedDisplayLanes {
@@ -1734,13 +1791,12 @@ mod tests {
                 .iter()
                 .map(|(zone_id, _)| (*zone_id, 30))
                 .collect::<HashMap<_, _>>();
-            let screen_faces = faces
+            let faced = faces
                 .iter()
-                .map(|(_, face)| ScreenFace {
-                    device_id: face.display_target.device_id,
-                    blends_with_backdrop: face.display_target.blends_with_effect(),
-                })
+                .map(|(_, face)| face.display_target.device_id)
                 .collect::<Vec<_>>();
+            let mut placed = screens.values().cloned().collect::<Vec<_>>();
+            placed.sort_by_key(|screen| screen.device_id.as_uuid());
             let active_zone_ids = faces
                 .iter()
                 .map(|(zone_id, _)| *zone_id)
@@ -1756,7 +1812,7 @@ mod tests {
                     fallback: &fallback_routes,
                 },
                 backdrops: ScreenBackdrops {
-                    routes: backdrop_routes,
+                    screens: &placed,
                     zone_frames,
                     composed: None,
                     black: &black,
@@ -1765,7 +1821,7 @@ mod tests {
             let mut compose = self.compose_runtime();
             DisplayLaneMaterializer::new(&mut compose, context).materialize(
                 &active_zone_ids,
-                &screen_faces,
+                &faced,
                 faces,
             )
         }
@@ -1774,7 +1830,7 @@ mod tests {
         /// frames land a tick or two after a real GPU is asked for them.
         fn materialize_until(
             &mut self,
-            backdrop_routes: &HashMap<DeviceId, ScreenBackdropRoute>,
+            screens: &HashMap<DeviceId, PlacedScreen>,
             zone_frames: &[(ZoneId, ProducerFrame)],
             faces: impl Fn() -> Vec<(ZoneId, PendingDisplayZoneFrame)>,
             done: impl Fn(&MaterializedDisplayLanes) -> bool,
@@ -1782,8 +1838,7 @@ mod tests {
             let start = std::time::Instant::now();
             loop {
                 self.elapsed_ms += 100;
-                let lanes =
-                    self.materialize(self.elapsed_ms, backdrop_routes, zone_frames, faces());
+                let lanes = self.materialize(self.elapsed_ms, screens, zone_frames, faces());
                 if done(&lanes) {
                     return lanes;
                 }

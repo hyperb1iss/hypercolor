@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hypercolor_core::bus::{DisplayZoneOutputRoute, ScreenBackdropRoute};
+use hypercolor_core::bus::DisplayZoneOutputRoute;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 
@@ -10,6 +10,7 @@ use super::model::{
     RetainedDirectZoneFrame, RetainedMaterializedZoneFrame,
 };
 use super::zone_state::zone_publishes_direct_canvas;
+use crate::render_thread::display_lane::PlacedScreen;
 use crate::render_thread::producer_queue::ProducerFrameIdentity;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
@@ -146,16 +147,15 @@ impl ZoneRuntime {
     }
 
     /// The screen's retained backdrop frame, while it still stands in for
-    /// `backdrop` on `route`.
+    /// `backdrop` on the screen as it is placed now.
     pub(crate) fn reuse_retained_backdrop_frame(
         &self,
-        device_id: DeviceId,
         elapsed_ms: u64,
-        route: &ScreenBackdropRoute,
+        screen: &PlacedScreen,
         backdrop: Option<ProducerFrameIdentity>,
     ) -> Option<RetainedBackdrop> {
-        let retained = self.retained_backdrop_frames.get(&device_id)?;
-        if retained.route != *route {
+        let retained = self.retained_backdrop_frames.get(&screen.device_id)?;
+        if retained.screen != *screen {
             return None;
         }
         if backdrop.is_some() && retained.backdrop == backdrop {
@@ -163,44 +163,42 @@ impl ZoneRuntime {
         }
         retained
             .cadence
-            .is_some_and(|cadence| cadence.holds_at(elapsed_ms, route.target_fps))
+            .is_some_and(|cadence| cadence.holds_at(elapsed_ms, screen.target_fps))
             .then(|| RetainedBackdrop::Held(retained.frame.clone()))
     }
 
-    /// The screen's latest backdrop frame on `route`, whatever its age: what
-    /// the screen keeps showing while its next frame is still being made.
+    /// The screen's latest backdrop frame as it is placed now, whatever its
+    /// age: what the screen keeps showing while its next frame is made.
     pub(crate) fn reuse_latest_backdrop_frame(
         &self,
-        device_id: DeviceId,
-        route: &ScreenBackdropRoute,
+        screen: &PlacedScreen,
     ) -> Option<DisplayZoneCanvasFrame> {
-        let retained = self.retained_backdrop_frames.get(&device_id)?;
-        (retained.route == *route).then(|| retained.frame.clone())
+        let retained = self.retained_backdrop_frames.get(&screen.device_id)?;
+        (retained.screen == *screen).then(|| retained.frame.clone())
     }
 
     pub(crate) fn retain_backdrop_frame(
         &mut self,
-        device_id: DeviceId,
         elapsed_ms: u64,
-        route: &ScreenBackdropRoute,
+        screen: &PlacedScreen,
         backdrop: Option<ProducerFrameIdentity>,
         frame: &DisplayZoneCanvasFrame,
     ) {
         let previous = self
             .retained_backdrop_frames
-            .get(&device_id)
-            .filter(|retained| retained.route == *route)
+            .get(&screen.device_id)
+            .filter(|retained| retained.screen == *screen)
             .and_then(|retained| retained.cadence);
         self.retained_backdrop_frames.insert(
-            device_id,
+            screen.device_id,
             RetainedBackdropFrame {
                 frame: frame.clone(),
                 cadence: DisplayFrameCadence::after_render(
                     previous,
                     elapsed_ms,
-                    Some(route.target_fps),
+                    Some(screen.target_fps),
                 ),
-                route: route.clone(),
+                screen: screen.clone(),
                 backdrop,
             },
         );

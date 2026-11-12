@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::bus::{
-    DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget, ScreenBackdropRoute,
-};
+use hypercolor_core::bus::{DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget};
 use hypercolor_core::effect::media::MediaProducer;
 use hypercolor_core::effect::{EffectRegistry, FrameDataSources, InputSourceAvailability};
 use hypercolor_core::input::{InteractionData, ScreenBranchPublication};
@@ -19,6 +17,7 @@ use hypercolor_types::net::NetStats;
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 
+use super::super::display_lane::PlacedScreen;
 use super::super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::super::producer_queue::{ProducerFrame, ProducerFrameIdentity};
 use super::super::scene_dependency::SceneDependencyKey;
@@ -415,7 +414,8 @@ pub(super) struct RetainedMaterializedZoneFrame {
 pub(super) struct RetainedBackdropFrame {
     pub(super) frame: DisplayZoneCanvasFrame,
     pub(super) cadence: Option<DisplayFrameCadence>,
-    pub(super) route: ScreenBackdropRoute,
+    /// The screen as the scene placed it when `frame` was finalized.
+    pub(super) screen: PlacedScreen,
     /// What the backdrop showed when `frame` was finalized over it.
     pub(super) backdrop: Option<ProducerFrameIdentity>,
 }

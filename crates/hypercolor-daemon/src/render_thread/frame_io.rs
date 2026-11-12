@@ -582,7 +582,9 @@ fn zone_preview_frame_from_display(
                 .clone()
                 .with_frame_metadata(frame_number, timestamp_ms),
         )),
-        DisplayZoneFrame::Yuv420(_) => None,
+        // A finalized panel frame and a canvas still to be cropped are not
+        // pictures of the zone.
+        DisplayZoneFrame::Yuv420(_) | DisplayZoneFrame::Backdrop(_) => None,
     }
 }
 
@@ -649,6 +651,10 @@ fn should_publish_display_zone_frame(
             current.storage_identity() != next.storage_identity()
                 || current.width != next.width
                 || current.height != next.height
+        }
+        (DisplayZoneFrame::Backdrop(current), DisplayZoneFrame::Backdrop(next)) => {
+            current.viewport != next.viewport
+                || should_publish_canvas_frame(&current.frame, &next.frame)
         }
         _ => true,
     }
