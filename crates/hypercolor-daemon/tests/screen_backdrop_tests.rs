@@ -42,7 +42,7 @@ use hypercolor_types::device::{
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
-    DisplayFaceTarget, Scene, UnassignedBehavior, Zone, ZoneId, ZoneRole,
+    DisplayFaceTarget, DisplayRotation, Scene, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -231,7 +231,12 @@ impl Screen {
     }
 }
 
-fn panel_info(device_id: DeviceId, format: DisplayFrameFormat, max_fps: u32) -> DeviceInfo {
+fn panel_info(
+    device_id: DeviceId,
+    format: DisplayFrameFormat,
+    max_fps: u32,
+    circular: bool,
+) -> DeviceInfo {
     DeviceInfo {
         id: device_id,
         name: "Test Panel".to_owned(),
@@ -246,7 +251,7 @@ fn panel_info(device_id: DeviceId, format: DisplayFrameFormat, max_fps: u32) -> 
             topology: DeviceTopologyHint::Display {
                 width: PANEL,
                 height: PANEL,
-                circular: false,
+                circular,
                 format,
             },
             color_format: DeviceColorFormat::Rgb,
@@ -513,8 +518,20 @@ impl Rig {
         screen
     }
 
-    /// Connect a panel whose box a layout may already hold.
+    /// Connect a square panel whose box a layout may already hold.
     async fn connect_screen(&self, screen: &Screen, format: DisplayFrameFormat, max_fps: u32) {
+        self.connect_panel(screen, format, max_fps, false).await;
+    }
+
+    /// Connect a panel, square or circular, whose box a layout may already
+    /// hold.
+    async fn connect_panel(
+        &self,
+        screen: &Screen,
+        format: DisplayFrameFormat,
+        max_fps: u32,
+        circular: bool,
+    ) {
         let device_id = screen.device_id;
         let layout_id = screen.layout_id.clone();
         let name = layout_id.as_str();
@@ -540,7 +557,7 @@ impl Rig {
         let tracked = self
             .state
             .device_registry
-            .add(panel_info(device_id, format, max_fps))
+            .add(panel_info(device_id, format, max_fps, circular))
             .await;
         assert_eq!(tracked, device_id);
         assert!(
@@ -749,80 +766,291 @@ async fn gpu_overlapping_screens_with_faces_show_their_own_zones() {
     overlapping_screens_show_their_own_zones(RenderAccelerationMode::Gpu, true).await;
 }
 
-/// One zone, no overlapping screens: each panel shows the crop of the scene
-/// canvas its layout box names, which is what a panel showed when every
-/// screen cropped the scene canvas. The scene canvas of a lone zone at the
-/// scene extent is that zone's frame, so the crop is unchanged.
+// ── One zone: every panel against a reference ────────────────────────────
+
+/// The four columns of the parity scene, left to right, each a quarter of
+/// the canvas wide.
+const COLUMNS: [[u8; 3]; 4] = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]];
+
+/// The face of the faced panel: opaque green, laid on at half strength.
+const FACE: [u8; 3] = [0, 255, 0];
+
+/// One panel of the parity scene.
+struct ParityPanel {
+    name: &'static str,
+    format: DisplayFrameFormat,
+    circular: bool,
+    mount: DisplayRotation,
+    faced: bool,
+    /// The panel's box on the zone's canvas: its center and its size.
+    placed: ((f32, f32), (f32, f32)),
+}
+
+/// Both output formats, a circular panel, a panel mounted a quarter turn
+/// round, and a panel with a face. Every box straddles a column edge, so a
+/// crop that is off by a pixel, mirrored or turned the wrong way shows.
+const PARITY_PANELS: [ParityPanel; 5] = [
+    ParityPanel {
+        name: "rgb",
+        format: DisplayFrameFormat::Rgb,
+        circular: false,
+        mount: DisplayRotation::Deg0,
+        faced: false,
+        placed: ((0.5, 0.6), (0.3, 0.3)),
+    },
+    ParityPanel {
+        name: "jpeg",
+        format: DisplayFrameFormat::Jpeg,
+        circular: false,
+        mount: DisplayRotation::Deg0,
+        faced: false,
+        placed: ((0.25, 0.3), (0.3, 0.3)),
+    },
+    ParityPanel {
+        name: "round",
+        format: DisplayFrameFormat::Rgb,
+        circular: true,
+        mount: DisplayRotation::Deg0,
+        faced: false,
+        placed: ((0.75, 0.6), (0.3, 0.3)),
+    },
+    ParityPanel {
+        name: "turned",
+        format: DisplayFrameFormat::Rgb,
+        circular: false,
+        mount: DisplayRotation::Deg90,
+        faced: false,
+        placed: ((0.5, 0.25), (0.3, 0.3)),
+    },
+    ParityPanel {
+        name: "faced",
+        format: DisplayFrameFormat::Rgb,
+        circular: false,
+        mount: DisplayRotation::Deg0,
+        faced: true,
+        placed: ((0.75, 0.3), (0.3, 0.3)),
+    },
+];
+
+fn small(value: u32) -> f32 {
+    f32::from(u16::try_from(value).expect("test coordinates are small"))
+}
+
+/// The column a normalized canvas x falls in.
+fn column_at(canvas_x: f32) -> [u8; 3] {
+    let quarter = canvas_x.clamp(0.0, 1.0) * 4.0;
+    COLUMNS
+        .iter()
+        .zip([1.0_f32, 2.0, 3.0, 4.0])
+        .find_map(|(color, right_edge)| (quarter < right_edge).then_some(*color))
+        .unwrap_or(COLUMNS[3])
+}
+
+fn srgb_to_linear(channel: u8) -> f32 {
+    let value = f32::from(channel) / 255.0;
+    if value <= 0.040_45 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(value: f32) -> u8 {
+    let encoded = if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    let rounded = (encoded.clamp(0.0, 1.0) * 255.0).round();
+    (0..=u8::MAX)
+        .find(|byte| f32::from(*byte) >= rounded)
+        .unwrap_or(u8::MAX)
+}
+
+/// The face at half strength over `backdrop`: mixed in encoded bytes, and
+/// mixed in linear light. A compositor may do either, and nothing else.
+fn faced(backdrop: [u8; 3]) -> [[u8; 3]; 2] {
+    let encoded = std::array::from_fn(|channel| {
+        u8::try_from((u16::from(backdrop[channel]) + u16::from(FACE[channel])).div_ceil(2))
+            .expect("the mean of two bytes is a byte")
+    });
+    let linear = std::array::from_fn(|channel| {
+        linear_to_srgb(f32::midpoint(
+            srgb_to_linear(backdrop[channel]),
+            srgb_to_linear(FACE[channel]),
+        ))
+    });
+    [encoded, linear]
+}
+
+/// The colors a panel pixel may take, from a reference that knows the scene
+/// without drawing it.
 ///
-/// `with_face` adds a screen with a face. It is left out on a compositor
-/// that does not finalize, which showed no routed face at all while every
-/// screen cropped the scene canvas; the overlapping screens cover it there.
-async fn lone_zone_screens_show_their_crop_of_the_scene_canvas(
-    mode: RenderAccelerationMode,
-    with_face: bool,
-) {
+/// The scene canvas of a lone zone is four columns. A panel pixel at panel
+/// point `p`, measured from the panel's center in panel widths, shows the
+/// canvas at `center + turn(p * size)`, where the turn is the panel's mount
+/// rotation, clockwise. That is the crop a panel showed when every screen
+/// cropped the one scene canvas, restated here with nothing shared with the
+/// code that draws it.
+///
+/// Resampling may pull a neighbor into a pixel, so a pixel answers for the
+/// eight around it too: inside one column that is one color, and across an
+/// edge it is any mix of the two. A circular panel is black outside its
+/// circle, and its rim may be either.
+fn reference_pixel(panel: &ParityPanel, x: u32, y: u32) -> Vec<[u8; 3]> {
+    let side = small(PANEL);
+    let ((center_x, _), (width, height)) = panel.placed;
+    let (sin, cos) = panel.mount.radians().sin_cos();
+    let mut colors = Vec::new();
+    for neighbor_y in [-1.0_f32, 0.0, 1.0] {
+        for neighbor_x in [-1.0_f32, 0.0, 1.0] {
+            let across = ((small(x) + 0.5 + neighbor_x) / side - 0.5) * width;
+            let down = ((small(y) + 0.5 + neighbor_y) / side - 0.5) * height;
+            let backdrop = column_at(center_x + across * cos - down * sin);
+            if panel.faced {
+                colors.extend(faced(backdrop));
+            } else {
+                colors.push(backdrop);
+            }
+        }
+    }
+    if panel.circular {
+        let radius = side / 2.0;
+        let from_center = (small(x) + 0.5 - radius).hypot(small(y) + 0.5 - radius);
+        if from_center > radius + 1.0 {
+            return vec![[0, 0, 0]];
+        }
+        if from_center > radius - 1.0 {
+            colors.push([0, 0, 0]);
+        }
+    }
+    colors.sort_unstable();
+    colors.dedup();
+    colors
+}
+
+/// Whether `actual` lies among `allowed`: each channel between the least
+/// and the greatest it may be, give or take `tolerance`.
+fn among(actual: [u8; 3], allowed: &[[u8; 3]], tolerance: u8) -> bool {
+    (0..3).all(|channel| {
+        let least = allowed.iter().map(|color| color[channel]).min();
+        let greatest = allowed.iter().map(|color| color[channel]).max();
+        least.zip(greatest).is_some_and(|(least, greatest)| {
+            actual[channel] >= least.saturating_sub(tolerance)
+                && actual[channel] <= greatest.saturating_add(tolerance)
+        })
+    })
+}
+
+/// A panel frame as raw RGB, decoded if it was sent as JPEG.
+fn decoded(write: &PanelWrite) -> Vec<u8> {
+    if write.format == DisplayFrameFormat::Rgb {
+        return write.data.clone();
+    }
+    let side = usize::try_from(PANEL).expect("panel side fits usize");
+    let mut rgb = vec![0; side * side * 3];
+    turbojpeg::Decompressor::new()
+        .expect("the JPEG decoder should start")
+        .decompress(
+            &write.data,
+            turbojpeg::Image {
+                pixels: rgb.as_mut_slice(),
+                width: side,
+                pitch: side * 3,
+                height: side,
+                format: turbojpeg::PixelFormat::RGB,
+            },
+        )
+        .expect("the panel's JPEG should decode");
+    rgb
+}
+
+/// Every pixel of `frame` that the reference does not allow.
+fn mismatches(panel: &ParityPanel, frame: &[u8]) -> Vec<String> {
+    // JPEG rings around an edge, and a 16 pixel panel is all edge.
+    let tolerance = match panel.format {
+        DisplayFrameFormat::Rgb => 3,
+        DisplayFrameFormat::Jpeg => 40,
+    };
+    let picture = Panel(frame);
+    (0..PANEL)
+        .flat_map(|y| (0..PANEL).map(move |x| (x, y)))
+        .filter_map(|(x, y)| {
+            let allowed = reference_pixel(panel, x, y);
+            let actual = picture.pixel(x, y);
+            (!among(actual, &allowed, tolerance))
+                .then(|| format!("({x}, {y}) is {actual:?}, not among {allowed:?}"))
+        })
+        .collect()
+}
+
+/// One zone at the scene extent, no overlapping zones: every panel shows,
+/// in every pixel, the crop of the scene canvas its layout box names. That
+/// is what each panel showed when all screens cropped the one scene canvas,
+/// and the scene canvas of a lone zone is that zone's frame.
+///
+/// The published scene canvas is checked against the same columns first, so
+/// the reference is a statement about the scene canvas and not only about
+/// the panels.
+///
+/// One panel is a stated exception to "what it showed before". On a
+/// compositor that does not finalize, a face routed to a screen used not to
+/// be shown at all: the worker cropped the scene canvas and sent that. The
+/// worker now blends the face over the backdrop, as the compositor that
+/// finalizes always did. So the faced panel is held to the blend on both
+/// backends, which on that backend is a change made on purpose.
+async fn lone_zone_panels_match_the_reference_crop(mode: RenderAccelerationMode) {
     let mut rig = Rig::new(mode);
-    let red_screen = rig.add_screen("column-one").await;
-    let split_screen = rig.add_screen("columns-two-three").await;
-    let face_screen = rig.add_screen("column-four").await;
-    // Columns are a quarter of the canvas wide: red, green, blue, white.
-    let layout = zone_layout(vec![
-        strip_output("strip:all", (0.5, 0.05), (0.9, 0.05)),
-        red_screen.output((0.125, 0.3), (0.15, 0.3)),
-        split_screen.output((0.5, 0.6), (0.3, 0.3)),
-        face_screen.output((0.875, 0.7), (0.15, 0.3)),
-    ]);
-    let mut zone = scene_zone(
+    let mut screens = Vec::new();
+    for panel in &PARITY_PANELS {
+        let screen = Screen::named(panel.name);
+        rig.connect_panel(&screen, panel.format, 30, panel.circular)
+            .await;
+        rig.state
+            .device_registry
+            .update_user_settings(&screen.device_id, None, None, None, Some(panel.mount))
+            .await
+            .expect("the panel is registered");
+        screens.push(screen);
+    }
+    let mut outputs = vec![strip_output("strip:all", (0.5, 0.05), (0.9, 0.05))];
+    outputs.extend(
+        PARITY_PANELS
+            .iter()
+            .zip(&screens)
+            .map(|(panel, screen)| screen.output(panel.placed.0, panel.placed.1)),
+    );
+    let mut zones = vec![scene_zone(
         "Columns",
         ZoneRole::Primary,
         vec![rig.effects.columns()],
-        Vec::new(),
-    );
-    zone.layout = layout.clone();
-    let mut zones = vec![zone];
-    if with_face {
-        zones.push(blending_face_zone(
-            &face_screen,
-            vec![rig.effects.solid(GREEN)],
-        ));
+        outputs,
+    )];
+    for (panel, screen) in PARITY_PANELS.iter().zip(&screens) {
+        if panel.faced {
+            zones.push(blending_face_zone(screen, vec![rig.effects.solid(GREEN)]));
+        }
     }
     let mut canvas_rx = rig.state.event_bus.canvas_receiver();
 
     let running = rig.run(zones).await;
-    rig.writes
-        .wait_for(red_screen.device_id, "the red column", |panel| {
-            near(panel.center(), [255, 0, 0])
-        })
-        .await;
-    let split = rig
-        .writes
-        .wait_for(
-            split_screen.device_id,
-            "the green and blue columns",
-            |panel| {
-                near(panel.pixel(1, PANEL / 2), [0, 255, 0])
-                    && near(panel.pixel(PANEL - 2, PANEL / 2), [0, 0, 255])
-            },
-        )
-        .await;
-    if with_face {
-        rig.writes
-            .wait_for(
-                face_screen.device_id,
-                "green over the white column",
-                |panel| {
-                    let [r, g, b] = panel.center();
-                    g >= 250 && (100..=240).contains(&r) && r.abs_diff(b) <= 3
-                },
-            )
-            .await;
-    } else {
-        rig.writes
-            .wait_for(face_screen.device_id, "the white column", |panel| {
-                near(panel.center(), [255, 255, 255])
+    let deadline = Instant::now() + WAIT;
+    let latest = loop {
+        let latest = PARITY_PANELS
+            .iter()
+            .zip(&screens)
+            .map(|(panel, screen)| {
+                rig.writes.of(screen.device_id).pop().map_or_else(
+                    || vec!["no frame yet".to_owned()],
+                    |write| mismatches(panel, &decoded(&write)),
+                )
             })
-            .await;
-    }
+            .collect::<Vec<_>>();
+        if latest.iter().all(Vec::is_empty) || Instant::now() >= deadline {
+            break latest;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     tokio::time::timeout(WAIT, canvas_rx.wait_for(|frame| frame.width == CANVAS.0))
         .await
         .expect("the scene canvas should publish")
@@ -830,51 +1058,42 @@ async fn lone_zone_screens_show_their_crop_of_the_scene_canvas(
     let canvas = canvas_rx.borrow().clone();
     running.stop().await;
 
-    // The crop every screen took before: the scene canvas through the
-    // spatial layout's box for the screen, checked away from column edges.
-    let logical_devices = rig.logical_devices.read().await;
-    let viewport = screen_viewport_in_layout(
-        &layout,
-        &layout_ids(&logical_devices, split_screen.device_id),
-        false,
-    )
-    .expect("the layout places the split screen");
-    let panel = Panel(&split.data);
-    for (x, y) in [
-        (1, 2),
-        (1, PANEL - 3),
-        (PANEL - 2, 2),
-        (PANEL - 2, PANEL - 3),
-    ] {
-        let local = |pixel: u32| (f32::from(u16::try_from(pixel).expect("small")) + 0.5) / 16.0;
-        let canvas_x = viewport.position.x + (local(x) - 0.5) * viewport.size.x;
-        let canvas_y = viewport.position.y + (local(y) - 0.5) * viewport.size.y;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::as_conversions,
-            reason = "normalized canvas positions inside the canvas map to pixel indices"
-        )]
-        let expected = canvas
-            .surface()
-            .get_pixel((canvas_x * 320.0) as u32, (canvas_y * 200.0) as u32);
+    // The scene canvas is the columns the reference describes, away from
+    // the one pixel either side of each edge.
+    for y in 0..CANVAS.1 {
+        for x in 0..CANVAS.0 {
+            let left = column_at((small(x) - 0.5) / small(CANVAS.0));
+            let right = column_at((small(x) + 1.5) / small(CANVAS.0));
+            if left != right {
+                continue;
+            }
+            let pixel = canvas.surface().get_pixel(x, y);
+            assert!(
+                near([pixel.r, pixel.g, pixel.b], left),
+                "scene canvas pixel ({x}, {y}) is {pixel:?}, not the column {left:?}"
+            );
+        }
+    }
+    for (panel, wrong) in PARITY_PANELS.iter().zip(&latest) {
         assert!(
-            near(panel.pixel(x, y), [expected.r, expected.g, expected.b]),
-            "panel pixel ({x}, {y}) was {:?}, the scene canvas crop is {expected:?}",
-            panel.pixel(x, y)
+            wrong.is_empty(),
+            "the {} panel differs from the reference crop in {} pixels: {:?}",
+            panel.name,
+            wrong.len(),
+            wrong.iter().take(6).collect::<Vec<_>>()
         );
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cpu_lone_zone_screens_show_their_crop_of_the_scene_canvas() {
-    lone_zone_screens_show_their_crop_of_the_scene_canvas(RenderAccelerationMode::Cpu, false).await;
+async fn cpu_lone_zone_panels_match_the_reference_crop() {
+    lone_zone_panels_match_the_reference_crop(RenderAccelerationMode::Cpu).await;
 }
 
 #[cfg(feature = "wgpu")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gpu_lone_zone_screens_show_their_crop_of_the_scene_canvas() {
-    lone_zone_screens_show_their_crop_of_the_scene_canvas(RenderAccelerationMode::Gpu, true).await;
+async fn gpu_lone_zone_panels_match_the_reference_crop() {
+    lone_zone_panels_match_the_reference_crop(RenderAccelerationMode::Gpu).await;
 }
 
 /// A screen turned in its zone's layout shows its backdrop turned once, the
