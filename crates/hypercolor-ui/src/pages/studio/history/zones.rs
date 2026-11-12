@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use hypercolor_types::api::scene::{
     CreateLayerRequest, EditMembersRequest, MemberEdit, MemberState, PatchZoneRequest,
 };
-use hypercolor_types::layer::SceneLayer;
+use hypercolor_types::layer::{LayerScope, SceneLayer};
 use hypercolor_types::scene::{SceneId, ZoneId, ZoneRole};
 use hypercolor_types::spatial::Output;
 use leptos::prelude::*;
@@ -64,12 +64,39 @@ impl DeletedZone {
 
 /// The requests that rebuild a deleted zone's layers, bottom to top, each
 /// with its source, controls, blend, opacity, transform, and adjustments.
+///
+/// `restored` holds the ids of the outputs the rebuilt zone has again. A
+/// scoped layer comes back limited to those of its outputs that are among
+/// them, and is left out when none are: a create may only name outputs
+/// the zone holds, and a layer must never come back wider than it was.
 #[must_use]
-pub fn restore_layer_requests(record: &DeletedZone) -> Vec<CreateLayerRequest> {
+pub fn restore_layer_requests(
+    record: &DeletedZone,
+    restored: &HashSet<&str>,
+) -> Vec<CreateLayerRequest> {
     record
         .layers
         .iter()
-        .map(|layer| CreateLayerRequest::from(api::update_request_from_layer(layer)))
+        .filter_map(|layer| {
+            let scope = match &layer.scope {
+                None => None,
+                Some(scope) => {
+                    let outputs: Vec<String> = scope
+                        .outputs
+                        .iter()
+                        .filter(|id| restored.contains(id.as_str()))
+                        .cloned()
+                        .collect();
+                    if outputs.is_empty() {
+                        return None;
+                    }
+                    Some(LayerScope { outputs })
+                }
+            };
+            let mut request = CreateLayerRequest::from(api::update_request_from_layer(layer));
+            request.scope = scope;
+            Some(request)
+        })
         .collect()
 }
 
@@ -989,11 +1016,21 @@ impl StudioHistory {
             if !self.is_current(generation) {
                 return None;
             }
-            let mut fence = live.ok().map(|live| Fence::of(&live));
+            let live = live.ok();
+            let restored: HashSet<&str> = live
+                .iter()
+                .flat_map(|live| live.zones.iter())
+                .filter(|zone| zone.id == zone_id)
+                .flat_map(|zone| zone.members.iter())
+                .map(|member| member.id.0.as_str())
+                .collect();
+            let requests = restore_layer_requests(record, &restored);
+            let mut fence = live.as_ref().map(Fence::of);
             // Whether the layers all came back; `None` when no answer said.
-            let mut layers_back = Some(fence.is_some());
+            // A scoped layer none of whose outputs came back is not sent.
+            let mut layers_back = Some(fence.is_some() && requests.len() == record.layers.len());
             if let Some(at) = fence.as_mut() {
-                for request in restore_layer_requests(record) {
+                for request in requests {
                     let key = keyed::new_key();
                     let answer = keyed::send(&at.run, || {
                         api::create_layer_keyed(&zone_key, &request, at, &key)
