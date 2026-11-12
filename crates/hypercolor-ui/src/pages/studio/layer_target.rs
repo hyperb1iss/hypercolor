@@ -60,6 +60,9 @@ pub(crate) struct TargetPick {
     pub zone_id: String,
     pub subject: TargetSubject,
     pub draft: Target,
+    /// Outputs the target names that have left the zone. No box stands
+    /// for them, so the pick cannot toggle them, and it keeps them.
+    pub kept: Vec<String>,
     /// The composition panel covered the canvas and stepped aside for the
     /// pick; it comes back when the pick ends.
     pub reopen_panel: bool,
@@ -406,10 +409,13 @@ impl LayerTargets {
             studio.composition_open.set(false);
         }
         // Boxes toggle outputs, so the pick starts from the outputs the
-        // draft names; the whole zone starts it empty.
+        // draft names that have a box; the whole zone starts it empty.
         let mut draft = editor.draft;
-        self.outputs
-            .with_untracked(|outputs| draft.drop_missing(outputs));
+        let kept = self.outputs.with_untracked(|outputs| {
+            let kept = draft.missing(outputs);
+            draft.drop_missing(outputs);
+            kept
+        });
         if draft.is_whole_zone() {
             draft = Target::Outputs(std::collections::BTreeSet::new());
         }
@@ -417,6 +423,7 @@ impl LayerTargets {
             zone_id: editor.zone_id,
             subject: editor.subject,
             draft,
+            kept,
             reopen_panel,
         }));
     }
@@ -431,7 +438,16 @@ impl LayerTargets {
             studio.composition_open.set(true);
         }
         if apply {
-            self.apply(studio, pick.zone_id, pick.subject, pick.draft);
+            let mut draft = pick.draft;
+            // A layer keeps the outputs it was waiting on; a new one may
+            // only name outputs the zone holds.
+            if let (Target::Outputs(picked), TargetSubject::Layer { .. }) =
+                (&mut draft, &pick.subject)
+                && !picked.is_empty()
+            {
+                picked.extend(pick.kept);
+            }
+            self.apply(studio, pick.zone_id, pick.subject, draft);
         }
     }
 }
