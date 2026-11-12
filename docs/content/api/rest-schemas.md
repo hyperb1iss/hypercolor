@@ -3022,6 +3022,7 @@ resource carries it.
 | `enabled` | boolean or null | no |
 | `name` | string or null | no |
 | `opacity` | number (float) or null | no |
+| `scope` | [`LayerScope`](@/api/rest-schemas.md#LayerScope) or null | no |
 | `source` | [`LayerSource`](@/api/rest-schemas.md#LayerSource) | yes |
 | `transform` | [`LayerTransform`](@/api/rest-schemas.md#LayerTransform) or null | no |
 
@@ -3082,11 +3083,12 @@ Used by [`DELETE /api/v1/scenes/{id}`](@/api/rest.md#delete_scene) response.
 
 `POST /scene/members/edit`: one revision-fenced membership transaction.
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `assignment` | [`MemberAssignmentTarget`](@/api/rest-schemas.md#MemberAssignmentTarget) or null | no |
-| `changes` | array of [`MemberEdit`](@/api/rest-schemas.md#MemberEdit) | no |
-| `scene_id` | string | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `assignment` | [`MemberAssignmentTarget`](@/api/rest-schemas.md#MemberAssignmentTarget) or null | no |  |
+| `changes` | array of [`MemberEdit`](@/api/rest-schemas.md#MemberEdit) | no |  |
+| `layer_moves` | array of [`LayerMove`](@/api/rest-schemas.md#LayerMove) or null | no | The scoped layers to move with the outputs, replayed from a receipt's `layer_moves` beside its `changes`. Omitted, the daemon decides which scoped layers follow the moved outputs. Present, exactly these moves are applied and nothing else is carried, so replaying a receipt's reversed moves restores each layer's zone, stack position, and scope. Only valid with explicit `changes`. |
+| `scene_id` | string | yes |  |
 
 Unknown fields are rejected.
 
@@ -3098,12 +3100,50 @@ Used by [`POST /api/v1/scene/members/edit`](@/api/rest.md#edit_live_scene_member
 
 Committed scene and reversible, canonical membership changes.
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `changes` | array of [`MemberEdit`](@/api/rest-schemas.md#MemberEdit) | yes |
-| `document` | [`SceneDocument`](@/api/rest-schemas.md#SceneDocument) | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `changes` | array of [`MemberEdit`](@/api/rest-schemas.md#MemberEdit) | yes |  |
+| `document` | [`SceneDocument`](@/api/rest-schemas.md#SceneDocument) | yes |  |
+| `layer_moves` | array of [`LayerMove`](@/api/rest-schemas.md#LayerMove) | no | Every scoped layer the edit moved or narrowed, in the order a replay applies them. |
 
 Used by [`POST /api/v1/scene/members/edit`](@/api/rest.md#edit_live_scene_members) response.
+
+<div class="schema-anchor" id="LayerMove"></div>
+
+### LayerMove
+
+One scoped layer a membership edit carried with its outputs, or
+narrowed because some of them left.
+
+`from.index` is the layer's position before the edit and `to.index`
+its position after it. A layer whose outputs all moved changes zone
+and keeps its scope; a layer that lost only some of them keeps its
+zone and loses those ids. `Self::reversed` is the record that undoes
+it.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `from` | [`LayerSlot`](@/api/rest-schemas.md#LayerSlot) | yes |
+| `layer_id` | [`SceneLayerId`](@/api/rest-schemas.md#SceneLayerId) | yes |
+| `scope_after` | [`LayerScope`](@/api/rest-schemas.md#LayerScope) | yes |
+| `scope_before` | [`LayerScope`](@/api/rest-schemas.md#LayerScope) | yes |
+| `to` | [`LayerSlot`](@/api/rest-schemas.md#LayerSlot) | yes |
+
+Unknown fields are rejected.
+
+<div class="schema-anchor" id="LayerSlot"></div>
+
+### LayerSlot
+
+A layer's place in a scene: the zone that owns it and its position in
+that zone's bottom-to-top stack.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `index` | integer | yes |
+| `zone_id` | string | yes |
+
+Unknown fields are rejected.
 
 <div class="schema-anchor" id="LayoutId"></div>
 
@@ -3219,7 +3259,8 @@ Used by [`PATCH /api/v1/scene/zones/{zone}/layers/order`](@/api/rest.md#reorder_
 
 Replacement is creation: every successful `PUT` mints a fresh layer
 id, same effect or not (Spec 78 §1.4). The request shape is the
-creation shape; the path names the layer being replaced.
+creation shape, except that an omitted `scope` keeps the replaced
+layer's; the path names the layer being replaced.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3229,6 +3270,7 @@ creation shape; the path names the layer being replaced.
 | `enabled` | boolean or null | no |
 | `name` | string or null | no |
 | `opacity` | number (float) or null | no |
+| `scope` | [`LayerScope`](@/api/rest-schemas.md#LayerScope) or null | no |
 | `source` | [`LayerSource`](@/api/rest-schemas.md#LayerSource) | yes |
 | `transform` | [`LayerTransform`](@/api/rest-schemas.md#LayerTransform) or null | no |
 
@@ -3240,6 +3282,11 @@ Used by [`PUT /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#replace_
 
 ### ReplaceSceneLayerRequest
 
+One layer of a zone in a whole-scene replacement.
+
+A layer that carries an `id` replaces the stored layer with that id;
+one without is new.
+
 | Field | Type | Required |
 | --- | --- | --- |
 | `adjust` | [`LayerAdjust`](@/api/rest-schemas.md#LayerAdjust) | no |
@@ -3249,6 +3296,7 @@ Used by [`PUT /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#replace_
 | `id` | [`SceneLayerId`](@/api/rest-schemas.md#SceneLayerId) or null | no |
 | `name` | string or null | no |
 | `opacity` | number (float) | no |
+| `scope` | [`LayerScope`](@/api/rest-schemas.md#LayerScope) or null | no |
 | `source` | [`LayerSource`](@/api/rest-schemas.md#LayerSource) | yes |
 | `transform` | [`LayerTransform`](@/api/rest-schemas.md#LayerTransform) | no |
 
@@ -4941,6 +4989,16 @@ Bindable scalar layer parameters.
 
 One of `opacity`, `brightness`, `saturation`, `hue_shift`, `tint_strength`, `contrast`, `scale_x`, `scale_y`, `rotation`, `playback_speed`.
 
+<div class="schema-anchor" id="LayerScope"></div>
+
+### LayerScope
+
+The outputs one layer is limited to.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `outputs` | array of string | yes | Output ids of the owning zone: the value `Output::id` holds in the zone's layout and `ZoneMember::id` carries on the wire. Sorted, unique, never empty. |
+
 <div class="schema-anchor" id="LayerSource"></div>
 
 ### LayerSource
@@ -5418,6 +5476,7 @@ Authored layer inside a zone's bottom-to-top stack.
 | `id` | [`SceneLayerId`](@/api/rest-schemas.md#SceneLayerId) | yes | Stable identifier for this layer. |
 | `name` | string or null | no | Display name. Defaults to the source's intrinsic name in the UI. |
 | `opacity` | number (float) | no | Layer opacity. |
+| `scope` | [`LayerScope`](@/api/rest-schemas.md#LayerScope) or null | no |  |
 | `source` | [`LayerSource`](@/api/rest-schemas.md#LayerSource) | yes | Content source that feeds this layer. |
 | `transform` | [`LayerTransform`](@/api/rest-schemas.md#LayerTransform) | no | Geometric placement of the source within the zone's canvas. |
 

@@ -74,8 +74,9 @@ Return to the Default scene and receive the new live document.
 {% <api_endpoint method="POST" path="/api/v1/scene/clear"> %}
 Clear every non-display zone's layer stack. Pass
 `{ "zone": "<zone_uuid>" }` to clear one non-display stack. Display zones stay
-owned by the display API, and a targeted display clear is rejected. This is the
-canonical stop gesture and optionally accepts `If-Match`.
+owned by the display API, and a targeted display clear is rejected. A layer
+whose `scope` reaches only screens is a face and survives the clear. This is
+the canonical stop gesture and optionally accepts `If-Match`.
 {% </api_endpoint> %}
 
 ### Zones and members
@@ -164,7 +165,10 @@ List the zone's authored layer stack from bottom to top.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="POST" path="/api/v1/scene/zones/{zone}/layers"> %}
-Append a layer. The server mints its `SceneLayerId`.
+Append a layer. The server mints its `SceneLayerId`. An optional
+`scope: { "outputs": [...] }` limits the layer to those member ids of the zone;
+omitted, the layer applies to the whole zone. An id that is not a current
+member, or an empty list, returns `422 validation_error`.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}/layers/order"> %}
@@ -173,7 +177,10 @@ Reorder the stack with every current layer id exactly once, bottom to top.
 
 {% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layers/{layer}"> %}
 Replace a whole layer. Every successful replacement mints a fresh id, including
-a replacement with the same effect and controls.
+a replacement with the same effect and controls. `scope` has three states here:
+leaving it out keeps the replaced layer's scope, `null` clears it to the whole
+zone, and a value sets it. A client that does not know the field therefore
+never widens a scoped layer.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}/layers/{layer}"> %}
