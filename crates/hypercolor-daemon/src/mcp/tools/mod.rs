@@ -87,6 +87,7 @@ impl ToolResponse {
 pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         effects::build_set_effect(),
+        effects::build_add_layer(),
         effects::build_list_effects(),
         system::build_set_output_power(),
         scenes::build_clear_zone(),
@@ -522,6 +523,7 @@ async fn execute_structured_tool(
 ) -> Result<Value, ToolError> {
     match name {
         "set_effect" => effects::handle_set_effect_with_state(params, state).await,
+        "add_layer" => effects::handle_add_layer_with_state(params, state).await,
         "list_effects" => effects::handle_list_effects_with_state(params, state).await,
         "set_output_power" => system::handle_set_output_power_with_state(params, state).await,
         "clear_zone" => scenes::handle_clear_zone_with_state(params, state).await,
