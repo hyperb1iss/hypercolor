@@ -145,7 +145,12 @@ fn ScreenCard(surface: Surface, label: String) -> impl IntoView {
             class=("hover:bg-surface-hover/30", move || !is_selected.get())
             class=("opacity-55", move || dimmed)
             aria-pressed=move || is_selected.get().to_string()
-            on:click=move |_| studio.selected_surface_id.set(Some(zone_id.get_value()))
+            // Picking a screen is asking about its face, so its face and
+            // settings open with it.
+            on:click=move |_| {
+                studio.selected_surface_id.set(Some(zone_id.get_value()));
+                studio.composition_open.set(true);
+            }
         >
             <div class="w-16 shrink-0">
                 {move || {

@@ -50,7 +50,7 @@ use crate::zones::surface::{selected_screen_device_id, surfaces_from_zones};
 use composition_panel::CompositionPanel;
 use device_pane::DevicePane;
 use drag::{DragController, DragLayer};
-use phone_view::{StudioPhoneView, VIEW_PARAM};
+use phone_view::{SURFACE_PARAM, StudioPhoneView, VIEW_PARAM};
 use stage::Stage;
 use undo_notice::{UndoNotice, UndoNoticeHost};
 use zone_strip::{ZONE_PANEL_ID, ZoneStrip, active_tab_dom_id};
@@ -230,6 +230,11 @@ fn StudioWorkspace() -> impl IntoView {
         history::held_document(zones_ctx.active_scene).into();
 
     let selected_surface_id = RwSignal::new(None::<String>);
+    let wants_screens = StoredValue::new(
+        leptos_router::hooks::use_query_map()
+            .with_untracked(|query| phone_view::wants_screens(query.get(SURFACE_PARAM).as_deref())),
+    );
+    let opens_on_screen = StoredValue::new(false);
 
     // Keep the selection on a still-present zone. A fresh selection opens
     // the zone the rest of the app targets, else the first LED zone, so
@@ -255,8 +260,25 @@ fn StudioWorkspace() -> impl IntoView {
                 .iter()
                 .filter(|zone| zone.role != ZoneRole::Display)
         };
-        let next = led_zones()
-            .find(|zone| focused.as_deref() == Some(zone.id.to_string().as_str()))
+        // A link that asked for the screens lands on the first one, with
+        // its face open; the ask is spent once it has been honoured.
+        let asked_screen = wants_screens
+            .get_value()
+            .then(|| {
+                scene
+                    .zones
+                    .iter()
+                    .find(|zone| zone.role == ZoneRole::Display)
+            })
+            .flatten();
+        if asked_screen.is_some() {
+            wants_screens.set_value(false);
+            opens_on_screen.set_value(true);
+        }
+        let next = asked_screen
+            .or_else(|| {
+                led_zones().find(|zone| focused.as_deref() == Some(zone.id.to_string().as_str()))
+            })
             .or_else(|| led_zones().next())
             .or_else(|| scene.zones.first())
             .map(|zone| zone.id.to_string());
@@ -430,6 +452,13 @@ fn StudioWorkspace() -> impl IntoView {
     });
 
     let composition_open = RwSignal::new(false);
+    Effect::new(move |_| {
+        selected_surface_id.track();
+        if opens_on_screen.get_value() {
+            opens_on_screen.set_value(false);
+            composition_open.set(true);
+        }
+    });
 
     // Which outputs are hidden, kept per zone and persisted across
     // sessions so a deliberately hidden output stays hidden between

@@ -15,24 +15,37 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
+use std::sync::Arc;
+
 use hypercolor_leptos_ext::events::Input;
-use hypercolor_types::layer::BlendMode;
+use hypercolor_types::layer::{BlendMode, LayerSource};
 
 use crate::api;
 use crate::api::DisplayFaceScope;
+use crate::components::control_panel::ControlPanel;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
+use crate::control_session::{
+    ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
+};
 use crate::face_blend::{
     FACE_BLEND_PRESETS, face_blend_option, face_blend_select_options, face_blend_value,
     parse_face_blend,
 };
 use crate::icons::*;
+use crate::optimistic_controls::ControlValueMap;
 use crate::toasts;
 
 use super::StudioContext;
 
-/// Debounce for the blend-amount slider — matches the Displays page.
+/// Debounce for the blend-amount slider.
 const OPACITY_DEBOUNCE_MS: f64 = 90.0;
+
+/// Flush debounce for face-setting edits, the layer inspector's cadence.
+const FACE_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
+
+/// Accent for the face's control groups: the app accent.
+const FACE_ACCENT_RGB: &str = "225, 53, 255";
 
 /// The Screen surface's face-composition section. Renders nothing while
 /// the screen has no face assigned; there is no composition without one.
@@ -235,7 +248,8 @@ pub fn ScreenCompositionSection(
 
 /// The Screen's default-face card. Shown while the screen paints its
 /// stored default with no scene layer of its own, so Studio never reports
-/// an empty stack over a face that is visibly running. "Use in this
+/// an empty stack over a face that is visibly running. The face's own
+/// settings are edited right here, where it is named. "Use in this
 /// scene" copies the default into the scene as an editable layer (the
 /// scene layer then wins, per spec 69 precedence); "Clear default" drops
 /// the preference, which blanks the screen in every scene that gives it
@@ -262,6 +276,9 @@ pub fn DefaultFaceCard(
             .map(|face| face.effect.name)
             .unwrap_or_default()
     };
+    let default_effect_id = Memo::new(move |_| {
+        default_face.with(|face| face.as_ref().map(|face| face.effect.id.to_string()))
+    });
     let (busy, set_busy) = signal(false);
     let refresh_face = studio.refresh_screen_face;
     let refresh_scene = studio.refresh_scene;
@@ -336,6 +353,17 @@ pub fn DefaultFaceCard(
                         style="color: rgba(225, 53, 255, 0.72)"
                     />
                 </div>
+                // Keyed on the face, not on its controls: an edit refetches
+                // the face, and the editor must outlive its own echoes.
+                {move || {
+                    let device_id = display_device_id.get()?;
+                    let effect_id = default_effect_id.get()?;
+                    Some(view! {
+                        <div class="border-b border-edge-subtle/60 px-4 py-4">
+                            <DefaultFaceControls device_id=device_id effect_id=effect_id />
+                        </div>
+                    })
+                }}
                 <div class="flex flex-wrap items-center gap-2 px-4 py-3">
                     <button
                         type="button"
@@ -363,5 +391,116 @@ pub fn DefaultFaceCard(
                 </div>
             </section>
         </Show>
+    }
+}
+
+/// The stored controls of a face's effect layer.
+fn face_controls(face: &api::DisplayFaceResponse) -> ControlValueMap {
+    face.zone
+        .layers
+        .iter()
+        .find_map(|layer| match &layer.source {
+            LayerSource::Effect { controls, .. } => Some(controls.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The default face's own settings (a clock's hour format, a gauge's
+/// sensor). Edits patch the display's stored default, so they show in
+/// every scene that leaves this screen to its default.
+#[component]
+fn DefaultFaceControls(device_id: String, effect_id: String) -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let refresh_face = studio.refresh_screen_face;
+    let detail = api::daemon_resource({
+        let effect_id = effect_id.clone();
+        move || {
+            let effect_id = effect_id.clone();
+            async move { api::fetch_effect_detail(&effect_id).await }
+        }
+    });
+    let defs = Signal::derive(move || {
+        detail
+            .get()
+            .and_then(Result::ok)
+            .map(|detail| detail.controls)
+            .unwrap_or_default()
+    });
+    let stored = move || {
+        studio
+            .screen_face
+            .get()
+            .filter(|face| face.live_scope == DisplayFaceScope::Default)
+            .map(|face| face_controls(&face))
+    };
+    let (values, set_values) = signal(stored().unwrap_or_default());
+
+    let patch: ControlPatchFn = Arc::new({
+        let device_id = device_id.clone();
+        move |_target: String,
+              payload: ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
+            let device_id = device_id.clone();
+            Box::pin(async move {
+                api::update_display_face_controls(&device_id, payload.into_iter().collect())
+                    .await?;
+                Ok(api::MutationOutcome::Applied(None))
+            })
+        }
+    });
+    let session = use_control_patch_session(ControlPatchConfig {
+        target: Signal::stored(Some(format!("default-face:{device_id}:{effect_id}"))),
+        defs,
+        set_values,
+        initial_version: None,
+        debounce_ms: FACE_CONTROLS_DEBOUNCE_MS,
+        patch,
+        on_error: Callback::new(|error: String| {
+            toasts::toast_error(&format!("Face settings failed: {error}"));
+        }),
+        recover: Callback::new(move |()| {
+            if let Some(controls) = stored() {
+                set_values.set(controls);
+            }
+            refresh_face.run(());
+        }),
+        on_committed: None,
+        flush_guard: None,
+    });
+    Effect::new(move |_| {
+        if let Some(controls) = stored() {
+            session.reconcile_values.run(controls);
+        }
+    });
+    let on_change = session.on_change;
+
+    view! {
+        <div class="space-y-2">
+            <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Face settings"</span>
+            <Show
+                when=move || detail.get().is_some()
+                fallback=|| view! {
+                    <div class="rounded-lg border border-edge-subtle/50 bg-surface-sunken/40 px-3 py-4 text-center text-[11px] text-fg-tertiary">
+                        "Loading settings\u{2026}"
+                    </div>
+                }
+            >
+                <Show
+                    when=move || !defs.with(Vec::is_empty)
+                    fallback=|| view! {
+                        <div class="text-[11px] text-fg-tertiary">"This face has no settings."</div>
+                    }
+                >
+                    <ControlPanel
+                        controls=defs
+                        control_values=values
+                        accent_rgb=Signal::derive(|| FACE_ACCENT_RGB.to_owned())
+                        on_change=on_change
+                    />
+                </Show>
+            </Show>
+        </div>
     }
 }
