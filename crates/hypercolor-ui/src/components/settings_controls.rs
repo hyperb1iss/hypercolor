@@ -263,6 +263,7 @@ pub fn SettingDropdown(
                 <SilkSelect
                     value=value
                     options=options
+                    aria_label=label
                     placeholder=placeholder
                     disabled=disabled
                     on_change=Callback::new(move |str_val: String| {

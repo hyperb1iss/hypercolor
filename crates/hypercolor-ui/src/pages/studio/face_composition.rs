@@ -177,6 +177,7 @@ pub fn ScreenCompositionSection(
                             })
                             options=Signal::derive(face_blend_select_options)
                             on_change=on_blend_change
+                            aria_label="Face blend mode"
                             placeholder="Blend mode"
                             class="border border-edge-subtle bg-surface-sunken/55 px-3 py-2 text-xs text-fg-primary"
                             label_class="font-medium"
