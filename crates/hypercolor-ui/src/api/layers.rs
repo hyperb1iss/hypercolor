@@ -8,7 +8,7 @@ use hypercolor_types::api::scene::{
     PatchControlsRequest, ReorderLayersRequest, SceneDocument, ZoneResource,
 };
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
 
 use super::client::{Fence, KeyedResponse, MutationOutcome};
 use super::http_transport::HttpMethod;
@@ -24,6 +24,11 @@ pub use hypercolor_types::api::scene::{CreateLayerRequest, ReplaceLayerRequest};
 
 /// Build a whole-layer replacement request from the fields the canonical
 /// resource accepts. Replacement mints a new layer identity.
+///
+/// The request always states the layer's scope: its outputs, or `null`
+/// for the whole zone. A replace that left it out would keep whatever
+/// scope the daemon holds, which is the same thing only while nobody else
+/// has changed it.
 #[must_use]
 pub fn update_request_from_layer(layer: &SceneLayer) -> ReplaceLayerRequest {
     ReplaceLayerRequest {
@@ -35,8 +40,17 @@ pub fn update_request_from_layer(layer: &SceneLayer) -> ReplaceLayerRequest {
         adjust: Some(layer.adjust),
         bindings: Some(layer.bindings.clone()),
         enabled: Some(layer.enabled),
-        // Left unsaid, so a replace keeps the layer's scope.
-        scope: None,
+        scope: Some(layer.scope.clone()),
+    }
+}
+
+/// [`update_request_from_layer`] with the layer limited to `scope`, or to
+/// the whole zone for `None`: the request a change of target sends.
+#[must_use]
+pub fn scope_request(layer: &SceneLayer, scope: Option<LayerScope>) -> ReplaceLayerRequest {
+    ReplaceLayerRequest {
+        scope: Some(scope),
+        ..update_request_from_layer(layer)
     }
 }
 
