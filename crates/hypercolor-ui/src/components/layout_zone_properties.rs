@@ -141,7 +141,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
 
     view! {
         <div
-            class="flex min-h-12 items-center px-4 py-2 max-md:px-3"
+            class="@container flex min-h-12 items-center px-4 py-2 max-md:px-3"
             on:pointerdown=move |ev: web_sys::PointerEvent| {
                 let is_range = ev
                     .target()
@@ -243,11 +243,14 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     <div class="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                         // What is selected. A canvas edit saves geometry only,
                         // so the name and channel are shown, not edited.
-                        <div class="flex min-w-0 grow basis-28 items-baseline gap-2">
-                            <span class="min-w-0 max-w-56 shrink truncate text-sm font-medium text-fg-primary" title=zone_title>
+                        // The name has the identity block to itself until
+                        // the bar is wide enough for the detail line too;
+                        // sharing a narrow block cut both to a few letters.
+                        <div class="flex min-w-0 grow basis-32 items-baseline gap-2">
+                            <span class="min-w-0 max-w-56 truncate text-sm font-medium text-fg-primary" title=zone_title>
                                 {zone_name}
                             </span>
-                            <span class="min-w-0 shrink-[3] truncate text-xs tabular-nums text-fg-tertiary">
+                            <span class="hidden min-w-0 truncate text-xs tabular-nums text-fg-tertiary @6xl:inline">
                                 {meta_line}
                             </span>
                         </div>
