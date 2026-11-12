@@ -190,15 +190,17 @@ pub(super) fn encode_face_scene_blend(
     )
 }
 
+/// Encode a frame the render thread finalized for this display. The
+/// finalize pass already turned it with the screen's viewport, so it is not
+/// turned again here; a frame of another size is fitted to the panel.
 pub(super) fn encode_finalized_canvas_frame(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
-    rotation: f32,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
-    render_direct_canvas_frame_rgba(source, geometry, rotation, encode_state, false)?;
+    render_direct_canvas_frame_rgba(source, geometry, 0.0, encode_state, false)?;
     finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
@@ -866,11 +868,20 @@ mod tests {
             [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
             8,
         );
+    }
+
+    /// A frame the render thread finalized was turned with the screen's
+    /// viewport by the finalize pass. Turning it again here would put an
+    /// upside-down panel's picture back the wrong way up.
+    #[test]
+    fn finalized_frame_encode_does_not_turn_the_frame_again() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let frame =
+            CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
 
         let encoded = encode_finalized_canvas_frame(
             &frame,
             &test_geometry(),
-            std::f32::consts::PI,
             DisplayFrameFormat::Rgb,
             false,
             &mut state,
@@ -878,7 +889,7 @@ mod tests {
         .expect("canvas encode should succeed");
         assert_rgb_corners_close(
             rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
-            [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
+            [RED_RGB, GREEN_RGB, BLUE_RGB, YELLOW_RGB],
             8,
         );
     }
