@@ -11,6 +11,7 @@ use hypercolor_types::event::FrameTiming;
 use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
 use hypercolor_types::session::OffOutputBehavior;
 
+use super::display_lane::static_backdrop_lanes;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
@@ -410,9 +411,12 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
+    // Read before the frame that covers them is made: a screen that
+    // arrives while it is made is a change the next poll still sees.
+    let mut placed_screens = screen_placement_revision(state, &scene_snapshot);
     if output_power.sleeping() {
         if output_power.effective_off_output_behavior() == OffOutputBehavior::Static
-            && !frame_loop.throttle.sleep_black_pushed()
+            && !frame_loop.throttle.sleep_black_pushed(placed_screens)
         {
             force_static_sleep_snapshot(
                 state,
@@ -421,7 +425,9 @@ pub(crate) async fn execute_frame(
                 None,
             )
             .await;
-            frame_loop.throttle.note_sleep_frame_published();
+            frame_loop
+                .throttle
+                .note_sleep_frame_published(placed_screens);
             render.sparkleflinger.end_gpu_frame();
             let mut render_loop = state.render_loop.write().await;
             return runtime
@@ -440,6 +446,7 @@ pub(crate) async fn execute_frame(
             &mut render.output_artifacts,
             &mut frame_loop.throttle,
             &mut frame_loop.publication_cadence,
+            placed_screens,
         )
         .await
         {
@@ -458,6 +465,7 @@ pub(crate) async fn execute_frame(
     )
     .await
     {
+        placed_screens = screen_placement_revision(state, &scene_snapshot);
         let refreshed_demand = scene_snapshot.effect_demand;
         publish_input_demands(
             frame_loop,
@@ -473,12 +481,6 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
 
-    // Read before the idle frame composes: a screen that arrives while it
-    // does is a change the next poll still sees.
-    let placed_screens = ScreenPlacementRevision {
-        routes: state.event_bus.screen_backdrop_routes_revision(),
-        zones: scene_snapshot.scene_runtime.resolved_zones_revision,
-    };
     let entering_idle = match maybe_idle_throttle(
         state,
         &mut runtime.frame_policy,
@@ -665,7 +667,9 @@ pub(crate) async fn execute_frame(
                 Some(&mut *manager),
             )
             .await;
-            frame_loop.throttle.note_sleep_frame_published();
+            frame_loop
+                .throttle
+                .note_sleep_frame_published(placed_screens);
             render.sparkleflinger.end_gpu_frame();
             let mut render_loop = state.render_loop.write().await;
             return runtime
@@ -889,7 +893,9 @@ pub(crate) async fn execute_frame(
             None,
         )
         .await;
-        frame_loop.throttle.note_sleep_frame_published();
+        frame_loop
+            .throttle
+            .note_sleep_frame_published(placed_screens);
         let mut render_loop = state.render_loop.write().await;
         return runtime
             .frame_policy
@@ -1079,6 +1085,17 @@ fn publish_input_demands(
     );
 }
 
+/// What decides which screens a frame that composes no scene has to cover.
+fn screen_placement_revision(
+    state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
+) -> ScreenPlacementRevision {
+    ScreenPlacementRevision {
+        routes: state.event_bus.screen_backdrop_routes_revision(),
+        zones: scene_snapshot.scene_runtime.resolved_zones_revision,
+    }
+}
+
 fn should_record_idle_black_frame(
     effect_running: bool,
     screen_capture_active: bool,
@@ -1133,6 +1150,31 @@ async fn force_static_sleep_snapshot(
             .event_bus
             .zone_canvas_sender(zone_id)
             .send_replace(zone_frame.clone());
+    }
+    // A placed screen with no lane yet, one that connected while output
+    // was off, gets its backdrop lane here. Nothing else publishes lanes
+    // until output is back.
+    let (_, screen_routes) = state.event_bus.screen_backdrop_routes_snapshot();
+    let placed = static_backdrop_lanes(
+        &screen_routes,
+        &scene_snapshot.scene_runtime.resolved_zones,
+        canvas_frame.surface(),
+    );
+    for (lane_id, frame) in placed.frames {
+        let device_id = frame.display_target.device_id;
+        if display_zone_targets
+            .values()
+            .any(|target| target.device_id == device_id)
+        {
+            continue;
+        }
+        state
+            .event_bus
+            .upsert_display_zone_target(lane_id, frame.display_target);
+        state
+            .event_bus
+            .zone_canvas_sender(lane_id)
+            .send_replace(frame.frame);
     }
     state
         .event_bus

@@ -2119,6 +2119,89 @@ async fn gpu_screen_changing_its_face_still_fades_its_backdrop() {
     screen_changing_its_face_still_fades_its_backdrop(RenderAccelerationMode::Gpu).await;
 }
 
+/// A placed screen that connects while output is off goes dark like the
+/// screens that were there when it went off: with output stopped, which
+/// releases the devices, and with output paused, which holds a static
+/// color.
+async fn screen_connected_while_output_is_off_goes_dark(
+    mode: RenderAccelerationMode,
+    off: hypercolor_daemon::output_power::OutputOverride,
+) {
+    let mut rig = Rig::new(mode);
+    let early = rig.add_screen("early").await;
+    let late = Screen::named("late");
+    let zones = vec![scene_zone(
+        "Red",
+        ZoneRole::Primary,
+        vec![rig.effects.solid(RED)],
+        vec![
+            strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
+            early.output((0.3, 0.5), (0.3, 0.3)),
+            late.output((0.7, 0.5), (0.3, 0.3)),
+        ],
+    )];
+
+    let running = rig.run(zones).await;
+    rig.writes
+        .wait_for(early.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    rig.power.send_modify(|power| power.output_override = off);
+    rig.writes
+        .wait_for(early.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    // Let the loop settle into its off state before the panel appears.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    rig.connect_screen(&late, DisplayFrameFormat::Rgb, 30).await;
+    rig.writes
+        .wait_for(late.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_screen_connected_while_output_is_stopped_goes_dark() {
+    screen_connected_while_output_is_off_goes_dark(
+        RenderAccelerationMode::Cpu,
+        hypercolor_daemon::output_power::OutputOverride::Stopped,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_screen_connected_while_output_is_paused_goes_dark() {
+    screen_connected_while_output_is_off_goes_dark(
+        RenderAccelerationMode::Cpu,
+        hypercolor_daemon::output_power::OutputOverride::Paused,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_screen_connected_while_output_is_stopped_goes_dark() {
+    screen_connected_while_output_is_off_goes_dark(
+        RenderAccelerationMode::Gpu,
+        hypercolor_daemon::output_power::OutputOverride::Stopped,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_screen_connected_while_output_is_paused_goes_dark() {
+    screen_connected_while_output_is_off_goes_dark(
+        RenderAccelerationMode::Gpu,
+        hypercolor_daemon::output_power::OutputOverride::Paused,
+    )
+    .await;
+}
+
 // ── Viewports: the owning zone against the spatial service ────────────────
 
 /// The layout ids a physical device goes by, the way the display output

@@ -964,9 +964,11 @@ the implementation:
   were rendered with. A still zone costs each screen one finalize pass, or
   one published canvas on the CPU backend, whatever the screen's cadence.
 - **Frames that compose no scene still carry the screens.** The idle frame
-  gives every placed screen black and is composed again when the set of
-  screens or the scene's zones change, and the frame that releases output
-  carries a black backdrop for every placed screen.
+  gives every placed screen black, and the frame that takes output off gives
+  every placed screen its off color, whether output is released or held
+  static. Each is made again when the set of screens or the scene's zones
+  change, so a screen that connects afterwards is not left on its last
+  picture.
 
 The viewport check §9 asks for was run against the evidence rig's live scene.
 The owning zone and the spatial service agree for every screen but one. The

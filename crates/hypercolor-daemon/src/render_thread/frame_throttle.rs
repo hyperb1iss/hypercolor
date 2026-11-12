@@ -8,7 +8,7 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
-use super::display_lane::dark_backdrop_lanes;
+use super::display_lane::static_backdrop_lanes;
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ThrottleFrameMetricsInput, build_throttle_frame_metrics};
 use super::frame_policy::{FrameExecution, FramePolicy};
@@ -83,9 +83,10 @@ pub(crate) async fn maybe_sleep_throttle(
     output_artifacts: &mut OutputArtifactsState,
     throttle: &mut ThrottleState,
     publication_cadence: &mut PublicationCadenceState,
+    screens: ScreenPlacementRevision,
 ) -> Option<FrameExecution> {
     let power_state = scene_snapshot.output_power;
-    if throttle.sleep_black_pushed() {
+    if throttle.sleep_black_pushed(screens) {
         let mut render_loop = state.render_loop.write().await;
         return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
@@ -110,7 +111,7 @@ pub(crate) async fn maybe_sleep_throttle(
         // itself. Publishing no lanes would drop them and leave each placed
         // screen on its last picture.
         let (_, screen_routes) = state.event_bus.screen_backdrop_routes_snapshot();
-        let dark_lanes = dark_backdrop_lanes(
+        let dark_lanes = static_backdrop_lanes(
             &screen_routes,
             &scene_snapshot.scene_runtime.resolved_zones,
             &surface,
@@ -158,7 +159,7 @@ pub(crate) async fn maybe_sleep_throttle(
             publish_us,
             "published cleared frame/canvas for release sleep"
         );
-        throttle.note_sleep_frame_published();
+        throttle.note_sleep_frame_published(screens);
         let mut render_loop = state.render_loop.write().await;
         return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
@@ -273,7 +274,7 @@ pub(crate) async fn maybe_sleep_throttle(
         performance.record_frame(&frame_metrics);
     }
 
-    throttle.note_sleep_frame_published();
+    throttle.note_sleep_frame_published(screens);
     let mut render_loop = state.render_loop.write().await;
     Some(frame_policy.sleep_throttle_execution(&mut render_loop))
 }

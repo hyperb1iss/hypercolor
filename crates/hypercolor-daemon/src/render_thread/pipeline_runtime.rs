@@ -1288,13 +1288,15 @@ pub(crate) struct ThrottleState {
     /// edit places, after that frame would wait for a backdrop until
     /// something rendered again.
     idle_black_pushed_for: Option<ScreenPlacementRevision>,
-    pub(crate) sleep_black_pushed: bool,
+    /// The screens the frame that took output off was published for. A
+    /// screen that connects while output is off needs its dark lane too.
+    sleep_black_pushed_for: Option<ScreenPlacementRevision>,
 }
 
 impl ThrottleState {
     pub(crate) fn reset_for_canvas_resize(&mut self) {
         self.idle_black_pushed_for = None;
-        self.sleep_black_pushed = false;
+        self.sleep_black_pushed_for = None;
     }
 
     pub(crate) fn note_effect_running(&mut self) {
@@ -1311,15 +1313,17 @@ impl ThrottleState {
     }
 
     pub(crate) fn clear_sleep(&mut self) {
-        self.sleep_black_pushed = false;
+        self.sleep_black_pushed_for = None;
     }
 
-    pub(crate) fn sleep_black_pushed(&self) -> bool {
-        self.sleep_black_pushed
+    /// Whether the frame that took output off is out, and still covers
+    /// `screens`.
+    pub(crate) fn sleep_black_pushed(&self, screens: ScreenPlacementRevision) -> bool {
+        self.sleep_black_pushed_for == Some(screens)
     }
 
-    pub(crate) fn note_sleep_frame_published(&mut self) {
-        self.sleep_black_pushed = true;
+    pub(crate) fn note_sleep_frame_published(&mut self, screens: ScreenPlacementRevision) {
+        self.sleep_black_pushed_for = Some(screens);
     }
 }
 
