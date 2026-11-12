@@ -1207,6 +1207,63 @@ fn previews_and_backdrops_show_each_output_from_its_class() {
     }
 }
 
+/// A zone's preview paints its outputs in the order the scene canvas does:
+/// LED outputs in zone order, then screens, the later box winning where two
+/// overlap. An output with no scoped layer takes its turn like any other,
+/// so its box covers an earlier scoped output's, as its LEDs say it should.
+#[test]
+fn a_zone_preview_paints_unscoped_outputs_in_their_turn() {
+    for backend in BACKENDS {
+        let Some(mut rig) = Rig::new(backend) else {
+            continue;
+        };
+        let mut screen = matrix("screen", (0.3, 0.3), (0.2, 0.2), (1, 1));
+        screen.zone_name = Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned());
+        let scene = zone(
+            SCENE,
+            vec![
+                matrix("first", (0.4, 0.5), (0.4, 0.4), (2, 2)),
+                matrix("second", (0.6, 0.5), (0.4, 0.4), (2, 2)),
+                screen,
+            ],
+            vec![
+                color_fill_layer(BLUE),
+                scoped(color_fill_layer(RED), &["first"]),
+            ],
+        );
+        // The first output alone, where the second covers it, the second
+        // alone, where the screen covers the first, and no output at all.
+        let spots = [
+            (0.3, 0.6),
+            (0.5, 0.5),
+            (0.7, 0.5),
+            (0.3, 0.35),
+            (0.05, 0.05),
+        ];
+        let expected = vec![rgb(RED), rgb(BLUE), rgb(BLUE), rgb(BLUE), rgb(BLUE)];
+
+        rig.render(std::slice::from_ref(&scene), 1);
+        rig.runtime.request_zone_pictures(|_| true);
+        let result = rig.render(std::slice::from_ref(&scene), 1);
+        assert_eq!(result.scope_class_count, 2, "{backend:?}");
+
+        assert_eq!(
+            rig.frame_colors(&result.scene_frame, &spots),
+            expected,
+            "{backend:?}: scene canvas"
+        );
+        let [(_, picture)] = &result.class_frames.pictures[..] else {
+            panic!("{backend:?}: the previewed zone should have one picture");
+        };
+        let picture = picture.clone();
+        assert_eq!(
+            rig.frame_colors(&picture, &spots),
+            expected,
+            "{backend:?}: zone preview"
+        );
+    }
+}
+
 // ── Admission ────────────────────────────────────────────────────────────
 
 /// When the GPU refuses a scene's class textures, the scene takes the same

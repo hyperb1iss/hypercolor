@@ -472,10 +472,11 @@ impl ZoneRuntime {
     }
 
     /// One frame that shows a zone with several classes for a preview: the
-    /// base class, with every other output's box drawn from that output's
-    /// own class, LED outputs first and screens over them. Where boxes
-    /// overlap the later one wins, in the picture only: LEDs and screens
-    /// read their class's frame, never this one.
+    /// base class, then every output's box drawn from that output's own
+    /// class in the order the scene canvas paints them, LED outputs first
+    /// and screens over them. Where boxes overlap the later one wins, in
+    /// the picture only: LEDs and screens read their class's frame, never
+    /// this one.
     fn compose_zone_picture(
         &mut self,
         zone: &Zone,
@@ -490,31 +491,51 @@ impl ZoneRuntime {
                 .iter()
                 .find_map(|(index, frame)| (*index == class).then_some(frame))
         };
-        let base = match frame_of(ScopeClassIndex::BASE) {
-            Some(base) => CompositionLayer::replace(base.clone()),
-            None => CompositionLayer::replace_opaque(
-                opaque_black_frame(
-                    &mut self.static_layer_surface_cache,
-                    zone_size.0,
-                    zone_size.1,
-                )
-                .ok()?,
-            ),
+        let (base, base_frame) = if let Some(base) = frame_of(ScopeClassIndex::BASE) {
+            (CompositionLayer::replace(base.clone()), base.clone())
+        } else {
+            let black = opaque_black_frame(
+                &mut self.static_layer_surface_cache,
+                zone_size.0,
+                zone_size.1,
+            )
+            .ok()?;
+            (CompositionLayer::replace_opaque(black.clone()), black)
         };
         let mut layers = vec![base];
+        // The boxes painted so far from a class other than the base. The
+        // base lies under everything, so a base-class output paints again
+        // only where it follows one of these and takes the overlap back.
+        let mut scoped_boxes = Vec::<[f32; 4]>::new();
         for led_stratum in [true, false] {
             for (index, output) in zone.layout.zones.iter().enumerate() {
-                let class = classes.class_of_output(index);
-                if class.is_base() || is_led_sampled_zone(output) != led_stratum {
+                if is_led_sampled_zone(output) != led_stratum {
                     continue;
                 }
-                let Some(placement) = frame_of(class).zip(
-                    LayerFrame::of_output(output)
-                        .and_then(|frame| LayerPlacement::window(&frame, zone_size)),
-                ) else {
+                let Some(window) = LayerFrame::of_output(output)
+                    .and_then(|frame| LayerPlacement::window(&frame, zone_size))
+                else {
                     continue;
                 };
-                let (frame, window) = placement;
+                let bounds = window.frame_bounds();
+                let class = classes.class_of_output(index);
+                let frame = if class.is_base() {
+                    let follows_a_scoped_box = bounds.is_some_and(|bounds| {
+                        scoped_boxes
+                            .iter()
+                            .any(|painted| boxes_overlap(bounds, *painted))
+                    });
+                    if !follows_a_scoped_box {
+                        continue;
+                    }
+                    &base_frame
+                } else {
+                    let Some(frame) = frame_of(class) else {
+                        continue;
+                    };
+                    scoped_boxes.extend(bounds);
+                    frame
+                };
                 layers.push(CompositionLayer::replace(frame.clone()).with_placement(window));
             }
         }
@@ -728,4 +749,10 @@ fn held_zone_frame(frame: &ProducerFrame) -> Option<ProducerFrame> {
         ProducerFrame::Surface(_) => Some(frame.clone()),
         _ => None,
     }
+}
+
+/// Whether two boxes of zone pixels, each left, top, right, bottom, share
+/// any area.
+fn boxes_overlap(first: [f32; 4], second: [f32; 4]) -> bool {
+    first[0] < second[2] && second[0] < first[2] && first[1] < second[3] && second[1] < first[3]
 }
