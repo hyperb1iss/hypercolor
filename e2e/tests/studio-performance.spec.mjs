@@ -305,7 +305,7 @@ test("Studio preserves the inspector during control events and refreshes values 
       meta: { api_version: "v1", request_id: "req_fixture_effect", timestamp: "2026-09-06T00:00:00Z" },
     } });
   });
-  await page.getByTitle("Open the composition panel", { exact: true }).click();
+  await page.locator("#studio-composition-trigger").click();
   const selectEmpty = page.getByRole("tab", { name: "Empty lights", exact: true });
   await selectEmpty.click();
   const inspector = page.getByRole("complementary");
