@@ -422,7 +422,14 @@ pub fn EffectsPage() -> impl IntoView {
                 .is_some_and(|entry| entry.effect.category == EffectCategory::Display)
         });
         if is_display_face {
-            toasts::toast_info("Display faces are assigned from the Displays page.");
+            // A face plays on a screen, and screens are picked in Studio.
+            toasts::toast_info("Faces play on screens. Pick the screen for this one.");
+            navigate.with_value(|navigate| {
+                navigate(
+                    crate::pages::studio::phone_view::SCREENS_HREF,
+                    NavigateOptions::default(),
+                );
+            });
             return;
         }
         fx.apply_effect(id);

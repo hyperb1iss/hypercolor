@@ -368,8 +368,8 @@ fn ZoneCanvasBar() -> impl IntoView {
 }
 
 /// The Stage header's now-playing chip. Names the selected surface's
-/// top layer and, on click, toggles the composition slide-over — the
-/// only way layer editing is summoned in the two-column workspace.
+/// top layer and what a click opens (a zone's layers, a screen's face
+/// settings), and toggles the composition slide-over.
 /// Rendered for every surface, Light and Screen alike: both carry a
 /// layer stack, so both need the composition trigger.
 #[component]
@@ -418,6 +418,13 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
     });
     let label = move || playing.get().label;
     let is_default_face = move || playing.get().is_default_face;
+    let is_screen = move || {
+        surface.with(|surface| {
+            surface
+                .as_ref()
+                .is_some_and(|surface| surface.kind == SurfaceKind::Screen)
+        })
+    };
     view! {
         <button
             type="button"
@@ -425,7 +432,11 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
             aria-controls=COMPOSITION_PANEL_ID
             aria-expanded=move || studio.composition_open.get().to_string()
             class="group flex items-center gap-2 rounded-lg border border-edge-subtle/60 bg-surface-overlay/40 px-3 py-1.5 transition-colors hover:border-accent-muted hover:bg-surface-overlay/70"
-            title=move || if studio.composition_open.get() { "Close the composition panel" } else { "Open the composition panel" }
+            title=move || if is_screen() {
+                "Change this screen's face and its settings"
+            } else {
+                "Edit this zone's layers and their settings"
+            }
             on:click=move |_| studio.composition_open.update(|open| *open = !*open)
         >
             <Icon
@@ -446,12 +457,15 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
                     "Default"
                 </span>
             </Show>
+            <span class="border-l border-edge-subtle pl-2 text-[11px] text-fg-tertiary group-hover:text-fg-secondary">
+                {move || if is_screen() { "Face settings" } else { "Layers" }}
+            </span>
             <Icon
                 icon=LuChevronRight
                 width="12px"
                 height="12px"
                 {..}
-                class="text-fg-tertiary/55 transition-transform duration-200"
+                class="text-fg-tertiary transition-transform duration-200"
                 class=("rotate-180", move || studio.composition_open.get())
             />
         </button>

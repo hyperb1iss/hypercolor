@@ -1,4 +1,5 @@
-//! Which face of Studio a phone shows, and how it lives in the URL.
+//! What a Studio address asks for: which face of the page a phone shows,
+//! and whether the visit is about the screens.
 //!
 //! Below `md` Studio opens on the zone summary, and the spatial editor is
 //! one tap away at `?view=editor`. The view is part of the address, so the
@@ -37,4 +38,17 @@ impl StudioPhoneView {
             Self::Editor => "/studio?view=editor",
         }
     }
+}
+
+/// The query parameter that asks Studio to open on a kind of surface.
+pub const SURFACE_PARAM: &str = "surface";
+
+/// The address that opens Studio on its screens, at any width: a phone
+/// needs the editor, and wider layouts ignore the view.
+pub const SCREENS_HREF: &str = "/studio?view=editor&surface=screens";
+
+/// Whether a `surface` query value asks for the screens.
+#[must_use]
+pub fn wants_screens(value: Option<&str>) -> bool {
+    value == Some("screens")
 }

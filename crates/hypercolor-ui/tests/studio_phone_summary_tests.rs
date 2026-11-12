@@ -149,3 +149,24 @@ fn each_studio_phone_view_has_its_own_address() {
         assert_eq!(StudioPhoneView::from_query(value), view, "{view:?}");
     }
 }
+
+#[test]
+fn the_screens_address_asks_for_the_editor_and_the_screens() {
+    use hypercolor_ui::pages::studio::phone_view::{SCREENS_HREF, StudioPhoneView, wants_screens};
+
+    let query = SCREENS_HREF.split_once('?').map(|(_, query)| query);
+    let value = |key: &str| {
+        query?
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find_map(|(name, value)| (name == key).then_some(value))
+    };
+    // A phone must land in the editor for a screen to be selectable.
+    assert_eq!(
+        StudioPhoneView::from_query(value("view")),
+        StudioPhoneView::Editor
+    );
+    assert!(wants_screens(value("surface")));
+    assert!(!wants_screens(None));
+    assert!(!wants_screens(Some("lights")));
+}
