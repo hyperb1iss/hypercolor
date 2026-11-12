@@ -11,8 +11,8 @@ use std::fmt;
 use uuid::{Uuid, uuid};
 
 use crate::device::DeviceId;
-use crate::layer::{BlendMode, LayerSource, SceneLayer};
-use crate::spatial::SpatialLayout;
+use crate::layer::{BlendMode, LayerScope, LayerSource, SceneLayer};
+use crate::spatial::{Output, SpatialLayout};
 
 // ── Scene Identity ───────────────────────────────────────────────────────
 
@@ -134,6 +134,31 @@ impl Zone {
     #[must_use]
     pub fn has_effect(&self, effect_id: crate::effect::EffectId) -> bool {
         self.effect_ids().any(|candidate| candidate == effect_id)
+    }
+
+    /// The outputs of this zone that `scope` names, in the zone's output
+    /// order.
+    ///
+    /// A scope id that names no current output is dormant: it yields
+    /// nothing here and stays in the scope.
+    pub fn scoped_outputs<'a>(
+        &'a self,
+        scope: &'a LayerScope,
+    ) -> impl Iterator<Item = &'a Output> + 'a {
+        self.layout
+            .zones
+            .iter()
+            .filter(move |output| scope.contains(&output.id))
+    }
+
+    /// Whether `layer` is scoped and none of its scope ids names a current
+    /// output of this zone. A dormant layer renders nothing and is kept.
+    #[must_use]
+    pub fn layer_is_dormant(&self, layer: &SceneLayer) -> bool {
+        layer
+            .scope
+            .as_ref()
+            .is_some_and(|scope| self.scoped_outputs(scope).next().is_none())
     }
 }
 

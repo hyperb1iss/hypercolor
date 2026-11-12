@@ -7,8 +7,8 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlBinding, EffectId};
 use hypercolor_types::layer::{
     AudioBand, BindingMap, BindingSource, BlendMode, LayerAdjust, LayerBinding, LayerParameter,
-    LayerSource, LayerTransform, LoopMode, MediaPlayback, SceneLayer, SceneLayerId, TimeWave,
-    WebViewportRender,
+    LayerScope, LayerSource, LayerTransform, LoopMode, MediaPlayback, SceneLayer, SceneLayerId,
+    TimeWave, WebViewportRender,
 };
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
@@ -276,4 +276,152 @@ fn playback_and_binding_enums_serialize_as_snake_case() {
 
     assert_eq!(playback_json["loop_mode"], "ping_pong");
     assert_eq!(source_json["wave"], "triangle");
+}
+
+fn scoped_layer(outputs: &[&str]) -> SceneLayer {
+    let mut layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::from(Uuid::now_v7()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    layer.scope = Some(LayerScope {
+        outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+    });
+    layer
+}
+
+#[test]
+fn a_layer_without_a_scope_serializes_without_the_field() {
+    let layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::from(Uuid::now_v7()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+
+    assert_eq!(layer.scope, None);
+    let json = serde_json::to_value(&layer).expect("serialize layer");
+    assert!(
+        json.as_object()
+            .expect("layer serializes as an object")
+            .get("scope")
+            .is_none(),
+        "a whole-zone layer must not gain a scope key: {json}"
+    );
+}
+
+#[test]
+fn a_scoped_layer_round_trips_its_output_ids() {
+    let layer = scoped_layer(&["usb:keyboard-main", "usb:push2-pads"]);
+
+    let json = serde_json::to_value(&layer).expect("serialize layer");
+    assert_eq!(
+        json["scope"],
+        serde_json::json!({ "outputs": ["usb:keyboard-main", "usb:push2-pads"] })
+    );
+    let restored: SceneLayer = serde_json::from_value(json).expect("deserialize layer");
+    assert_eq!(restored, layer);
+}
+
+#[test]
+fn a_layer_document_written_before_scope_existed_decodes_unchanged() {
+    let stored = serde_json::json!({
+        "id": "0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3",
+        "name": "Ripples",
+        "source": {
+            "type": "effect",
+            "effect_id": "0195e5b0-b2ea-7f22-9ab2-9bc31b48adf4",
+            "controls": {}
+        },
+        "blend": "screen",
+        "opacity": 0.5,
+        "transform": {
+            "anchor": { "x": 0.5, "y": 0.5 },
+            "scale": [1.0, 1.0],
+            "rotation": 0.0,
+            "fit": "cover"
+        },
+        "adjust": {
+            "brightness": 1.0,
+            "saturation": 1.0,
+            "hue_shift": 0.0,
+            "tint": [1.0, 1.0, 1.0, 1.0],
+            "tint_strength": 0.0,
+            "contrast": 0.0
+        },
+        "enabled": true
+    });
+
+    let layer: SceneLayer = serde_json::from_value(stored.clone()).expect("stored layer decodes");
+
+    assert_eq!(layer.scope, None);
+    assert_eq!(
+        serde_json::to_value(&layer).expect("serialize layer"),
+        stored,
+        "decoding and re-encoding a pre-scope layer must not change it"
+    );
+}
+
+#[test]
+fn layer_normalization_sorts_and_dedupes_scope_outputs() {
+    let layer = scoped_layer(&["usb:push2-pads", "usb:keyboard-main", "usb:push2-pads"]);
+
+    let normalized = layer.normalized();
+
+    assert_eq!(
+        normalized.scope,
+        Some(LayerScope {
+            outputs: vec!["usb:keyboard-main".to_owned(), "usb:push2-pads".to_owned()],
+        })
+    );
+    assert_eq!(normalized.normalized(), normalized);
+}
+
+#[test]
+fn layer_validation_rejects_an_empty_scope() {
+    let errors = scoped_layer(&[])
+        .validate()
+        .expect_err("a scope with no outputs is not a state");
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("scope.outputs must name at least one output")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn layer_validation_rejects_an_empty_scope_output_id() {
+    let errors = scoped_layer(&["usb:keyboard-main", ""])
+        .validate()
+        .expect_err("an empty output id names nothing");
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("must not hold an empty output id")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn layer_validation_does_not_check_scope_membership() {
+    scoped_layer(&["an-output-no-zone-holds"])
+        .validate()
+        .expect("membership needs the zone, so the layer alone validates");
+}
+
+#[test]
+fn layer_scope_contains_matches_whole_ids_only() {
+    let scope = LayerScope {
+        outputs: vec!["usb:keyboard-main".to_owned()],
+    };
+
+    assert!(scope.contains("usb:keyboard-main"));
+    assert!(!scope.contains("usb:keyboard"));
+    assert!(!scope.contains(""));
 }

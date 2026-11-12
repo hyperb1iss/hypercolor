@@ -3,7 +3,7 @@
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerScope, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene,
     SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec,
@@ -313,6 +313,75 @@ fn scene_json_requires_mutation_mode() {
     assert!(
         error.to_string().contains("mutation_mode"),
         "expected mutation_mode parse error, got {error}"
+    );
+}
+
+fn scoped(zone: &mut Zone, outputs: &[&str]) {
+    zone.layers[0].scope = Some(LayerScope {
+        outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+    });
+}
+
+#[test]
+fn zone_scoped_outputs_yields_only_current_outputs_in_zone_order() {
+    let mut zone = sample_zone("Desk", "keyboard", EffectId::from(Uuid::now_v7()));
+    let mut pads = zone.layout.zones[0].clone();
+    pads.id = "pads".into();
+    zone.layout.zones.insert(0, pads);
+    let scope = LayerScope {
+        outputs: vec!["keyboard".into(), "left-the-zone".into(), "pads".into()],
+    };
+
+    let live = zone
+        .scoped_outputs(&scope)
+        .map(|output| output.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(live, vec!["pads", "keyboard"]);
+}
+
+#[test]
+fn a_layer_is_dormant_only_when_scoped_to_no_current_output() {
+    let mut zone = sample_zone("Desk", "keyboard", EffectId::from(Uuid::now_v7()));
+    assert!(
+        !zone.layer_is_dormant(&zone.layers[0]),
+        "a whole-zone layer is never dormant"
+    );
+
+    scoped(&mut zone, &["keyboard", "left-the-zone"]);
+    assert!(!zone.layer_is_dormant(&zone.layers[0]));
+
+    scoped(&mut zone, &["left-the-zone"]);
+    assert!(zone.layer_is_dormant(&zone.layers[0]));
+}
+
+#[test]
+fn scene_validate_accepts_a_scope_id_no_zone_holds() {
+    let mut zone = sample_zone("Desk", "keyboard", EffectId::from(Uuid::now_v7()));
+    scoped(&mut zone, &["an-output-from-another-rig"]);
+    let scene = Scene {
+        zones: vec![zone],
+        ..sample_scene()
+    };
+
+    scene
+        .validate()
+        .expect("a stored scene keeps a dormant scope id");
+}
+
+#[test]
+fn scene_validate_rejects_an_empty_scope() {
+    let mut zone = sample_zone("Desk", "keyboard", EffectId::from(Uuid::now_v7()));
+    scoped(&mut zone, &[]);
+    let scene = Scene {
+        zones: vec![zone],
+        ..sample_scene()
+    };
+
+    let errors = scene.validate().expect_err("an empty scope is not a state");
+    assert!(
+        errors.iter().any(|error| error.contains("scope.outputs")),
+        "{errors:?}"
     );
 }
 
