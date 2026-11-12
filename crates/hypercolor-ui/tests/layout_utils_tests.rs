@@ -449,3 +449,130 @@ fn a_display_output_reports_its_resolution_and_an_led_output_none() {
     assert_eq!(layout_utils::display_resolution(&fan, &devices), None);
     assert_eq!(layout_utils::display_resolution(&lcd, &[]), None);
 }
+
+fn plain_output(name: &str, channel: Option<&str>) -> Output {
+    ring_zone("output", name, "usb:prism8:test", channel, 0, None)
+}
+
+fn panel_device() -> Vec<api::DeviceSummary> {
+    vec![sample_device_summary(
+        "Canvas 449E",
+        vec![
+            sample_zone_summary("segment_0", "Panel 22959", 1),
+            sample_zone_summary("segment_1", "Panel 53948", 1),
+        ],
+    )]
+}
+
+#[test]
+fn a_generated_output_name_takes_its_channel_row_from_the_rail() {
+    let devices = panel_device();
+    let rail = |name: &str| {
+        layout_utils::rail_output_name(&plain_output(name, Some("Panel 22959")), &devices)
+    };
+    let row = Some(layout_utils::RailOutputName {
+        name: "Panel 22959".to_owned(),
+        card: Some("Canvas 449E".to_owned()),
+    });
+
+    // The daemon's auto layout wrote the device's name as it was then.
+    assert_eq!(rail("Canvas-449E.local: Panel 22959"), row);
+    assert_eq!(rail("Canvas 449E · Panel 22959"), row);
+    assert_eq!(rail("Canvas 449E · panel 22959"), row);
+    assert_eq!(rail("Panel 22959"), row);
+}
+
+#[test]
+fn a_renamed_channel_reads_the_same_in_the_bar_as_on_the_rail() {
+    let devices = panel_device();
+    channel_names::save_channel_name("physical:prism8", "segment_0", "Panel 22959", "Corner");
+
+    let rail = layout_utils::rail_output_name(
+        &plain_output("Canvas 449E: Panel 22959", Some("Panel 22959")),
+        &devices,
+    );
+
+    assert_eq!(
+        rail.map(|rail| rail.name),
+        Some(channel_names::effective_channel_name(
+            "physical:prism8",
+            "segment_0",
+            "Panel 22959"
+        ))
+    );
+}
+
+#[test]
+fn a_single_channel_device_is_named_by_its_card() {
+    let devices = vec![sample_device_summary(
+        "Razer Basilisk V3",
+        vec![sample_zone_summary("segment_0", "Main", 11)],
+    )];
+    let card = Some(layout_utils::RailOutputName {
+        name: "Razer Basilisk V3".to_owned(),
+        card: None,
+    });
+
+    for name in ["Razer Basilisk V3 · Main", "Razer Basilisk V3"] {
+        assert_eq!(
+            layout_utils::rail_output_name(&plain_output(name, Some("Main")), &devices),
+            card,
+            "{name}"
+        );
+    }
+    assert!(!layout_utils::card_lists_channels(0));
+    assert!(!layout_utils::card_lists_channels(1));
+    assert!(layout_utils::card_lists_channels(2));
+}
+
+#[test]
+fn a_chosen_output_name_is_not_replaced_by_the_rail() {
+    let devices = panel_device();
+    let rail = |output: &Output| layout_utils::rail_output_name(output, &devices);
+
+    // Somebody named it; the rail's channel name says less.
+    assert_eq!(
+        rail(&plain_output("Desk corner", Some("Panel 22959"))),
+        None
+    );
+    // Ends like the channel, but not behind a device prefix.
+    assert_eq!(
+        rail(&plain_output("Spare Panel 22959", Some("Panel 22959"))),
+        None
+    );
+    assert_eq!(
+        rail(&plain_output("A·Panel 22959", Some("Panel 22959"))),
+        None
+    );
+    // A channel the device no longer reports has no row.
+    assert_eq!(
+        rail(&plain_output("Canvas 449E: Panel 7", Some("Panel 7"))),
+        None
+    );
+    assert_eq!(rail(&plain_output("Canvas 449E", None)), None);
+    // A component is named by its binding, not by a channel.
+    let component = ring_zone(
+        "fan",
+        "Canvas 449E: Panel 22959",
+        "usb:prism8:test",
+        Some("Panel 22959"),
+        0,
+        Some(OutputComponent {
+            template_id: "fan-template-1".to_owned(),
+            slot_id: "segment_0".to_owned(),
+            instance: 0,
+            led_start: None,
+            led_count: None,
+            led_mapping: None,
+        }),
+    );
+    assert_eq!(rail(&component), None);
+    // No device, no rail.
+    assert_eq!(
+        layout_utils::rail_output_name(
+            &plain_output("Canvas 449E: Panel 22959", Some("Panel 22959")),
+            &[]
+        ),
+        None
+    );
+}
