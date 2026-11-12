@@ -1,13 +1,12 @@
 //! Studio on a phone: a zone summary with per-zone effect switching.
 //!
-//! The spatial editor needs room a phone does not have, so below `md` (a
-//! phone, or a desktop window narrower than 768px) Studio shows what the
-//! scene is doing instead of a cramped canvas: one
-//! card per LED zone with its devices, what it plays, a pause toggle, and a
-//! button that opens an effect picker for that zone alone. Screens are
-//! listed read-only. Placing devices, drawing zones, and stacking layers
-//! stay at `md` and up, so the note names the room the editor needs, not a
-//! kind of device.
+//! Below `md` (a phone, or a desktop window narrower than 768px) Studio
+//! opens on what the scene is doing: one card per LED zone with its
+//! devices, what it plays, a pause toggle, and a button that opens an
+//! effect picker for that zone alone. Screens are listed read-only. The
+//! spatial editor is one tap away (see [`super::phone_view`]); the summary
+//! is the landing view because switching effects is the common job on a
+//! phone and it needs no canvas.
 //!
 //! The counting and filtering rules are pure ([`member_counts`],
 //! [`member_summary`], [`zone_effect_choices`]) and tested without a DOM.
@@ -19,6 +18,7 @@ use hypercolor_types::effect::EffectCategory;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
+use super::phone_view::StudioPhoneView;
 use crate::app::EffectsContext;
 use crate::components::bottom_sheet::BottomSheet;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -187,14 +187,21 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                         >
                             <Icon icon=LuLayoutTemplate width="18px" height="18px" />
                         </span>
-                        <div class="min-w-0">
+                        <div class="min-w-0 flex-1">
                             <div class="text-sm font-medium text-fg-primary">
-                                "Arrange on a bigger screen"
+                                "Every zone at a glance"
                             </div>
                             <p class="mt-1 text-xs leading-relaxed text-fg-tertiary">
-                                "Placing devices, drawing zones, and stacking layers need more room than \
-                                 this. Here you can see every zone and switch what each one plays."
+                                "Switch what each zone plays here. Placing devices, drawing zones, and \
+                                 stacking layers live in the editor, which is roomier on a bigger screen."
                             </p>
+                            <a
+                                href=crate::route_ui::route_href(StudioPhoneView::Editor.href())
+                                class="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-3.5 text-xs font-medium text-fg-primary btn-press"
+                            >
+                                <Icon icon=LuLayoutTemplate width="14px" height="14px" />
+                                "Open the editor"
+                            </a>
                         </div>
                     </div>
 

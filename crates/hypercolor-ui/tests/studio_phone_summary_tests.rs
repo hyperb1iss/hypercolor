@@ -118,3 +118,34 @@ fn the_picker_search_matches_name_and_category() {
     assert_eq!(by_category[0].category, "ambient");
     assert!(!by_category[0].favorite);
 }
+
+#[test]
+fn only_editor_in_the_query_opens_the_editor() {
+    use hypercolor_ui::pages::studio::phone_view::StudioPhoneView;
+
+    assert_eq!(
+        StudioPhoneView::from_query(Some("editor")),
+        StudioPhoneView::Editor
+    );
+    for value in [None, Some(""), Some("summary"), Some("Editor")] {
+        assert_eq!(
+            StudioPhoneView::from_query(value),
+            StudioPhoneView::Summary,
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn each_studio_phone_view_has_its_own_address() {
+    use hypercolor_ui::pages::studio::phone_view::StudioPhoneView;
+
+    assert_ne!(
+        StudioPhoneView::Summary.href(),
+        StudioPhoneView::Editor.href()
+    );
+    for view in [StudioPhoneView::Summary, StudioPhoneView::Editor] {
+        let value = view.href().split_once("?view=").map(|(_, value)| value);
+        assert_eq!(StudioPhoneView::from_query(value), view, "{view:?}");
+    }
+}

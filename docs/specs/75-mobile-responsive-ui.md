@@ -296,7 +296,8 @@ shell decisions this wave owned settled first.
   `input.css` uses the same query, as Tailwind's `max-md:` does. Surfaces that cost
   work mount on one side of the boundary only: the strip on phones, the
   sidebar's live thumbnail (which kept a hidden preview stream running on
-  phones) on desktop, and the Studio editor on tablet and desktop.
+  phones) on desktop, and the Studio editor on tablet and desktop, or on a
+  phone that asked for it (`?view=editor`).
 
 #### Pages
 
@@ -334,13 +335,17 @@ shell decisions this wave owned settled first.
   the toolbar row and clips vertically, so the chips' finger margins
   cannot make it scroll up and down.
 - **Studio.** Below `md` (a phone, or a desktop window narrower than
-  768px) Studio shows `pages/studio/phone_summary.rs` instead of the
-  editor, under a note that names the room the editor needs ("Arrange on
-  a bigger screen") rather than a kind of device: a card per LED zone with its hardware ("12 outputs on 4
-  devices"), what it plays, a pause toggle, and a Change button that opens
-  an effect picker for that zone alone (favorites first, display faces
-  excluded). Screens are listed read-only. The editor never mounts below
-  `md`. Counting and filtering are tested in
+  768px) Studio opens on `pages/studio/phone_summary.rs`: a card per LED
+  zone with its hardware ("12 outputs on 4 devices"), what it plays, a
+  pause toggle, and a Change button that opens an effect picker for that
+  zone alone (favorites first, display faces excluded). Screens are listed
+  read-only. The summary's "Open the editor" link goes to
+  `/studio?view=editor` (`pages/studio/phone_view.rs`), which mounts the
+  full editor with its device pane in the slide-over drawer; a "Zone
+  summary" link in the editor's drawer strip and the browser's back button
+  both return. The editor mounts below `md` only at that address. The
+  drawer is opaque and capped at 85vw so a strip of scrim stays tappable.
+  Counting, filtering, and the view's address are tested in
   `tests/studio_phone_summary_tests.rs`.
 - **Modals and dropdowns.** `Modal` leaked its keydown listener on every
   open; it is removed on unmount now, which every sheet relies on. Its
@@ -435,10 +440,11 @@ move the page from plain content by about 200px;
 | Sliders | Settings, device brightness, and control sliders (and the sidebar's at 1024px with touch) keep a thin, round track inside a hit box of 44px or more | Pass | Pass |
 | Every page | The page scroll owners, the sheet body, and an open select panel contain overscroll | Pass | Pass |
 | Every page | A swipe at the end of a nested list moves the page: the Dashboard panel list, and a plain overflow list placed in Settings | Pass | Pass |
-| Studio | The note reads "Arrange on a bigger screen" at both sizes and in a 700px desktop window | Pass | Pass |
+| Studio | The summary is the landing view; "Open the editor" mounts the editor at `?view=editor` with no horizontal page scroll | Pass | Pass |
 | Effects | Tapping a card applies it and the strip shows it; the card keeps no hover look | Pass | Pass |
 | Effects | A touch drag moves a control slider; its hit box is at least 44px | Pass | Pass |
-| Studio | The editor never mounts; a zone's picker switches only that zone; a card's pause and resume work | Pass | Pass |
+| Studio | A zone's picker switches only that zone; a card's pause and resume work | Pass | Pass |
+| Studio | In the editor the device drawer opens opaque at 85vw; "Zone summary" and browser back return to the summary | Pass | Pass |
 | Media | A tile opens its details in a sheet | Pass | Pass |
 | Every page | No horizontal overflow, no page errors, no visible control under 44px | Pass | Pass |
 | Touch polish | Tap highlight transparent; the page scroller contains overscroll; the document has none; text fields are 16px | Pass | Pass |
@@ -483,5 +489,5 @@ with actual touch input, not emulated mouse events.
 - Native app wrappers (Tauri mobile): revisit only if LAN discovery
   or app-store presence becomes a real want.
 - Daemon TLS.
-- Mobile-specific feature removal: every capability except the Studio
-  editor remains reachable on phones.
+- Mobile-specific feature removal: every capability remains reachable on
+  phones.
