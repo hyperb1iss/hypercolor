@@ -3,11 +3,12 @@
 
 use std::collections::BTreeSet;
 
-use hypercolor_types::api::scene::{MemberEdit, MemberState, PatchZoneRequest};
+use hypercolor_types::api::scene::{LayerMove, MemberEdit, MemberState, PatchZoneRequest};
 use hypercolor_types::scene::ZoneRole;
 
 use super::super::drag_model::channel_label;
 use super::StudioEdit;
+use crate::components::layer_panel::scope::layer_count_words;
 use crate::zones::surface::zone_display_name;
 
 /// Where moved outputs end up when no zone holds them.
@@ -41,7 +42,8 @@ pub fn replay_announcement(
     };
     let action = match edit {
         StudioEdit::Layout { zone_id, .. } => format!("layout change on {}", zone(zone_id)),
-        StudioEdit::Members(changes) => members_action(changes, redo, &zone, device)?,
+        StudioEdit::Members { changes, .. } => members_action(changes, redo, &zone, device)?,
+        StudioEdit::LayerScope { name, .. } => format!("changed where {name} applies"),
         StudioEdit::ZoneCreated { name, filled, .. } if filled.is_empty() => {
             format!("created {}", zone_display_name(name, ZoneRole::Custom))
         }
@@ -74,6 +76,35 @@ pub fn replay_announcement(
         StudioEdit::Unresolved { .. } => return None,
     };
     Some(format!("{verb}: {action}"))
+}
+
+/// What a move that took layers with it says: "Moved K70 to Desk with 1
+/// layer". `None` when no layer changed zone: a move that only narrowed a
+/// layer left behind, or moved none, reads as any other.
+#[must_use]
+pub fn carried_announcement(
+    changes: &[MemberEdit],
+    layer_moves: &[LayerMove],
+    zone_lookup: &ZoneLookup<'_>,
+    device: &DeviceLookup<'_>,
+) -> Option<String> {
+    let carried = layer_moves
+        .iter()
+        .filter(|moved| moved.from.zone_id != moved.to.zone_id)
+        .count();
+    if carried == 0 {
+        return None;
+    }
+    let to = changes.iter().find_map(|change| change.after.as_ref())?;
+    let zone = zone_lookup(&to.zone_id.to_string()).map_or_else(
+        || "a zone".to_owned(),
+        |(name, role)| zone_display_name(&name, role),
+    );
+    Some(format!(
+        "Moved {} to {zone} with {}",
+        moved_label(changes, device),
+        layer_count_words(carried)
+    ))
 }
 
 /// A membership replay: where the outputs went, or where they were placed

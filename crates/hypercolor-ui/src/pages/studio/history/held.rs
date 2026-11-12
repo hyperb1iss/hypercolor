@@ -18,7 +18,7 @@
 //! it does only once that request is done, a read of the scene says what
 //! it can.
 
-use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, PatchZoneRequest};
+use hypercolor_types::api::scene::{EditMembersRequest, LayerMove, MemberEdit, PatchZoneRequest};
 use hypercolor_types::scene::SceneId;
 use leptos::prelude::*;
 
@@ -179,9 +179,13 @@ pub(super) struct Unresolved {
 /// keeps the entry it undid.
 fn undone(entry: &StudioEdit, did: StudioEdit) -> StudioEdit {
     match did {
-        StudioEdit::Members(changes) => {
-            StudioEdit::Members(changes.into_iter().map(flip).collect())
-        }
+        StudioEdit::Members {
+            changes,
+            layer_moves,
+        } => StudioEdit::Members {
+            changes: changes.into_iter().map(flip).collect(),
+            layer_moves: layer_moves.iter().map(LayerMove::reversed).collect(),
+        },
         _ => entry.clone(),
     }
 }
@@ -265,7 +269,7 @@ pub fn resolve_deletion(
     if deleted {
         return Some(StudioEdit::ZoneDeleted(Box::new(record.clone())));
     }
-    (!release.is_empty()).then(|| StudioEdit::Members(release.to_vec()))
+    (!release.is_empty()).then(|| StudioEdit::members(release.to_vec()))
 }
 
 /// Whether `scene` holds what a membership edit's `changes` make. A change
@@ -555,9 +559,13 @@ impl StudioHistory {
                     // retire; edits made since are newer and stand.
                     Told::Answer(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                         let changes = response.changes;
+                        let layer_moves = response.layer_moves;
                         retire_placed(item.scene_id, &changes, *through);
                         self.adopt(response.document);
-                        Some((!changes.is_empty()).then_some(StudioEdit::Members(changes)))
+                        Some((!changes.is_empty()).then_some(StudioEdit::Members {
+                            changes,
+                            layer_moves,
+                        }))
                     }
                     Told::Answer(_) => {
                         did_not_land(&item.name);
@@ -571,7 +579,14 @@ impl StudioHistory {
                     Told::Read(scene) => {
                         if members_landed(&scene, &request.changes) {
                             retire_placed(item.scene_id, &request.changes, *through);
-                            return Some(Some(StudioEdit::Members(request.changes.clone())));
+                            // Which layers went with the outputs is the daemon's
+                            // to say and it did not: a replay that named its
+                            // moves made exactly those, and any other is undone
+                            // by the rule that carried them.
+                            return Some(Some(StudioEdit::Members {
+                                changes: request.changes.clone(),
+                                layer_moves: request.layer_moves.clone().unwrap_or_default(),
+                            }));
                         }
                         if request.changes.is_empty() {
                             toasts::toast_info(
@@ -667,7 +682,7 @@ impl StudioHistory {
                 name: name.clone(),
                 color: color.clone(),
                 filled: match did {
-                    Some(StudioEdit::Members(changes)) => changes,
+                    Some(StudioEdit::Members { changes, .. }) => changes,
                     _ => Vec::new(),
                 },
             }),

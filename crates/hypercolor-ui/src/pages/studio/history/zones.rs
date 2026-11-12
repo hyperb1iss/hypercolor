@@ -368,7 +368,8 @@ impl StudioHistory {
     /// left as `entry`. A kept zone with nothing moved back leaves no step
     /// to redo, so its place goes rather than eat a keypress.
     fn settle_created(self, id: EntryId, redo: bool, entry: StudioEdit) {
-        let settle = if matches!(&entry, StudioEdit::Members(changes) if changes.is_empty()) {
+        let settle = if matches!(&entry, StudioEdit::Members { changes, .. } if changes.is_empty())
+        {
             Settle::Remove
         } else {
             Settle::Step
@@ -712,7 +713,7 @@ impl StudioHistory {
                     }
                     // Undo is how those devices get back.
                     TakeDown::Stranded(released) => self.journal.update(|journal| {
-                        journal.record(StudioEdit::Members(released));
+                        journal.record(StudioEdit::members(released));
                     }),
                     TakeDown::Unknown(pending) => {
                         let name = format!("deleting {}", record.name);
@@ -1207,7 +1208,7 @@ impl StudioHistory {
                         // the step becomes that release, so undo returns them.
                         TakeDown::Stranded(released) => {
                             self.replay_words.try_set_value(None);
-                            self.settle_zone_entry(id, redo, StudioEdit::Members(released), settle);
+                            self.settle_zone_entry(id, redo, StudioEdit::members(released), settle);
                         }
                         // The redo's place holds until what it did is known,
                         // so it cannot run twice.
@@ -1530,9 +1531,9 @@ impl StudioHistory {
                 if filled_now.is_empty() {
                     self.replay_words.try_set_value(Some(kept));
                 } else {
-                    self.prepare_words(&StudioEdit::Members(filled_now.clone()), false);
+                    self.prepare_words(&StudioEdit::members(filled_now.clone()), false);
                 }
-                Some(StudioEdit::Members(filled_now))
+                Some(StudioEdit::members(filled_now))
             }
             // Its place holds until the delete settles: gone, it is the
             // zone's creation, ready to redo; still there, it is the move
@@ -1541,7 +1542,7 @@ impl StudioHistory {
             Removal::Unknown(fence, key) => {
                 self.replay_words.try_set_value(None);
                 let not = if moved_out {
-                    Settled::Unapplied(StudioEdit::Members(filled_now.clone()))
+                    Settled::Unapplied(StudioEdit::members(filled_now.clone()))
                 } else {
                     Settled::Applied(created(filled_now.clone()))
                 };
@@ -1574,8 +1575,8 @@ impl StudioHistory {
                 toasts::toast_info(&format!(
                     "Moved its devices back, but {name} could not be removed: {reason}"
                 ));
-                self.prepare_words(&StudioEdit::Members(filled_now.clone()), false);
-                Some(StudioEdit::Members(filled_now))
+                self.prepare_words(&StudioEdit::members(filled_now.clone()), false);
+                Some(StudioEdit::members(filled_now))
             }
         }
     }
@@ -1800,7 +1801,7 @@ impl StudioHistory {
                     ..
                 } => {
                     let receipt = match did {
-                        StudioEdit::Members(changes) => changes,
+                        StudioEdit::Members { changes, .. } => changes,
                         _ => Vec::new(),
                     };
                     let home = receipt
