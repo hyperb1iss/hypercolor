@@ -15,8 +15,8 @@ use self::preview_policy::{
     requires_cpu_sampling_canvas, scene_canvas_forces_full_surface,
 };
 use super::display_lane::{
-    ComposedSceneBackdrop, DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
-    MaterializedDisplayLanes, ScreenBackdrops, faced_screens, place_screens,
+    DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes, MaterializedDisplayLanes,
+    ScreenBackdrops, faced_screens, place_screens,
 };
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
@@ -431,29 +431,11 @@ impl ComposeContext<'_> {
                         .sparkleflinger
                         .preview_only_frame(scene_frame.clone(), preview_request)
                 };
-                // The composed scene is a zone's backdrop in two cases only:
-                // while a transition crossfades, and when one zone at the
-                // scene extent is the whole scene.
-                let composed_scene = (requires_full_composition
-                    && (compiled_plan.metadata.transition_active
-                        || render_zone_result.scene_frame_zone.is_some()))
-                .then(|| self.composed_scene_frame(&composed))
-                .flatten();
-                let composed_backdrop = composed_scene.as_ref().and_then(|frame| {
-                    if compiled_plan.metadata.transition_active {
-                        Some(ComposedSceneBackdrop::Transition(frame))
-                    } else {
-                        render_zone_result
-                            .scene_frame_zone
-                            .map(|zone_id| ComposedSceneBackdrop::Zone(zone_id, frame))
-                    }
-                });
                 let display_lanes = self.materialize_display_lanes(
                     dependency_key,
                     &render_zone_result.active_display_zone_ids,
                     render_zone_result.display_zone_frames,
                     &render_zone_result.zone_canvases,
-                    composed_backdrop,
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -679,25 +661,6 @@ impl ComposeContext<'_> {
         )
     }
 
-    /// The scene as the primary composition just produced it: on the GPU
-    /// where the compositor keeps it there, and otherwise its CPU pixels.
-    fn composed_scene_frame(&mut self, composed: &ComposedFrameSet) -> Option<ProducerFrame> {
-        #[cfg(feature = "wgpu")]
-        match self.compose.sparkleflinger.current_output_frame() {
-            Ok(Some(frame)) => return Some(ProducerFrame::GpuTexture(frame)),
-            Ok(None) => {}
-            Err(error) => {
-                debug!(%error, "failed to export GPU scene frame for display backdrops");
-            }
-        }
-
-        shared_composed_frame(
-            composed,
-            self.state.canvas_dims.width(),
-            self.state.canvas_dims.height(),
-        )
-    }
-
     /// Materialize the display lanes of a frame that renders no zone: every
     /// placed screen shows black, the backdrop of a zone that renders
     /// nothing.
@@ -707,7 +670,6 @@ impl ComposeContext<'_> {
             &[],
             Vec::new(),
             &[],
-            None,
         )
     }
 
@@ -719,7 +681,6 @@ impl ComposeContext<'_> {
         active_display_zone_ids: &[ZoneId],
         display_zone_frames: Vec<(ZoneId, PendingDisplayZoneFrame)>,
         zone_frames: &[(ZoneId, ProducerFrame)],
-        composed: Option<ComposedSceneBackdrop<'_>>,
     ) -> MaterializedDisplayLanes {
         let scene_runtime = &self.scene_snapshot.scene_runtime;
         let (_, display_routes) = self.state.event_bus.display_zone_output_routes_snapshot();
@@ -742,7 +703,6 @@ impl ComposeContext<'_> {
             backdrops: ScreenBackdrops {
                 screens: &screens,
                 zone_frames,
-                composed,
                 black: &black,
             },
         };

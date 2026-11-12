@@ -5082,16 +5082,20 @@ struct PreviewCadence {
     scene_previews_mid_transition: u32,
     zone_previews: u32,
     face_frames: u32,
-    face_frames_mid_transition: u32,
+    /// Face frames that arrived while the screens' fade was part way.
+    face_frames_mid_fade: u32,
     failures: Vec<String>,
 }
 
 /// Studio zone previews, the UI scene preview, canvas captures, and a
 /// blended display face of a GPU multi-zone scene hold their cadence while
 /// the face and the zones compose at three sizes on the shared compositor
-/// every frame, and the scene preview and the face backdrop are lit and
-/// show a multi-zone to multi-zone transition as it runs (Spec 86 §8
-/// criterion 9).
+/// every frame, and the scene preview is lit and shows a multi-zone to
+/// multi-zone transition as it runs (Spec 86 §8 criterion 9).
+///
+/// The face is lit too, but its frames never show the crossfade: a screen
+/// reads its own scene's zone, and the transition reaches it as a fade
+/// published for its display worker to mix on the panel (Spec 95 §5.10).
 ///
 /// Real GPU timing decides whether a preview readback finishes inside its
 /// own frame, so this test cannot force one to land late; the render-zone
@@ -5224,7 +5228,7 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
     tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             if display_center(&blue_face_rx.borrow_and_update())
-                .is_some_and(|center| center[0] > 24 && center[1] < 250)
+                .is_some_and(|center| center[0] <= 24 && center[2] > 24)
             {
                 break;
             }
@@ -5235,7 +5239,14 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
         }
     })
     .await
-    .expect("the blue face should finalize over the transitioning backdrop");
+    .expect("the blue face should finalize over its own scene's blue zone");
+    assert!(
+        state
+            .event_bus
+            .screen_fade()
+            .is_some_and(|fade| fade.weight < 1.0),
+        "the transition should be published for the screens to fade with"
+    );
     let blue_extents = blue_zones
         .iter()
         .map(|zone_id| (*zone_id, ZONE_PREVIEW_SIZE))
@@ -5287,13 +5298,21 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
                 let center = display_center(&blue_face_rx.borrow_and_update());
                 cadence.face_frames += 1;
                 match center {
-                    Some(center) if center[0] <= 24 && center[2] <= 24 => cadence.failures.push(
+                    Some(center) if center[2] <= 24 => cadence.failures.push(
                         format!("the face lost its backdrop: center {center:?}"),
                     ),
-                    Some(center) if mid_red_to_blue(center[0], center[2]) => {
-                        cadence.face_frames_mid_transition += 1;
+                    Some(center) if center[0] > 24 => cadence.failures.push(format!(
+                        "the face showed the outgoing scene behind it: center {center:?}"
+                    )),
+                    Some(_) => {
+                        if state
+                            .event_bus
+                            .screen_fade()
+                            .is_some_and(|fade| fade.weight > 0.0 && fade.weight < 1.0)
+                        {
+                            cadence.face_frames_mid_fade += 1;
+                        }
                     }
-                    Some(_) => {}
                     None => cadence.failures.push("the face published an empty frame".to_owned()),
                 }
             }
@@ -5361,8 +5380,8 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
         "no scene preview showed the red-to-blue transition: {cadence:#?}"
     );
     assert!(
-        cadence.face_frames_mid_transition > 0,
-        "no face frame showed the transition behind it: {cadence:#?}"
+        cadence.face_frames_mid_fade > 0,
+        "no face frame arrived while its screen's fade was under way: {cadence:#?}"
     );
     assert_eq!(
         capture.len(),

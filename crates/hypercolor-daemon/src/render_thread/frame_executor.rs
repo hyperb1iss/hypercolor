@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, ScreenFade};
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_types::canvas::{Canvas, Rgba};
@@ -410,6 +410,7 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
+    publish_screen_fade(state, &scene_snapshot);
     if output_power.sleeping() {
         if output_power.effective_off_output_behavior() == OffOutputBehavior::Static
             && !frame_loop.throttle.sleep_black_pushed()
@@ -458,6 +459,7 @@ pub(crate) async fn execute_frame(
     )
     .await
     {
+        publish_screen_fade(state, &scene_snapshot);
         let refreshed_demand = scene_snapshot.effect_demand;
         publish_input_demands(
             frame_loop,
@@ -1067,6 +1069,26 @@ fn publish_input_demands(
         screen_extent,
         screen_target,
     );
+}
+
+/// Tell the screens how far the scene transition has come, before any of
+/// this frame's display lanes publish.
+///
+/// It is published for every frame the loop looks at, idle and throttled
+/// ones included, so a fade into a scene that renders nothing still runs to
+/// its end and is then withdrawn. Sleeping output fades nothing: its static
+/// frame is the whole picture.
+fn publish_screen_fade(state: &RenderThreadState, scene_snapshot: &FrameSceneSnapshot) {
+    let fade = scene_snapshot
+        .scene_runtime
+        .active_transition
+        .as_ref()
+        .filter(|_| !scene_snapshot.output_power.sleeping())
+        .map(|transition| ScreenFade {
+            epoch: transition.epoch,
+            weight: transition.eased_progress.clamp(0.0, 1.0),
+        });
+    state.event_bus.publish_screen_fade(fade);
 }
 
 fn should_record_idle_black_frame(

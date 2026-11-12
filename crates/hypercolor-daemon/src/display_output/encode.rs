@@ -10,7 +10,7 @@ use turbojpeg::{
 };
 
 use hypercolor_color::Rgb;
-use hypercolor_core::bus::{CanvasFrame, DisplayYuv420Frame};
+use hypercolor_core::bus::{CanvasFrame, DisplayYuv420Frame, DisplayZoneFrame, ScreenFade};
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::layer::BlendMode;
 
@@ -20,7 +20,7 @@ use super::render::{
     PreparedDisplayPlan, apply_circular_mask, apply_circular_mask_rgba, fast_display_crop,
     render_display_view, rgb_buffer_len, rgba_buffer_len,
 };
-use super::{DisplayGeometry, DisplayViewport};
+use super::{DisplayGeometry, DisplayViewport, DisplayWorkerFrameSource};
 
 const JPEG_QUALITY: u8 = 85;
 /// Qualities tried, in order, when a frame overruns a device's wire cap at
@@ -72,6 +72,313 @@ impl DisplayEncodeState {
             brightness_lut: identity_brightness_lut(),
         })
     }
+}
+
+/// What a screen last showed, kept beside its worker so a scene transition
+/// has a picture to fade from.
+///
+/// It outlives a worker restarted for a new configuration, which is how a
+/// screen that gains or loses a face with the scene still fades.
+#[derive(Default)]
+pub(super) struct ScreenFadeMemory {
+    /// The frames behind the last picture sent outside a fade.
+    settled: Option<DisplayWorkerFrameSource>,
+    fading: Option<FadeInProgress>,
+}
+
+struct FadeInProgress {
+    epoch: u64,
+    /// The picture the screen showed when the fade began.
+    from: Vec<u8>,
+    /// The picture the screen shows now. A fade that interrupts this one
+    /// starts from it, the way LEDs start from the blend they were showing.
+    shown: Vec<u8>,
+}
+
+/// Encode a screen's next frame.
+///
+/// While `fade` runs the frame's picture is mixed, on the panel, with the
+/// picture the screen showed when the fade began: each screen crossfades on
+/// its own, from its own outgoing picture to its own incoming one (Spec 95
+/// §5.10). A screen with nothing to fade from shows the incoming picture.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one frame's encode reads the screen's geometry, format and fade state together"
+)]
+pub(super) fn encode_display_frame(
+    source: &DisplayWorkerFrameSource,
+    fade: Option<ScreenFade>,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+    memory: &mut ScreenFadeMemory,
+) -> Result<EncodedDisplayFrame> {
+    let Some(fade) = fade else {
+        memory.fading = None;
+        let encoded = encode_settled_frame(
+            source,
+            geometry,
+            brightness,
+            frame_format,
+            include_preview_jpeg,
+            encode_state,
+        )?;
+        memory.settled = Some(source.clone());
+        return Ok(encoded);
+    };
+
+    if memory
+        .fading
+        .as_ref()
+        .is_none_or(|fading| fading.epoch != fade.epoch)
+    {
+        let from = match (memory.fading.take(), memory.settled.as_ref()) {
+            (Some(interrupted), _) => Some(interrupted.shown),
+            (None, Some(settled)) => {
+                render_picture_rgba(settled, geometry, brightness, encode_state)?;
+                Some(encode_state.rgba_buffer.clone())
+            }
+            (None, None) => None,
+        };
+        memory.fading = from.map(|from| FadeInProgress {
+            epoch: fade.epoch,
+            shown: from.clone(),
+            from,
+        });
+    }
+
+    // Both ends of a fade meet as panel RGBA, whatever form they arrived in.
+    render_picture_rgba(source, geometry, brightness, encode_state)?;
+    if let Some(fading) = memory.fading.as_mut()
+        && fading.from.len() == encode_state.rgba_buffer.len()
+    {
+        mix_rgba(&fading.from, &mut encode_state.rgba_buffer, fade.weight);
+        fading.shown.clone_from(&encode_state.rgba_buffer);
+    }
+    memory.settled = Some(source.clone());
+    finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
+}
+
+/// Encode a frame outside a fade, each kind of source by its shortest path.
+fn encode_settled_frame(
+    source: &DisplayWorkerFrameSource,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    match source {
+        DisplayWorkerFrameSource::Backdrop { frame, viewport } => encode_canvas_frame(
+            frame,
+            viewport,
+            geometry,
+            brightness,
+            frame_format,
+            include_preview_jpeg,
+            encode_state,
+        ),
+        DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
+            DisplayZoneFrame::Canvas(frame) => encode_finalized_canvas_frame(
+                frame,
+                geometry,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+            DisplayZoneFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
+                frame,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+            DisplayZoneFrame::Backdrop(backdrop) => encode_canvas_frame(
+                &backdrop.frame,
+                &backdrop.viewport,
+                geometry,
+                brightness,
+                frame_format,
+                include_preview_jpeg,
+                encode_state,
+            ),
+        },
+        DisplayWorkerFrameSource::Face {
+            backdrop_frame,
+            face_frame,
+            viewport,
+            blend_mode,
+            opacity,
+        } => encode_face_backdrop_blend(
+            backdrop_frame.as_deref(),
+            face_frame,
+            viewport,
+            geometry,
+            brightness,
+            *blend_mode,
+            *opacity,
+            frame_format,
+            include_preview_jpeg,
+            encode_state,
+        ),
+    }
+}
+
+/// Draw the picture a source puts on the panel into the RGBA buffer, as it
+/// would be sent: cropped, blended, dimmed and masked.
+fn render_picture_rgba(
+    source: &DisplayWorkerFrameSource,
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<()> {
+    match source {
+        DisplayWorkerFrameSource::Backdrop { frame, viewport } => {
+            render_canvas_frame_rgba(frame, viewport, geometry, encode_state, false)?;
+            finish_picture_rgba(geometry, brightness, encode_state);
+        }
+        DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
+            // A finalized frame is dimmed and masked already.
+            DisplayZoneFrame::Canvas(frame) => {
+                render_direct_canvas_frame_rgba(frame, geometry, 0.0, encode_state, false)?;
+            }
+            DisplayZoneFrame::Yuv420(frame) => {
+                render_yuv420_frame_rgba(frame, geometry, encode_state)?;
+            }
+            DisplayZoneFrame::Backdrop(backdrop) => {
+                render_canvas_frame_rgba(
+                    &backdrop.frame,
+                    &backdrop.viewport,
+                    geometry,
+                    encode_state,
+                    false,
+                )?;
+                finish_picture_rgba(geometry, brightness, encode_state);
+            }
+        },
+        DisplayWorkerFrameSource::Face {
+            backdrop_frame,
+            face_frame,
+            viewport,
+            blend_mode,
+            opacity,
+        } => {
+            render_face_backdrop_blend_rgba(
+                backdrop_frame.as_deref(),
+                face_frame,
+                viewport,
+                geometry,
+                *blend_mode,
+                *opacity,
+                encode_state,
+            )?;
+            finish_picture_rgba(geometry, brightness, encode_state);
+        }
+    }
+    Ok(())
+}
+
+/// Mix the `incoming` picture with the `outgoing` one, in place: a `weight`
+/// of 0 keeps the outgoing picture and 1 the incoming one.
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the weight is clamped to 0..=256 and the mix of two bytes fits a byte"
+)]
+fn mix_rgba(outgoing: &[u8], incoming: &mut [u8], weight: f32) {
+    let weight = if weight.is_finite() {
+        weight.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let incoming_weight = (weight * 256.0 + 0.5) as u32;
+    let outgoing_weight = 256 - incoming_weight;
+    for (incoming, outgoing) in incoming.iter_mut().zip(outgoing) {
+        *incoming = ((u32::from(*outgoing) * outgoing_weight
+            + u32::from(*incoming) * incoming_weight
+            + 128)
+            >> 8) as u8;
+    }
+}
+
+/// Draw a frame finalized as YUV 4:2:0 into the RGBA buffer, in the colors
+/// its JPEG decodes to: full-range BT.601, as JFIF defines them.
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "each channel is clamped to a byte before it is narrowed"
+)]
+fn render_yuv420_frame_rgba(
+    source: &DisplayYuv420Frame,
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<()> {
+    anyhow::ensure!(
+        source.width == geometry.width && source.height == geometry.height,
+        "finalized YUV frame is {}x{} on a {}x{} panel",
+        source.width,
+        source.height,
+        geometry.width,
+        geometry.height
+    );
+    let width = usize::try_from(source.width).context("display width does not fit usize")?;
+    let height = usize::try_from(source.height).context("display height does not fit usize")?;
+    let y_stride =
+        usize::try_from(source.y_stride).context("display Y stride does not fit usize")?;
+    let uv_stride =
+        usize::try_from(source.uv_stride).context("display UV stride does not fit usize")?;
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
+    let (y_plane, u_plane, v_plane) = (source.y_plane(), source.u_plane(), source.v_plane());
+    let plane_holds = |plane: &[u8], stride: usize, rows: usize, columns: usize| {
+        rows == 0
+            || (stride >= columns
+                && stride
+                    .checked_mul(rows - 1)
+                    .and_then(|start| start.checked_add(columns))
+                    .is_some_and(|needed| plane.len() >= needed))
+    };
+    anyhow::ensure!(
+        plane_holds(y_plane, y_stride, height, width)
+            && plane_holds(u_plane, uv_stride, chroma_height, chroma_width)
+            && plane_holds(v_plane, uv_stride, chroma_height, chroma_width),
+        "finalized YUV frame planes are shorter than its geometry"
+    );
+    let render_len =
+        rgba_buffer_len(geometry.width, geometry.height).context("display RGBA buffer overflow")?;
+    encode_state.rgba_buffer.resize(render_len, 0);
+    if width == 0 {
+        return Ok(());
+    }
+
+    let clamp = |value: i32| value.clamp(0, 255) as u8;
+    for (row, pixels) in encode_state
+        .rgba_buffer
+        .chunks_exact_mut(width * 4)
+        .enumerate()
+    {
+        let luma = &y_plane[row * y_stride..][..width];
+        let chroma_row = (row / 2) * uv_stride;
+        let (blue_chroma, red_chroma) = (
+            &u_plane[chroma_row..][..chroma_width],
+            &v_plane[chroma_row..][..chroma_width],
+        );
+        for (column, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let y = i32::from(luma[column]);
+            let u = i32::from(blue_chroma[column / 2]) - 128;
+            let v = i32::from(red_chroma[column / 2]) - 128;
+            *pixel = [
+                clamp(y + ((91_881 * v + 32_768) >> 16)),
+                clamp(y - ((22_554 * u + 46_802 * v + 32_768) >> 16)),
+                clamp(y + ((116_130 * u + 32_768) >> 16)),
+                u8::MAX,
+            ];
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn encode_canvas_frame(
@@ -156,7 +463,11 @@ pub(super) fn encode_canvas_frame(
     }
 }
 
-pub(super) fn encode_face_backdrop_blend(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a face blend reads both sources, the viewport and the output format together"
+)]
+fn encode_face_backdrop_blend(
     backdrop_source: Option<&CanvasFrame>,
     face_source: &CanvasFrame,
     viewport: &DisplayViewport,
@@ -168,6 +479,35 @@ pub(super) fn encode_face_backdrop_blend(
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
+    render_face_backdrop_blend_rgba(
+        backdrop_source,
+        face_source,
+        viewport,
+        geometry,
+        face_blend_mode,
+        face_opacity,
+        encode_state,
+    )?;
+    encode_prepared_rgba_frame(
+        geometry,
+        brightness,
+        frame_format,
+        include_preview_jpeg,
+        encode_state,
+    )
+}
+
+/// Draw a face over its screen's backdrop into the RGBA buffer, before the
+/// panel's brightness and mask.
+fn render_face_backdrop_blend_rgba(
+    backdrop_source: Option<&CanvasFrame>,
+    face_source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    geometry: &DisplayGeometry,
+    face_blend_mode: BlendMode,
+    face_opacity: f32,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<()> {
     if let Some(backdrop_source) = backdrop_source {
         render_canvas_frame_rgba(backdrop_source, viewport, geometry, encode_state, false)?;
     } else {
@@ -181,19 +521,13 @@ pub(super) fn encode_face_backdrop_blend(
         face_blend_mode,
         face_opacity,
     );
-    encode_prepared_rgba_frame(
-        geometry,
-        brightness,
-        frame_format,
-        include_preview_jpeg,
-        encode_state,
-    )
+    Ok(())
 }
 
 /// Encode a frame the render thread finalized for this display. The
 /// finalize pass already turned it with the screen's viewport, so it is not
 /// turned again here; a frame of another size is fitted to the panel.
-pub(super) fn encode_finalized_canvas_frame(
+fn encode_finalized_canvas_frame(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
     frame_format: DisplayFrameFormat,
@@ -204,7 +538,7 @@ pub(super) fn encode_finalized_canvas_frame(
     finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
-pub(super) fn encode_finalized_yuv420_frame(
+fn encode_finalized_yuv420_frame(
     source: &DisplayYuv420Frame,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
@@ -326,17 +660,27 @@ fn render_direct_canvas_frame_rgba(
     )
 }
 
-pub(super) fn encode_prepared_rgba_frame(
+fn encode_prepared_rgba_frame(
     geometry: &DisplayGeometry,
     brightness: f32,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
+    finish_picture_rgba(geometry, brightness, encode_state);
+    finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
+}
+
+/// Apply the panel's brightness and mask to the picture in the RGBA buffer.
+fn finish_picture_rgba(
+    geometry: &DisplayGeometry,
+    brightness: f32,
+    encode_state: &mut DisplayEncodeState,
+) {
     let brightness_factor = display_brightness_factor(brightness);
     if brightness_factor == 0 {
         prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
-        return finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state);
+        return;
     }
 
     refresh_display_brightness_lut(encode_state, brightness_factor);
@@ -348,8 +692,6 @@ pub(super) fn encode_prepared_rgba_frame(
             geometry.height,
         );
     }
-
-    finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
 fn apply_display_brightness_rgba(rgba_buffer: &mut [u8], brightness_lut: &[u8; 256]) {
@@ -992,6 +1334,190 @@ mod tests {
         apply_display_brightness_rgba(&mut rgba, &state.brightness_lut);
 
         assert_eq!(rgba, [128, 64, 32, 127, 5, 10, 15, 255]);
+    }
+
+    /// A solid zone canvas for a worker to crop whole.
+    fn solid_backdrop(rgb: [u8; 3]) -> DisplayWorkerFrameSource {
+        let mut canvas = Canvas::new(TEST_WIDTH, TEST_HEIGHT);
+        canvas.fill(hypercolor_types::canvas::Rgba::new(
+            rgb[0], rgb[1], rgb[2], 255,
+        ));
+        DisplayWorkerFrameSource::Backdrop {
+            frame: std::sync::Arc::new(CanvasFrame::from_owned_canvas(canvas, 1, 16)),
+            viewport: default_viewport(),
+        }
+    }
+
+    /// The center pixel a raw RGB screen is sent for `source` at `fade`.
+    fn faded_center(
+        source: &DisplayWorkerFrameSource,
+        fade: Option<ScreenFade>,
+        state: &mut DisplayEncodeState,
+        memory: &mut ScreenFadeMemory,
+    ) -> [u8; 3] {
+        let encoded = encode_display_frame(
+            source,
+            fade,
+            &test_geometry(),
+            1.0,
+            DisplayFrameFormat::Rgb,
+            false,
+            state,
+            memory,
+        )
+        .expect("the frame should encode");
+        rgb_pixel_at(&encoded.data, TEST_WIDTH, TEST_WIDTH / 2, TEST_HEIGHT / 2)
+    }
+
+    fn fade(epoch: u64, weight: f32) -> ScreenFade {
+        ScreenFade { epoch, weight }
+    }
+
+    /// A screen fades from the picture it showed when the transition began
+    /// to the incoming one, and lands on the incoming one exactly.
+    #[test]
+    fn a_fading_screen_mixes_the_incoming_picture_with_the_one_it_showed() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let mut memory = ScreenFadeMemory::default();
+        let (red, blue) = (solid_backdrop([255, 0, 0]), solid_backdrop([0, 0, 255]));
+
+        assert_eq!(
+            faded_center(&red, None, &mut state, &mut memory),
+            [255, 0, 0]
+        );
+        assert_eq!(
+            faded_center(&blue, Some(fade(1, 0.0)), &mut state, &mut memory),
+            [255, 0, 0],
+            "a fade starts on the outgoing picture"
+        );
+        assert_eq!(
+            faded_center(&blue, Some(fade(1, 0.25)), &mut state, &mut memory),
+            [191, 0, 64]
+        );
+        assert_eq!(
+            faded_center(&blue, Some(fade(1, 0.75)), &mut state, &mut memory),
+            [64, 0, 191],
+            "every step mixes from where the fade began, not from the last step"
+        );
+        assert_eq!(
+            faded_center(&blue, None, &mut state, &mut memory),
+            [0, 0, 255]
+        );
+    }
+
+    /// A transition that interrupts another starts from the mix the screen
+    /// was showing, and black is an end of a fade like any other picture.
+    #[test]
+    fn an_interrupting_fade_starts_from_the_picture_on_the_screen() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let mut memory = ScreenFadeMemory::default();
+        let (red, blue, black) = (
+            solid_backdrop([255, 0, 0]),
+            solid_backdrop([0, 0, 255]),
+            solid_backdrop([0, 0, 0]),
+        );
+
+        faded_center(&red, None, &mut state, &mut memory);
+        assert_eq!(
+            faded_center(&blue, Some(fade(1, 0.5)), &mut state, &mut memory),
+            [128, 0, 128]
+        );
+        assert_eq!(
+            faded_center(&black, Some(fade(2, 0.0)), &mut state, &mut memory),
+            [128, 0, 128],
+            "the second fade begins on the first one's mix"
+        );
+        assert_eq!(
+            faded_center(&black, Some(fade(2, 0.5)), &mut state, &mut memory),
+            [64, 0, 64]
+        );
+    }
+
+    /// A screen that has shown nothing has nothing to fade from.
+    #[test]
+    fn a_screen_with_no_picture_yet_shows_the_incoming_one() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let mut memory = ScreenFadeMemory::default();
+
+        assert_eq!(
+            faded_center(
+                &solid_backdrop([0, 0, 255]),
+                Some(fade(1, 0.1)),
+                &mut state,
+                &mut memory
+            ),
+            [0, 0, 255]
+        );
+    }
+
+    /// A frame finalized as YUV fades as the colors its JPEG decodes to.
+    #[test]
+    fn a_finalized_yuv420_frame_fades_as_the_colors_it_decodes_to() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let mut memory = ScreenFadeMemory::default();
+        let (width, height) = (TEST_WIDTH, TEST_HEIGHT);
+        let y_plane_len = usize::try_from(width * height).expect("Y plane should fit usize");
+        let u_plane_len =
+            usize::try_from((width / 2) * (height / 2)).expect("U plane should fit usize");
+        // Pure red: Y 76, Cb 85, Cr 255.
+        let mut data = Vec::with_capacity(y_plane_len + (u_plane_len * 2));
+        data.extend(std::iter::repeat_n(76, y_plane_len));
+        data.extend(std::iter::repeat_n(85, u_plane_len));
+        data.extend(std::iter::repeat_n(255, u_plane_len));
+        let red = DisplayWorkerFrameSource::Direct(std::sync::Arc::new(DisplayZoneFrame::Yuv420(
+            DisplayYuv420Frame::from_vec(
+                data,
+                width,
+                height,
+                width,
+                width / 2,
+                y_plane_len,
+                u_plane_len,
+                1,
+                16,
+            ),
+        )));
+        let geometry = test_geometry();
+
+        render_picture_rgba(&red, &geometry, 1.0, &mut state).expect("YUV should convert");
+        let center = usize::try_from(((height / 2) * width + width / 2) * 4)
+            .expect("offset should fit usize");
+        let converted = &state.rgba_buffer[center..center + 4];
+        assert!(
+            converted[0] >= 250 && converted[1] <= 4 && converted[2] <= 4 && converted[3] == 255,
+            "pure red should convert to pure red: {converted:?}"
+        );
+
+        let settled = encode_display_frame(
+            &red,
+            None,
+            &geometry,
+            1.0,
+            DisplayFrameFormat::Jpeg,
+            false,
+            &mut state,
+            &mut memory,
+        )
+        .expect("the settled frame should encode");
+        assert_eq!(settled.format, DisplayFrameFormat::Jpeg);
+        let faded = encode_display_frame(
+            &solid_backdrop([0, 0, 0]),
+            Some(fade(1, 0.5)),
+            &geometry,
+            1.0,
+            DisplayFrameFormat::Jpeg,
+            false,
+            &mut state,
+            &mut memory,
+        )
+        .expect("the fading frame should encode");
+        let decoded = decode_jpeg_rgb(&faded.data, width, height);
+        let [r, g, b] = rgb_pixel_at(&decoded, width, width / 2, height / 2);
+        assert!(
+            (110..=146).contains(&r) && g <= 16 && b <= 16,
+            "halfway from red to black should be half red: {:?}",
+            [r, g, b]
+        );
     }
 
     fn test_geometry() -> DisplayGeometry {

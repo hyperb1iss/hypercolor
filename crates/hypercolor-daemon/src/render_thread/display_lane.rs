@@ -39,18 +39,6 @@ impl DisplayLaneRoutes<'_> {
     }
 }
 
-/// When the composed scene stands in for a zone's own frame as a backdrop.
-#[derive(Clone, Copy)]
-pub(super) enum ComposedSceneBackdrop<'a> {
-    /// A scene transition is crossfading. The crossfade exists only in the
-    /// composed scene, so the screens of every zone that renders read it
-    /// there until the transition ends (Spec 86 §5.1).
-    Transition(&'a ProducerFrame),
-    /// One zone at the scene extent is the whole scene, and the composed
-    /// scene is that zone's frame as its LEDs sample it.
-    Zone(ZoneId, &'a ProducerFrame),
-}
-
 /// A screen the display output thread drives, placed in the scene this
 /// frame renders.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,7 +97,6 @@ pub(super) struct ScreenBackdrops<'a> {
     pub(super) screens: &'a [PlacedScreen],
     /// Each scene zone's frame this pass.
     pub(super) zone_frames: &'a [(ZoneId, ProducerFrame)],
-    pub(super) composed: Option<ComposedSceneBackdrop<'a>>,
     /// What a screen shows when its zone renders nothing.
     pub(super) black: &'a ProducerFrame,
 }
@@ -123,18 +110,15 @@ impl<'a> ScreenBackdrops<'a> {
 
     /// The frame a zone gives its screens, or `None` for a zone that
     /// renders nothing this pass.
+    ///
+    /// It is always the zone's own frame, a scene transition included: the
+    /// composed scene crossfade is one flattened picture, and a screen that
+    /// read it would show whichever zone was painted last over its box.
+    /// Screens fade on their own panels instead (Spec 95 §5.10).
     fn zone_frame(&self, zone_id: ZoneId) -> Option<&'a ProducerFrame> {
-        let own = self
-            .zone_frames
+        self.zone_frames
             .iter()
-            .find_map(|(id, frame)| (*id == zone_id).then_some(frame))?;
-        Some(match self.composed {
-            Some(ComposedSceneBackdrop::Transition(frame)) => frame,
-            Some(ComposedSceneBackdrop::Zone(composed_zone, frame)) if composed_zone == zone_id => {
-                frame
-            }
-            Some(ComposedSceneBackdrop::Zone(..)) | None => own,
-        })
+            .find_map(|(id, frame)| (*id == zone_id).then_some(frame))
     }
 
     /// The backdrop of the screen on `device_id`. A screen no zone places,
@@ -785,12 +769,12 @@ mod tests {
     use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
-    use super::{ComposedSceneBackdrop, DisplayLaneRoutes, PlacedScreen, ScreenBackdrops};
     #[cfg(feature = "wgpu")]
     use super::{
         DisplayLaneContext, DisplayLaneMaterializer, MaterializedDisplayLanes,
         display_finalize_dispatch_reuses_retained_frame, display_finalize_frame_to_zone,
     };
+    use super::{DisplayLaneRoutes, PlacedScreen, ScreenBackdrops};
     #[cfg(feature = "wgpu")]
     use crate::render_thread::composition_planner::CompositionPlanner;
     #[cfg(feature = "wgpu")]
@@ -856,9 +840,8 @@ mod tests {
         assert_eq!(routes.route_for_zone(&zone_id), Some(&bus_route));
     }
 
-    /// Each screen reads the frame of the zone that places it. The composed
-    /// scene stands in only for the one zone it is the frame of, or for every
-    /// zone while a transition crossfades in it.
+    /// Each screen reads the frame of the zone that places it, and nothing
+    /// else: no other zone's frame and no flattened picture of the scene.
     #[test]
     fn screen_backdrops_resolve_each_screen_from_the_zone_that_places_it() {
         fn same(left: &ProducerFrame, right: &ProducerFrame) -> bool {
@@ -884,15 +867,12 @@ mod tests {
         ];
         let (left_frame, right_frame) = (&zone_frames[0].1, &zone_frames[1].1);
         let black = black_frame();
-        let composed = solid_frame([255, 255, 255]);
-        let backdrops = |composed| ScreenBackdrops {
+        let own_frames = ScreenBackdrops {
             screens: &screens,
             zone_frames: &zone_frames,
-            composed,
             black: &black,
         };
 
-        let own_frames = backdrops(None);
         assert!(same(own_frames.frame_for_screen(left_screen), left_frame));
         assert!(same(own_frames.frame_for_screen(right_screen), right_frame));
         assert!(
@@ -903,24 +883,6 @@ mod tests {
             same(own_frames.frame_for_screen(unplaced_screen), &black),
             "a screen no zone places has no backdrop"
         );
-
-        let lone_zone = backdrops(Some(ComposedSceneBackdrop::Zone(left_zone, &composed)));
-        assert!(same(lone_zone.frame_for_screen(left_screen), &composed));
-        assert!(
-            same(lone_zone.frame_for_screen(right_screen), right_frame),
-            "the composed scene stands in for its own zone only"
-        );
-
-        let transition = backdrops(Some(ComposedSceneBackdrop::Transition(&composed)));
-        for rendering in [left_screen, right_screen] {
-            assert!(same(transition.frame_for_screen(rendering), &composed));
-        }
-        for dark in [idle_screen, unplaced_screen] {
-            assert!(
-                same(transition.frame_for_screen(dark), &black),
-                "a transition gives a screen nothing its zone does not render"
-            );
-        }
     }
 
     /// A compositor that does not finalize hands each screen's worker the
@@ -1207,7 +1169,6 @@ mod tests {
             backdrops: ScreenBackdrops {
                 screens: &[],
                 zone_frames: &[],
-                composed: None,
                 black: &black,
             },
         };
@@ -1691,7 +1652,6 @@ mod tests {
             backdrops: ScreenBackdrops {
                 screens: &[],
                 zone_frames: &[],
-                composed: None,
                 black: &black,
             },
         };
@@ -1814,7 +1774,6 @@ mod tests {
                 backdrops: ScreenBackdrops {
                     screens: &placed,
                     zone_frames,
-                    composed: None,
                     black: &black,
                 },
             };

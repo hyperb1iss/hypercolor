@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use hypercolor_core::bus::{
     CanvasFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget, DisplayZoneViewport,
     EventFilter, EventTimestamp, HypercolorBus, INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE,
-    PreviewKind, PublicationClock, ScreenBackdropRoute, TimestampedEvent, WatchLane,
+    PreviewKind, PublicationClock, ScreenBackdropRoute, ScreenFade, TimestampedEvent, WatchLane,
     ZonePreviewFrame, screen_backdrop_lane_id,
 };
 use hypercolor_core::input::{SourceKind, SourceState, SourceStatusReporter};
@@ -1743,4 +1743,20 @@ fn screen_backdrop_lane_ids_are_stable_per_device_and_distinct_across_devices() 
         first.as_uuid(),
         "a backdrop lane must not reuse the device's own id"
     );
+}
+
+#[test]
+fn screen_fade_is_published_until_the_transition_ends() {
+    let bus = HypercolorBus::new();
+    assert_eq!(bus.screen_fade(), None, "no transition runs at first");
+
+    let halfway = ScreenFade {
+        epoch: 7,
+        weight: 0.5,
+    };
+    bus.publish_screen_fade(Some(halfway));
+    assert_eq!(bus.screen_fade(), Some(halfway));
+
+    bus.publish_screen_fade(None);
+    assert_eq!(bus.screen_fade(), None);
 }

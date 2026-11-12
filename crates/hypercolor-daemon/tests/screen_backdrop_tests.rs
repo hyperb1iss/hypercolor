@@ -1186,6 +1186,224 @@ async fn gpu_unplaced_screen_is_not_driven() {
     unplaced_screen_is_not_driven(RenderAccelerationMode::Gpu).await;
 }
 
+/// Two screens whose boxes overlap in two zones keep showing their own zone
+/// while one scene fades into another with the same arrangement. Each
+/// screen's backdrop crossfades on its own, so the fade never passes through
+/// a picture of the other zone.
+async fn overlapping_screens_keep_their_zones_through_a_transition(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let red_screen = rig.add_screen("red").await;
+    let blue_screen = rig.add_screen("blue").await;
+    let scene = |name: &str, transition_ms: u64| {
+        test_scene(
+            name,
+            vec![
+                scene_zone(
+                    "Red",
+                    ZoneRole::Primary,
+                    vec![rig.effects.solid(RED)],
+                    vec![
+                        strip_output("strip:red", (0.5, 0.1), (0.8, 0.1)),
+                        red_screen.output((0.5, 0.5), (0.4, 0.4)),
+                    ],
+                ),
+                scene_zone(
+                    "Blue",
+                    ZoneRole::Custom,
+                    vec![rig.effects.solid(BLUE)],
+                    vec![
+                        strip_output("strip:blue", (0.5, 0.9), (0.8, 0.1)),
+                        blue_screen.output((0.55, 0.5), (0.4, 0.4)),
+                    ],
+                ),
+            ],
+            transition_ms,
+        )
+    };
+    let (first, second) = (scene("First", 0), scene("Second", 700));
+
+    let running = rig.run_scene(first).await;
+    rig.writes
+        .wait_for(red_screen.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    rig.writes
+        .wait_for(blue_screen.device_id, "its blue zone", |panel| {
+            near(panel.center(), [0, 0, 255])
+        })
+        .await;
+    let red_seen = rig.writes.of(red_screen.device_id).len();
+    let blue_seen = rig.writes.of(blue_screen.device_id).len();
+    rig.activate(&second).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    running.stop().await;
+
+    for write in rig.writes.of(red_screen.device_id).iter().skip(red_seen) {
+        assert!(
+            near(Panel(&write.data).center(), [255, 0, 0]),
+            "the red zone's panel showed {:?} during the transition",
+            Panel(&write.data).center()
+        );
+    }
+    for write in rig.writes.of(blue_screen.device_id).iter().skip(blue_seen) {
+        assert!(
+            near(Panel(&write.data).center(), [0, 0, 255]),
+            "the blue zone's panel showed {:?} during the transition",
+            Panel(&write.data).center()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_overlapping_screens_keep_their_zones_through_a_transition() {
+    overlapping_screens_keep_their_zones_through_a_transition(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_overlapping_screens_keep_their_zones_through_a_transition() {
+    overlapping_screens_keep_their_zones_through_a_transition(RenderAccelerationMode::Gpu).await;
+}
+
+/// A lit screen whose zone renders nothing in the next scene fades to black
+/// with the scene, and fades back in from black: black is one end of the
+/// crossfade, not a cut at its start.
+async fn screen_fades_with_the_scene_when_its_zone_goes_dark(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("fading").await;
+    let scene = |name: &str, screen_layers: Vec<SceneLayer>| {
+        test_scene(
+            name,
+            vec![
+                scene_zone(
+                    "Lit",
+                    ZoneRole::Primary,
+                    vec![rig.effects.solid(GREEN)],
+                    vec![strip_output("strip:lit", (0.5, 0.1), (0.8, 0.1))],
+                ),
+                scene_zone(
+                    "Screen",
+                    ZoneRole::Custom,
+                    screen_layers,
+                    vec![
+                        strip_output("strip:screen", (0.5, 0.9), (0.8, 0.1)),
+                        screen.output((0.5, 0.5), (0.4, 0.4)),
+                    ],
+                ),
+            ],
+            900,
+        )
+    };
+    let lit = scene("Lit", vec![rig.effects.solid(RED)]);
+    let dark = scene("Dark", Vec::new());
+    let mid_fade = |panel: &Panel<'_>| {
+        let [r, g, b] = panel.center();
+        (40..=215).contains(&r) && g <= 3 && b <= 3
+    };
+
+    let running = rig.run_scene(lit.clone()).await;
+    rig.writes
+        .wait_for(screen.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    for (scene, end, what) in [(&dark, [0, 0, 0], "black"), (&lit, [255, 0, 0], "red")] {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.activate(scene).await;
+        rig.writes
+            .wait_for(screen.device_id, what, |panel| near(panel.center(), end))
+            .await;
+        let fade = rig.writes.of(screen.device_id);
+        assert!(
+            fade.iter()
+                .skip(seen)
+                .any(|write| mid_fade(&Panel(&write.data))),
+            "the screen cut to {what} without fading: {:?}",
+            fade.iter()
+                .skip(seen)
+                .map(|write| Panel(&write.data).center())
+                .collect::<Vec<_>>()
+        );
+    }
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_screen_fades_with_the_scene_when_its_zone_goes_dark() {
+    screen_fades_with_the_scene_when_its_zone_goes_dark(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_screen_fades_with_the_scene_when_its_zone_goes_dark() {
+    screen_fades_with_the_scene_when_its_zone_goes_dark(RenderAccelerationMode::Gpu).await;
+}
+
+/// A scene that renders nothing at all still gets its fade: the render loop
+/// idles once it has shown the incoming black, but the transition keeps
+/// stepping, so the screen fades out instead of freezing on its first step.
+async fn screen_fades_out_when_the_whole_scene_goes_dark(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig.add_screen("fading-out").await;
+    let scene = |name: &str, layers: Vec<SceneLayer>| {
+        test_scene(
+            name,
+            vec![scene_zone(
+                "Only",
+                ZoneRole::Primary,
+                layers,
+                vec![
+                    strip_output("strip:only", (0.5, 0.1), (0.8, 0.1)),
+                    screen.output((0.5, 0.5), (0.4, 0.4)),
+                ],
+            )],
+            900,
+        )
+    };
+    let lit = scene("Lit", vec![rig.effects.solid(RED)]);
+    let dark = scene("Dark", Vec::new());
+
+    let running = rig.run_scene(lit).await;
+    rig.writes
+        .wait_for(screen.device_id, "its red zone", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.activate(&dark).await;
+    rig.writes
+        .wait_for(screen.device_id, "black", |panel| {
+            near(panel.center(), [0, 0, 0])
+        })
+        .await;
+    running.stop().await;
+
+    let fade = rig.writes.of(screen.device_id);
+    let centers = fade
+        .iter()
+        .skip(seen)
+        .map(|write| Panel(&write.data).center())
+        .collect::<Vec<_>>();
+    assert!(
+        centers
+            .iter()
+            .any(|[r, g, b]| (40..=215).contains(r) && *g <= 3 && *b <= 3),
+        "the screen cut to black without fading: {centers:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_screen_fades_out_when_the_whole_scene_goes_dark() {
+    screen_fades_out_when_the_whole_scene_goes_dark(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_screen_fades_out_when_the_whole_scene_goes_dark() {
+    screen_fades_out_when_the_whole_scene_goes_dark(RenderAccelerationMode::Gpu).await;
+}
+
 // ── Viewports: the owning zone against the spatial service ────────────────
 
 /// The layout ids a physical device goes by, the way the display output

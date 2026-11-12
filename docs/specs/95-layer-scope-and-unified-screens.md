@@ -945,6 +945,34 @@ that output's placement in that zone's layout.
   service's layout (`display_output/mod.rs:722`, `:945-1007`). §9 confirms the
   two agree for every screen on the evidence rig before the source changes.
 
+**Scene transitions.** A screen never reads the composed scene crossfade. That
+crossfade is one flattened picture, so a screen that read it would show
+whichever zone was painted last over its box for the length of the transition
+and snap back to its own zone at the end. Each screen crossfades on its own
+panel instead, the way LEDs blend in LED space (Spec 86 §4.1): from the picture
+the panel showed when the transition began to the picture the incoming scene
+gives it, by the transition's eased progress.
+
+- The render thread publishes the transition's epoch and eased progress ahead
+  of the incoming scene's display frames. It keeps publishing while the loop
+  idles, so a fade into a scene that renders nothing still runs to its end.
+- The display worker does the mixing. It alone knows what its panel last
+  showed, so it holds that picture when a new epoch arrives and mixes each
+  incoming picture with it in panel space. The outgoing picture outlives a
+  worker restarted because the screen gained or lost a face with the scene.
+- Black is an end of the fade like any other picture. A screen whose zone
+  renders nothing in the incoming scene fades to black; the frame that says
+  "black" is the incoming endpoint, not a cut.
+- A transition that interrupts another starts from the mix on the panel.
+- A face that replaces its backdrop shows nothing of the scene and does not
+  fade. A face that blends with its backdrop fades as part of its screen's
+  picture: the panel picture crossfades whole, face included.
+- A lone zone at the scene extent is not a special case. Its screens read the
+  zone's own frame like every other screen's, never the composed crossfade,
+  so one mechanism fades every screen and none fades twice.
+- The mix is linear in the panel's encoded bytes at the screen's own cadence.
+  A transition's color interpolation mode applies to LEDs only.
+
 This changes the display lane, the display output targets, and the workers. It
 ships first, as W1, on zone frames: it fixes overlapping screens across zones
 on its own, and scope classes then only swap the frame it reads.

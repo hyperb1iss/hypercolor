@@ -654,6 +654,21 @@ pub struct ScreenBackdropRoute {
     pub target_fps: u32,
 }
 
+/// A scene transition, as far as the screens fading with it are concerned.
+///
+/// A screen crossfades on its own panel, from the picture it showed when the
+/// transition began to the picture the incoming scene gives it (Spec 95
+/// §5.10). The render thread says how far along the transition is; each
+/// display worker does the mixing, because only it knows what its panel
+/// last showed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenFade {
+    /// Which transition this is. A new epoch starts a new fade.
+    pub epoch: u64,
+    /// How far the incoming scene has faded in, eased, from 0 to 1.
+    pub weight: f32,
+}
+
 /// The display lane id of a screen's backdrop.
 ///
 /// A screen without a face has no display zone, so its backdrop travels the
@@ -923,6 +938,7 @@ pub struct HypercolorBus {
 
     /// Display-output-authored set of the screens it drives.
     screen_backdrop_routes: Arc<Mutex<ScreenBackdropRouteRegistry>>,
+    screen_fade: watch::Sender<Option<ScreenFade>>,
 
     /// Notified when output demand appears or observable state changes.
     output_demand: Arc<OutputDemandSignal>,
@@ -957,6 +973,7 @@ impl HypercolorBus {
                 DisplayZoneOutputRouteRegistry::default(),
             )),
             screen_backdrop_routes: Arc::new(Mutex::new(ScreenBackdropRouteRegistry::default())),
+            screen_fade: watch::Sender::new(None),
             output_demand,
             clock,
         }
@@ -1457,6 +1474,28 @@ impl HypercolorBus {
             .lock()
             .expect("screen backdrop route registry should not be poisoned");
         (registry.revision, Arc::clone(&registry.routes))
+    }
+
+    /// Publish the scene transition the screens fade with, or `None` when
+    /// no transition runs.
+    ///
+    /// The render thread publishes this before the display frames of the
+    /// scene it fades to. A reader that takes a lane's frame first and the
+    /// fade second therefore never pairs an incoming scene's frame with the
+    /// time before its fade began, which would show as a cut.
+    pub fn publish_screen_fade(&self, fade: Option<ScreenFade>) {
+        self.screen_fade.send_if_modified(|current| {
+            let changed = *current != fade;
+            *current = fade;
+            changed
+        });
+    }
+
+    /// The scene transition the screens fade with, if one runs. Read it
+    /// after the lane frame it is applied to.
+    #[must_use]
+    pub fn screen_fade(&self) -> Option<ScreenFade> {
+        *self.screen_fade.borrow()
     }
 
     /// Remove the render-thread-authored display-face route for a zone.
