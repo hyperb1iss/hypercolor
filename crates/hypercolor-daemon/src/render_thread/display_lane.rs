@@ -22,6 +22,8 @@ use super::render_zones::{
     DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedBackdrop, ZoneContentRevision,
 };
 use super::scene_dependency::SceneDependencyKey;
+#[cfg(feature = "wgpu")]
+use super::screen_fade::ScreenFadeStep;
 use super::sparkleflinger::DisplayFinalizeFade;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::{
@@ -397,6 +399,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             None,
             fade,
         ) {
+            self.note_fade_shown(display_target.device_id, &finalized);
             return Some(DisplayZoneCanvasFrame {
                 frame: finalized.frame,
                 display_target: DisplayZoneTarget {
@@ -439,6 +442,21 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             let _ = route;
             None
         }
+    }
+
+    /// Record how far into the fade the picture a screen is about to
+    /// publish is, for a transition that interrupts this one to start the
+    /// screen from.
+    fn note_fade_shown(&mut self, device_id: DeviceId, finalized: &FinalizedDisplayFrame) {
+        #[cfg(feature = "wgpu")]
+        if let Some(step) = finalized.fade {
+            self.compose
+                .render_zone_runtime
+                .screen_fades
+                .note_shown(device_id, step);
+        }
+        #[cfg(not(feature = "wgpu"))]
+        let _ = (device_id, finalized);
     }
 
     /// Materialize the backdrop lane of a placed screen: its backdrop
@@ -569,6 +587,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             crate::render_thread::sparkleflinger::gpu::record_gpu_display_finalize_latch();
             return Some(retained);
         };
+        self.note_fade_shown(device_id, &finalized);
         let frame = DisplayZoneCanvasFrame {
             frame: finalized.frame,
             display_target: backdrop_lane_target(device_id, true),
@@ -739,6 +758,12 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                     display_route: display_route.clone(),
                     frame_format: display_route.frame_format,
                     content,
+                    fade: fade.and_then(|fade| {
+                        self.compose
+                            .render_zone_runtime
+                            .screen_fades
+                            .step(fade.weight)
+                    }),
                     pending,
                 };
                 match self.try_finish_display_finalize_work(&mut work) {
@@ -823,6 +848,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                     FinalizedDisplayFrame {
                         frame,
                         content: work.content,
+                        fade: work.fade,
                     }
                 }),
             ),
@@ -844,6 +870,9 @@ struct FinalizedDisplayFrame {
     frame: DisplayZoneFrame,
     #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     content: Option<ZoneContentRevision>,
+    /// The step of the screen's fade the frame shows, if it shows one.
+    #[cfg(feature = "wgpu")]
+    fade: Option<ScreenFadeStep>,
 }
 
 #[cfg(feature = "wgpu")]
@@ -1244,6 +1273,71 @@ mod tests {
             shows(&cut),
             Some([255, 0, 0, 255]),
             "a panel with no base for its new shape should cut to the incoming backdrop"
+        );
+    }
+
+    /// A screen under its cadence cap is finalized less often than the
+    /// transition moves. Interrupted between two of its frames, it starts
+    /// the new fade from the picture it last published, mixed at the weight
+    /// that picture had, and not at the weight the transition had reached
+    /// behind it.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn gpu_interrupted_fade_starts_from_the_weight_its_screen_last_published() {
+        let Some(mut harness) = DisplayLaneHarness::with_gpu_display() else {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "GPU display finalization test was required but no GPU compositor started"
+            );
+            return;
+        };
+        let zone = ZoneId::new();
+        let screen = DeviceId::new();
+        let lane = screen_backdrop_lane_id(screen);
+        let screens = HashMap::from([(screen, placed_screen(screen, zone, 4))]);
+        let red = [(zone, surface_frame([255, 0, 0]))];
+        let blue = [(zone, surface_frame([0, 0, 255]))];
+        let green = [(zone, surface_frame([0, 255, 0]))];
+        let shows = |lanes: &MaterializedDisplayLanes| {
+            lane_frame(lanes, lane).map(|frame| first_pixel(&frame.frame))
+        };
+
+        harness.retain_zone_frames(&red);
+        harness.materialize_until(&screens, &red, Vec::new, |lanes| {
+            shows(lanes) == Some([255, 0, 0, 255])
+        });
+
+        // A quarter of the way to blue, and the screen publishes it.
+        harness.transition(Some((1, 0.25)));
+        harness.retain_zone_frames(&blue);
+        let quarter = harness.materialize_until(&screens, &blue, Vec::new, |lanes| {
+            shows(lanes).is_some_and(|pixel| pixel[2] >= 40)
+        });
+        let published = shows(&quarter).expect("the fading backdrop");
+        assert!(
+            (185..=197).contains(&published[0]) && (58..=70).contains(&published[2]),
+            "a quarter of the way from red to blue: {published:?}"
+        );
+
+        // The transition is three quarters through by the next tick, and
+        // the screen, under its cap, still shows the quarter.
+        harness.transition(Some((1, 0.75)));
+        let held = harness.materialize(harness.elapsed_ms + 10, &screens, &blue, Vec::new());
+        assert_eq!(shows(&held), Some(published));
+
+        // Green interrupts, half way in at once: half green over the
+        // quarter mix the screen was showing.
+        harness.transition(Some((2, 0.5)));
+        harness.retain_zone_frames(&green);
+        let onward = harness.materialize_until(&screens, &green, Vec::new, |lanes| {
+            shows(lanes).is_some_and(|pixel| pixel[1] >= 100)
+        });
+        let pixel = shows(&onward).expect("the interrupting fade");
+        assert!(
+            (90..=102).contains(&pixel[0])
+                && (122..=134).contains(&pixel[1])
+                && (26..=38).contains(&pixel[2]),
+            "half green over a quarter of the way from red to blue: {pixel:?}"
         );
     }
 
@@ -2203,17 +2297,21 @@ mod tests {
                     faces,
                 )
             };
-            let fade = self.fade;
-            self.render_zone_runtime.screen_fades.note_frame(
-                placed,
-                zone_frames.is_empty().then_some([0, 0, 0]),
-                fade,
-            );
+            self.render_zone_runtime
+                .screen_fades
+                .note_frame(placed, zone_frames.is_empty().then_some([0, 0, 0]));
             lanes
         }
 
         /// Begin, step or end the scene transition the next frames render
         /// in: its epoch and how far it has come.
+        /// Stand in for the scene pass that rendered `zone_frames`: the
+        /// frames a transition beginning next takes its bases from.
+        fn retain_zone_frames(&mut self, zone_frames: &[(ZoneId, ProducerFrame)]) {
+            self.render_zone_runtime
+                .retain_zone_frames_for_test(zone_frames);
+        }
+
         fn transition(&mut self, transition: Option<(u64, f32)>) {
             self.fade = transition.map(|(_, weight)| weight);
             let transition =

@@ -82,6 +82,18 @@ impl ScreenTransition {
     }
 }
 
+/// How far into which transition one finalized picture of a screen is.
+///
+/// A finalization can land a frame after it was asked for, and a screen
+/// under its cadence cap is not asked every frame, so the step travels
+/// with the picture instead of being read off the frame that publishes it.
+#[cfg(feature = "wgpu")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ScreenFadeStep {
+    transition: ScreenTransitionKey,
+    weight: f32,
+}
+
 /// The backdrop a screen fades from.
 struct ScreenFadeBase {
     /// The panel the base was taken for. A screen whose panel has changed
@@ -108,10 +120,14 @@ enum FadePicture {
 pub(crate) struct ScreenFades {
     /// The transition the bases were taken for.
     transition: Option<ScreenTransitionKey>,
-    /// How far that transition had come when the screens were last mixed:
-    /// the weight of the mix a transition that interrupts it starts from.
-    weight: f32,
     bases: HashMap<DeviceId, ScreenFadeBase>,
+    /// How far into that transition the picture each screen last published
+    /// was: the weight of the mix a transition that interrupts it starts
+    /// that screen from. A screen that has published nothing of the
+    /// transition still shows its base. Kept only where the mix is made on
+    /// the GPU; as pixels, the last published mix is itself retained.
+    #[cfg(feature = "wgpu")]
+    shown: HashMap<DeviceId, f32>,
     /// The screens of the last frame, as its scene placed them.
     last_screens: Vec<PlacedScreen>,
     /// The one color every placed screen showed in the last frame, when it
@@ -124,16 +140,26 @@ pub(crate) struct ScreenFades {
 impl ScreenFades {
     /// Record what a frame's screens were, for the transition that may begin
     /// with the next frame to take its bases from.
-    pub(super) fn note_frame(
-        &mut self,
-        screens: Vec<PlacedScreen>,
-        flat: Option<[u8; 3]>,
-        weight: Option<f32>,
-    ) {
+    pub(super) fn note_frame(&mut self, screens: Vec<PlacedScreen>, flat: Option<[u8; 3]>) {
         self.last_screens = screens;
         self.last_flat = flat;
-        if let Some(weight) = weight {
-            self.weight = weight;
+    }
+
+    /// The step a picture finalized now at `weight` is.
+    #[cfg(feature = "wgpu")]
+    pub(super) fn step(&self, weight: f32) -> Option<ScreenFadeStep> {
+        Some(ScreenFadeStep {
+            transition: self.transition?,
+            weight,
+        })
+    }
+
+    /// A screen published a picture finalized at `step`. One that belongs
+    /// to a transition already over says nothing about this one.
+    #[cfg(feature = "wgpu")]
+    pub(super) fn note_shown(&mut self, device_id: DeviceId, step: ScreenFadeStep) {
+        if self.transition == Some(step.transition) {
+            self.shown.insert(device_id, step.weight);
         }
     }
 
@@ -143,7 +169,8 @@ impl ScreenFades {
     pub(super) fn retire_for_off_output(&mut self, screens: Vec<PlacedScreen>, color: [u8; 3]) {
         self.transition = None;
         self.bases.clear();
-        self.weight = 0.0;
+        #[cfg(feature = "wgpu")]
+        self.shown.clear();
         self.last_screens = screens;
         self.last_flat = Some(color);
     }
@@ -271,6 +298,8 @@ pub(super) fn begin_screen_fades(
     let interrupted = std::mem::replace(&mut fades.transition, key).is_some();
     if key.is_none() {
         fades.bases.clear();
+        #[cfg(feature = "wgpu")]
+        fades.shown.clear();
         compose.render_zone_runtime.screen_fades = fades;
         return;
     }
@@ -281,17 +310,20 @@ pub(super) fn begin_screen_fades(
     let finalizes = false;
     let mut bases = HashMap::with_capacity(fades.last_screens.len());
     if finalizes {
-        // A transition that interrupts another starts from the mix on the
-        // panel: the last incoming backdrop over the old base, at the
-        // weight it had.
-        #[cfg(feature = "wgpu")]
-        let interrupted_weight = interrupted.then_some(fades.weight);
+        // A transition that interrupts another starts each screen from the
+        // mix on its panel: the incoming backdrop over the old base, at the
+        // weight of the picture that screen last published. The transition
+        // itself has moved on since, for a screen under its cadence cap.
         #[cfg(feature = "wgpu")]
         for screen in &fades.last_screens {
             let (width, height) = (screen.output.width, screen.output.height);
-            let previous = interrupted_weight
-                .zip(fades.base(screen.device_id, width, height))
-                .map(|(weight, base)| (weight, &base.picture));
+            let previous = fades
+                .base(screen.device_id, width, height)
+                .filter(|_| interrupted)
+                .map(|base| {
+                    let shown = fades.shown.get(&screen.device_id).copied();
+                    (shown.unwrap_or(0.0), &base.picture)
+                });
             if let Some(picture) = base_on_gpu(compose, screen, fades.last_flat, previous) {
                 bases.insert(
                     screen.device_id,
@@ -361,7 +393,8 @@ pub(super) fn begin_screen_fades(
         }
     }
     fades.bases = bases;
-    fades.weight = 0.0;
+    #[cfg(feature = "wgpu")]
+    fades.shown.clear();
     compose.render_zone_runtime.screen_fades = fades;
 }
 
@@ -404,6 +437,12 @@ fn base_on_gpu(
     let (slot, fade) = match previous {
         None => (0, None),
         Some((_, FadePicture::Pixels(_))) => return None,
+        // The screen published nothing of the transition this one
+        // interrupts, so it still shows the base it had.
+        Some((weight, FadePicture::Black)) if weight <= 0.0 => return Some(FadePicture::Black),
+        Some((weight, FadePicture::Route { slot })) if weight <= 0.0 => {
+            return Some(FadePicture::Route { slot: *slot });
+        }
         Some((weight, FadePicture::Black)) => (
             0,
             Some(DisplayFinalizeFade {
@@ -620,7 +659,6 @@ mod tests {
         let screen = DeviceId::new();
         let mut fades = ScreenFades {
             transition: Some(ScreenTransition::for_test(1, 0.5).key),
-            weight: 0.5,
             ..ScreenFades::default()
         };
         fades.bases.insert(
@@ -641,6 +679,27 @@ mod tests {
         assert_eq!(fades.last_flat, Some([0, 0, 0]));
         #[cfg(feature = "wgpu")]
         assert_eq!(fades.base_route_ids().count(), 0);
+    }
+
+    /// A picture counts as shown for the transition it was finalized in.
+    /// One that lands after its transition was interrupted says nothing
+    /// about how far the screen is into the one that interrupted it.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn only_a_picture_of_the_running_transition_counts_as_shown() {
+        let screen = DeviceId::new();
+        let mut fades = ScreenFades::default();
+        assert!(fades.step(0.5).is_none(), "no transition, no step");
+
+        fades.transition = Some(ScreenTransition::for_test(1, 0.25).key);
+        let quarter = fades.step(0.25).expect("a transition is running");
+        fades.note_shown(screen, quarter);
+        assert_eq!(fades.shown.get(&screen), Some(&0.25));
+
+        fades.transition = Some(ScreenTransition::for_test(2, 0.0).key);
+        fades.shown.clear();
+        fades.note_shown(screen, quarter);
+        assert!(fades.shown.is_empty());
     }
 
     #[test]

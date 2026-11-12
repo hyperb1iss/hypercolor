@@ -67,6 +67,8 @@ use super::scene_snapshot::{EffectDemand, FrameSceneSnapshot, SceneSnapshotCache
 use super::scene_state::RenderSceneState;
 use super::screen_canvas::ScreenZonesSnapshot;
 #[cfg(feature = "wgpu")]
+use super::screen_fade::ScreenFadeStep;
+#[cfg(feature = "wgpu")]
 use super::screen_parity_diagnostics::ScreenParityDiagnosticMailbox;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::PendingDisplayFinalization;
@@ -1774,6 +1776,8 @@ pub(crate) struct PendingDisplayFinalizeWork {
     /// What the lane's zone showed when this finalization was dispatched,
     /// for a lane that shows a zone's frame alone.
     pub(crate) content: Option<ZoneContentRevision>,
+    /// The step of its screen's fade this finalization draws, if any.
+    pub(crate) fade: Option<ScreenFadeStep>,
     pub(crate) pending: PendingDisplayFinalization,
 }
 

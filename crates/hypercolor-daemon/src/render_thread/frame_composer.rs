@@ -731,7 +731,6 @@ impl ComposeContext<'_> {
             screens,
             // A frame with no zone frames gives every placed screen black.
             zone_frames.is_empty().then_some([0, 0, 0]),
-            fade,
         );
         lanes
     }

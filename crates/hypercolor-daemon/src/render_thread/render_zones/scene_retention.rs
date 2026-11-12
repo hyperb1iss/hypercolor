@@ -33,6 +33,28 @@ impl ZoneRuntime {
             .map(|retained| retained.zone_canvases.as_slice())
     }
 
+    /// Stand in for a scene pass that rendered `zone_frames`, for a test of
+    /// what the frame after it reads back.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn retain_zone_frames_for_test(&mut self, zone_frames: &[(ZoneId, ProducerFrame)]) {
+        use crate::render_thread::frame_sampling::RetainedLedSamplingStrategy;
+
+        self.retained_frame = Some(RetainedRenderZoneFrame {
+            dependency_key: SceneDependencyKey::default(),
+            scene_frame: ProducerFrame::Canvas(hypercolor_types::canvas::Canvas::new(1, 1)),
+            scene_frame_zone: None,
+            display_zone_frames: Vec::new(),
+            active_display_zone_ids: Vec::new(),
+            zone_canvases: zone_frames.to_vec(),
+            zone_revisions: Vec::new(),
+            led_sampling_strategy: RetainedLedSamplingStrategy::PreSampled {
+                layout: std::sync::Arc::clone(&self.combined_led_layout),
+                zones: std::sync::Arc::from(Vec::new()),
+            },
+            logical_layer_count: 0,
+        });
+    }
+
     pub(super) fn reuse_last_good_scene(&self) -> Option<ZoneResult> {
         self.retained_frame.as_ref().map(zone_result_from_retained)
     }

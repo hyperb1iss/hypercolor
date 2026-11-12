@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::{DisplayZoneViewport, HypercolorBus};
+use hypercolor_core::bus::{DisplayZoneViewport, HypercolorBus, screen_backdrop_lane_id};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -2390,6 +2390,125 @@ async fn gpu_transition_begun_while_output_was_stopped_fades_in_from_dark() {
         hypercolor_daemon::output_power::OutputOverride::Stopped,
     )
     .await;
+}
+
+/// The center of each new picture a lane carried, with when it arrived.
+type LanePictures = Arc<StdMutex<Vec<(Instant, [u8; 3])>>>;
+
+/// Each new picture a screen's backdrop lane carries, as its center and
+/// when the render thread published it. A lane holds its picture between
+/// two of the screen's frames, so only a center that changed is recorded.
+fn watch_backdrop_lane(rig: &Rig, device_id: DeviceId) -> LanePictures {
+    let mut lane = rig
+        .state
+        .event_bus
+        .zone_canvas_sender(screen_backdrop_lane_id(device_id))
+        .subscribe();
+    let pictures = Arc::new(StdMutex::new(Vec::new()));
+    let record = Arc::clone(&pictures);
+    tokio::spawn(async move {
+        loop {
+            let center = {
+                let frame = lane.borrow_and_update();
+                let (width, height) = (frame.width(), frame.height());
+                let offset = usize::try_from((height / 2 * width + width / 2) * 4)
+                    .expect("lane offset fits usize");
+                frame
+                    .rgba_bytes()
+                    .get(offset..offset + 3)
+                    .map(|rgb| [rgb[0], rgb[1], rgb[2]])
+            };
+            if let Some(center) = center {
+                let mut pictures = record.lock().unwrap_or_else(PoisonError::into_inner);
+                if pictures.last().is_none_or(|(_, last)| *last != center) {
+                    pictures.push((Instant::now(), center));
+                }
+            }
+            if lane.changed().await.is_err() {
+                break;
+            }
+        }
+    });
+    pictures
+}
+
+/// A transition that interrupts another starts each screen from the picture
+/// that screen last showed, not from where the fade had got to since. This
+/// panel takes four frames a second, so the fade moves on a long way
+/// between two of them: interrupted there, the screen's next picture
+/// continues from the last one it published.
+async fn interrupted_slow_screen_continues_from_its_last_picture(mode: RenderAccelerationMode) {
+    let mut rig = Rig::new(mode);
+    let screen = rig
+        .add_screen_with("slow", DisplayFrameFormat::Rgb, 4)
+        .await;
+    let red = lit_scene(&rig.effects, &screen, "Red", RED, 0, false);
+    let blue = lit_scene(&rig.effects, &screen, "Blue", BLUE, 1000, false);
+    let green = lit_scene(&rig.effects, &screen, "Green", GREEN, 20_000, false);
+
+    let running = rig.run_scene(red).await;
+    rig.writes
+        .wait_for(screen.device_id, "red", |panel| {
+            near(panel.center(), [255, 0, 0])
+        })
+        .await;
+    let pictures = watch_backdrop_lane(&rig, screen.device_id);
+    let latest = || {
+        let pictures = pictures.lock().unwrap_or_else(PoisonError::into_inner);
+        (pictures.len(), pictures.last().copied())
+    };
+    rig.activate(&blue).await;
+    // Interrupt part way to the screen's next frame: its last picture is a
+    // good tenth of a second old, and the next is not due for as long again.
+    let deadline = Instant::now() + WAIT;
+    let (seen, last) = loop {
+        if let (seen, Some((at, center))) = latest()
+            && between_red_and_blue(center)
+            && (Duration::from_millis(110)..=Duration::from_millis(140)).contains(&at.elapsed())
+        {
+            break (seen, center);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the screen never held a mix of red and blue: {:?}",
+            latest()
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
+    rig.activate(&green).await;
+    let deadline = Instant::now() + WAIT;
+    let first = loop {
+        let next = pictures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(seen)
+            .copied();
+        if let Some((_, center)) = next {
+            break center;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the screen showed nothing new after the interruption"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    running.stop().await;
+
+    assert!(
+        first[0].abs_diff(last[0]) <= 14 && first[2].abs_diff(last[2]) <= 14 && first[1] <= 24,
+        "the new fade began on {first:?}, not on the {last:?} the screen was showing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_interrupted_slow_screen_continues_from_its_last_picture() {
+    interrupted_slow_screen_continues_from_its_last_picture(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_interrupted_slow_screen_continues_from_its_last_picture() {
+    interrupted_slow_screen_continues_from_its_last_picture(RenderAccelerationMode::Gpu).await;
 }
 
 // ── Viewports: the owning zone against the spatial service ────────────────
