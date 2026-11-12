@@ -125,6 +125,21 @@ impl StudioEdit {
     }
 }
 
+/// The scoped layers a step carried between zones or narrowed: a move's
+/// own, or those of the move that filled a zone as it was made.
+fn carried_layers(edit: &StudioEdit) -> &[LayerMove] {
+    match edit {
+        StudioEdit::Members { layer_moves, .. } | StudioEdit::ZoneCreated { layer_moves, .. } => {
+            layer_moves
+        }
+        StudioEdit::Layout { .. }
+        | StudioEdit::LayerScope { .. }
+        | StudioEdit::ZonePatched { .. }
+        | StudioEdit::ZoneDeleted(_)
+        | StudioEdit::Unresolved { .. } => &[],
+    }
+}
+
 /// A journal entry's identity, unique to the page: it never changes while
 /// the entry lives, however settling other entries moves it, and no other
 /// journal (another scene's, or this scene's after a switch) ever reuses it.
@@ -293,39 +308,99 @@ impl StudioJournal {
         }
     }
 
-    /// Point every entry that names the layer `old` of the zone `zone_id`
-    /// at `new`, the id a replace of that layer minted.
+    /// Point every entry that names the layer `old` at `new`, the id a
+    /// replace of that layer minted. `zone_id` is the zone the layer sits
+    /// in now, where the replace was made.
+    ///
+    /// An entry names the layer in the zone it sat in when the entry was
+    /// recorded, and the layer may have been carried elsewhere since, so
+    /// each entry is asked where its layer sits now (see
+    /// [`Self::zone_now`]) rather than which zone it wrote down. A layer
+    /// of the same id that sits in another zone is another layer: ids are
+    /// unique within a zone, not across a scene.
     pub fn remap_layer(&mut self, zone_id: &str, old: SceneLayerId, new: SceneLayerId) {
-        for entry in &mut self.entries {
-            match &mut entry.edit {
+        // Which entries name the layer is decided against the journal as
+        // it stands, before any id in it changes.
+        let mut named: Vec<(usize, Option<usize>)> = Vec::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            match &entry.edit {
                 StudioEdit::LayerScope {
                     zone_id: zone,
                     layer_id,
                     ..
                 } => {
-                    if zone == zone_id && *layer_id == old {
-                        *layer_id = new;
+                    if *layer_id == old && self.zone_now(index, zone.clone(), old) == zone_id {
+                        named.push((index, None));
                     }
                 }
-                StudioEdit::Members { layer_moves, .. }
-                | StudioEdit::ZoneCreated { layer_moves, .. } => {
-                    // A carried layer sits in the zone its move ended in,
-                    // on whichever side of the journal's cursor the entry is.
-                    for moved in layer_moves {
-                        let here = [moved.from.zone_id, moved.to.zone_id]
-                            .iter()
-                            .any(|zone| zone.to_string() == zone_id);
-                        if here && moved.layer_id == old {
-                            moved.layer_id = new;
+                edit => {
+                    for (place, moved) in carried_layers(edit).iter().enumerate() {
+                        // An applied move left its layer where it ends;
+                        // one waiting to be redone will find it where it
+                        // starts.
+                        let slot = if index < self.cursor {
+                            moved.to
+                        } else {
+                            moved.from
+                        };
+                        if moved.layer_id == old
+                            && self.zone_now(index, slot.zone_id.to_string(), old) == zone_id
+                        {
+                            named.push((index, Some(place)));
                         }
                     }
                 }
-                StudioEdit::Layout { .. }
-                | StudioEdit::ZonePatched { .. }
-                | StudioEdit::ZoneDeleted(_)
-                | StudioEdit::Unresolved { .. } => {}
             }
         }
+        for (index, place) in named {
+            match (&mut self.entries[index].edit, place) {
+                (StudioEdit::LayerScope { layer_id, .. }, None) => *layer_id = new,
+                (
+                    StudioEdit::Members { layer_moves, .. }
+                    | StudioEdit::ZoneCreated { layer_moves, .. },
+                    Some(place),
+                ) => {
+                    if let Some(moved) = layer_moves.get_mut(place) {
+                        moved.layer_id = new;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The zone the layer `layer` sits in now, given the zone the entry at
+    /// `index` knows it in: `zone` is where it sits once that entry is
+    /// applied, for an applied entry, and where it sits just before the
+    /// entry is redone, for one on the redo side.
+    ///
+    /// Every applied step after an applied entry may have carried the
+    /// layer on, and every step waiting to be redone before a redo-side
+    /// entry will have carried it there by the time that entry runs, so
+    /// the moves between the entry and the cursor are followed, forward
+    /// or back.
+    fn zone_now(&self, index: usize, zone: String, layer: SceneLayerId) -> String {
+        let mut zone = zone;
+        if index < self.cursor {
+            for entry in &self.entries[index + 1..self.cursor] {
+                if let Some(moved) = carried_layers(&entry.edit)
+                    .iter()
+                    .find(|moved| moved.layer_id == layer && moved.from.zone_id.to_string() == zone)
+                {
+                    zone = moved.to.zone_id.to_string();
+                }
+            }
+        } else {
+            for entry in self.entries[self.cursor..index].iter().rev() {
+                if let Some(moved) = carried_layers(&entry.edit)
+                    .iter()
+                    .find(|moved| moved.layer_id == layer && moved.to.zone_id.to_string() == zone)
+                {
+                    zone = moved.from.zone_id.to_string();
+                }
+            }
+        }
+        zone
     }
 
     /// Hold the place `id` while the step it stands for, which went out

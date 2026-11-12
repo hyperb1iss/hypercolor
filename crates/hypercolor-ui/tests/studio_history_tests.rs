@@ -1309,3 +1309,135 @@ fn redoing_a_zones_creation_carries_the_same_layers_into_the_remade_zone() {
         other => panic!("expected the creation, found {other:?}"),
     }
 }
+
+// ── A layer's id through replaces made in another zone ──────────────────
+
+fn scope_step(zone: &str, layer: SceneLayerId) -> StudioEdit {
+    StudioEdit::LayerScope {
+        zone_id: zone.to_owned(),
+        layer_id: layer,
+        name: "Ripples".to_owned(),
+        before: None,
+        after: Some(scoped(&["keys"])),
+    }
+}
+
+fn carried_by(layer: SceneLayerId) -> StudioEdit {
+    StudioEdit::Members {
+        changes: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![LayerMove {
+            layer_id: layer,
+            ..ripples_carried()
+        }],
+    }
+}
+
+fn scope_step_layer(edit: Option<&StudioEdit>) -> (String, SceneLayerId) {
+    match edit {
+        Some(StudioEdit::LayerScope {
+            zone_id, layer_id, ..
+        }) => (zone_id.clone(), *layer_id),
+        other => panic!("expected a change of target, found {other:?}"),
+    }
+}
+
+fn carried_layer(edit: Option<&StudioEdit>) -> SceneLayerId {
+    match edit {
+        Some(StudioEdit::Members { layer_moves, .. }) => layer_moves[0].layer_id,
+        other => panic!("expected the move, found {other:?}"),
+    }
+}
+
+#[test]
+fn a_change_of_target_follows_its_layer_into_the_zone_it_was_carried_to() {
+    let [first, second, third, fourth] = [(); 4].map(|()| SceneLayerId::new());
+    let mut journal = StudioJournal::default();
+
+    // Ripples is limited to the keys in Case, then the keys move to
+    // Keyboard and take it along.
+    let retargeted_in_case = journal.record(scope_step(ZONE_A, first));
+    let moved = journal.record(carried_by(first));
+
+    // Its target changes again, in Keyboard: the replace mints a new id
+    // there, and the step recorded in Case names the same layer.
+    journal.remap_layer(ZONE_B, first, second);
+    let retargeted_in_keyboard = journal.record(scope_step(ZONE_B, second));
+    assert_eq!(carried_layer(journal.edit(moved)), second);
+    assert_eq!(
+        scope_step_layer(journal.edit(retargeted_in_case)),
+        (ZONE_A.to_owned(), second),
+        "the step keeps the zone it was made in and follows the layer's id"
+    );
+
+    // Undo the second change of target: another replace in Keyboard.
+    journal.remap_layer(ZONE_B, second, third);
+    journal.settle(
+        retargeted_in_keyboard,
+        Settled::Unapplied(scope_step(ZONE_B, third)),
+    );
+    assert_eq!(scope_step_layer(journal.edit(retargeted_in_case)).1, third);
+
+    // Undo the move: the layer is back in Case under the same id.
+    journal.settle(moved, Settled::Unapplied(carried_by(third)));
+    assert_eq!(
+        scope_step_layer(journal.undo_edit()),
+        (ZONE_A.to_owned(), third),
+        "the first change of target can still find its layer to undo"
+    );
+
+    // Undo the first change of target: a replace in Case. The steps on
+    // the redo side name the layer where they will find it once redone.
+    journal.remap_layer(ZONE_A, third, fourth);
+    journal.settle(
+        retargeted_in_case,
+        Settled::Unapplied(scope_step(ZONE_A, fourth)),
+    );
+    assert_eq!(carried_layer(journal.edit(moved)), fourth);
+    assert_eq!(
+        scope_step_layer(journal.edit(retargeted_in_keyboard)),
+        (ZONE_B.to_owned(), fourth)
+    );
+}
+
+#[test]
+fn a_replace_leaves_a_layer_of_the_same_id_in_another_zone_alone() {
+    // Layer ids are unique within a zone, not across a scene: Case and
+    // Keyboard each hold a layer with this id, and neither ever moved.
+    let shared = layer_id(RIPPLES);
+    let minted = SceneLayerId::new();
+    let mut journal = StudioJournal::default();
+    let in_case = journal.record(scope_step(ZONE_A, shared));
+    let in_keyboard = journal.record(scope_step(ZONE_B, shared));
+
+    journal.remap_layer(ZONE_B, shared, minted);
+
+    assert_eq!(scope_step_layer(journal.edit(in_case)).1, shared);
+    assert_eq!(scope_step_layer(journal.edit(in_keyboard)).1, minted);
+}
+
+#[test]
+fn a_layer_carried_into_a_zone_made_for_it_keeps_its_earlier_steps() {
+    let [first, second] = [(); 2].map(|()| SceneLayerId::new());
+    let mut journal = StudioJournal::default();
+    let retargeted = journal.record(scope_step(ZONE_A, first));
+    let made = journal.record(StudioEdit::ZoneCreated {
+        zone_id: ZONE_B.to_owned(),
+        name: "Keyboard".to_owned(),
+        color: None,
+        filled: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![LayerMove {
+            layer_id: first,
+            ..ripples_carried()
+        }],
+    });
+
+    journal.remap_layer(ZONE_B, first, second);
+
+    assert_eq!(scope_step_layer(journal.edit(retargeted)).1, second);
+    match journal.edit(made) {
+        Some(StudioEdit::ZoneCreated { layer_moves, .. }) => {
+            assert_eq!(layer_moves[0].layer_id, second);
+        }
+        other => panic!("expected the creation, found {other:?}"),
+    }
+}
