@@ -54,7 +54,9 @@ use crate::zones::surface::zone_display_name;
 
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
-use scope::{Target, TargetOutput, WHOLE_ZONE, draft_words, pickable_count};
+use scope::{
+    NoCreateTarget, Target, TargetOutput, WHOLE_ZONE, create_scope, draft_words, pickable_count,
+};
 use source::{
     AddLayerScope, add_layer_request, available_add_layer_scopes, resolve_add_layer_targets,
 };
@@ -262,24 +264,55 @@ pub fn LayerPanel(
             .unwrap_or_default()
     });
 
-    // A new layer's target only shows where there is something to choose
-    // between: an LED zone with at least two outputs.
+    // What the next added layer applies to, with the zone's outputs as
+    // they stand. The host's target is taken as it is: a zone that has
+    // fallen to one output still holds a target somebody chose.
     let target_host = targets;
-    let add_target = Memo::new(move |_| {
+    let add_target: Memo<Option<(Target, Vec<TargetOutput>)>> = Memo::new(move |_| {
         let host = target_host.get()?;
         if selected_zone_role.get() == Some(ZoneRole::Display) {
             return None;
         }
-        let outputs = host.outputs.get();
-        (pickable_count(&outputs) > 1).then(|| (host.add_target.get(), outputs))
+        Some((host.add_target.get(), host.outputs.get()))
     });
+    // The line under "Add layer" shows where there is something to choose
+    // between, an LED zone with at least two outputs, and wherever a
+    // target is already chosen.
     let add_target_words = Memo::new(move |_| {
         add_target.with(|target| {
             target
                 .as_ref()
+                .filter(|(target, outputs)| pickable_count(outputs) > 1 || !target.is_whole_zone())
                 .map(|(target, outputs)| draft_words(target, outputs))
         })
     });
+    // The chosen target's outputs have all left the zone.
+    let add_target_departed = Memo::new(move |_| {
+        add_target.with(|target| {
+            target.as_ref().is_some_and(|(target, outputs)| {
+                create_scope(target, outputs) == Err(NoCreateTarget::Departed)
+            })
+        })
+    });
+    // The target the open picker adds to: the one shown when it opened. A
+    // selection that moves on, or outputs that leave, while it is open
+    // must not turn the add into one for something else.
+    let picker_target = RwSignal::new(None::<Target>);
+    let open_picker = move || {
+        let target = add_target.get_untracked();
+        if let Some((target, outputs)) = &target
+            && let Err(stopped) = create_scope(target, outputs)
+        {
+            toasts::toast_error(stopped.message());
+            return;
+        }
+        // The asset list is decoupled from any host page's refresh tick,
+        // so refresh it on demand, or a file uploaded since mount is
+        // missing from the picker.
+        assets_resource.refetch();
+        picker_target.set(target.map(|(target, _)| target));
+        set_show_picker.set(true);
+    };
     // The host's "+ Layer" asks for the picker; the count is only read to
     // notice that it moved.
     Effect::new(move |seen: Option<Option<u64>>| {
@@ -287,10 +320,26 @@ pub fn LayerPanel(
         if let Some(Some(before)) = seen
             && asked.is_some_and(|now| now != before)
         {
-            assets_resource.refetch();
-            set_show_picker.set(true);
+            open_picker();
         }
         asked
+    });
+    // Outputs that leave while the picker is open take its target with
+    // them: the picker closes and says why, rather than go on offering
+    // content for nothing.
+    Effect::new(move |_| {
+        if !show_picker.get() {
+            return;
+        }
+        let stopped = picker_target.with(|target| {
+            let target = target.as_ref()?;
+            let outputs = target_host.get()?.outputs.get();
+            create_scope(target, &outputs).err()
+        });
+        if let Some(stopped) = stopped {
+            set_show_picker.set(false);
+            toasts::toast_error(stopped.message());
+        }
     });
 
     let add_layer = Callback::new(move |(draft, scope): (NewLayerDraft, AddLayerScope)| {
@@ -318,19 +367,28 @@ pub fn LayerPanel(
         // Only the open zone's own layer takes the target; a layer sent to
         // every screen is each screen's whole.
         let target = (scope == AddLayerScope::ThisSurface)
-            .then(|| add_target.get_untracked())
+            .then(|| picker_target.get_untracked())
             .flatten();
+        let host = target_host.get_untracked();
         let mut added_to = None;
         let mut added_target = Target::WholeZone;
-        if let Some((mut target, outputs)) = target {
-            target.drop_missing(&outputs);
-            if target.is_complete() && !target.is_whole_zone() {
-                added_to = Some(draft_words(&target, &outputs));
-                request.scope = target.scope();
-                added_target = target;
+        if let (Some(target), Some(host)) = (target, host) {
+            let outputs = host.outputs.get_untracked();
+            // A target whose outputs left since it was chosen stops the
+            // add. It never widens to the whole zone.
+            match create_scope(&target, &outputs) {
+                Ok(None) => {}
+                Ok(Some(scope)) => {
+                    added_target = Target::of(Some(&scope));
+                    added_to = Some(draft_words(&added_target, &outputs));
+                    request.scope = Some(scope);
+                }
+                Err(stopped) => {
+                    toasts::toast_error(stopped.message());
+                    return;
+                }
             }
         }
-        let host = target_host.get_untracked();
         leptos::task::spawn_local(async move {
             let mut applied = 0_usize;
             let mut failed = 0_usize;
@@ -407,13 +465,7 @@ pub fn LayerPanel(
                     type="button"
                     class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-accent-muted/30 bg-accent/10 px-3 py-2 text-xs font-semibold text-accent transition-colors hover:bg-accent/15 btn-press disabled:cursor-not-allowed disabled:opacity-45"
                     disabled=move || selected_zone_id.get().is_none()
-                    on:click=move |_| {
-                        // The asset list is decoupled from any host page's
-                        // refresh tick, so refresh it on demand, or a file
-                        // uploaded since mount is missing from the picker.
-                        assets_resource.refetch();
-                        set_show_picker.set(true);
-                    }
+                    on:click=move |_| open_picker()
                 >
                     <Icon icon=LuPlus width="13px" height="13px" />
                     "Add layer"
@@ -426,12 +478,22 @@ pub fn LayerPanel(
                             class="group inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-secondary"
                             aria-haspopup="dialog"
                             aria-label=move || {
-                                format!(
-                                    "New layer applies to {}",
-                                    add_target_words.get().unwrap_or_default(),
-                                )
+                                if add_target_departed.get() {
+                                    "The new layer's outputs are not in this zone".to_owned()
+                                } else {
+                                    format!(
+                                        "New layer applies to {}",
+                                        add_target_words.get().unwrap_or_default(),
+                                    )
+                                }
                             }
-                            title="Choose what the new layer applies to"
+                            title=move || {
+                                if add_target_departed.get() {
+                                    "The outputs chosen for the new layer have left this zone. Choose what it applies to."
+                                } else {
+                                    "Choose what the new layer applies to"
+                                }
+                            }
                             on:click=move |ev: web_sys::MouseEvent| {
                                 if let (Some(host), Some(element)) =
                                     (target_host.get_untracked(), crate::pointer_gesture::listener_element(&ev))
@@ -440,15 +502,19 @@ pub fn LayerPanel(
                                 }
                             }
                         >
-                            <span>"to"</span>
+                            <Show when=move || !add_target_departed.get()>
+                                <span>"to"</span>
+                            </Show>
                             <span
                                 class="min-w-0 truncate font-medium"
                                 class=("text-fg-secondary", move || {
                                     add_target_words.with(|words| words.as_deref() == Some(WHOLE_ZONE))
                                 })
                                 class=("text-fg-primary", move || {
-                                    add_target_words.with(|words| words.as_deref() != Some(WHOLE_ZONE))
+                                    !add_target_departed.get()
+                                        && add_target_words.with(|words| words.as_deref() != Some(WHOLE_ZONE))
                                 })
+                                class=("text-status-warning", move || add_target_departed.get())
                             >
                                 {move || add_target_words.get().unwrap_or_default()}
                             </span>
@@ -527,7 +593,9 @@ pub fn LayerPanel(
                     scopes=scopes
                     selected_surface_role=selected_zone_role
                     target=Signal::derive(move || {
-                        add_target_words.get().filter(|words| words != WHOLE_ZONE)
+                        let target = picker_target.get().filter(|target| !target.is_whole_zone())?;
+                        let outputs = target_host.get()?.outputs.get();
+                        Some(draft_words(&target, &outputs))
                     })
                     on_pick=add_layer
                     on_cancel=Callback::new(move |()| set_show_picker.set(false))

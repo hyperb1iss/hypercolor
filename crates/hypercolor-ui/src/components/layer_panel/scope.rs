@@ -139,9 +139,15 @@ impl Target {
     }
 
     /// The target a canvas selection stands for: its pickable outputs, or
-    /// the whole zone when it holds none.
+    /// the whole zone when it holds none, or when the zone has nothing to
+    /// choose between (see [`pickable_count`]). A selection is a hint, so
+    /// one that names nothing any more is no target; a target somebody
+    /// chose is another matter (see [`create_scope`]).
     #[must_use]
     pub fn from_selection(selection: &HashSet<String>, outputs: &[TargetOutput]) -> Self {
+        if pickable_count(outputs) < 2 {
+            return Self::WholeZone;
+        }
         let picked: BTreeSet<String> = outputs
             .iter()
             .filter(|output| !output.screen && selection.contains(&output.id))
@@ -252,6 +258,74 @@ impl Target {
     }
 }
 
+/// Why a new layer cannot be made for its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoCreateTarget {
+    /// The target names no output at all: every box is unticked.
+    Unchosen,
+    /// Every output the target named has left the zone.
+    Departed,
+}
+
+impl NoCreateTarget {
+    /// What to tell someone whose add was stopped.
+    #[must_use]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Unchosen => "Choose what the new layer applies to first.",
+            Self::Departed => {
+                "The outputs chosen for the new layer have left this zone, so nothing was added. Choose what it applies to first."
+            }
+        }
+    }
+}
+
+/// The scope a new layer is made with for `target`, in a zone that holds
+/// `outputs` now: none for the whole zone, otherwise the LED outputs the
+/// target names that the zone still holds.
+///
+/// A target that named outputs and has none of them left is an error, and
+/// never the whole zone: the layer would land on outputs nobody chose. One
+/// that lost only some comes out narrower, which is still what was asked.
+///
+/// # Errors
+///
+/// [`NoCreateTarget`] when the target names no output the zone holds.
+pub fn create_scope(
+    target: &Target,
+    outputs: &[TargetOutput],
+) -> Result<Option<LayerScope>, NoCreateTarget> {
+    let Target::Outputs(ids) = target else {
+        return Ok(None);
+    };
+    if ids.is_empty() {
+        return Err(NoCreateTarget::Unchosen);
+    }
+    let live: Vec<String> = ids
+        .iter()
+        .filter(|id| {
+            outputs
+                .iter()
+                .any(|output| !output.screen && output.id == **id)
+        })
+        .cloned()
+        .collect();
+    if live.is_empty() {
+        return Err(NoCreateTarget::Departed);
+    }
+    Ok(Some(LayerScope { outputs: live }))
+}
+
+/// Whether a canvas selection that went from `before` to `after` is a new
+/// selection: it names an output it did not name before. One that only
+/// lost outputs is not. An output that leaves the zone drops out of the
+/// selection without anyone choosing anything, and whether the zone's
+/// outputs or the selection hears of it first is not for this to guess.
+#[must_use]
+pub fn is_new_selection(before: &HashSet<String>, after: &HashSet<String>) -> bool {
+    !after.is_subset(before)
+}
+
 /// What a layer's target reads as.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetWords {
@@ -300,14 +374,20 @@ pub fn target_words(scope: Option<&LayerScope>, outputs: &[TargetOutput]) -> Tar
 
 /// What a draft target reads as, for the line under "Add layer" and the
 /// banner while picking on the canvas. An empty pick reads as nothing
-/// chosen yet.
+/// chosen yet, and one whose outputs have all left the zone says so.
 #[must_use]
 pub fn draft_words(target: &Target, outputs: &[TargetOutput]) -> String {
     match target {
         Target::WholeZone => WHOLE_ZONE.to_owned(),
         Target::Outputs(ids) => {
-            let ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
-            outputs_label(&ids, outputs).unwrap_or_else(|| "No outputs yet".to_owned())
+            let named: HashSet<&str> = ids.iter().map(String::as_str).collect();
+            outputs_label(&named, outputs).unwrap_or_else(|| {
+                if ids.is_empty() {
+                    "No outputs yet".to_owned()
+                } else {
+                    NOT_IN_ZONE.to_owned()
+                }
+            })
         }
     }
 }

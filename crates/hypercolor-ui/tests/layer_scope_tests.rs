@@ -10,9 +10,10 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::components::layer_panel::scope::{
-    Checked, NOT_IN_ZONE, Target, TargetOutput, TargetWords, WHOLE_ZONE, applies_to, draft_words,
-    hover_outputs, is_dormant, layer_count_words, names_output, outputs_detail, outputs_label,
-    pickable_count, stands_back, target_groups, target_words, zone_target_outputs,
+    Checked, NOT_IN_ZONE, NoCreateTarget, Target, TargetOutput, TargetWords, WHOLE_ZONE,
+    applies_to, create_scope, draft_words, hover_outputs, is_dormant, is_new_selection,
+    layer_count_words, names_output, outputs_detail, outputs_label, pickable_count, stands_back,
+    target_groups, target_words, zone_target_outputs,
 };
 use hypercolor_ui::components::layer_panel::target_checklist::hang_popover;
 
@@ -343,4 +344,98 @@ fn the_checklist_stays_inside_the_viewport() {
     let tight = hang_popover((0.0, 150.0, 170.0), (400.0, 300.0), 200.0);
     assert!(tight.upward);
     assert_eq!(tight.max_height, 138.0);
+}
+
+// ── A new layer's target, once the zone has changed under it ─────────────
+
+fn picked(ids: &[&str]) -> Target {
+    Target::Outputs(ids.iter().map(|id| (*id).to_owned()).collect())
+}
+
+fn without(outputs: &[TargetOutput], gone: &[&str]) -> Vec<TargetOutput> {
+    outputs
+        .iter()
+        .filter(|output| !gone.contains(&output.id.as_str()))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_new_layer_is_created_on_what_its_target_still_names() {
+    let outputs = outputs();
+
+    assert_eq!(create_scope(&Target::WholeZone, &outputs), Ok(None));
+    assert_eq!(
+        create_scope(&picked(&["k70", "basilisk"]), &outputs),
+        Ok(Some(scope_of(&["basilisk", "k70"])))
+    );
+    // One of two left: the layer is narrower, never wider.
+    assert_eq!(
+        create_scope(
+            &picked(&["k70", "basilisk"]),
+            &without(&outputs, &["basilisk"])
+        ),
+        Ok(Some(scope_of(&["k70"])))
+    );
+}
+
+#[test]
+fn a_target_whose_outputs_all_left_stops_the_create_instead_of_widening() {
+    let outputs = outputs();
+    let left = without(&outputs, &["k70"]);
+
+    assert_eq!(
+        create_scope(&picked(&["k70"]), &left),
+        Err(NoCreateTarget::Departed)
+    );
+    // Nothing ticked is no target either, and no whole zone.
+    assert_eq!(
+        create_scope(&picked(&[]), &outputs),
+        Err(NoCreateTarget::Unchosen)
+    );
+    // A screen cannot be a new layer's target, so one alone is none.
+    assert_eq!(
+        create_scope(&picked(&["lcd"]), &outputs),
+        Err(NoCreateTarget::Departed)
+    );
+    // The line under "Add layer" says so rather than naming nothing.
+    assert_eq!(draft_words(&picked(&["k70"]), &left), NOT_IN_ZONE);
+    assert_eq!(draft_words(&picked(&[]), &left), "No outputs yet");
+}
+
+#[test]
+fn a_chosen_target_outlives_the_zone_falling_to_one_output() {
+    // Chosen while there were two to choose between; the other one left.
+    let mut zone = zone();
+    zone.members.retain(|member| member.id.0 == "k70");
+    let outputs = zone_target_outputs(&zone, |member| (member.name.clone(), member.name.clone()));
+    assert_eq!(pickable_count(&outputs), 1);
+
+    assert_eq!(
+        create_scope(&picked(&["k70"]), &outputs),
+        Ok(Some(scope_of(&["k70"])))
+    );
+    // A selection there is no choice, so it stands for the whole zone.
+    assert_eq!(
+        Target::from_selection(&ids(&["k70"]), &outputs),
+        Target::WholeZone
+    );
+}
+
+#[test]
+fn a_selection_that_only_lost_outputs_is_not_a_new_selection() {
+    // The keyboard left the zone and the selection lost it: nobody chose
+    // anything new, so a target chosen for the next layer stays, whichever
+    // of the zone's outputs and the selection heard of it first.
+    assert!(!is_new_selection(
+        &ids(&["k70", "basilisk"]),
+        &ids(&["basilisk"])
+    ));
+    assert!(!is_new_selection(&ids(&["k70"]), &ids(&[])));
+    assert!(!is_new_selection(&ids(&["k70"]), &ids(&["k70"])));
+    // Naming an output that was not selected before is the user's doing,
+    // alone or beside what was.
+    assert!(is_new_selection(&ids(&["k70"]), &ids(&["basilisk"])));
+    assert!(is_new_selection(&ids(&["k70"]), &ids(&["k70", "basilisk"])));
+    assert!(is_new_selection(&ids(&[]), &ids(&["k70"])));
 }

@@ -27,7 +27,8 @@ use wasm_bindgen::JsCast;
 use crate::api::{self, DeviceSummary};
 use crate::components::bottom_sheet::BottomSheet;
 use crate::components::layer_panel::scope::{
-    Target, TargetOutput, draft_words, is_screen_member, outputs_label, zone_target_outputs,
+    Target, TargetOutput, draft_words, is_new_selection, is_screen_member, outputs_label,
+    zone_target_outputs,
 };
 use crate::components::layer_panel::target_checklist::{TargetChecklist, hang_popover};
 use crate::components::layer_panel::{LayerTargetHost, TargetSubject};
@@ -175,12 +176,16 @@ impl LayerTargets {
         // A new selection is the newest word on what is being worked on:
         // it brings the emphasis back, and it replaces a target chosen for
         // the next layer before it, unless that target is the selection.
+        // A selection that only lost outputs is nobody's new word: an
+        // output that leaves the zone drops out of it. The chosen target
+        // stays then, to say that it no longer names anything rather than
+        // give way to the whole zone.
         Effect::new(move |previous: Option<HashSet<String>>| {
             let selected = selected_output_ids.get();
             if emphasis_off.get_untracked() {
                 emphasis_off.set(false);
             }
-            let moved_on = previous.is_some_and(|previous| previous != selected)
+            let moved_on = previous.is_some_and(|before| is_new_selection(&before, &selected))
                 && chosen.with_untracked(|chosen| {
                     chosen
                         .as_ref()
@@ -224,13 +229,23 @@ impl LayerTargets {
             asker: StoredValue::new_local(None),
         };
         // Another tab is another zone: an editor or a pick left open
-        // belongs to the one just left.
+        // belongs to the one just left, and so does a target chosen there
+        // for the next layer. One chosen for the zone being opened stays:
+        // "+ Layer" on a device in another zone opens that zone's tab.
         Effect::new(move |previous: Option<Option<String>>| {
             let current = selected_surface_id.get();
             if previous.is_some_and(|previous| previous != current) {
                 targets.editor.set(None);
                 targets.pick.set(None);
                 targets.lit.set(HashSet::new());
+                let elsewhere = chosen.with_untracked(|chosen| {
+                    chosen
+                        .as_ref()
+                        .is_some_and(|(zone, _)| Some(zone) != current.as_ref())
+                });
+                if elsewhere {
+                    chosen.set(None);
+                }
             }
             current
         });

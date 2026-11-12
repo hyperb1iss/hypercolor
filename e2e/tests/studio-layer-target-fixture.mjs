@@ -140,6 +140,13 @@ export async function openLayerTargets(page, { effectId, olderDaemon = false }) 
   return {
     scene, zone, writes, unexpected,
     layerWrites: () => writes.filter((write) => write.path.includes("/layers")),
+    // Another client takes an output out of the zone.
+    removeOutput: (id) => {
+      zone.members = zone.members.filter((member) => member.id !== id);
+      zone.layout.placements = zone.layout.placements.filter((placement) => placement.member !== id);
+      scene.revision += 1;
+      notify();
+    },
     undo: page.getByRole("button", { name: "Undo (Ctrl+Z)", exact: true }),
     redo: page.getByRole("button", { name: "Redo (Ctrl+Shift+Z)", exact: true }),
   };

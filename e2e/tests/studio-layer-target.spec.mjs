@@ -110,6 +110,44 @@ test("Studio restates what a layer applies to when another of its settings chang
   expect(fixture.unexpected).toEqual([]);
 });
 
+test("Studio stops an add whose chosen outputs left the zone instead of adding to the whole zone", async ({ page }) => {
+  const fixture = await openLayerTargets(page, { effectId: effect.id });
+
+  // Choose the keyboard for the next layer, then think again.
+  await page.locator(`[data-zone-id="${KEYS}"]`).click();
+  await page.getByRole("button", { name: "Add layer to the selection", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Add layer", exact: true });
+  await expect(picker.getByText("Pick what plays on Keyboard", { exact: true })).toBeVisible();
+  await picker.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New layer applies to Keyboard", exact: true })).toBeVisible();
+
+  // The keyboard leaves the zone from somewhere else, which also leaves
+  // the zone with one output and nothing to choose between.
+  fixture.removeOutput(KEYS);
+  await expect(page.locator(`[data-zone-id="${KEYS}"]`)).toHaveCount(0);
+
+  // The target does not quietly become the whole zone: it says where it
+  // stands, and Add layer says why it will not add.
+  const stale = page.getByRole("button", { name: "The new layer's outputs are not in this zone", exact: true });
+  await expect(stale).toBeVisible();
+  await expect(stale).toContainText("Not in this zone");
+  await page.getByRole("button", { name: "Add layer", exact: true }).click();
+  await expect(page.getByText("The outputs chosen for the new layer have left this zone, so nothing was added. Choose what it applies to first.", { exact: true })).toBeVisible();
+  await expect(picker).toHaveCount(0);
+  expect(fixture.layerWrites()).toEqual([]);
+
+  // Choosing again is one click away, and then the add goes through.
+  await stale.click();
+  const editor = page.getByRole("dialog", { name: "New layer applies to", exact: true });
+  await editor.getByRole("radio", { name: /^Whole zone/ }).click();
+  await editor.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: "Add layer", exact: true }).click();
+  await picker.getByRole("button", { name: new RegExp(`^${effect.name}`) }).first().click();
+  await expect.poll(() => scopes(fixture)).toEqual([null, null]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test("Studio offers no layer target on a daemon that cannot limit layers", async ({ page }) => {
   const fixture = await openLayerTargets(page, { effectId: effect.id, olderDaemon: true });
 
