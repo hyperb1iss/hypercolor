@@ -15,11 +15,13 @@ use std::sync::Arc;
 
 use hypercolor_types::attachment::{slot_alias_key, slot_alias_key_matches};
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::layer::LayerScope;
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, SpatialLayout, StripDirection,
 };
 
 use super::is_led_sampled_zone;
+use super::layer_placement::LayerPlacement;
 use super::sampler::{OutputPlacement, resolve_edge_behavior};
 
 /// Canvas placement of the device surfaces one spatial layout resolves.
@@ -35,15 +37,44 @@ use super::sampler::{OutputPlacement, resolve_edge_behavior};
 /// that names no segment does not stand in for a named one, because its LED
 /// order follows the whole device rather than the touched segment.
 ///
+/// A map can also be narrowed to one layer of the zone with
+/// [`Self::for_layer`]. It then answers [`Self::segment_source_position`]
+/// with the point of that layer's own source under the finger, through the
+/// placement the compositor draws the layer with, and gives no point to a
+/// touch on an output outside the layer's scope.
+///
 /// Cloning is cheap; the placements are shared.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeviceSurfaceMap {
     surfaces: Arc<[DeviceSurface]>,
+    layer: Option<LayerSurface>,
+}
+
+/// One layer's view of its zone's device surfaces.
+#[derive(Debug, Clone, PartialEq)]
+struct LayerSurface {
+    /// Where the layer's source lands on the zone canvas.
+    placement: LayerPlacement,
+    /// The zone canvas the placement is laid out on, in pixels.
+    zone_size: [u32; 2],
+    /// The outputs the layer applies to, or `None` for the whole zone.
+    scope: Option<Arc<LayerScope>>,
+}
+
+/// A point on a device surface placed on a zone's canvas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceCanvasPoint<'a> {
+    /// The layout output the touch resolved through.
+    pub output_id: &'a str,
+    /// The canvas point the LED under the finger samples.
+    pub position: NormalizedPosition,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct DeviceSurface {
     device_id: DeviceId,
+    /// The layout output this surface is placed through.
+    output_id: Arc<str>,
     /// The output's segment, kept only when no other LED output of the same
     /// device names it, so a touch naming it has exactly one place to land.
     segment: Option<Arc<str>>,
@@ -94,6 +125,7 @@ impl DeviceSurfaceMap {
                 }
                 Some(DeviceSurface {
                     device_id,
+                    output_id: Arc::from(output.id.as_str()),
                     segment: segment.map(Arc::from),
                     alias: segment.map(|segment| slot_alias_key(segment).into_boxed_str()),
                     sole,
@@ -103,7 +135,32 @@ impl DeviceSurfaceMap {
                 })
             })
             .collect();
-        Self { surfaces }
+        Self {
+            surfaces,
+            layer: None,
+        }
+    }
+
+    /// This map as one layer of the zone sees it.
+    ///
+    /// `placement` is where the layer's source lands on the `zone_size`
+    /// canvas, the same value the compositor draws the layer with, and
+    /// `scope` is the outputs the layer applies to.
+    #[must_use]
+    pub fn for_layer(
+        &self,
+        placement: LayerPlacement,
+        zone_size: (u32, u32),
+        scope: Option<Arc<LayerScope>>,
+    ) -> Self {
+        Self {
+            surfaces: Arc::clone(&self.surfaces),
+            layer: Some(LayerSurface {
+                placement,
+                zone_size: [zone_size.0, zone_size.1],
+                scope,
+            }),
+        }
     }
 
     /// Normalized canvas position of a point on a device's surface, for a
@@ -140,12 +197,70 @@ impl DeviceSurfaceMap {
         x: f32,
         y: f32,
     ) -> Option<NormalizedPosition> {
+        self.segment_canvas_point(device_id, segment, x, y)
+            .map(|point| point.position)
+    }
+
+    /// [`Self::segment_canvas_position`] with the output the touch resolved
+    /// through.
+    #[must_use]
+    pub fn segment_canvas_point(
+        &self,
+        device_id: DeviceId,
+        segment: Option<&str>,
+        x: f32,
+        y: f32,
+    ) -> Option<SurfaceCanvasPoint<'_>> {
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
         let surface = self.surface(device_id, segment)?;
         let local = surface.frame.to_local(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        Some(surface.placement.local_to_canvas(local, surface.edge))
+        Some(SurfaceCanvasPoint {
+            output_id: &surface.output_id,
+            position: surface.placement.local_to_canvas(local, surface.edge),
+        })
+    }
+
+    /// Normalized position, on the canvas an effect renders into, of a point
+    /// on one segment of a device's surface.
+    ///
+    /// For a map of a whole zone this is [`Self::segment_canvas_position`]:
+    /// the effect's canvas is the zone's. For a map narrowed with
+    /// [`Self::for_layer`] it is the point of the layer's own source whose
+    /// pixels the LED under the finger samples. Then it is `None` as well
+    /// when the touched output is outside the layer's scope, or the finger
+    /// is outside the frame or the placed source.
+    ///
+    /// Positions follow the sampler's convention: 0 and 1 are the centres of
+    /// the first and last pixel.
+    #[must_use]
+    pub fn segment_source_position(
+        &self,
+        device_id: DeviceId,
+        segment: Option<&str>,
+        x: f32,
+        y: f32,
+    ) -> Option<NormalizedPosition> {
+        let point = self.segment_canvas_point(device_id, segment, x, y)?;
+        let Some(layer) = &self.layer else {
+            return Some(point.position);
+        };
+        if layer
+            .scope
+            .as_deref()
+            .is_some_and(|scope| !scope.contains(point.output_id))
+        {
+            return None;
+        }
+        let [zone_width, zone_height] = layer.zone_size;
+        let (zone_x, zone_y) = point.position.to_pixel(zone_width, zone_height);
+        let source = layer.placement.source_point([zone_x + 0.5, zone_y + 0.5])?;
+        let [source_width, source_height] = layer.placement.source_size;
+        Some(NormalizedPosition::new(
+            pixel_center_fraction(source[0], source_width),
+            pixel_center_fraction(source[1], source_height),
+        ))
     }
 
     fn surface(&self, device_id: DeviceId, segment: Option<&str>) -> Option<&DeviceSurface> {
@@ -190,6 +305,15 @@ impl DeviceSurfaceMap {
     pub fn is_empty(&self) -> bool {
         self.surfaces.is_empty()
     }
+}
+
+/// Where a continuous pixel coordinate sits between the centres of the first
+/// and last of `extent` pixels.
+fn pixel_center_fraction(value: f32, extent: u32) -> f32 {
+    if extent <= 1 {
+        return 0.0;
+    }
+    ((value - 0.5) / (extent - 1) as f32).clamp(0.0, 1.0)
 }
 
 /// How a device's surface frame sits inside its output's local box.

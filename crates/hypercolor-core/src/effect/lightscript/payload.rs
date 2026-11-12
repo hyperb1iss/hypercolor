@@ -147,6 +147,9 @@ pub(super) struct LightScriptInteractionPayload {
 /// The canvas a frame renders into, for placing device-surface points on it.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TouchCanvas<'a> {
+    /// The device surfaces the frame's layer sees. A layer with a scope or
+    /// a transform carries its placement and its scope in this map, so a
+    /// touch resolves to the point of the layer's own source.
     pub(super) surfaces: Option<&'a DeviceSurfaceMap>,
     pub(super) width: u32,
     pub(super) height: u32,
@@ -155,7 +158,8 @@ pub(super) struct TouchCanvas<'a> {
 impl TouchCanvas<'_> {
     /// Canvas point of a device-surface position, or `None` when the touched
     /// surface has no single output in the layout this canvas is sampled
-    /// through. `segment` is the device segment the contact landed on.
+    /// through, or the frame's layer does not show under the finger.
+    /// `segment` is the device segment the contact landed on.
     fn point(
         self,
         device_id: DeviceId,
@@ -165,7 +169,7 @@ impl TouchCanvas<'_> {
     ) -> Option<LightScriptCanvasPointPayload> {
         let position = self
             .surfaces?
-            .segment_canvas_position(device_id, segment, x, y)?;
+            .segment_source_position(device_id, segment, x, y)?;
         // The sampler reads pixel indices with pixel centers on integers;
         // Canvas 2D puts a pixel's center half a unit further in.
         let (px, py) = position.to_pixel(self.width, self.height);
