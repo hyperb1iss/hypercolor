@@ -403,6 +403,8 @@ async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()>
                 adjust: Some(layer.adjust),
                 bindings: Some(layer.bindings.clone()),
                 enabled: Some(layer.enabled),
+                // Left unsaid, so the daemon keeps the layer's scope.
+                scope: None,
             },
         )
         .await?;

@@ -1010,6 +1010,10 @@ async fn reset_controls_replaces_the_layer_without_apply_side_effects() {
     assert!(body["source"].get("preset_id").is_none());
     assert_eq!(body["blend"], "replace");
     assert_eq!(body["enabled"], true);
+    assert!(
+        body.get("scope").is_none(),
+        "a reset says nothing about scope, so the daemon keeps the layer's"
+    );
 }
 
 fn device_page(offset: u64, ids: &[&str], has_more: bool) -> Value {

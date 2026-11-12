@@ -258,6 +258,7 @@ fn effect_layer_request(effect_id: EffectId) -> ReplaceLayerRequest {
         adjust: None,
         bindings: None,
         enabled: None,
+        scope: None,
     }
 }
 

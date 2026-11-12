@@ -242,6 +242,7 @@ pub fn add_layer_request(
         adjust: Some(LayerAdjust::default()),
         bindings: None,
         enabled: None,
+        scope: None,
     }
 }
 

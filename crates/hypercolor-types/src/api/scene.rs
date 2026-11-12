@@ -368,7 +368,7 @@ pub struct PatchZoneRequest {
     /// sets it.
     #[serde(
         default,
-        deserialize_with = "tri_state_color",
+        deserialize_with = "tri_state",
         skip_serializing_if = "Option::is_none"
     )]
     #[allow(
@@ -383,15 +383,19 @@ pub struct PatchZoneRequest {
     pub index: Option<usize>,
 }
 
+/// Decode a tri-state field: beside `#[serde(default)]`, a missing key
+/// stays `None`, an explicit `null` is `Some(None)`, and a value is
+/// `Some(Some(value))`.
 #[allow(
     clippy::option_option,
     reason = "the double Option IS the tri-state wire pattern"
 )]
-fn tri_state_color<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+pub(crate) fn tri_state<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Option::<String>::deserialize(deserializer).map(Some)
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
@@ -441,13 +445,19 @@ pub struct CreateLayerRequest {
     pub bindings: Option<Vec<LayerBinding>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// The zone's outputs the layer applies to, by member id. Omitted, the
+    /// layer applies to the whole zone. Every id must be a current member
+    /// of the zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<LayerScope>,
 }
 
 /// `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 ///
 /// Replacement is creation: every successful `PUT` mints a fresh layer
 /// id, same effect or not (Spec 78 §1.4). The request shape is the
-/// creation shape; the path names the layer being replaced.
+/// creation shape, except that an omitted `scope` keeps the replaced
+/// layer's; the path names the layer being replaced.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -467,9 +477,30 @@ pub struct ReplaceLayerRequest {
     pub bindings: Option<Vec<LayerBinding>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Tri-state: missing keeps the replaced layer's scope, `null` applies
+    /// the replacement to the whole zone, a value sets it.
+    ///
+    /// Missing keeps the scope so a client that predates the field, and
+    /// replaces a layer by sending back the fields it knows, cannot widen
+    /// a scoped layer. Ids the replaced layer's scope already held are
+    /// accepted even when their output has left the zone; any other id
+    /// must be a current member.
+    #[serde(
+        default,
+        deserialize_with = "tri_state",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<LayerScope>))]
+    #[allow(
+        clippy::option_option,
+        reason = "the double Option IS the tri-state wire pattern: missing = keep, null = clear, value = set"
+    )]
+    pub scope: Option<Option<LayerScope>>,
 }
 
 impl From<ReplaceLayerRequest> for CreateLayerRequest {
+    /// The layer the replacement describes when nothing is replaced: a
+    /// scope the request does not set is no scope.
     fn from(request: ReplaceLayerRequest) -> Self {
         Self {
             source: request.source,
@@ -480,6 +511,7 @@ impl From<ReplaceLayerRequest> for CreateLayerRequest {
             adjust: request.adjust,
             bindings: request.bindings,
             enabled: request.enabled,
+            scope: request.scope.flatten(),
         }
     }
 }

@@ -17,6 +17,7 @@ use hypercolor_types::api::scene::{
     SideEffectOutcome, TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
 use hypercolor_types::api::scenes::{ReplaceSceneRequest, SnapshotSceneRequest};
+use hypercolor_types::layer::LayerScope;
 use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority};
 use serde_json::json;
 
@@ -260,6 +261,79 @@ fn replace_is_the_creation_shape() {
         same.name.is_none(),
         "replacement is creation (Spec 78 §1.4)"
     );
+}
+
+#[test]
+fn a_created_layer_takes_an_optional_scope() {
+    let source = json!({"type": "color_fill", "rgba": [1.0, 0.0, 0.0, 1.0]});
+    let whole_zone: CreateLayerRequest =
+        serde_json::from_value(json!({"source": source})).expect("no scope decodes");
+    assert_eq!(whole_zone.scope, None, "omitted means the whole zone");
+    assert!(
+        serde_json::to_value(&whole_zone)
+            .expect("serializes")
+            .get("scope")
+            .is_none(),
+        "a whole-zone create stays off the wire"
+    );
+
+    let scoped: CreateLayerRequest = serde_json::from_value(json!({
+        "source": source,
+        "scope": {"outputs": ["out-keys", "out-logo"]}
+    }))
+    .expect("a scope decodes");
+    assert_eq!(
+        scoped.scope,
+        Some(LayerScope {
+            outputs: vec!["out-keys".to_owned(), "out-logo".to_owned()],
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&scoped).expect("serializes")["scope"],
+        json!({"outputs": ["out-keys", "out-logo"]})
+    );
+}
+
+#[test]
+fn a_layer_replace_scope_is_tri_state() {
+    let source = json!({"type": "color_fill", "rgba": [1.0, 0.0, 0.0, 1.0]});
+    let keep: ReplaceLayerRequest =
+        serde_json::from_value(json!({"source": source})).expect("absent decodes");
+    assert_eq!(keep.scope, None, "missing keeps the replaced layer's scope");
+    assert!(
+        serde_json::to_value(&keep)
+            .expect("serializes")
+            .get("scope")
+            .is_none(),
+        "a request that says nothing about scope sends nothing"
+    );
+
+    let clear: ReplaceLayerRequest =
+        serde_json::from_value(json!({"source": source, "scope": null})).expect("null decodes");
+    assert_eq!(
+        clear.scope,
+        Some(None),
+        "explicit null clears to whole zone"
+    );
+    assert_eq!(
+        serde_json::to_value(&clear).expect("serializes")["scope"],
+        serde_json::Value::Null,
+        "a clear travels as an explicit null"
+    );
+
+    let set: ReplaceLayerRequest = serde_json::from_value(json!({
+        "source": source,
+        "scope": {"outputs": ["out-keys"]}
+    }))
+    .expect("value decodes");
+    let scope = LayerScope {
+        outputs: vec!["out-keys".to_owned()],
+    };
+    assert_eq!(set.scope, Some(Some(scope.clone())));
+
+    assert_eq!(CreateLayerRequest::from(keep).scope, None);
+    assert_eq!(CreateLayerRequest::from(clear).scope, None);
+    assert_eq!(CreateLayerRequest::from(set).scope, Some(scope));
 }
 
 #[test]

@@ -487,6 +487,11 @@ pub async fn replace_layer(
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
+    let scope = match body.scope.clone() {
+        None => LayerScopeEdit::Keep,
+        Some(None) => LayerScopeEdit::Clear,
+        Some(Some(scope)) => LayerScopeEdit::Set(scope),
+    };
     let replacement = match build_layer(body.into()) {
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
@@ -499,7 +504,7 @@ pub async fn replace_layer(
                 zone_id,
                 layer_id,
                 layer: replacement,
-                scope: LayerScopeEdit::Keep,
+                scope,
                 fence: expected,
             },
         )
@@ -683,7 +688,7 @@ fn build_layer(request: CreateLayerRequest) -> Result<SceneLayer, DomainError> {
         adjust: request.adjust.unwrap_or_default(),
         bindings: request.bindings.unwrap_or_default(),
         enabled: request.enabled.unwrap_or(true),
-        scope: None,
+        scope: request.scope,
     }
     .normalized();
     layer.validate().map_err(|errors| {

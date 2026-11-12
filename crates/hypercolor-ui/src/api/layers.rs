@@ -35,6 +35,8 @@ pub fn update_request_from_layer(layer: &SceneLayer) -> ReplaceLayerRequest {
         adjust: Some(layer.adjust),
         bindings: Some(layer.bindings.clone()),
         enabled: Some(layer.enabled),
+        // Left unsaid, so the daemon keeps the layer's scope.
+        scope: None,
     }
 }
 
