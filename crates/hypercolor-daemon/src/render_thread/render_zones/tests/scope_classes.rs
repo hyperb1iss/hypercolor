@@ -1266,6 +1266,69 @@ fn a_zone_preview_paints_unscoped_outputs_in_their_turn() {
 
 // ── Admission ────────────────────────────────────────────────────────────
 
+/// Zone previews made while the GPU refuses class textures are each a
+/// picture of their own zone. Two zones of one size must not share the
+/// compositor's output for them.
+#[test]
+fn refused_class_textures_keep_each_zones_preview_its_own() {
+    let Some(mut rig) = Rig::new(Backend::Gpu) else {
+        return;
+    };
+    let scoped_zone = |name: &str, base: Rgba, overlay: Rgba| {
+        let keys = format!("{name}_keys");
+        let mut zone = zone(
+            (96, 64),
+            vec![
+                matrix(&keys, (0.3, 0.5), (0.4, 0.4), (3, 2)),
+                matrix(&format!("{name}_case"), (0.7, 0.5), (0.4, 0.4), (3, 2)),
+            ],
+            vec![
+                color_fill_layer(base),
+                scoped(color_fill_layer(overlay), &[keys.as_str()]),
+            ],
+        );
+        zone.name = name.to_owned();
+        zone
+    };
+    let zones = [
+        scoped_zone("left", RED, GREEN),
+        scoped_zone("right", BLUE, MAGENTA),
+    ];
+    // On the scoped output, and where no output sits.
+    let spots = [(0.3, 0.5), (0.5, 0.05)];
+    rig.sparkleflinger
+        .fail_next_projected_scene_preparation_for_test();
+
+    rig.render(&zones, 1);
+    rig.runtime.request_zone_pictures(|_| true);
+    let result = rig.render(&zones, 1);
+    assert!(
+        matches!(
+            result.led_sampling_strategy,
+            LedSamplingStrategy::PreSampled(_)
+        ),
+        "a scene without its class textures samples on the CPU"
+    );
+
+    let pictures = result.class_frames.pictures.clone();
+    assert_eq!(pictures.len(), 2);
+    for (zone, expected) in zones
+        .iter()
+        .zip([vec![rgb(GREEN), rgb(RED)], vec![rgb(MAGENTA), rgb(BLUE)]])
+    {
+        let picture = pictures
+            .iter()
+            .find_map(|(zone_id, picture)| (*zone_id == zone.id).then_some(picture))
+            .unwrap_or_else(|| panic!("{} should have a picture", zone.name));
+        assert_eq!(
+            rig.frame_colors(picture, &spots),
+            expected,
+            "{}: its preview shows its own layers",
+            zone.name
+        );
+    }
+}
+
 /// When the GPU refuses a scene's class textures, the scene takes the same
 /// fallback a refused zone texture takes: it composes and samples on the
 /// CPU, each class in a canvas of its own from the first frame, and no

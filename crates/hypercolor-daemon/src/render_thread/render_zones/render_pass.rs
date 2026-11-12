@@ -542,6 +542,14 @@ impl ZoneRuntime {
         let plan = CompositionPlan::with_layers(zone_size.0, zone_size.1, layers)
             .with_cpu_replay_cacheable(false)
             .preserving_scene_preview();
+        // A picture with no texture of its own to be kept in is composed
+        // on the CPU, as its classes are: the compositor's output is one
+        // texture, and the next zone's picture would be written over it.
+        let plan = if gpu_resident {
+            plan
+        } else {
+            plan.composed_on_cpu()
+        };
         let composed = sparkleflinger.compose_for_outputs(plan, !gpu_resident, None);
         let frame = composed_frame_to_producer_frame(composed, sparkleflinger, false)?;
         if !gpu_resident {
