@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 
+import { settle } from "./control-fixture.mjs";
 import { createApi, findRunnableEffect, readEnvelope } from "./helpers.mjs";
 import { KEYS, MOUSE, openLayerTargets } from "./studio-layer-target-fixture.mjs";
 
@@ -64,14 +65,21 @@ test("Studio adds a layer to one output from the canvas, retargets it, and undoe
 test("Studio restates what a layer applies to when another of its settings changes", async ({ page }) => {
   const fixture = await openLayerTargets(page, { effectId: effect.id });
   const stackSettled = async (rows) => {
-    // A row's controls load after it mounts and shift the stack as they
-    // arrive, which closes an open dropdown, so the stack settles first.
+    // A dropdown closes when anything under it scrolls or shifts: the
+    // panel sliding in, a row's controls arriving after it mounts. The
+    // stack settles before one is opened.
     await expect(page.locator("[data-layer-row]")).toHaveCount(rows);
     await expect(page.getByText("Loading controls…", { exact: true })).toHaveCount(0);
+    await page.locator("#studio-composition-panel")
+      .evaluate((panel) => Promise.all(panel.getAnimations({ subtree: true }).map((motion) => motion.finished)));
+    await settle(page);
   };
   const blendOfTopRow = async (name) => {
-    await page.locator("[data-layer-row]").first()
-      .getByRole("combobox", { name: "Blend mode", exact: true }).click();
+    const blend = page.locator("[data-layer-row]").first()
+      .getByRole("combobox", { name: "Blend mode", exact: true });
+    await blend.scrollIntoViewIfNeeded();
+    await settle(page);
+    await blend.click();
     await page.getByRole("option", { name, exact: true }).click();
   };
 
