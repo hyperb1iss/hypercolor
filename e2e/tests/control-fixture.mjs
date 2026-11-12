@@ -104,7 +104,7 @@ export async function openControls(page, { rejectControls = false, surface = "st
   await expect.poll(() => Boolean(socket)).toBe(true);
   let inspector;
   if (surface === "studio") {
-    await page.getByTitle("Open the composition panel", { exact: true }).click();
+    await page.locator("#studio-composition-trigger").click();
     await page.getByRole("tab", { name: "Control lights", exact: true }).click();
     inspector = page.getByRole("complementary");
   } else {
