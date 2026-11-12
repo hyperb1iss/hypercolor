@@ -100,3 +100,26 @@ test("Studio restates what a layer applies to when another of its settings chang
   expect(scopes(fixture)).toEqual([null, [MOUSE]]);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test("Studio offers no layer target on a daemon that cannot limit layers", async ({ page }) => {
+  const fixture = await openLayerTargets(page, { effectId: effect.id, olderDaemon: true });
+
+  // The properties bar keeps "Move to" and gains nothing beside it.
+  await page.locator(`[data-zone-id="${KEYS}"]`).click();
+  await expect(page.getByRole("button", { name: "Move to", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add layer to the selection", exact: true })).toHaveCount(0);
+
+  // Neither does the device card's menu.
+  const card = page.locator('div.group\\/card').filter({ has: page.getByText("Keyboard", { exact: true }) });
+  await card.getByTitle("Device options").click();
+  await expect(card.getByRole("button", { name: "Remove from this zone", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add layer to this device", exact: true })).toHaveCount(0);
+
+  // The stack adds to the zone, and its rows name no target.
+  await page.locator("#studio-composition-trigger").click();
+  await expect(page.locator("[data-layer-row]")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /applies to/ })).toHaveCount(0);
+  await expect(page.locator("[data-studio-showing]")).toHaveCount(0);
+  expect(fixture.layerWrites()).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});

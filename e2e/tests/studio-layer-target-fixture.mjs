@@ -47,7 +47,9 @@ const layer = (body) => ({
 // a new id and read `scope` as missing, null, or a value), and reorders.
 // Reads other than the scene, the devices, and the layouts reach the real
 // harness daemon, which lists the effects and advertises layer-scope.
-export async function openLayerTargets(page, { effectId }) {
+// `olderDaemon` takes that advertisement out of its status, as a daemon
+// from before layers could be limited answers.
+export async function openLayerTargets(page, { effectId, olderDaemon = false }) {
   const keys = output(KEYS, KEYBOARD, "Keyboard", 0.3);
   const mouse = output(MOUSE, POINTER, "Mouse", 0.7);
   const scene = {
@@ -95,6 +97,13 @@ export async function openLayerTargets(page, { effectId }) {
           id: "fixture-rig", name: "Fixture rig", description: null,
           canvas_width: 640, canvas_height: 480, zones: [], version: 1,
         }), headers: daemonHeaders(scene) });
+      }
+      if (olderDaemon && path === "/api/v1/system") {
+        const response = await route.fetch();
+        const status = await response.json();
+        status.data.status.capabilities = status.data.status.capabilities
+          .filter((capability) => capability !== "layer-scope");
+        return route.fulfill({ response, json: status });
       }
       return route.continue();
     }
