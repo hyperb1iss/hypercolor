@@ -13,6 +13,72 @@ use leptos_icons::Icon;
 use super::scope::{Checked, Target, TargetGroup, TargetOutput, target_groups};
 use crate::icons::*;
 
+/// The gap a popover keeps from the viewport's edges.
+const POPOVER_MARGIN: f64 = 8.0;
+/// The gap between a popover and the element it hangs from.
+const POPOVER_GAP: f64 = 4.0;
+/// The room under its opener a popover takes before it would rather open
+/// upward: enough for the heading, a handful of outputs, and the footer.
+const POPOVER_ROOM: f64 = 280.0;
+
+/// Where a popover holding the checklist hangs from the element that
+/// opened it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopoverPlacement {
+    pub left: f64,
+    /// Whether it opens upward, its bottom edge above the opener.
+    pub upward: bool,
+    /// Its top edge, or when [`Self::upward`] the distance from the
+    /// viewport's bottom to its bottom edge.
+    pub offset: f64,
+    /// The height it may take; the list inside scrolls past it.
+    pub max_height: f64,
+}
+
+impl PopoverPlacement {
+    /// The placement as inline style.
+    #[must_use]
+    pub fn style(&self) -> String {
+        let edge = if self.upward { "bottom" } else { "top" };
+        format!(
+            "left: {:.0}px; {edge}: {:.0}px; max-height: {:.0}px",
+            self.left, self.offset, self.max_height
+        )
+    }
+}
+
+/// Hang a popover `width` wide from an opener whose box is `anchor`
+/// (left, top, bottom) in a `viewport` (width, height). It opens under
+/// the opener, left edges together, and stays there while it has room,
+/// its list scrolling rather than the popover covering what opened it. It
+/// opens upward only when the room below is tight and there is more
+/// above. Either way it stays inside the viewport.
+#[must_use]
+pub fn hang_popover(anchor: (f64, f64, f64), viewport: (f64, f64), width: f64) -> PopoverPlacement {
+    let (left, top, bottom) = anchor;
+    let below = viewport.1 - bottom - POPOVER_GAP - POPOVER_MARGIN;
+    let above = top - POPOVER_GAP - POPOVER_MARGIN;
+    let upward = below < POPOVER_ROOM && above > below;
+    let left = left
+        .min(viewport.0 - width - POPOVER_MARGIN)
+        .max(POPOVER_MARGIN);
+    if upward {
+        PopoverPlacement {
+            left,
+            upward,
+            offset: viewport.1 - top + POPOVER_GAP,
+            max_height: above.max(0.0),
+        }
+    } else {
+        PopoverPlacement {
+            left,
+            upward,
+            offset: bottom + POPOVER_GAP,
+            max_height: below.max(0.0),
+        }
+    }
+}
+
 const ROW: &str = "flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left \
      text-[12px] text-fg-secondary transition-colors hover:bg-surface-hover/40 \
      hover:text-fg-primary pointer-coarse:min-h-11 max-md:py-2.5 max-md:text-sm";
@@ -45,6 +111,9 @@ pub fn TargetChecklist(
 
     view! {
         <div role="group" aria-label="Applies to" on:mouseleave=move |_| hover(Vec::new())>
+            // Marked so a host whose list scrolls can pin the whole zone
+            // above the outputs it stands against.
+            <div data-target-whole="">
             <button
                 type="button"
                 role="radio"
@@ -69,7 +138,9 @@ pub fn TargetChecklist(
                 </span>
                 <span class="shrink-0 text-[10px] text-fg-tertiary">"Every output"</span>
             </button>
-            <div class="my-1 h-px bg-edge-subtle/60" role="separator" />
+            <div class="mt-1 h-px bg-edge-subtle/60" role="separator" />
+            </div>
+            <div class="h-1" />
             <For
                 each=move || groups.get()
                 key=|group| (group.device_id.clone(), group.ids())

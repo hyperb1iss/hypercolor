@@ -14,6 +14,7 @@ use hypercolor_ui::components::layer_panel::scope::{
     hover_outputs, is_dormant, layer_count_words, names_output, outputs_detail, outputs_label,
     pickable_count, stands_back, target_groups, target_words, zone_target_outputs,
 };
+use hypercolor_ui::components::layer_panel::target_checklist::hang_popover;
 
 fn member(id: &str, device: &str, segment: Option<&str>, name: &str) -> ZoneMember {
     ZoneMember {
@@ -302,4 +303,44 @@ fn hovering_a_row_lights_its_live_outputs_and_a_box_answers_its_rows() {
 fn layers_are_counted_in_words() {
     assert_eq!(layer_count_words(1), "1 layer");
     assert_eq!(layer_count_words(3), "3 layers");
+}
+
+#[test]
+fn the_checklist_hangs_under_its_opener_and_scrolls_before_it_covers_it() {
+    let viewport = (1270.0, 900.0);
+
+    // Plenty of room: under the chip, left edges together.
+    let roomy = hang_popover((900.0, 280.0, 300.0), viewport, 324.0);
+    assert!(!roomy.upward);
+    assert_eq!(roomy.left, 900.0);
+    assert_eq!(roomy.offset, 304.0);
+    assert_eq!(roomy.max_height, 588.0);
+
+    // Less room than its full height, but enough to be useful: it stays
+    // under the chip and its list scrolls.
+    let snug = hang_popover((900.0, 545.0, 565.0), viewport, 324.0);
+    assert!(!snug.upward);
+    assert_eq!(snug.max_height, 323.0);
+    assert_eq!(snug.style(), "left: 900px; top: 569px; max-height: 323px");
+
+    // Near the bottom edge it opens upward, measured from the bottom.
+    let low = hang_popover((900.0, 800.0, 820.0), viewport, 324.0);
+    assert!(low.upward);
+    assert_eq!(low.offset, 104.0);
+    assert_eq!(low.max_height, 788.0);
+    assert_eq!(low.style(), "left: 900px; bottom: 104px; max-height: 788px");
+}
+
+#[test]
+fn the_checklist_stays_inside_the_viewport() {
+    // An opener near the right edge pulls the popover back in.
+    let right = hang_popover((1200.0, 100.0, 120.0), (1270.0, 900.0), 324.0);
+    assert_eq!(right.left, 938.0);
+    // A viewport narrower than the popover pins it to the left margin.
+    let narrow = hang_popover((40.0, 100.0, 120.0), (300.0, 600.0), 324.0);
+    assert_eq!(narrow.left, 8.0);
+    // Tight both ways, it takes the side with more room.
+    let tight = hang_popover((0.0, 150.0, 170.0), (400.0, 300.0), 200.0);
+    assert!(tight.upward);
+    assert_eq!(tight.max_height, 138.0);
 }

@@ -29,13 +29,12 @@ use crate::components::bottom_sheet::BottomSheet;
 use crate::components::layer_panel::scope::{
     Target, TargetOutput, draft_words, is_screen_member, outputs_label, zone_target_outputs,
 };
-use crate::components::layer_panel::target_checklist::TargetChecklist;
+use crate::components::layer_panel::target_checklist::{TargetChecklist, hang_popover};
 use crate::components::layer_panel::{LayerTargetHost, TargetSubject};
 use crate::icons::*;
 use crate::layout_utils;
 
 use super::StudioContext;
-use super::zone_strip::menu_position;
 
 /// The capability a daemon advertises once a layer can be limited to
 /// outputs. Without it Studio shows no target anywhere.
@@ -453,9 +452,9 @@ pub(super) fn TargetEditorHost() -> impl IntoView {
     let targets = studio.targets;
     let phone = crate::viewport::is_phone_layout();
     let panel_ref = NodeRef::<html::Div>::new();
-    // The rendered size, so the popover stays on screen whatever the root
-    // font size makes of its width.
-    let size = RwSignal::new((288.0_f64, 320.0_f64));
+    // The rendered width, so the popover stays on screen whatever the root
+    // font size makes of it.
+    let width = RwSignal::new(288.0_f64);
     let open = Memo::new(move |_| targets.editor.with(Option::is_some));
     let draft = Signal::derive(move || {
         targets
@@ -504,8 +503,7 @@ pub(super) fn TargetEditorHost() -> impl IntoView {
                 let Some(panel) = panel_ref.try_get_untracked().flatten() else {
                     return;
                 };
-                let rect = panel.get_bounding_client_rect();
-                let _ = size.try_set((rect.width(), rect.height()));
+                let _ = width.try_set(panel.get_bounding_client_rect().width());
                 // Start on what is chosen now, so arrows move from there.
                 let start = panel
                     .query_selector("[data-target-item][aria-checked=true]")
@@ -595,29 +593,20 @@ pub(super) fn TargetEditorHost() -> impl IntoView {
                                 aria-label=move || heading.get()
                                 class="fixed z-[71] flex w-72 max-w-[calc(100vw-1rem)] flex-col rounded-lg border border-edge-subtle bg-surface-overlay/98 backdrop-blur-xl dropdown-glow animate-enter-down"
                                 style=move || {
-                                    let (width, height) = size.get();
+                                    let width = width.get();
+                                    let extent = |value: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>, fallback: f64| {
+                                        value.ok().and_then(|value| value.as_f64()).unwrap_or(fallback)
+                                    };
+                                    let viewport = (
+                                        extent(window().inner_width(), 1280.0),
+                                        extent(window().inner_height(), 800.0),
+                                    );
                                     targets
                                         .editor
                                         .with(|editor| {
-                                            editor.as_ref().map(|editor| {
-                                                let (left, top, bottom) = editor.anchor;
-                                                // Below what asked, or above it when
-                                                // only that side has the room.
-                                                let below = bottom + 4.0;
-                                                let viewport = window()
-                                                    .inner_height()
-                                                    .ok()
-                                                    .and_then(|value| value.as_f64())
-                                                    .unwrap_or(800.0);
-                                                let y = if below + height > viewport - 8.0
-                                                    && top - height - 4.0 >= 8.0
-                                                {
-                                                    top - height - 4.0
-                                                } else {
-                                                    below
-                                                };
-                                                menu_position(left, y, width, height)
-                                            })
+                                            editor
+                                                .as_ref()
+                                                .map(|editor| hang_popover(editor.anchor, viewport, width).style())
                                         })
                                         .unwrap_or_default()
                                 }
@@ -641,7 +630,12 @@ pub(super) fn TargetEditorHost() -> impl IntoView {
                                 <div class="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-tertiary">
                                     <span class="block truncate">{move || heading.get()}</span>
                                 </div>
-                                <div class="ambient-scroll max-h-[min(20rem,55vh)] overflow-y-auto p-1" style:--ambient-hue=crate::ambient::hue_style()>
+                                // The whole zone stays in view above the
+                                // outputs however far their list scrolls.
+                                <div
+                                    class="ambient-scroll min-h-0 flex-1 overflow-y-auto px-1 pb-1 [&_[data-target-whole]]:sticky [&_[data-target-whole]]:top-0 [&_[data-target-whole]]:z-10 [&_[data-target-whole]]:bg-surface-overlay"
+                                    style:--ambient-hue=crate::ambient::hue_style()
+                                >
                                     <TargetChecklist
                                         draft=draft
                                         outputs=targets.outputs
