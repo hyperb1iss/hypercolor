@@ -5,10 +5,13 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::api::envelope::ListResponse;
-use crate::api::scene::{SceneDocument, SideEffectOutcome, ZoneLayoutResource, ZoneMember};
+use crate::api::scene::{
+    SceneDocument, SideEffectOutcome, ZoneLayoutResource, ZoneMember, tri_state,
+};
 use crate::identity::LayoutId;
 use crate::layer::{
-    BlendMode, LayerAdjust, LayerBinding, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerBinding, LayerScope, LayerSource, LayerTransform, SceneLayer,
+    SceneLayerId,
 };
 use crate::scene::{
     DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
@@ -201,6 +204,10 @@ pub struct ReplaceZoneRequest {
     pub layers: Vec<ReplaceSceneLayerRequest>,
 }
 
+/// One layer of a zone in a whole-scene replacement.
+///
+/// A layer that carries an `id` replaces the stored layer with that id;
+/// one without is new.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -222,6 +229,29 @@ pub struct ReplaceSceneLayerRequest {
     pub bindings: Vec<LayerBinding>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Tri-state, with the meaning it has on a single-layer replace:
+    /// missing keeps the scope of the stored layer this one names by `id`
+    /// (a new layer has none), `null` applies the layer to its whole zone,
+    /// a value sets it.
+    ///
+    /// A read-back document echoes each scoped layer's scope, so sending
+    /// it back unchanged changes nothing, and a client that drops the
+    /// field cannot widen a layer. Because a whole-zone layer reads back
+    /// with no `scope` key, removing the key does not clear a scope; send
+    /// `null`. Ids the stored layer's scope already held are accepted as
+    /// they are; any other id must be a member of the zone as this
+    /// request states it.
+    #[serde(
+        default,
+        deserialize_with = "tri_state",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<LayerScope>))]
+    #[allow(
+        clippy::option_option,
+        reason = "the double Option IS the tri-state wire pattern: missing = keep, null = clear, value = set"
+    )]
+    pub scope: Option<Option<LayerScope>>,
 }
 
 impl From<&SceneDocument> for ReplaceSceneRequest {
@@ -285,6 +315,7 @@ impl From<&SceneLayer> for ReplaceSceneLayerRequest {
             adjust: layer.adjust,
             bindings: layer.bindings.clone(),
             enabled: layer.enabled,
+            scope: layer.scope.clone().map(Some),
         }
     }
 }

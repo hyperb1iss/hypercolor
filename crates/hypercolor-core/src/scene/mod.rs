@@ -18,7 +18,9 @@ pub mod priority;
 pub mod transition;
 
 pub use automation::AutomationEngine;
-pub use layer_scope::{OutputMove, first_lighting_effect, plan_layer_carry};
+pub use layer_scope::{
+    OutputMove, check_introduced_scope, first_lighting_effect, plan_layer_carry,
+};
 pub use priority::{PriorityStack, StackEntry};
 pub use transition::{
     TransitionIdentity, TransitionPlan, interpolate_color, interpolate_oklab, interpolate_srgb,

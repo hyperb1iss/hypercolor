@@ -32,7 +32,11 @@ pub struct OutputMove {
 ///
 /// `carried` is the scope of the layer being replaced, whose ids may be
 /// dormant and are not re-checked. A new layer carries nothing.
-pub(super) fn check_introduced_scope(
+///
+/// # Errors
+///
+/// [`LayerMutationError::ScopeOutputMissing`] naming the first such id.
+pub fn check_introduced_scope(
     zone: &Zone,
     layer: &SceneLayer,
     carried: Option<&LayerScope>,

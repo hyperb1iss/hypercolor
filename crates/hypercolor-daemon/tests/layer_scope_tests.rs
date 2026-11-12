@@ -1,8 +1,9 @@
 //! Layer scope through the daemon's services: what the layer and member
 //! routes keep, carry, and refuse, and what apply and clear leave alone.
 //!
-//! No request type carries a scope yet, so these tests seed scoped layers
-//! through the scene mutation and then drive the public surfaces.
+//! These tests seed scoped layers through the scene mutation and then
+//! drive the public surfaces. The layer routes' own scope fields are
+//! covered in `layer_api_tests`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -960,9 +961,9 @@ async fn the_error_fallback_removes_a_failed_layer_that_clear_would_keep() {
 
 // ── Whole-scene replacement ──────────────────────────────────────────────
 
-#[tokio::test]
-async fn replacing_a_scene_keeps_the_scope_of_the_layers_it_names() {
-    let rig = rig().await;
+/// A named copy of the rig's scene with a keyboard layer on top, and the
+/// replacement body its read-back document makes.
+async fn studio_scene(rig: &Rig) -> (SceneId, SceneLayerId, ReplaceSceneRequest) {
     let keyboard = rig.add(rig.main, &[KEYS, LOGO]).await;
     let mut studio = hypercolor_core::scene::make_scene("Studio");
     studio.zones = rig.scene().await.zones;
@@ -983,15 +984,15 @@ async fn replacing_a_scene_keeps_the_scope_of_the_layers_it_names() {
     assert_eq!(read.status(), StatusCode::OK);
     let document =
         serde_json::from_value(body_json(read).await["data"].clone()).expect("scene document");
-    let mut replacement = ReplaceSceneRequest::from(&document);
-    let layers = &mut replacement.zones[0].layers;
-    layers[1].opacity = 0.25;
-    layers.push(hypercolor_types::api::scenes::ReplaceSceneLayerRequest {
-        id: None,
-        ..layers[1].clone()
-    });
+    (scene_id, keyboard, ReplaceSceneRequest::from(&document))
+}
 
-    let response = send(
+async fn put_scene(
+    rig: &Rig,
+    scene_id: SceneId,
+    replacement: &ReplaceSceneRequest,
+) -> axum::response::Response {
+    send(
         &rig.app,
         json_request(
             "PUT",
@@ -999,19 +1000,140 @@ async fn replacing_a_scene_keeps_the_scope_of_the_layers_it_names() {
             &json!(replacement),
         ),
     )
-    .await;
+    .await
+}
+
+async fn stored_layers(rig: &Rig, scene_id: SceneId) -> Vec<SceneLayer> {
+    let stored = rig.state.scene_manager.snapshot().await;
+    stored.get(&scene_id).expect("named scene").zones[0]
+        .layers
+        .clone()
+}
+
+#[tokio::test]
+async fn a_scene_read_back_and_replaced_keeps_every_scope() {
+    let rig = rig().await;
+    let (scene_id, keyboard, mut replacement) = studio_scene(&rig).await;
+    assert_eq!(
+        replacement.zones[0].layers[1].scope,
+        Some(Some(scope(&[KEYS, LOGO]))),
+        "the read-back document carries the scope"
+    );
+    replacement.zones[0].layers[1].opacity = 0.25;
+
+    let response = put_scene(&rig, scene_id, &replacement).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let stored = rig.state.scene_manager.snapshot().await;
-    let zone = &stored.get(&scene_id).expect("named scene").zones[0];
-    assert_eq!(zone.layers[1].id, keyboard);
-    assert!((zone.layers[1].opacity - 0.25).abs() < f32::EPSILON);
-    assert_eq!(
-        zone.layers[1].scope,
-        Some(scope(&[KEYS, LOGO])),
-        "the request shape has no scope, so a named layer keeps the stored one"
+    let layers = stored_layers(&rig, scene_id).await;
+    assert_eq!(layers[1].id, keyboard);
+    assert!((layers[1].opacity - 0.25).abs() < f32::EPSILON);
+    assert_eq!(layers[1].scope, Some(scope(&[KEYS, LOGO])));
+    assert_eq!(layers[0].scope, None);
+}
+
+#[tokio::test]
+async fn a_scene_replacement_that_says_nothing_about_scope_keeps_it() {
+    let rig = rig().await;
+    let (scene_id, keyboard, mut replacement) = studio_scene(&rig).await;
+    let layers = &mut replacement.zones[0].layers;
+    layers[1].scope = None;
+    layers[1].opacity = 0.25;
+    layers.push(hypercolor_types::api::scenes::ReplaceSceneLayerRequest {
+        id: None,
+        ..layers[1].clone()
+    });
+    let body = json!(replacement);
+    assert!(
+        body["zones"][0]["layers"][1].get("scope").is_none(),
+        "the request omits the field, as a client that predates it does"
     );
-    assert_eq!(zone.layers[2].scope, None, "a new layer starts whole-zone");
+
+    let response = put_scene(&rig, scene_id, &replacement).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let layers = stored_layers(&rig, scene_id).await;
+    assert_eq!(layers[1].id, keyboard);
+    assert!((layers[1].opacity - 0.25).abs() < f32::EPSILON);
+    assert_eq!(
+        layers[1].scope,
+        Some(scope(&[KEYS, LOGO])),
+        "a named layer keeps the stored scope"
+    );
+    assert_eq!(layers[2].scope, None, "a new layer starts whole-zone");
+}
+
+#[tokio::test]
+async fn a_scene_replacement_sets_and_clears_scope() {
+    let rig = rig().await;
+    let (scene_id, keyboard, mut replacement) = studio_scene(&rig).await;
+    let layers = &mut replacement.zones[0].layers;
+    let unsorted = LayerScope {
+        outputs: vec![STRIP.to_owned(), KEYS.to_owned(), STRIP.to_owned()],
+    };
+    layers.push(hypercolor_types::api::scenes::ReplaceSceneLayerRequest {
+        id: None,
+        scope: Some(Some(unsorted)),
+        ..layers[1].clone()
+    });
+    layers[1].scope = Some(None);
+
+    let response = put_scene(&rig, scene_id, &replacement).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let layers = stored_layers(&rig, scene_id).await;
+    assert_eq!(layers[1].id, keyboard);
+    assert_eq!(layers[1].scope, None, "an explicit null clears the scope");
+    assert_eq!(
+        layers[2].scope,
+        Some(scope(&[KEYS, STRIP])),
+        "a new layer takes the scope it names, sorted and unique"
+    );
+}
+
+#[tokio::test]
+async fn a_scene_replacement_checks_only_the_scope_ids_it_introduces() {
+    let rig = rig().await;
+    let (scene_id, keyboard, mut replacement) = studio_scene(&rig).await;
+    let before = stored_layers(&rig, scene_id).await;
+
+    replacement.zones[0].layers[1].scope = Some(Some(scope(&[KEYS, "out-elsewhere"])));
+    let refused = put_scene(&rig, scene_id, &replacement).await;
+    assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(refused).await;
+    assert_eq!(body["error"]["code"], "validation_error");
+    assert_eq!(body["error"]["details"]["unknown_member"], "out-elsewhere");
+    assert_eq!(
+        stored_layers(&rig, scene_id).await,
+        before,
+        "nothing changed"
+    );
+
+    replacement.zones[0].layers[1].scope = Some(Some(LayerScope {
+        outputs: Vec::new(),
+    }));
+    let empty = put_scene(&rig, scene_id, &replacement).await;
+    assert_eq!(empty.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        stored_layers(&rig, scene_id).await,
+        before,
+        "nothing changed"
+    );
+
+    // The zone gives up its logo output in the same request that keeps the
+    // layer's scope: the id is carried, so it may go dormant.
+    let zone = &mut replacement.zones[0];
+    zone.members.retain(|member| member.id.0 != LOGO);
+    if let Some(layout) = zone.layout.as_mut() {
+        layout
+            .placements
+            .retain(|placement| placement.member.0 != LOGO);
+    }
+    zone.layers[1].scope = Some(Some(scope(&[KEYS, LOGO])));
+    let carried = put_scene(&rig, scene_id, &replacement).await;
+    assert_eq!(carried.status(), StatusCode::OK);
+    let layers = stored_layers(&rig, scene_id).await;
+    assert_eq!(layers[1].id, keyboard);
+    assert_eq!(layers[1].scope, Some(scope(&[KEYS, LOGO])));
 }
 
 // ── Persistence ──────────────────────────────────────────────────────────

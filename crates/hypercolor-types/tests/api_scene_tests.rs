@@ -337,6 +337,38 @@ fn a_layer_replace_scope_is_tri_state() {
 }
 
 #[test]
+fn a_scene_replacement_layer_scope_is_tri_state_and_echoes_a_read() {
+    let mut payload = representative_document();
+    payload["run_epoch"] = json!("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    payload["zones"][0]["layers"][0]["scope"] = json!({"outputs": ["out-desk-1"]});
+    let document: SceneDocument = serde_json::from_value(payload).expect("document decodes");
+
+    let echoed: ReplaceSceneRequest =
+        serde_json::from_value(serde_json::to_value(&document).expect("document encodes"))
+            .expect("a scoped read written back is a valid replacement");
+    let scope = LayerScope {
+        outputs: vec!["out-desk-1".to_owned()],
+    };
+    assert_eq!(echoed.zones[0].layers[0].scope, Some(Some(scope)));
+    assert_eq!(ReplaceSceneRequest::from(&document), echoed);
+
+    let mut wire = serde_json::to_value(&echoed).expect("replacement encodes");
+    wire["zones"][0]["layers"][0]["scope"] = serde_json::Value::Null;
+    let cleared: ReplaceSceneRequest = serde_json::from_value(wire.clone()).expect("null decodes");
+    assert_eq!(cleared.zones[0].layers[0].scope, Some(None));
+
+    wire["zones"][0]["layers"][0]
+        .as_object_mut()
+        .expect("layer object")
+        .remove("scope");
+    let kept: ReplaceSceneRequest = serde_json::from_value(wire).expect("absent decodes");
+    assert_eq!(
+        kept.zones[0].layers[0].scope, None,
+        "a client that drops the field keeps the stored scope"
+    );
+}
+
+#[test]
 fn the_output_resource_patches_either_or_both_fields() {
     let resource: OutputResource =
         serde_json::from_value(json!({"power": "running", "brightness": 0.8}))

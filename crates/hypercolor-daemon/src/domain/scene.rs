@@ -28,7 +28,7 @@ use arc_swap::{ArcSwap, Guard};
 use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
 use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, SceneManager, ScenePlanSnapshot, ZoneMetaPatch,
-    ZoneMutationError, default_primary_zone,
+    ZoneMutationError, check_introduced_scope, default_primary_zone,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::api::scene::{LayerMove, SceneFence, SideEffectOutcome};
@@ -46,7 +46,7 @@ use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent, LayerStackChangeKind,
     SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind, Severity, ZoneChangeKind,
 };
-use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
@@ -3138,12 +3138,12 @@ fn replacement_zones(
                 .iter()
                 .find(|candidate| candidate.id == zone_id);
             let layout = replacement_zone_layout(stored, default_layout, &zone)?;
-            let layers = zone
+            let (layers, stored_scopes): (Vec<_>, Vec<_>) = zone
                 .layers
                 .into_iter()
                 .map(|layer| replacement_layer(existing, layer))
-                .collect::<Vec<_>>();
-            Ok(Zone {
+                .unzip();
+            let replacement = Zone {
                 id: zone_id,
                 name: zone.name,
                 description: zone.description,
@@ -3157,18 +3157,31 @@ fn replacement_zones(
                 controls_version: stored
                     .map_or(0, |stored| stored.controls_version.saturating_add(1)),
                 layers_version: stored.map_or(0, |stored| stored.layers_version.saturating_add(1)),
-            })
+            };
+            for (layer, stored_scope) in replacement.layers.iter().zip(&stored_scopes) {
+                check_introduced_scope(&replacement, layer, stored_scope.as_ref()).map_err(
+                    |error| crate::domain::scene_tree::layer_error(error, zone_id, Some(layer.id)),
+                )?;
+            }
+            Ok(replacement)
         })
         .collect()
 }
 
-/// Build a stored layer from a replacement request.
+/// Build a stored layer from a replacement request, beside the scope of
+/// the stored layer it names.
 ///
-/// The request shape carries no scope, so a layer the request names by id
-/// keeps the scope the stored layer has, wherever in the scene the request
-/// puts it. A layer without an id is new and applies to its whole zone.
-fn replacement_layer(existing: &Scene, request: ReplaceSceneLayerRequest) -> SceneLayer {
-    let scope = request.id.and_then(|layer_id| {
+/// The request's `scope` is a tri-state. Missing, a layer the request
+/// names by id keeps the scope the stored layer has, wherever in the scene
+/// the request puts it, and a layer without an id applies to its whole
+/// zone. `null` clears the scope and a value sets it. The stored scope
+/// comes back so the caller can accept its ids without a membership
+/// check.
+fn replacement_layer(
+    existing: &Scene,
+    request: ReplaceSceneLayerRequest,
+) -> (SceneLayer, Option<LayerScope>) {
+    let stored_scope = request.id.and_then(|layer_id| {
         existing
             .zones
             .iter()
@@ -3176,7 +3189,12 @@ fn replacement_layer(existing: &Scene, request: ReplaceSceneLayerRequest) -> Sce
             .find(|layer| layer.id == layer_id)
             .and_then(|layer| layer.scope.clone())
     });
-    SceneLayer {
+    let scope = match request.scope {
+        None => stored_scope.clone(),
+        Some(None) => None,
+        Some(Some(scope)) => Some(scope.normalized()),
+    };
+    let layer = SceneLayer {
         id: request.id.unwrap_or_default(),
         name: request.name,
         source: request.source,
@@ -3187,7 +3205,8 @@ fn replacement_layer(existing: &Scene, request: ReplaceSceneLayerRequest) -> Sce
         bindings: request.bindings,
         enabled: request.enabled,
         scope,
-    }
+    };
+    (layer, stored_scope)
 }
 
 fn replacement_zone_layout(
