@@ -9,6 +9,7 @@
 //! The human-readable companion is `tests/fixtures/rest_v1/MATRIX.md`; the two
 //! are edited together.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -21,6 +22,12 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
     EffectSource, EffectState,
+};
+use hypercolor_types::event::ChangeTrigger;
+use hypercolor_types::scene::ZoneId;
+use hypercolor_types::spatial::{
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -707,6 +714,160 @@ async fn config_key_deletes_reset_one_key() {
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_error_envelope(&body_json(response).await, "internal_error");
+}
+
+// ── Layer scope ──────────────────────────────────────────────────────────
+
+/// A primary zone in the default scene holding one output.
+async fn seed_zone_with_one_output(state: &Arc<AppState>) -> ZoneId {
+    let base = register_effect(state, "Base").await;
+    let layout = SpatialLayout {
+        id: "wire-layout".to_owned(),
+        name: "Wire".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![Output {
+            id: "out-keys".to_owned(),
+            name: "Keys".to_owned(),
+            device_id: "mock:keyboard".to_owned(),
+            zone_name: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 4,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    };
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let zone_id = mutation
+        .upsert_primary_zone(
+            &base,
+            HashMap::new(),
+            None,
+            layout,
+            ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should be seeded")
+        .id;
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("seed should commit");
+    zone_id
+}
+
+#[tokio::test]
+async fn a_layer_carries_scope_only_when_it_has_one() {
+    let (state, _tmp) = isolated_state();
+    let zone_id = seed_zone_with_one_output(&state).await;
+    let app = test_app(&state);
+    let layers_uri = format!("/api/v1/scene/zones/{zone_id}/layers");
+    let source = json!({ "type": "color_fill", "rgba": [1.0, 0.0, 0.5, 1.0] });
+
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            &layers_uri,
+            &json!({ "source": source, "scope": { "outputs": ["out-keys"] } }),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let body = body_json(created).await;
+    assert_envelope(&body);
+    let layers = body["data"]["layers"].as_array().expect("layer stack");
+    let layer_keys = [
+        "id",
+        "source",
+        "blend",
+        "opacity",
+        "transform",
+        "adjust",
+        "enabled",
+    ];
+    assert_keys(&layers[0], &layer_keys, "whole-zone layer");
+    assert_keys(
+        &layers[1],
+        &[&layer_keys[..], &["scope"]].concat(),
+        "scoped layer",
+    );
+    assert_keys(&layers[1]["scope"], &["outputs"], "layer scope");
+    assert_eq!(layers[1]["scope"]["outputs"], json!(["out-keys"]));
+
+    let scoped_id = layers[1]["id"].as_str().expect("layer id");
+    let cleared = send(
+        &app,
+        json_request(
+            "PUT",
+            &format!("{layers_uri}/{scoped_id}"),
+            &json!({ "source": source, "scope": null }),
+        ),
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let body = body_json(cleared).await;
+    assert_keys(
+        &body["data"]["layers"][1],
+        &layer_keys,
+        "a layer whose scope was cleared",
+    );
+}
+
+#[tokio::test]
+async fn a_scope_naming_a_non_member_is_a_validation_error_with_the_id() {
+    let (state, _tmp) = isolated_state();
+    let zone_id = seed_zone_with_one_output(&state).await;
+    let app = test_app(&state);
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            &format!("/api/v1/scene/zones/{zone_id}/layers"),
+            &json!({
+                "source": { "type": "color_fill", "rgba": [1.0, 0.0, 0.5, 1.0] },
+                "scope": { "outputs": ["out-elsewhere"] },
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    assert_keys(&body, &["error", "meta"], "canonical error envelope");
+    assert_meta(&body["meta"]);
+    assert_keys(
+        &body["error"],
+        &["code", "message", "details"],
+        "scope validation error",
+    );
+    assert_eq!(body["error"]["code"], json!("validation_error"));
+    assert_eq!(
+        body["error"]["message"],
+        json!("a layer's scope may only name outputs its zone holds")
+    );
+    assert_eq!(
+        body["error"]["details"],
+        json!({ "unknown_member": "out-elsewhere" })
+    );
 }
 
 // ── Error shapes ─────────────────────────────────────────────────────────
