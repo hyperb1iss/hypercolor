@@ -86,12 +86,15 @@ pub enum StudioEdit {
         before: Option<LayerScope>,
         after: Option<LayerScope>,
     },
-    /// A zone Studio made, with the move that filled it as it was made.
+    /// A zone Studio made, with the move that filled it as it was made:
+    /// the outputs that went in, and the scoped layers the daemon carried
+    /// with them or narrowed, as the move's receipt recorded both.
     ZoneCreated {
         zone_id: String,
         name: String,
         color: Option<String>,
         filled: Vec<MemberEdit>,
+        layer_moves: Vec<LayerMove>,
     },
     /// A rename, recolor, pause or resume, or reorder: the changed fields
     /// as they were and as they became.
@@ -241,6 +244,16 @@ impl StudioJournal {
                 }
             }
         };
+        let remap_moves = |layer_moves: &mut Vec<LayerMove>| {
+            for slot in layer_moves
+                .iter_mut()
+                .flat_map(|moved| [&mut moved.from, &mut moved.to])
+            {
+                if slot.zone_id.to_string() == old {
+                    slot.zone_id = new;
+                }
+            }
+        };
         let new_key = new.to_string();
         for entry in &mut self.entries {
             match &mut entry.edit {
@@ -256,22 +269,19 @@ impl StudioJournal {
                     layer_moves,
                 } => {
                     remap_changes(changes);
-                    for slot in layer_moves
-                        .iter_mut()
-                        .flat_map(|moved| [&mut moved.from, &mut moved.to])
-                    {
-                        if slot.zone_id.to_string() == old {
-                            slot.zone_id = new;
-                        }
-                    }
+                    remap_moves(layer_moves);
                 }
                 StudioEdit::ZoneCreated {
-                    zone_id, filled, ..
+                    zone_id,
+                    filled,
+                    layer_moves,
+                    ..
                 } => {
                     if zone_id == old {
                         zone_id.clone_from(&new_key);
                     }
                     remap_changes(filled);
+                    remap_moves(layer_moves);
                 }
                 StudioEdit::ZoneDeleted(record) => {
                     if record.zone_id == old {
@@ -297,7 +307,8 @@ impl StudioJournal {
                         *layer_id = new;
                     }
                 }
-                StudioEdit::Members { layer_moves, .. } => {
+                StudioEdit::Members { layer_moves, .. }
+                | StudioEdit::ZoneCreated { layer_moves, .. } => {
                     // A carried layer sits in the zone its move ended in,
                     // on whichever side of the journal's cursor the entry is.
                     for moved in layer_moves {
@@ -310,7 +321,6 @@ impl StudioJournal {
                     }
                 }
                 StudioEdit::Layout { .. }
-                | StudioEdit::ZoneCreated { .. }
                 | StudioEdit::ZonePatched { .. }
                 | StudioEdit::ZoneDeleted(_)
                 | StudioEdit::Unresolved { .. } => {}
@@ -1668,8 +1678,13 @@ impl StudioHistory {
                 name,
                 color,
                 filled,
+                layer_moves,
             } => {
-                self.replay_zone_created(id, redo, zone_id, name, color, filled);
+                let fill = zones::Fill {
+                    changes: filled,
+                    layer_moves,
+                };
+                self.replay_zone_created(id, redo, zone_id, name, color, fill);
             }
             StudioEdit::ZonePatched {
                 zone_id,
@@ -1709,25 +1724,14 @@ impl StudioHistory {
             changes: changes.clone(),
             layer_moves: layer_moves.clone(),
         };
-        let changes = changes
-            .into_iter()
-            .map(|change| if redo { change } else { flip(change) })
-            .collect::<Vec<_>>();
-        let Ok(changes) = prepare_members_replay(&scene, changes) else {
+        let Ok(request) = members_replay_request(&scene, changes, &layer_moves, redo) else {
             toasts::toast_error("Assignment changed elsewhere; history was not applied");
             return;
         };
-        let layer_moves = replay_layer_moves(&scene, &changes, &layer_moves, redo);
         let Some(generation) = self.begin() else {
             return;
         };
         leptos::task::spawn_local(async move {
-            let request = EditMembersRequest {
-                scene_id: scene.id,
-                changes,
-                assignment: None,
-                layer_moves,
-            };
             let through = writer::edit_mark();
             let result = edit_members(&request, &Fence::of(&scene)).await;
             if !self.is_current(generation) {
@@ -1857,6 +1861,36 @@ pub fn replayable_scope(
         .cloned()
         .collect();
     (!outputs.is_empty()).then(|| Some(LayerScope { outputs }.normalized()))
+}
+
+/// The membership write that undoes (`redo` false) or redoes a recorded
+/// move against `scene` as it stands: `changes` and `layer_moves` are the
+/// move as its receipt recorded it, forward. Every replay of a move builds
+/// its request here, whichever entry holds the move: an assignment's own,
+/// or the fill of a zone Studio made.
+///
+/// # Errors
+///
+/// Why the move no longer fits the scene: an output it names has left the
+/// zone the move put it in, or changed its binding.
+pub fn members_replay_request(
+    scene: &api::SceneDocument,
+    changes: Vec<MemberEdit>,
+    layer_moves: &[LayerMove],
+    redo: bool,
+) -> Result<EditMembersRequest, String> {
+    let changes = changes
+        .into_iter()
+        .map(|change| if redo { change } else { flip(change) })
+        .collect();
+    let changes = prepare_members_replay(scene, changes)?;
+    let layer_moves = replay_layer_moves(scene, &changes, layer_moves, redo);
+    Ok(EditMembersRequest {
+        scene_id: scene.id,
+        changes,
+        assignment: None,
+        layer_moves,
+    })
 }
 
 /// The layer moves an undo (`redo` false) or redo of a membership edit
@@ -2660,6 +2694,7 @@ mod replay_tests {
                 name: gone.name.clone(),
                 color: None,
                 filled: Vec::new(),
+                layer_moves: Vec::new(),
             };
             let held_create = |name: &str| {
                 let name = name.to_owned();
@@ -2781,7 +2816,7 @@ mod replay_tests {
                 history.record_created_zone(
                     scene.id,
                     zone,
-                    Vec::new(),
+                    zones::Fill::default(),
                     Some(Box::new(held::Pending {
                         fence: fence.clone(),
                         key: "forward-fill".to_owned(),
@@ -2813,17 +2848,48 @@ mod replay_tests {
                     assert!(journal.waiting_on(false).is_some());
                 });
 
-                let receipt = landed.then(|| StudioEdit::members(changes.clone()));
+                // The fill took a layer limited to the output along.
+                let scope = LayerScope {
+                    outputs: vec![original.output.id.clone()],
+                };
+                let carried = vec![LayerMove {
+                    layer_id: SceneLayerId::new(),
+                    from: hypercolor_types::api::scene::LayerSlot {
+                        zone_id: scene.zones[0].id,
+                        index: 1,
+                    },
+                    to: hypercolor_types::api::scene::LayerSlot {
+                        zone_id: zone.id,
+                        index: 0,
+                    },
+                    scope_before: scope.clone(),
+                    scope_after: scope,
+                }];
+                let receipt = landed.then(|| StudioEdit::Members {
+                    changes: changes.clone(),
+                    layer_moves: carried.clone(),
+                });
                 assert!(history.settle_if_held(&item, receipt));
                 assert!(!history.has_unresolved());
                 history.journal.with_untracked(|journal| {
                     assert_eq!(journal.recorded(), 1, "settling adds no extra step");
-                    let Some(StudioEdit::ZoneCreated { filled, .. }) = journal.undo_edit() else {
+                    let Some(StudioEdit::ZoneCreated {
+                        filled,
+                        layer_moves,
+                        ..
+                    }) = journal.undo_edit()
+                    else {
                         panic!("the creation remains undoable");
                     };
                     assert_eq!(
                         filled.as_slice(),
                         if landed { changes.as_slice() } else { &[] }
+                    );
+                    // The creation keeps what the fill carried, so its undo
+                    // can put the layer back where it was.
+                    assert_eq!(
+                        layer_moves.as_slice(),
+                        if landed { carried.as_slice() } else { &[] }
                     );
                     if landed {
                         let undo = flip(filled[0].clone());
@@ -2928,6 +2994,7 @@ mod replay_tests {
                         name: "Keyboard".to_owned(),
                         color: None,
                         filled: moved.clone(),
+                        layer_moves: Vec::new(),
                     })
                 );
             });
@@ -2959,6 +3026,7 @@ mod replay_tests {
                     name: "Keyboard".to_owned(),
                     color: None,
                     filled: Vec::new(),
+                    layer_moves: Vec::new(),
                 };
                 history.settle_held(&item, landed.then_some(made));
                 let waiting = history.waiting.with_value(|waiting| {

@@ -9,9 +9,9 @@ use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
     DeletedZone, Settled, StudioEdit, StudioJournal, carried_announcement, held_document,
-    held_scene, light_neighbor, members_landed, prepare_members_replay, rename_is_noop,
-    replaced_layer_id, replay_announcement, replay_layer_moves, replayable_scope, resolve_deletion,
-    restore_layer_requests, settles_by_key, zone_patch_before,
+    held_scene, light_neighbor, members_landed, members_replay_request, prepare_members_replay,
+    rename_is_noop, replaced_layer_id, replay_announcement, replay_layer_moves, replayable_scope,
+    resolve_deletion, restore_layer_requests, settles_by_key, zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -575,6 +575,7 @@ fn zone_steps_are_announced_by_what_they_did() {
         name: "Keyboard".to_owned(),
         color: None,
         filled: vec![stand_move(Some(ZONE_A), Some(ZONE_B))],
+        layer_moves: Vec::new(),
     };
     assert_eq!(
         replay_announcement(&made, false, &zone_names, &whole_stand).as_deref(),
@@ -589,6 +590,7 @@ fn zone_steps_are_announced_by_what_they_did() {
         name: "New zone".to_owned(),
         color: None,
         filled: Vec::new(),
+        layer_moves: Vec::new(),
     };
     assert_eq!(
         replay_announcement(&empty, false, &zone_names, &whole_stand).as_deref(),
@@ -1222,5 +1224,88 @@ fn a_recreated_zone_takes_its_carried_layers_records_along() {
     match journal.redo_edit() {
         Some(StudioEdit::LayerScope { zone_id, .. }) => assert_eq!(zone_id, &remade.to_string()),
         other => panic!("expected the change of target, found {other:?}"),
+    }
+}
+
+// ── A zone made for a device, and the layers that came along ────────────
+
+/// The keyboard went into a zone made for it and took Ripples along.
+fn keyboard_zone_created() -> StudioEdit {
+    StudioEdit::ZoneCreated {
+        zone_id: ZONE_B.to_owned(),
+        name: "Keyboard".to_owned(),
+        color: None,
+        filled: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![ripples_carried()],
+    }
+}
+
+#[test]
+fn undoing_a_zones_creation_reverses_the_receipt_of_its_fill() {
+    let StudioEdit::ZoneCreated {
+        filled,
+        layer_moves,
+        ..
+    } = keyboard_zone_created()
+    else {
+        unreachable!("the fixture is a creation");
+    };
+    let scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+
+    let request = members_replay_request(&scene, filled.clone(), &layer_moves, false)
+        .expect("the keys are still in the zone made for them");
+
+    assert_eq!(request.scene_id, scene.id);
+    assert_eq!(request.assignment, None);
+    let back = &request.changes[0];
+    assert_eq!(
+        back.before.as_ref().map(|state| state.zone_id),
+        Some(zone_id(ZONE_B))
+    );
+    assert_eq!(
+        back.after.as_ref().map(|state| state.zone_id),
+        Some(zone_id(ZONE_A))
+    );
+    // The layer goes back to the stack position it left, which the
+    // daemon's own rule would not do: it lands a carried layer on top.
+    assert_eq!(
+        request.layer_moves,
+        Some(vec![ripples_carried().reversed()])
+    );
+
+    // The same rule as any move: a layer replaced since is left to the
+    // daemon rather than named in a request it would refuse.
+    let scene = carried_scene(&[stack_layer(GLOW, Some(&["keys"]))]);
+    let request = members_replay_request(&scene, filled, &layer_moves, false)
+        .expect("the keys are still in the zone made for them");
+    assert_eq!(request.layer_moves, None);
+}
+
+#[test]
+fn redoing_a_zones_creation_carries_the_same_layers_into_the_remade_zone() {
+    let mut journal = StudioJournal::default();
+    journal.record(keyboard_zone_created());
+    journal.complete(false);
+    let remade = ZoneId::new();
+
+    // The redo made the zone again under a new id.
+    journal.remap_zone(ZONE_B, remade);
+
+    match journal.redo_edit() {
+        Some(StudioEdit::ZoneCreated {
+            zone_id: made,
+            filled,
+            layer_moves,
+            ..
+        }) => {
+            assert_eq!(made, &remade.to_string());
+            assert_eq!(
+                filled[0].after.as_ref().map(|state| state.zone_id),
+                Some(remade)
+            );
+            assert_eq!(layer_moves[0].to.zone_id, remade);
+            assert_eq!(layer_moves[0].from.zone_id, zone_id(ZONE_A));
+        }
+        other => panic!("expected the creation, found {other:?}"),
     }
 }

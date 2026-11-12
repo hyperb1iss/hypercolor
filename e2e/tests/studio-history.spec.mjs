@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
-import { openHistory, addStand, dragOutput, FIRST, SECOND } from "./studio-history-fixture.mjs";
+import {
+  openHistory, addStand, dragOutput, BASE, FIRST, HAZE, RIPPLES, SECOND,
+} from "./studio-history-fixture.mjs";
 
 const standCard = (page) => page.locator('div.group\\/card').filter({ has: page.getByText("Laptop stand", { exact: true }) });
 const anchorCard = (page) => page.locator('div.group\\/card').filter({ has: page.getByText("Anchor light", { exact: true }) });
@@ -359,6 +361,49 @@ test("Studio drops an Unassigned device on the canvas at the drop point as one u
   await fixture.undo.click();
   await expect.poll(() => fixture.assigned()).toEqual([]);
   await expect(fixture.undo).toBeDisabled();
+  expect(fixture.rejected).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("Studio undoing a move to a new zone puts a carried layer back where it was", async ({ page }) => {
+  const fixture = await openHistory(page, { placedStand: true, standLayer: true });
+  const scope = { outputs: ["stand-output"] };
+  expect(fixture.stack(FIRST)).toEqual([BASE, RIPPLES, HAZE]);
+
+  // The stand takes Ripples along into a zone made for it.
+  await moveTo(standCard(page), page, "Move to a new zone");
+  await expect.poll(() => fixture.scene.zones.length).toBe(3);
+  const made = fixture.scene.zones[2].id;
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: made, id: "stand-output" }]);
+  expect(fixture.stack(FIRST)).toEqual([BASE, HAZE]);
+  expect(fixture.stack(made)).toEqual([RIPPLES]);
+
+  // Undo names the move that reverses the receipt, so Ripples goes back
+  // under Haze rather than on top, where the daemon's own rule lands it.
+  await expect(fixture.undo).toBeEnabled();
+  await fixture.undo.click();
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: FIRST, id: "stand-output" }]);
+  const undone = fixture.writes.filter((write) => write.path === "/api/v1/scene/members/edit").at(-1);
+  expect(undone.body.layer_moves).toEqual([{
+    layer_id: RIPPLES, from: { zone_id: made, index: 0 }, to: { zone_id: FIRST, index: 1 },
+    scope_before: scope, scope_after: scope,
+  }]);
+  expect(fixture.stack(FIRST)).toEqual([BASE, RIPPLES, HAZE]);
+  await expect.poll(() => fixture.scene.zones.length).toBe(2);
+
+  // Redo makes the zone again and carries Ripples into it by the receipt,
+  // which now names the new zone.
+  await expect(fixture.redo).toBeEnabled();
+  await fixture.redo.click();
+  await expect.poll(() => fixture.scene.zones.length).toBe(3);
+  const again = fixture.scene.zones[2].id;
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: again, id: "stand-output" }]);
+  const redone = fixture.writes.filter((write) => write.path === "/api/v1/scene/members/edit").at(-1);
+  expect(redone.body.layer_moves).toEqual([{
+    layer_id: RIPPLES, from: { zone_id: FIRST, index: 1 }, to: { zone_id: again, index: 0 },
+    scope_before: scope, scope_after: scope,
+  }]);
+  expect(fixture.stack(again)).toEqual([RIPPLES]);
   expect(fixture.rejected).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

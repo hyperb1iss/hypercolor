@@ -23,7 +23,7 @@ use hypercolor_types::scene::SceneId;
 use leptos::prelude::*;
 
 use super::super::placement::Footprint;
-use super::zones::{DeletedZone, live_scene, zone_patch_before};
+use super::zones::{DeletedZone, Fill, live_scene, zone_patch_before};
 use super::{EntryId, Fence, Settled, StudioEdit, StudioHistory, flip, retire_placed};
 use crate::api;
 use crate::components::layout_builder::keyed::{self, Answer};
@@ -88,7 +88,7 @@ pub(super) enum Resume {
         neighbor: Option<String>,
         name: String,
         color: Option<String>,
-        filled: Vec<MemberEdit>,
+        fill: Fill,
     },
     /// Redoing a zone's creation: the zone was made again, under a new id,
     /// and its devices follow.
@@ -96,7 +96,7 @@ pub(super) enum Resume {
         zone_id: String,
         name: String,
         color: Option<String>,
-        filled: Vec<MemberEdit>,
+        fill: Fill,
     },
 }
 
@@ -112,25 +112,15 @@ impl Resume {
                 zone_id,
                 name,
                 color,
-                filled,
+                fill,
                 ..
-            } => Settled::Applied(StudioEdit::ZoneCreated {
-                zone_id: zone_id.clone(),
-                name: name.clone(),
-                color: color.clone(),
-                filled: filled.clone(),
-            }),
+            } => Settled::Applied(fill.clone().created(zone_id, name, color.as_ref())),
             Self::Recreate {
                 zone_id,
                 name,
                 color,
-                filled,
-            } => Settled::Unapplied(StudioEdit::ZoneCreated {
-                zone_id: zone_id.clone(),
-                name: name.clone(),
-                color: color.clone(),
-                filled: filled.clone(),
-            }),
+                fill,
+            } => Settled::Unapplied(fill.clone().created(zone_id, name, color.as_ref())),
         }
     }
 }
@@ -249,6 +239,7 @@ fn create_says(told: Told<api::ZoneResource>) -> CreateSays {
                 name: zone.name,
                 color: zone.color,
                 filled: Vec::new(),
+                layer_moves: Vec::new(),
             })
         }
         Told::Answer(_) => CreateSays::Refused,
@@ -677,15 +668,19 @@ impl StudioHistory {
                     color,
                 },
                 did,
-            ) => Settled::Applied(StudioEdit::ZoneCreated {
-                zone_id: zone_id.clone(),
-                name: name.clone(),
-                color: color.clone(),
-                filled: match did {
-                    Some(StudioEdit::Members { changes, .. }) => changes,
-                    _ => Vec::new(),
-                },
-            }),
+            ) => {
+                let fill = match did {
+                    Some(StudioEdit::Members {
+                        changes,
+                        layer_moves,
+                    }) => Fill {
+                        changes,
+                        layer_moves,
+                    },
+                    _ => Fill::default(),
+                };
+                Settled::Applied(fill.created(zone_id, name, color.as_ref()))
+            }
             (Then::Resume(_), Some(did)) => {
                 self.when_free(super::Waiting::Resume {
                     item: Box::new(item.clone()),
@@ -741,6 +736,7 @@ mod tests {
                 name: made.name,
                 color: made.color,
                 filled: Vec::new(),
+                layer_moves: Vec::new(),
             })
         );
         assert_eq!(
