@@ -3,9 +3,11 @@
 //! The two-column workspace keeps the Stage uncluttered: the layer stack
 //! is not a permanent rail. This panel slides in over the Stage when the
 //! now-playing chip is clicked, hosts the shared [`LayerPanel`], and
-//! dismisses on a scrim click, the close button, or `Escape`.
+//! dismisses on a scrim click, the close button in its header, or
+//! `Escape`.
 
 use hypercolor_leptos_ext::events::target_is_text_entry;
+use hypercolor_types::scene::ZoneRole;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -84,6 +86,24 @@ pub fn CompositionPanel(
         selected_screen_device_id(&scene.zones, &selected)
     });
 
+    // The chip that opens the panel calls a Screen's stack its face
+    // settings and a zone's its layers; the header says the same.
+    let is_screen = Memo::new(move |_| {
+        let selected = selected_zone_id.get();
+        active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .zip(selected.as_ref())
+                .and_then(|(scene, selected)| {
+                    scene
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == *selected)
+                })
+                .is_some_and(|zone| zone.role == ZoneRole::Display)
+        })
+    });
+
     // Escape closes the panel while it is open, unless a text field owns
     // the key (a rename in the rail cancels with Escape too). The handle
     // is removed with the page so the listener never outlives its signals.
@@ -116,11 +136,22 @@ pub fn CompositionPanel(
             class=("translate-x-full", move || !open.get())
             inert=move || (!open.get()).then_some("")
         >
-            <div class="flex shrink-0 justify-end border-b border-edge-subtle/55 px-3 py-2">
+            // The header names the panel in the words of the chip that
+            // opened it, and takes the Stage header's padding and line box
+            // so the two rules meet when the panel docks beside it.
+            <div class="flex shrink-0 items-center justify-between gap-3 border-b border-edge-subtle/60 py-3 pl-4 pr-3">
+                <h2 class="flex min-w-0">
+                    // The chip's own box, borders and all. The line height
+                    // sits on the span because the global heading rule is
+                    // unlayered and outranks a utility on the `h2` itself.
+                    <span class="truncate border border-transparent py-1.5 text-[12px] font-medium leading-normal text-fg-secondary">
+                        {move || if is_screen.get() { "Face settings" } else { "Layers" }}
+                    </span>
+                </h2>
                 <button
                     node_ref=close_ref
                     type="button"
-                    class="flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary btn-press hover:bg-surface-hover/40 hover:text-fg-primary"
+                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-tertiary btn-press hover:bg-surface-hover/40 hover:text-fg-primary"
                     title="Close the composition panel"
                     on:click=move |_| close()
                 >
