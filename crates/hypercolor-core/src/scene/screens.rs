@@ -638,6 +638,221 @@ fn convert_zone(
     report.converted.push((legacy, owner_id));
 }
 
+/// The screen outputs a scene's zones hold: each known screen's device
+/// with the id of an output that places it.
+pub type ScreenPlacements = Vec<(DeviceId, String)>;
+
+/// Every screen output a scene's zones hold. Taken before a write, this is
+/// the only record of which device an output belonged to once the write
+/// has removed it.
+#[must_use]
+pub fn screen_placements(scene: &Scene, surfaces: &ScreenSurfaces) -> ScreenPlacements {
+    scene
+        .zones
+        .iter()
+        .filter(|zone| zone.display_target.is_none())
+        .flat_map(|zone| zone.layout.zones.iter())
+        .filter(|output| is_display_zone(output))
+        .filter_map(|output| {
+            surfaces
+                .get(&output.device_id)
+                .map(|surface| (surface.device_id, output.id.clone()))
+        })
+        .collect()
+}
+
+/// The display zone a scene stores for a screen no zone places, empty.
+/// It takes the screen's view id, so the zone a client addressed and the
+/// effect slots of the screen's layers stay the same whichever spelling
+/// holds its stack.
+#[must_use]
+pub fn stored_display_zone(scene_id: SceneId, surface: &ScreenSurface) -> Zone {
+    Zone {
+        id: screen_zone_id(scene_id, surface.device_id),
+        name: format!("{} Face", surface.name),
+        description: Some(format!("Display face for {}", surface.name)),
+        layers: Vec::new(),
+        layout: screen_face_layout(
+            surface.device_id,
+            &surface.name,
+            surface.width,
+            surface.height,
+        ),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(surface.device_id)),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
+/// What settling a scene's screens did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ScreenSettle {
+    /// Screens whose output left every zone and whose layers went back
+    /// into a stored display zone: the device, the stored zone, and the
+    /// zones the layers came from.
+    pub returned: Vec<(DeviceId, ZoneId, Vec<ZoneId>)>,
+    /// Stored display zones that became screen layers, and the ones left.
+    pub conversion: ScreenConversion,
+}
+
+impl ScreenSettle {
+    /// Whether the scene was changed at all.
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        !self.returned.is_empty() || self.conversion.changed()
+    }
+}
+
+/// Put every known screen's stack where its placement says it belongs.
+///
+/// A screen some zone places holds its stack as screen layers in that
+/// zone, unless its stored display zone cannot convert exactly. A screen
+/// no zone places holds its stack as a stored display zone, so no layer
+/// scoped only to it is left dormant in the zone its output left.
+///
+/// `held_before` is [`screen_placements`] of the scene before the write
+/// being settled. A screen it names that no zone places now has left, and
+/// its layers go back into a stored display zone exactly as lowering
+/// rendered them: same layers in the same order under the same ids, the
+/// bottom enabled one's blend and opacity as the target. Then every
+/// stored display zone whose screen is placed converts, as
+/// [`convert_legacy_display_zones`] says. The two are inverses, so a
+/// screen that leaves and returns holds the document it started with.
+///
+/// A layer the departed screen shared with screens still placed stays
+/// with them, and the departed screen gets a copy under a new id. A layer
+/// that also reaches an LED output is a canvas layer and is left alone.
+/// A snapshot-locked scene is not rewritten.
+pub fn settle_screens(
+    scene: &mut Scene,
+    surfaces: &ScreenSurfaces,
+    held_before: &[(DeviceId, String)],
+) -> ScreenSettle {
+    let mut report = ScreenSettle::default();
+    if !scene.blocks_runtime_mutation() {
+        let departed = held_before
+            .iter()
+            .filter(|(device_id, _)| {
+                surface_of(surfaces, *device_id).is_some()
+                    && screen_placement(scene, surfaces, *device_id).is_none()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for (device_id, _) in &departed {
+            if report.returned.iter().any(|(held, ..)| held == device_id) {
+                continue;
+            }
+            if let Some((zone_id, owners)) =
+                return_to_stored_zone(scene, surfaces, *device_id, &departed)
+            {
+                report.returned.push((*device_id, zone_id, owners));
+            }
+        }
+        if !report.returned.is_empty() {
+            scene.zones_revision = scene.zones_revision.saturating_add(1);
+        }
+    }
+    report.conversion = convert_legacy_display_zones(scene, surfaces);
+    report
+}
+
+/// Move a departed screen's layers out of the zones its output left and
+/// into a stored display zone. Returns the stored zone and the zones the
+/// layers came from, or nothing when the screen had no layers of its own.
+fn return_to_stored_zone(
+    scene: &mut Scene,
+    surfaces: &ScreenSurfaces,
+    device_id: DeviceId,
+    departed: &[(DeviceId, String)],
+) -> Option<(ZoneId, Vec<ZoneId>)> {
+    // A stored display zone is already the screen's whole stack. Layers it
+    // covered were never showing, and stay with the zone that holds them.
+    if scene.display_zone_for(device_id).is_some() {
+        return None;
+    }
+    let surface = surface_of(surfaces, device_id)?;
+    let own = departed
+        .iter()
+        .filter(|(held, _)| *held == device_id)
+        .map(|(_, output_id)| output_id.as_str())
+        .collect::<Vec<_>>();
+    let mut stack = Vec::new();
+    let mut owners = Vec::new();
+    let mut paused = false;
+    for zone in scene
+        .zones
+        .iter_mut()
+        .filter(|zone| zone.display_target.is_none())
+    {
+        let leds = zone
+            .layout
+            .zones
+            .iter()
+            .filter(|output| !is_display_zone(output))
+            .map(|output| output.id.clone())
+            .collect::<HashSet<_>>();
+        let before = stack.len();
+        zone.layers.retain_mut(|layer| {
+            let Some(scope) = layer.scope.as_ref() else {
+                return true;
+            };
+            // A layer that reaches an LED output of the zone is a canvas
+            // layer; the screen only ever saw it through its backdrop.
+            if !scope.outputs.iter().any(|id| own.contains(&id.as_str()))
+                || scope.outputs.iter().any(|id| leds.contains(id))
+            {
+                return true;
+            }
+            let remaining = scope
+                .outputs
+                .iter()
+                .filter(|id| !own.contains(&id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut copy = layer.clone();
+            copy.scope = None;
+            // Other screens keep the layer under its id, so this screen's
+            // copy needs one of its own.
+            if scope.outputs.len() > 1 {
+                copy.id = SceneLayerId::new();
+            }
+            stack.push(copy);
+            let kept = !remaining.is_empty();
+            layer.scope = Some(LayerScope { outputs: remaining });
+            kept
+        });
+        if stack.len() != before {
+            zone.layers_version = zone.layers_version.saturating_add(1);
+            owners.push(zone.id);
+            paused |= !zone.enabled;
+        }
+    }
+    if stack.is_empty() {
+        return None;
+    }
+    // Lowering took the bottom enabled layer's blend and opacity as the
+    // target and rendered that layer as the opaque base. Stored the same
+    // way, the zone renders the frames the layers did.
+    let base = stack.iter().position(|layer| layer.enabled).unwrap_or(0);
+    let mut zone = stored_display_zone(scene.id, surface);
+    zone.display_target = Some(normalize_face_target(DisplayFaceTarget {
+        device_id,
+        blend_mode: stack[base].blend,
+        opacity: stack[base].opacity,
+    }));
+    stack[base].blend = BlendMode::Replace;
+    stack[base].opacity = 1.0;
+    zone.layers = stack;
+    zone.enabled = !paused;
+    let zone_id = zone.id;
+    scene.zones.push(zone);
+    Some((zone_id, owners))
+}
+
 /// Take one screen out of a shared layer's scope and give it a copy of its
 /// own, directly above, so a write about this screen changes no other.
 ///

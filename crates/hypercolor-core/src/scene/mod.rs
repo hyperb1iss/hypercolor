@@ -1668,6 +1668,43 @@ impl SceneManager {
         report
     }
 
+    /// The screen outputs each scene's zones hold, to settle a write
+    /// against. See [`screens::screen_placements`].
+    #[must_use]
+    pub fn screen_placements(&self) -> HashMap<SceneId, screens::ScreenPlacements> {
+        self.scenes
+            .iter()
+            .map(|(scene_id, scene)| {
+                (
+                    *scene_id,
+                    screens::screen_placements(scene, &self.screen_surfaces),
+                )
+            })
+            .filter(|(_, held)| !held.is_empty())
+            .collect()
+    }
+
+    /// Put every known screen's stack of the active scene where its
+    /// placement says it belongs, given the outputs each scene held before
+    /// the write being settled. See [`screens::settle_screens`].
+    pub fn settle_screens(
+        &mut self,
+        held_before: &HashMap<SceneId, screens::ScreenPlacements>,
+    ) -> screens::ScreenSettle {
+        let Some(scene_id) = self.active_scene_id().copied() else {
+            return screens::ScreenSettle::default();
+        };
+        let Some(scene) = self.scenes.get_mut(&scene_id) else {
+            return screens::ScreenSettle::default();
+        };
+        let held = held_before.get(&scene_id).map_or(&[][..], Vec::as_slice);
+        let report = screens::settle_screens(scene, &self.screen_surfaces, held);
+        if report.changed() {
+            self.refresh_resolved_zones();
+        }
+        report
+    }
+
     /// Make sure a scene stores a display zone for a known screen, and
     /// return its id.
     ///
@@ -1704,26 +1741,9 @@ impl SceneManager {
         if let Some(zone) = scene.display_zone_for(device_id) {
             return Ok(zone.id);
         }
-        let zone_id = screens::screen_zone_id(*scene_id, device_id);
-        scene.zones.push(Zone {
-            id: zone_id,
-            name: format!("{} Face", surface.name),
-            description: Some(format!("Display face for {}", surface.name)),
-            layers: Vec::new(),
-            layout: screens::screen_face_layout(
-                device_id,
-                &surface.name,
-                surface.width,
-                surface.height,
-            ),
-            brightness: 1.0,
-            enabled: true,
-            color: None,
-            display_target: Some(DisplayFaceTarget::new(device_id)),
-            role: ZoneRole::Display,
-            controls_version: 0,
-            layers_version: 0,
-        });
+        let zone = screens::stored_display_zone(*scene_id, &surface);
+        let zone_id = zone.id;
+        scene.zones.push(zone);
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
             self.refresh_resolved_zones();

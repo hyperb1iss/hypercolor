@@ -3682,3 +3682,283 @@ async fn cpu_stored_scene_shows_the_same_frames_once_converted() {
 async fn gpu_stored_scene_shows_the_same_frames_once_converted() {
     stored_scene_shows_the_same_frames_once_converted(RenderAccelerationMode::Gpu).await;
 }
+
+// ── A screen that leaves its zone and returns ────────────────────────────
+
+/// The box a moving screen's device holds on the canvas whether or not its
+/// screen is placed: its LED ring, over the whole canvas. The render thread
+/// finds an unplaced screen its backdrop through this output, and the tests
+/// give the screen's own output the same box, so both placements show one
+/// backdrop and any difference between two frames is the face.
+const DEVICE_BOX: ((f32, f32), (f32, f32)) = ((0.5, 0.5), (1.0, 1.0));
+
+fn device_ring(screen: &Screen) -> Output {
+    let mut ring = strip_output("pump-ring", DEVICE_BOX.0, DEVICE_BOX.1);
+    ring.device_id.clone_from(&screen.layout_id);
+    ring.zone_name = Some("Ring".to_owned());
+    ring
+}
+
+/// A layout over the rig's canvas, with the device's ring and, when
+/// `placed`, its screen.
+fn moving_layout(screen: &Screen, placed: bool) -> SpatialLayout {
+    let mut outputs = vec![
+        strip_output("strip:main", (0.5, 0.1), (0.8, 0.1)),
+        device_ring(screen),
+    ];
+    if placed {
+        outputs.push(screen.output(DEVICE_BOX.0, DEVICE_BOX.1));
+    }
+    zone_layout(outputs)
+}
+
+/// A translucent two-layer face as screen layers of a zone that places the
+/// screen.
+fn placed_face_scene(effects: &Effects, screen: &Screen, name: &str) -> Scene {
+    let output_id = screen.output(DEVICE_BOX.0, DEVICE_BOX.1).id;
+    let mut layers = vec![effects.columns()];
+    for mut layer in [
+        with_composition(effects.solid(RED), BlendMode::Screen, 0.6),
+        with_composition(fill_layer(GREEN), BlendMode::Alpha, 0.5),
+    ] {
+        layer.scope = Some(LayerScope {
+            outputs: vec![output_id.clone()],
+        });
+        layers.push(layer);
+    }
+    let mut zone = scene_zone("Main", ZoneRole::Primary, layers, Vec::new());
+    zone.layout = moving_layout(screen, true);
+    test_scene(name, vec![zone], 0)
+}
+
+impl Rig {
+    /// Rewrite the live scene's primary zone from `layout`, as a layout
+    /// publication does, and commit it.
+    async fn publish_layout(&self, layout: &SpatialLayout) {
+        let mut mutation = self.state.scene_manager.begin_mutation().await;
+        mutation.sync_primary_layout(layout);
+        self.state
+            .scene_manager
+            .commit_mutation(mutation)
+            .await
+            .expect("the layout should commit");
+    }
+
+    /// Activate `scene` and align its primary zone with `layout`, as
+    /// activation does for a scene that follows a layout.
+    async fn activate_on(&self, scene: &Scene, layout: &SpatialLayout) {
+        let mut mutation = self.state.scene_manager.begin_mutation().await;
+        let _ = mutation.create_scene(scene.clone());
+        mutation
+            .activate(
+                scene.id,
+                None,
+                hypercolor_types::event::SceneChangeReason::UserActivate,
+            )
+            .expect("scene should activate");
+        mutation.realign_primary_layout(layout);
+        self.state
+            .scene_manager
+            .commit_mutation(mutation)
+            .await
+            .expect("scene activation should commit");
+    }
+
+    async fn stored(&self, scene: &Scene) -> Scene {
+        self.state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&scene.id)
+            .cloned()
+            .expect("the scene stays registered")
+    }
+}
+
+/// Every frame the panel was sent from `seen` on is `expected`.
+fn assert_frames_held(writes: &PanelWrites, device_id: DeviceId, seen: usize, expected: &[u8]) {
+    for (index, write) in writes.of(device_id).iter().enumerate().skip(seen) {
+        assert_same_frame(&format!("frame {index}"), expected, &write.data);
+    }
+}
+
+/// A face on a placed screen is screen layers; the same face once the
+/// screen's output leaves the zone is a stored display zone. The two are
+/// rendered by different paths and must put the same bytes on the panel:
+/// when the layout under a running scene loses the screen and gets it
+/// back, the panel never shows anything else.
+async fn face_survives_its_screen_leaving_the_layout_and_returning(mode: RenderAccelerationMode) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let scene = placed_face_scene(&rig.effects, &screen, "Moving");
+    let running = rig.run_scene(scene.clone()).await;
+    let placed = settled(&rig.writes, screen.device_id).await;
+
+    let mut backdrop_rig = Rig::new(mode);
+    backdrop_rig
+        .connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    backdrop_rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut bare = placed_face_scene(&backdrop_rig.effects, &screen, "Bare");
+    bare.zones[0].layers.truncate(1);
+    let backdrop_run = backdrop_rig.run_scene(bare).await;
+    let backdrop = settled(&backdrop_rig.writes, screen.device_id).await;
+    backdrop_run.stop().await;
+    assert_ne!(placed, backdrop, "the face reaches the panel");
+
+    for (placed_now, what) in [(false, "left"), (true, "returned"), (false, "left again")] {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.publish_layout(&moving_layout(&screen, placed_now))
+            .await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let held = rig.stored(&scene).await;
+        assert_eq!(
+            held.display_zone_for(screen.device_id).is_some(),
+            !placed_now,
+            "once the screen {what}, its stack follows its placement"
+        );
+        assert_eq!(
+            held.zones[0]
+                .layers
+                .iter()
+                .filter(|layer| layer.scope.is_some())
+                .count(),
+            if placed_now { 2 } else { 0 },
+            "no layer scoped to the screen is left behind in the zone"
+        );
+        assert_frames_held(&rig.writes, screen.device_id, seen, &placed);
+        let now = settled(&rig.writes, screen.device_id).await;
+        assert_same_frame(&format!("after the screen {what}"), &placed, &now);
+    }
+    running.stop().await;
+
+    // The stored spelling, run on its own from a cold start, is the same
+    // picture: the comparison above was not one frame held over.
+    let unplaced_doc = rig.stored(&scene).await;
+    let mut cold = Rig::new(mode);
+    cold.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    cold.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut cold_scene = unplaced_doc;
+    cold_scene.id = hypercolor_types::scene::SceneId::new();
+    let cold_run = cold.run_scene(cold_scene).await;
+    let from_stored = settled(&cold.writes, screen.device_id).await;
+    cold_run.stop().await;
+    assert_same_frame("the stored zone on a cold start", &placed, &from_stored);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_face_survives_its_screen_leaving_the_layout_and_returning() {
+    face_survives_its_screen_leaving_the_layout_and_returning(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_face_survives_its_screen_leaving_the_layout_and_returning() {
+    face_survives_its_screen_leaving_the_layout_and_returning(RenderAccelerationMode::Gpu).await;
+}
+
+/// The shape of a rig whose stored layouts hold no screens: screens are
+/// placed only inside a scene's primary zone. Activating a scene that
+/// follows such a layout, and coming back, realigns each primary zone to a
+/// layout without the screen. The faces stay on the panel, and activating
+/// a scene twice changes nothing.
+async fn faces_survive_activating_scenes_that_follow_a_layout_without_screens(
+    mode: RenderAccelerationMode,
+) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let layout = moving_layout(&screen, false);
+    // Home places the screen in its own primary zone and holds its face
+    // as screen layers. Play follows the layout and holds a stored face.
+    let home = placed_face_scene(&rig.effects, &screen, "Home");
+    let mut play_zone = scene_zone(
+        "Main",
+        ZoneRole::Primary,
+        vec![rig.effects.columns()],
+        Vec::new(),
+    );
+    play_zone.layout = moving_layout(&screen, true);
+    let mut play_face = blending_face_zone(
+        &screen,
+        vec![
+            rig.effects.solid(BLUE),
+            with_composition(fill_layer(WHITE), BlendMode::Alpha, 0.3),
+        ],
+    );
+    play_face.display_target = Some(DisplayFaceTarget {
+        device_id: screen.device_id,
+        blend_mode: BlendMode::Alpha,
+        opacity: 0.7,
+    });
+    let play = test_scene("Play", vec![play_zone, play_face], 0);
+
+    let running = rig.run_scene(home.clone()).await;
+    let home_frame = settled(&rig.writes, screen.device_id).await;
+
+    rig.activate_on(&play, &layout).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let play_frame = settled(&rig.writes, screen.device_id).await;
+    assert_ne!(play_frame, home_frame, "Play shows its own face");
+    let play_stored = rig.stored(&play).await;
+    assert!(
+        play_stored.display_zone_for(screen.device_id).is_some(),
+        "the layout Play follows holds no screen, so its face stays stored"
+    );
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.activate_on(&play, &layout).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        rig.stored(&play).await.zones,
+        play_stored.zones,
+        "activating it again changes nothing"
+    );
+    assert_frames_held(&rig.writes, screen.device_id, seen, &play_frame);
+
+    rig.activate_on(&home, &layout).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let back = settled(&rig.writes, screen.device_id).await;
+    let home_stored = rig.stored(&home).await;
+    assert!(
+        home_stored.display_zone_for(screen.device_id).is_some(),
+        "coming back realigned Home to the layout, and its face went with its screen"
+    );
+    assert_same_frame("Home after coming back", &home_frame, &back);
+    running.stop().await;
+
+    // Play's stored face on a cold start is the picture Play showed.
+    let mut cold = Rig::new(mode);
+    cold.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    cold.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut cold_scene = play_stored;
+    cold_scene.id = hypercolor_types::scene::SceneId::new();
+    let cold_run = cold.run_scene(cold_scene).await;
+    let from_stored = settled(&cold.writes, screen.device_id).await;
+    cold_run.stop().await;
+    assert_same_frame("Play on a cold start", &play_frame, &from_stored);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_faces_survive_activating_scenes_that_follow_a_layout_without_screens() {
+    faces_survive_activating_scenes_that_follow_a_layout_without_screens(
+        RenderAccelerationMode::Cpu,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_faces_survive_activating_scenes_that_follow_a_layout_without_screens() {
+    faces_survive_activating_scenes_that_follow_a_layout_without_screens(
+        RenderAccelerationMode::Gpu,
+    )
+    .await;
+}

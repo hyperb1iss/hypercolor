@@ -553,9 +553,7 @@ pub async fn sync_screen_surfaces(
 
 fn install_screen_surfaces(mutation: &mut SceneMutation, surfaces: ScreenSurfaces) -> Option<()> {
     let mut changed = mutation.set_screen_surfaces(surfaces);
-    if let Some(scene_id) = mutation.scenes().active_scene_id().copied() {
-        changed |= mutation.convert_legacy_display_zones(scene_id).changed();
-    }
+    changed |= mutation.settle_screens().changed();
     changed.then_some(())
 }
 

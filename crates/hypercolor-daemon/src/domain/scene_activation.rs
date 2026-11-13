@@ -149,7 +149,9 @@ pub async fn activate_selected_fields(
             SceneChangeReason::UserActivate,
         )?;
         mutation.realign_primary_layout(&ctx.layout.current());
-        mutation.convert_legacy_display_zones(expected.scene.id);
+        // The scene read back here fences the layout step that follows, so
+        // it has to be the scene as the commit will leave it.
+        mutation.settle_screens();
         let admitted = mutation
             .scenes()
             .get(&expected.scene.id)

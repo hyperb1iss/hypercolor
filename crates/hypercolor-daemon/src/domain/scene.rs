@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use arc_swap::{ArcSwap, Guard};
 use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
-use hypercolor_core::scene::screens::{self, ScreenConversion, ScreenSurfaces, ScreenView};
+use hypercolor_core::scene::screens::{self, ScreenSurfaces, ScreenView};
 use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, SceneManager, ScenePlanSnapshot, ZoneMetaPatch,
     ZoneMutationError, check_introduced_scope, default_primary_zone,
@@ -430,6 +430,7 @@ impl SceneService {
     pub async fn begin_mutation(&self) -> SceneMutation {
         let manager = self.0.manager.read().await;
         SceneMutation {
+            screens_before: manager.screen_placements(),
             candidate: manager.clone(),
             base_revision: self.0.commits.revision(),
             run_epoch: Arc::clone(&self.0.run_epoch),
@@ -677,7 +678,14 @@ impl SceneService {
         &self,
         mutation: SceneMutation,
     ) -> Result<SceneCommit, DomainError> {
+        // Every scene write ends here, so this is where each screen's stack
+        // is put where its placement says it belongs, whatever the write
+        // was. A service that answers with the scene settles earlier
+        // itself; settling twice changes nothing.
+        let mut mutation = mutation;
+        mutation.settle_screens();
         let SceneMutation {
+            screens_before: _,
             candidate,
             base_revision,
             run_epoch: _,
@@ -756,8 +764,7 @@ impl SceneService {
                     &preview_zones_to_clear.into_iter().collect::<Vec<_>>(),
                 )
                 .await;
-            let view_events = screen_view_events(&manager, &candidate, &events);
-            events.extend(view_events);
+            announce_display_zones(&manager, &candidate, &mut events);
             *manager = candidate;
             if store_changes {
                 self.move_store_projection(ticket.generation());
@@ -1024,7 +1031,21 @@ impl SceneService {
         }
 
         publish_renderer_state(candidate_spatial_engine.clone())?;
+        // A layout publication rewrites a primary zone that follows the
+        // layout, which can take a screen's output away or bring one in.
+        // It is a scene write like any other, so the screens are settled
+        // and their zones announced here as a commit does.
+        let before = manager.clone();
         manager.sync_primary_zone_layout(candidate_spatial_engine.layout().as_ref());
+        let settled = manager.settle_screens(&before.screen_placements());
+        let mut events = Vec::new();
+        if settled.changed()
+            && let Some(scene) = manager.active_scene()
+        {
+            events.extend(settled_layer_events(scene, &settled));
+        }
+        announce_display_zones(&before, &manager, &mut events);
+        drop(before);
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
         // The synced primary zone may belong to a named scene, which only a
         // later store save persists.
@@ -1054,7 +1075,7 @@ impl SceneService {
                 })
                 .unwrap_or_default(),
         };
-        ticket.release(Vec::new());
+        ticket.release(events);
         Ok(receipt)
     }
 
@@ -1231,6 +1252,11 @@ impl AdmittedSceneEffectIdMigration {
 /// locking, and abandoning the mutation costs a drop.
 #[derive(Debug)]
 pub struct SceneMutation {
+    /// The screen outputs each scene held when the mutation began. Once a
+    /// write removes an output, this is the only record of which screen
+    /// it was, which the settle pass needs to return that screen's layers
+    /// to a stored display zone.
+    screens_before: HashMap<SceneId, screens::ScreenPlacements>,
     candidate: SceneManager,
     base_revision: SceneRevision,
     /// The run `base_revision` belongs to, so a stale fence refusal can
@@ -2093,37 +2119,20 @@ impl SceneMutation {
         self.candidate.screen_view(scene_id, device_id)
     }
 
-    /// Rewrite a scene's stored display zones into screen layers where
-    /// the result renders the same frames, and report what was done.
-    pub fn convert_legacy_display_zones(&mut self, scene_id: SceneId) -> ScreenConversion {
-        let report = self.candidate.convert_legacy_display_zones(&scene_id);
-        if !report.changed() {
-            return report;
-        }
-        self.persists_scene_content = true;
-        for zone in report
-            .converted
-            .iter()
-            .map(|(zone, _)| zone)
-            .chain(&report.removed)
-        {
-            self.record_zone_change(scene_id, zone, ZoneChangeKind::Removed);
-            if let Some(view) = zone
-                .display_target
-                .as_ref()
-                .and_then(|target| self.candidate.screen_view(&scene_id, target.device_id))
-            {
-                self.record_zone_change(scene_id, &view.zone, ZoneChangeKind::Created);
-            }
-        }
-        let owners = report
-            .converted
-            .iter()
-            .map(|(_, owner)| *owner)
-            .collect::<HashSet<_>>();
-        for owner in owners {
-            if let Some(zone) = self.zone_in(scene_id, owner) {
-                self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Created);
+    /// Put every known screen's stack of the live scene where its
+    /// placement says it belongs: screen layers in the zone that holds the
+    /// screen's output, a stored display zone when no zone does.
+    ///
+    /// The commit runs this for every mutation. A service calls it first
+    /// when it answers with the scene, so its answer is the scene as it
+    /// will be committed. Running it again changes nothing.
+    pub fn settle_screens(&mut self) -> screens::ScreenSettle {
+        let report = self.candidate.settle_screens(&self.screens_before);
+        if report.changed() {
+            self.persists_scene_content = true;
+            if let Some(scene) = self.candidate.active_scene() {
+                let events = settled_layer_events(scene, &report);
+                self.events.extend(events);
             }
         }
         report
@@ -2719,8 +2728,16 @@ pub async fn activate_scene(
         transition,
         SceneChangeReason::UserActivate,
     )?;
-    mutation.realign_primary_layout(&ctx.layout.current());
-    mutation.convert_legacy_display_zones(command.scene_id);
+    // A scene that names its own layout has it published right after this
+    // commit. Its primary zone is aligned with that layout here, so where
+    // each screen's stack lives is decided once, against the outputs the
+    // scene will have, and not once for the current layout and again for
+    // its own.
+    let own_layout = match &layout_id {
+        Some(layout_id) => ctx.layout.get(layout_id).await,
+        None => None,
+    };
+    mutation.realign_primary_layout(&own_layout.unwrap_or_else(|| ctx.layout.current()));
 
     let commit = ctx.scene.commit(mutation).await?;
 
@@ -3023,7 +3040,6 @@ pub async fn replace_scene(
                         })
                 }))
     });
-
     let _effect_admission = ctx
         .effects
         .admit_layer_sources(
@@ -3425,9 +3441,6 @@ pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactiva
     mutation.set_screen_surfaces(screens);
     mutation.deactivate_current(SceneChangeReason::UserDeactivate);
     mutation.realign_primary_layout(&ctx.layout.current());
-    if let Some(scene_id) = mutation.scenes().active_scene_id().copied() {
-        mutation.convert_legacy_display_zones(scene_id);
-    }
     let current_scene = mutation.scenes().active_scene().cloned();
 
     let commit = ctx.scene.commit(mutation).await?;
@@ -3505,92 +3518,139 @@ pub fn zone_changed_event(scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) 
     }
 }
 
-/// The `ZoneChanged` events a commit owes the screens whose views it
-/// changed without addressing them.
+/// The `LayerStackChanged` events for the zones a settle pass moved
+/// screen layers into or out of.
+fn settled_layer_events(scene: &Scene, settled: &screens::ScreenSettle) -> Vec<HypercolorEvent> {
+    let owners = settled
+        .conversion
+        .converted
+        .iter()
+        .map(|(_, owner)| *owner)
+        .chain(
+            settled
+                .returned
+                .iter()
+                .flat_map(|(_, _, owners)| owners.iter().copied()),
+        )
+        .collect::<HashSet<_>>();
+    scene
+        .zones
+        .iter()
+        .filter(|zone| owners.contains(&zone.id))
+        .map(|zone| HypercolorEvent::LayerStackChanged {
+            scene_id: scene.id,
+            zone_id: zone.id,
+            revision: zone.layers_version,
+            kind: LayerStackChangeKind::Updated,
+        })
+        .collect()
+}
+
+/// Make `events` say what is true of the live scene's display zones.
 ///
-/// A screen's view is derived from the zone that places it, so a write to
-/// that zone changes the view with no write to the view: a layer scoped to
-/// the screen added through the owner, the owner paused or deleted, the
-/// screen carried to another zone. Comparing the views of the live scene
-/// before and after the commit sees every such change in one place. A view
-/// the mutation already announced is left to that event, and a commit that
-/// switches the live scene announces the switch instead.
-fn screen_view_events(
+/// A screen is listed as one `display` zone: its stored display zone, or
+/// its view. Both are moved by writes that never address them. A view is
+/// derived from the zone that places its screen, so a layer added through
+/// that zone, the zone paused or deleted, or a layout that takes the
+/// screen's output away all change it, and the settle pass turns a stored
+/// zone into a view and back under one id. Comparing what the scene lists
+/// before and after is the one place that sees all of it.
+///
+/// A zone that appears or goes is announced as that, replacing whatever a
+/// writer recorded for its id: a stored zone removed while its screen
+/// stays listed as an empty view was changed, not removed. A zone that
+/// changed keeps the event a writer recorded, or gets `Updated`. A write
+/// that switches the live scene announces the switch instead.
+fn announce_display_zones(
     before: &SceneManager,
     after: &SceneManager,
-    announced: &[HypercolorEvent],
-) -> Vec<HypercolorEvent> {
+    events: &mut Vec<HypercolorEvent>,
+) {
     let Some(scene_id) = after.active_scene_id().copied() else {
-        return Vec::new();
+        return;
     };
     if before.active_scene_id() != Some(&scene_id) {
-        return Vec::new();
+        return;
     }
-    // What a client sees of a screen: its view, and whether the stack in
-    // it draws, which a paused owner changes with the view left as it was.
-    // A view carries its owner's version counters, which move on every
+    // What a client sees of a screen: its zone, and whether the stack in
+    // it draws, which a paused owner changes with the zone left as it was.
+    // The zone carries its owner's version counters, which move on every
     // write to the owner, so they are left out: a write about another
     // screen or about the lighting is not a change to this one.
-    let seen = |manager: &SceneManager| {
-        manager
+    let listed = |manager: &SceneManager| {
+        let stored = manager
+            .get(&scene_id)
+            .into_iter()
+            .flat_map(|scene| scene.zones.iter())
+            .filter(|zone| zone.display_target.is_some())
+            .cloned();
+        let views = manager
             .screen_views(&scene_id)
             .into_iter()
-            .map(|mut view| {
-                view.zone.layers_version = 0;
-                view.zone.controls_version = 0;
-                let rendering = manager
-                    .active_screen_stack(view.device_id)
+            .map(|view| view.zone);
+        stored
+            .chain(views)
+            .map(|mut zone| {
+                zone.layers_version = 0;
+                zone.controls_version = 0;
+                let rendering = zone
+                    .display_target
+                    .as_ref()
+                    .and_then(|target| manager.active_screen_stack(target.device_id))
                     .is_some_and(screens::ScreenStack::rendering);
-                (view, rendering)
+                (zone, rendering)
             })
             .collect::<Vec<_>>()
     };
-    let (before, after) = (seen(before), seen(after));
+    let (before, after) = (listed(before), listed(after));
     if before == after {
-        return Vec::new();
+        return;
     }
-    let announced = |zone_id: ZoneId| {
-        announced.iter().any(|event| {
+    let mut announce = |zone: &Zone, kind: Option<ZoneChangeKind>| {
+        let recorded = events.iter().position(|event| {
             matches!(
                 event,
                 HypercolorEvent::ZoneChanged {
                     scene_id: event_scene,
-                    zone_id: event_zone,
+                    zone_id,
                     ..
-                } if *event_scene == scene_id && *event_zone == zone_id
+                } if *event_scene == scene_id && *zone_id == zone.id
             )
-        })
-    };
-    let mut events = Vec::new();
-    for now in &after {
-        if announced(now.0.zone.id) {
-            continue;
+        });
+        match (recorded, kind) {
+            // It appeared or went: say so, whatever was recorded.
+            (Some(index), Some(kind)) => events[index] = zone_changed_event(scene_id, zone, kind),
+            (None, Some(kind)) => events.push(zone_changed_event(scene_id, zone, kind)),
+            // It is still listed, so a recorded creation or removal was of
+            // one spelling of its stack, not of the zone a client sees.
+            (Some(index), None) => {
+                if matches!(
+                    events[index],
+                    HypercolorEvent::ZoneChanged {
+                        kind: ZoneChangeKind::Created | ZoneChangeKind::Removed,
+                        ..
+                    }
+                ) {
+                    events[index] = zone_changed_event(scene_id, zone, ZoneChangeKind::Updated);
+                }
+            }
+            (None, None) => {
+                events.push(zone_changed_event(scene_id, zone, ZoneChangeKind::Updated));
+            }
         }
-        match before.iter().find(|was| was.0.zone.id == now.0.zone.id) {
-            None => events.push(zone_changed_event(
-                scene_id,
-                &now.0.zone,
-                ZoneChangeKind::Created,
-            )),
-            Some(was) if was != now => events.push(zone_changed_event(
-                scene_id,
-                &now.0.zone,
-                ZoneChangeKind::Updated,
-            )),
+    };
+    for now in &after {
+        match before.iter().find(|was| was.0.id == now.0.id) {
+            None => announce(&now.0, Some(ZoneChangeKind::Created)),
+            Some(was) if was != now => announce(&now.0, None),
             Some(_) => {}
         }
     }
     for was in &before {
-        let gone = !after.iter().any(|now| now.0.zone.id == was.0.zone.id);
-        if gone && !announced(was.0.zone.id) {
-            events.push(zone_changed_event(
-                scene_id,
-                &was.0.zone,
-                ZoneChangeKind::Removed,
-            ));
+        if !after.iter().any(|now| now.0.id == was.0.id) {
+            announce(&was.0, Some(ZoneChangeKind::Removed));
         }
     }
-    events
 }
 
 /// The events a device binding migration owes observers, derived from the

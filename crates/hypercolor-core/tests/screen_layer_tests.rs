@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 
 use hypercolor_core::scene::screens::{
-    LegacyReason, ScreenStack, ScreenSurface, ScreenSurfaces, clear_screen_layers,
-    convert_legacy_display_zones, is_screen_layer, remove_screen_from_layer, screen_stack,
-    screen_view, screen_views, screen_zone_id, split_for_screen,
+    LegacyReason, ScreenSettle, ScreenStack, ScreenSurface, ScreenSurfaces, clear_screen_layers,
+    convert_legacy_display_zones, is_screen_layer, remove_screen_from_layer, screen_placements,
+    screen_stack, screen_view, screen_views, screen_zone_id, settle_screens, split_for_screen,
 };
 use hypercolor_core::scene::{SceneManager, ZoneMutationError, default_primary_zone, make_scene};
 use hypercolor_core::spatial::DISPLAY_ZONE_NAME;
@@ -1184,6 +1184,412 @@ fn a_display_zone_is_stored_only_for_a_known_screen_in_a_live_scene() {
         2,
         "asking again adds nothing"
     );
+}
+
+// ── Settling ─────────────────────────────────────────────────────────────
+
+/// Take a screen's output out of a scene and settle it, as any write that
+/// removes the output does.
+fn unplace(scene: &mut Scene, rig: &Rig, output_id: &str) -> ScreenSettle {
+    let held = screen_placements(scene, &rig.surfaces);
+    for zone in &mut scene.zones {
+        zone.layout.zones.retain(|output| output.id != output_id);
+    }
+    settle_screens(scene, &rig.surfaces, &held)
+}
+
+/// Give a zone a screen's output and settle it, as any write that adds
+/// the output does.
+fn place(scene: &mut Scene, rig: &Rig, zone: usize, output: Output) -> ScreenSettle {
+    let held = screen_placements(scene, &rig.surfaces);
+    scene.zones[zone].layout.zones.push(output);
+    settle_screens(scene, &rig.surfaces, &held)
+}
+
+/// A scene with the counters a settle pass moves set aside, so two scenes
+/// compare by what they store.
+fn content(scene: &Scene) -> Scene {
+    let mut scene = scene.clone();
+    scene.zones_revision = 0;
+    for zone in &mut scene.zones {
+        zone.layers_version = 0;
+        zone.controls_version = 0;
+    }
+    scene
+}
+
+#[test]
+fn a_screen_whose_output_leaves_gets_its_layers_back_as_a_stored_display_zone() {
+    let rig = rig();
+    let base = effect_layer();
+    let mut face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    face.blend = BlendMode::Screen;
+    face.opacity = 0.4;
+    let mixed = scoped(effect_layer(), &["keys", PUMP_SCREEN]);
+    let mut overlay = scoped(color_layer(), &[PUMP_SCREEN]);
+    overlay.blend = BlendMode::Add;
+    overlay.opacity = 0.7;
+    let mut settled = scene(vec![primary(
+        vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+        vec![base.clone(), face.clone(), mixed.clone(), overlay.clone()],
+    )]);
+    let rendered = lower(&rig, &settled, rig.pump).expect("the placed stack renders");
+
+    let report = unplace(&mut settled, &rig, PUMP_SCREEN);
+
+    let owner = settled.zones[0].id;
+    assert_eq!(
+        report.returned,
+        vec![(rig.pump, screen_zone_id(settled.id, rig.pump), vec![owner])]
+    );
+    assert_eq!(
+        settled.zones[0].layers,
+        vec![base, mixed],
+        "the zone keeps its lighting and the layer that also reaches its keys"
+    );
+    let stored = settled
+        .display_zone_for(rig.pump)
+        .expect("the screen's stack is a stored display zone")
+        .clone();
+    assert_eq!(stored.id, screen_zone_id(settled.id, rig.pump));
+    assert_eq!(
+        stored
+            .layers
+            .iter()
+            .map(|layer| layer.id)
+            .collect::<Vec<_>>(),
+        vec![face.id, overlay.id],
+        "its layers keep their ids and their order"
+    );
+    assert!(stored.layers.iter().all(|layer| layer.scope.is_none()));
+    assert_eq!(
+        stored.display_target,
+        Some(target(rig.pump, BlendMode::Screen, 0.4)),
+        "the bottom layer's blend and opacity are the target again"
+    );
+    assert_eq!(stored.layers[0].blend, BlendMode::Replace);
+    assert!((stored.layers[0].opacity - 1.0).abs() < f32::EPSILON);
+
+    // The stored zone is the zone lowering rendered, so the panel shows
+    // the same frames from the same effect slots.
+    let after = lower(&rig, &settled, rig.pump).expect("the stored stack renders");
+    assert_eq!(after.id, rendered.id);
+    assert_eq!(after.layers, rendered.layers);
+    assert_eq!(after.display_target, rendered.display_target);
+    assert_eq!(after.layout, rendered.layout);
+    assert_eq!(after.enabled, rendered.enabled);
+
+    assert!(
+        !settle_screens(&mut settled.clone(), &rig.surfaces, &[]).changed(),
+        "a settled scene stays as it is"
+    );
+}
+
+#[test]
+fn a_departed_screen_takes_a_copy_of_a_layer_other_screens_keep() {
+    let rig = rig();
+    let shared = scoped(effect_layer(), &[FAN_SCREEN, PUMP_SCREEN]);
+    let mut settled = scene(vec![primary(
+        vec![screen(PUMP_SCREEN, PUMP), screen(FAN_SCREEN, FAN)],
+        vec![shared.clone()],
+    )]);
+
+    unplace(&mut settled, &rig, PUMP_SCREEN);
+
+    assert_eq!(
+        settled.zones[0].layers,
+        vec![scoped(shared.clone(), &[FAN_SCREEN])],
+        "the screen still placed keeps the layer under its id"
+    );
+    let stored = settled.display_zone_for(rig.pump).expect("stored zone");
+    assert_eq!(stored.layers.len(), 1);
+    assert_ne!(
+        stored.layers[0].id, shared.id,
+        "the departed screen's copy is a layer of its own"
+    );
+    assert_eq!(stored.layers[0].source, shared.source);
+
+    // When the screen returns its copy returns as its own layer; it does
+    // not rejoin the layer the other screen kept.
+    place(&mut settled, &rig, 0, screen(PUMP_SCREEN, PUMP));
+    assert!(settled.display_zone_for(rig.pump).is_none());
+    assert_eq!(settled.zones[0].layers.len(), 2);
+    assert_eq!(
+        settled.zones[0].layers[0].scope,
+        Some(LayerScope {
+            outputs: vec![FAN_SCREEN.to_owned()]
+        })
+    );
+    assert_eq!(
+        settled.zones[0].layers[1].scope,
+        Some(LayerScope {
+            outputs: vec![PUMP_SCREEN.to_owned()]
+        })
+    );
+}
+
+#[test]
+fn a_face_paused_with_its_zone_stays_paused_when_its_screen_leaves() {
+    let rig = rig();
+    let mut owner = primary(
+        vec![screen(PUMP_SCREEN, PUMP)],
+        vec![scoped(effect_layer(), &[PUMP_SCREEN])],
+    );
+    owner.enabled = false;
+    let mut settled = scene(vec![owner]);
+
+    unplace(&mut settled, &rig, PUMP_SCREEN);
+
+    let stored = settled.display_zone_for(rig.pump).expect("stored zone");
+    assert!(!stored.enabled, "leaving the zone does not start the face");
+    assert!(lower(&rig, &settled, rig.pump).is_some_and(|zone| !zone.enabled));
+}
+
+#[test]
+fn a_screen_that_leaves_a_snapshot_or_already_has_a_stored_zone_is_left_alone() {
+    let rig = rig();
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    let mut locked = scene(vec![primary(
+        vec![screen(PUMP_SCREEN, PUMP)],
+        vec![face.clone()],
+    )]);
+    locked.mutation_mode = SceneMutationMode::Snapshot;
+    assert!(!unplace(&mut locked, &rig, PUMP_SCREEN).changed());
+    assert_eq!(locked.zones[0].layers, vec![face.clone()]);
+
+    // A stored zone that cannot convert is the screen's whole stack. The
+    // layer it covered was never showing, and stays where it is.
+    let mut partial = effect_layer();
+    partial.opacity = 0.5;
+    let stored = legacy_zone(vec![partial], DisplayFaceTarget::new(rig.pump));
+    let mut covered = scene(vec![
+        primary(vec![screen(PUMP_SCREEN, PUMP)], vec![face.clone()]),
+        stored.clone(),
+    ]);
+    assert!(unplace(&mut covered, &rig, PUMP_SCREEN).returned.is_empty());
+    assert_eq!(covered.zones[0].layers, vec![face]);
+    assert_eq!(covered.zones[1], stored);
+}
+
+#[test]
+fn deleting_a_zone_takes_the_faces_of_the_screens_it_placed() {
+    let rig = rig();
+    let desk = custom(
+        "Desk",
+        vec![screen(PUMP_SCREEN, PUMP)],
+        vec![scoped(effect_layer(), &[PUMP_SCREEN])],
+    );
+    let mut settled = scene(vec![primary(vec![strip("keys")], Vec::new()), desk]);
+    let held = screen_placements(&settled, &rig.surfaces);
+
+    settled.zones.remove(1);
+    let report = settle_screens(&mut settled, &rig.surfaces, &held);
+
+    assert!(
+        !report.changed(),
+        "a zone's layers go with it, faces included: nothing is left to return"
+    );
+    assert!(settled.display_zone_for(rig.pump).is_none());
+}
+
+#[test]
+fn clearing_the_lighting_cannot_delete_the_face_of_a_screen_that_left() {
+    let rig = rig();
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    let owner = primary(
+        vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+        vec![effect_layer(), face.clone()],
+    );
+    let owner_id = owner.id;
+    let mut settled = scene(vec![owner]);
+    unplace(&mut settled, &rig, PUMP_SCREEN);
+    let mut manager = active(&rig, settled);
+
+    let cleared = manager.clear_zone_effect(owner_id).expect("zone").clone();
+
+    assert!(
+        cleared.layers.is_empty(),
+        "no layer scoped to the departed screen was left in the zone to find"
+    );
+    assert_eq!(
+        lowered_for(&manager, rig.pump).map(|zone| zone.layers[0].id),
+        Some(face.id),
+        "the face is in the screen's stored zone, which a clear does not touch"
+    );
+}
+
+/// A small repeatable generator, so the round trips below run over many
+/// stacks without a dependency.
+struct Stacks(u64);
+
+impl Stacks {
+    fn next(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % bound
+    }
+
+    fn blend(&mut self) -> BlendMode {
+        [
+            BlendMode::Replace,
+            BlendMode::Alpha,
+            BlendMode::Add,
+            BlendMode::Screen,
+            BlendMode::Multiply,
+        ][usize::try_from(self.next(5)).expect("index")]
+    }
+
+    fn opacity(&mut self) -> f32 {
+        [1.0, 0.75, 0.5, 0.25][usize::try_from(self.next(4)).expect("index")]
+    }
+
+    /// One to four layers, any source, blend, opacity and enabled state.
+    fn layers(&mut self) -> Vec<SceneLayer> {
+        (0..=self.next(4))
+            .map(|_| {
+                let mut layer = if self.next(2) == 0 {
+                    effect_layer()
+                } else {
+                    color_layer()
+                };
+                layer.blend = self.blend();
+                layer.opacity = self.opacity();
+                layer.enabled = self.next(4) != 0;
+                layer
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_stored_zone_that_converts_and_returns_is_the_zone_that_was_stored() {
+    let rig = rig();
+    let mut stacks = Stacks(95);
+    for _ in 0..200 {
+        // A convertible stored zone as the daemon writes one: an opaque,
+        // enabled first layer under a target the renderer honors.
+        let mut layers = stacks.layers();
+        layers[0].enabled = true;
+        layers[0].opacity = 1.0;
+        // The one field a display zone never reads: its bottom layer
+        // always replaces, whatever blend it stores.
+        layers[0].blend = BlendMode::Replace;
+        let blend = stacks.blend();
+        let opacity = if blend == BlendMode::Replace {
+            1.0
+        } else {
+            stacks.opacity()
+        };
+        let mut authored = scene(vec![primary(
+            vec![strip("keys")],
+            vec![effect_layer(), scoped(color_layer(), &["keys"])],
+        )]);
+        let mut manager_free = stored_display_zone_for(&rig, authored.id);
+        manager_free.layers = layers;
+        manager_free.display_target = Some(target(rig.pump, blend, opacity));
+        authored.zones.push(manager_free);
+
+        let mut settled = authored.clone();
+        let placed = place(&mut settled, &rig, 0, screen(PUMP_SCREEN, PUMP));
+        assert_eq!(placed.conversion.converted.len(), 1);
+        assert!(settled.display_zone_for(rig.pump).is_none());
+        let returned = unplace(&mut settled, &rig, PUMP_SCREEN);
+        assert_eq!(returned.returned.len(), 1);
+
+        assert_eq!(content(&settled), content(&authored));
+    }
+}
+
+#[test]
+fn screen_layers_that_return_and_convert_are_the_layers_that_were_authored() {
+    let rig = rig();
+    let mut stacks = Stacks(6);
+    for _ in 0..200 {
+        // Screen layers as conversion leaves them: at the top of the
+        // zone, the bottom one enabled with a composition the renderer
+        // honors as written.
+        let mut layers = stacks.layers();
+        layers[0].enabled = true;
+        if layers[0].blend == BlendMode::Replace {
+            layers[0].opacity = 1.0;
+        }
+        let mut stack = vec![effect_layer(), scoped(color_layer(), &["keys"])];
+        stack.extend(
+            layers
+                .into_iter()
+                .map(|layer| scoped(layer, &[PUMP_SCREEN])),
+        );
+        let authored = scene(vec![primary(
+            vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+            stack,
+        )]);
+
+        let mut settled = authored.clone();
+        let returned = unplace(&mut settled, &rig, PUMP_SCREEN);
+        assert_eq!(returned.returned.len(), 1);
+        let placed = place(&mut settled, &rig, 0, screen(PUMP_SCREEN, PUMP));
+        assert_eq!(placed.conversion.converted.len(), 1);
+
+        assert_eq!(content(&settled), content(&authored));
+    }
+}
+
+/// The display zone the daemon stores for the pump screen when no zone
+/// places it, empty.
+fn stored_display_zone_for(rig: &Rig, scene_id: hypercolor_types::scene::SceneId) -> Zone {
+    hypercolor_core::scene::screens::stored_display_zone(
+        scene_id,
+        rig.surfaces.get(PUMP).expect("pump surface"),
+    )
+}
+
+#[test]
+fn placing_unplacing_and_placing_a_screen_starts_no_renderer() {
+    let rig = rig();
+    let authored = scene(vec![primary(vec![strip("keys")], vec![effect_layer()])]);
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
+    manager
+        .write_display_zone_face(
+            &scene_id,
+            rig.pump,
+            &sample_effect("clock"),
+            HashMap::new(),
+            target(rig.pump, BlendMode::Screen, 0.5),
+        )
+        .expect("the face should be stored");
+    let slots = effect_slots(&manager);
+    assert_eq!(slots.len(), 1);
+
+    for placed in [true, false, true, false] {
+        let held = manager.screen_placements();
+        let mut next = manager.get(&scene_id).expect("scene").clone();
+        if placed {
+            next.zones[0].layout.zones.push(screen(PUMP_SCREEN, PUMP));
+        } else {
+            next.zones[0]
+                .layout
+                .zones
+                .retain(|output| output.id != PUMP_SCREEN);
+        }
+        manager.update(next).expect("scene should update");
+        assert!(manager.settle_screens(&held).changed());
+
+        let stored = manager
+            .get(&scene_id)
+            .expect("scene")
+            .display_zone_for(rig.pump)
+            .is_some();
+        assert_eq!(stored, !placed, "the stack follows the placement");
+        assert_eq!(
+            effect_slots(&manager),
+            slots,
+            "the face keeps its zone and layer ids, so its renderer keeps running"
+        );
+        assert_eq!(display_zones(&manager).len(), 1);
+    }
 }
 
 // ── Renderers ────────────────────────────────────────────────────────────

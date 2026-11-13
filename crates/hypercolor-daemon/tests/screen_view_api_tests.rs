@@ -38,6 +38,17 @@ struct Rig {
     state: Arc<AppState>,
     app: axum::Router,
     _tempdir: tempfile::TempDir,
+    _layouts: LayoutPublisher,
+}
+
+/// Publishes queued layout changes, the render thread's part of a layout
+/// transaction, so a test can apply a layout.
+struct LayoutPublisher(tokio::task::JoinHandle<()>);
+
+impl Drop for LayoutPublisher {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 fn rig() -> Rig {
@@ -51,10 +62,21 @@ fn rig() -> Rig {
     let state = Arc::new(AppState::new());
     ConfigManager::set_data_dir_override(None);
     let app = api::build_router(Arc::clone(&state), None);
+    let executor = state.layout_publication_test_executor();
+    let layouts = LayoutPublisher(tokio::spawn(async move {
+        loop {
+            executor
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication should succeed");
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }));
     Rig {
         state,
         app,
         _tempdir: tempdir,
+        _layouts: layouts,
     }
 }
 
@@ -117,8 +139,8 @@ impl Rig {
     }
 
     /// Give the primary zone the screen's output through the member edit
-    /// route, the way a client places a screen.
-    async fn place(&self, screen: &Screen) {
+    /// route, the way a client places a screen. Returns the edit's receipt.
+    async fn place(&self, screen: &Screen) -> Value {
         let document = self.ok(Method::GET, "/api/v1/scene", None).await;
         let primary = document["zones"]
             .as_array()
@@ -126,37 +148,21 @@ impl Rig {
             .iter()
             .find(|zone| zone["role"] == "primary")
             .expect("the scene has a primary zone");
-        let request = json!({
-            "scene_id": document["id"],
-            "changes": [{
-                "before": null,
-                "after": {
-                    "zone_id": primary["id"],
-                    "index": primary["members"].as_array().map_or(0, Vec::len),
-                    "output": Output {
-                        id: screen.output.clone(),
-                        name: "Screen".to_owned(),
-                        device_id: screen.layout_id.clone(),
-                        zone_name: Some(DISPLAY_ZONE_NAME.to_owned()),
-                        position: NormalizedPosition::new(0.5, 0.5),
-                        size: NormalizedPosition::new(0.2, 0.2),
-                        rotation: 0.0,
-                        scale: 1.0,
-                        display_order: 0,
-                        orientation: None,
-                        topology: LedTopology::Point,
-                        led_positions: Vec::new(),
-                        led_mapping: None,
-                        sampling_mode: None,
-                        edge_behavior: None,
-                        shape: None,
-                        shape_preset: None,
-                        attachment: None,
-                        brightness: None,
-                    },
-                },
-            }],
-        });
+        let changes = json!([{
+            "before": null,
+            "after": {
+                "zone_id": primary["id"],
+                "index": primary["members"].as_array().map_or(0, Vec::len),
+                "output": screen_output(screen),
+            },
+        }]);
+        self.edit_members(changes).await
+    }
+
+    /// Apply membership changes through the member edit route.
+    async fn edit_members(&self, changes: Value) -> Value {
+        let document = self.ok(Method::GET, "/api/v1/scene", None).await;
+        let request = json!({ "scene_id": document["id"], "changes": changes });
         let request = Request::builder()
             .method(Method::POST)
             .uri("/api/v1/scene/members/edit")
@@ -173,11 +179,27 @@ impl Rig {
             .oneshot(request)
             .await
             .expect("request should run");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("failed to read response body");
+        let value: Value = serde_json::from_slice(&bytes).expect("failed to parse JSON body");
         assert!(
-            response.status().is_success(),
-            "placing the screen answered {}",
-            response.status()
+            status.is_success(),
+            "the member edit answered {status}: {value}"
         );
+        value["data"].clone()
+    }
+
+    /// Undo or redo a member edit by replaying its receipt reversed.
+    async fn reverse(&self, receipt: &Value) -> Value {
+        let changes = receipt["changes"]
+            .as_array()
+            .expect("a receipt lists its changes")
+            .iter()
+            .map(|change| json!({ "before": change["after"], "after": change["before"] }))
+            .collect::<Vec<_>>();
+        self.edit_members(json!(changes)).await
     }
 
     /// Register a face effect with one numeric control, `speed`.
@@ -355,6 +377,30 @@ impl Rig {
             None,
         )
         .await
+    }
+}
+
+fn screen_output(screen: &Screen) -> Output {
+    Output {
+        id: screen.output.clone(),
+        name: "Screen".to_owned(),
+        device_id: screen.layout_id.clone(),
+        zone_name: Some(DISPLAY_ZONE_NAME.to_owned()),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(0.2, 0.2),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
     }
 }
 
@@ -754,6 +800,270 @@ async fn placing_a_screen_converts_its_stored_face_in_the_same_commit() {
     assert_eq!(view["view_of"]["member"], screen.output);
     let read = rig.get_face(&screen).await;
     assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+}
+
+// ── A screen's output leaving and returning ──────────────────────────────
+
+/// What a scene stores, with the counters a write moves set aside.
+fn stored_content(scene: &Scene) -> Vec<Zone> {
+    scene
+        .zones
+        .iter()
+        .cloned()
+        .map(|mut zone| {
+            zone.layers_version = 0;
+            zone.controls_version = 0;
+            zone
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn undoing_the_edit_that_placed_a_screen_returns_its_face_and_redoing_converts_it() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    rig.ok(
+        Method::PUT,
+        &format!("/api/v1/displays/{}/face", screen.device),
+        Some(json!({
+            "effect_id": face.to_string(),
+            "scope": "scene",
+            "blend_mode": "screen",
+            "opacity": 0.5
+        })),
+    )
+    .await;
+    let unplaced = rig.scene().await;
+
+    let placed_receipt = rig.place(&screen).await;
+    let placed = rig.scene().await;
+    assert!(placed.display_zone_for(screen.device).is_none());
+
+    let undo_receipt = rig.reverse(&placed_receipt).await;
+    let undone = rig.scene().await;
+    assert_eq!(
+        stored_content(&undone),
+        stored_content(&unplaced),
+        "the undo leaves the scene as it was before the screen was placed"
+    );
+    assert!(
+        undo_receipt["document"]["zones"]
+            .as_array()
+            .expect("zones")
+            .iter()
+            .any(|zone| zone["id"] == screen.view && zone.get("view_of").is_none()),
+        "and answers with the stored zone, under the id the client holds"
+    );
+    let read = rig.get_face(&screen).await;
+    assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+
+    rig.reverse(&undo_receipt).await;
+    assert_eq!(
+        stored_content(&rig.scene().await),
+        stored_content(&placed),
+        "the redo converts it again"
+    );
+    let read = rig.get_face(&screen).await;
+    assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+}
+
+impl Rig {
+    /// Create a stored layout holding `outputs`, and return its id.
+    async fn layout(&self, name: &str, outputs: Vec<Output>) -> String {
+        let created = self
+            .ok(
+                Method::POST,
+                "/api/v1/layouts",
+                Some(json!({ "name": name })),
+            )
+            .await;
+        let id = created["id"].as_str().expect("layout id").to_owned();
+        self.ok(
+            Method::PUT,
+            &format!("/api/v1/layouts/{id}"),
+            Some(json!({ "zones": outputs })),
+        )
+        .await;
+        id
+    }
+
+    async fn apply_layout(&self, id: &str) {
+        self.ok(
+            Method::POST,
+            &format!("/api/v1/layouts/{id}/apply"),
+            Some(json!({})),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn applying_a_layout_moves_a_face_with_its_screen_and_announces_it() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let desk = rig.layout("Desk", vec![screen_output(&screen)]).await;
+    let bare = rig.layout("Bare", Vec::new()).await;
+    rig.put_face(&screen, face, "scene").await;
+    let layer = layer_ids(&rig.view(&screen).await).remove(0);
+    let stored = rig.scene().await.display_zone_for(screen.device).cloned();
+    assert!(stored.is_some(), "no zone places the screen yet");
+
+    for (layout, placed) in [(&desk, true), (&bare, false), (&desk, true), (&bare, false)] {
+        let mut events = rig.state.event_bus.subscribe_all();
+
+        rig.apply_layout(layout).await;
+
+        let scene = rig.scene().await;
+        assert_eq!(
+            scene.display_zone_for(screen.device).is_none(),
+            placed,
+            "the face is screen layers exactly while a zone places the screen"
+        );
+        assert_eq!(
+            scoped(scene.primary_zone().expect("primary zone")),
+            if placed {
+                vec![(layer.clone(), vec![screen.output.clone()])]
+            } else {
+                Vec::new()
+            },
+            "no layer scoped to the screen is left behind when it leaves"
+        );
+        let read = rig.get_face(&screen).await;
+        assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+        assert_eq!(layer_ids(&rig.view(&screen).await), vec![layer.clone()]);
+        assert_eq!(
+            changed_display_zones(&mut events),
+            vec![(screen.view.clone(), ZoneChangeKind::Updated)],
+            "the layout change is announced under the screen's zone id"
+        );
+        if !placed {
+            assert_eq!(
+                scene
+                    .display_zone_for(screen.device)
+                    .map(|zone| (&zone.layers, &zone.display_target)),
+                stored
+                    .as_ref()
+                    .map(|zone| (&zone.layers, &zone.display_target)),
+                "the stored zone is the one that was stored"
+            );
+        }
+    }
+
+    // A clear cannot delete the face because its screen is not placed.
+    rig.ok(Method::POST, "/api/v1/scene/clear", Some(json!({})))
+        .await;
+    assert_eq!(
+        rig.get_face(&screen).await["effect"]["id"],
+        face.to_string()
+    );
+}
+
+#[tokio::test]
+async fn activating_a_scene_decides_once_against_the_layout_it_follows() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let desk = rig.layout("Desk", vec![screen_output(&screen)]).await;
+    let bare = rig.layout("Bare", Vec::new()).await;
+    // Two scenes with the same stored face: one follows the layout that
+    // holds the screen, the other the layout that does not.
+    let mut ids = Vec::new();
+    for (name, layout) in [("On Desk", &desk), ("On Bare", &bare)] {
+        let mut scene = hypercolor_core::scene::make_scene(name);
+        scene.layout_id = Some(layout.parse().expect("a layout id"));
+        scene
+            .zones
+            .push(hypercolor_core::scene::default_primary_zone(face_layout(
+                screen.device,
+            )));
+        let mut stored = hypercolor_core::scene::screens::stored_display_zone(
+            scene.id,
+            rig.state
+                .scene_manager
+                .snapshot()
+                .await
+                .screen_surfaces()
+                .get(&screen.layout_id)
+                .expect("the screen's surface"),
+        );
+        stored.layers.push(SceneLayer::from_effect(
+            SceneLayerId::new(),
+            face,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        ));
+        scene.zones.push(stored);
+        ids.push(scene.id);
+        let mut mutation = rig.state.scene_manager.begin_mutation().await;
+        mutation
+            .create_scene(scene)
+            .expect("scene should be created");
+        commit_scene(&rig.state.domains.scene, mutation)
+            .await
+            .expect("the scene should commit");
+    }
+
+    // The live layout is the other one each time, so a decision taken
+    // against it would be the wrong one.
+    for (scene_id, live, converts) in [(ids[1], &desk, false), (ids[0], &bare, true)] {
+        rig.apply_layout(live).await;
+        let mut first = None;
+        for _ in 0..2 {
+            rig.ok(
+                Method::POST,
+                &format!("/api/v1/scenes/{scene_id}/activate"),
+                Some(json!({})),
+            )
+            .await;
+            let scene = rig.scene().await;
+            assert_eq!(scene.id, scene_id);
+            assert_eq!(
+                scene.display_zone_for(screen.device).is_none(),
+                converts,
+                "the face is where the scene's own layout puts its screen"
+            );
+            let view = screen_zone_id(scene_id, screen.device).to_string();
+            let read = rig.get_face(&screen).await;
+            assert_face(&read, face, &view, "scene", (true, false), "scene");
+            match &first {
+                None => first = Some(stored_content(&scene)),
+                Some(first) => assert_eq!(
+                    &stored_content(&scene),
+                    first,
+                    "activating it again changes nothing"
+                ),
+            }
+            // Leave and come back, as a person switching scenes does.
+            rig.ok(Method::POST, "/api/v1/scene/deactivate", Some(json!({})))
+                .await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn deleting_the_scene_face_of_a_listed_screen_is_announced_as_a_change() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    rig.put_face(&screen, face, "scene").await;
+    let mut events = rig.state.event_bus.subscribe_all();
+
+    rig.ok(
+        Method::DELETE,
+        &format!("/api/v1/displays/{}/face?scope=scene", screen.device),
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        changed_display_zones(&mut events),
+        vec![(screen.view.clone(), ZoneChangeKind::Updated)],
+        "the screen is still listed, as an empty view under the same id"
+    );
+    assert_eq!(rig.view(&screen).await["id"], screen.view);
 }
 
 // ── Screens that leave ───────────────────────────────────────────────────
