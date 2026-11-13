@@ -882,6 +882,66 @@ async fn deleting_a_zone_answers_with_the_views_it_committed() {
     assert_eq!(view["layers"][0]["source"]["effect_id"], face.to_string());
 }
 
+// ── Events for a view ────────────────────────────────────────────────────
+
+/// The display zones a commit published a change for, with the kind.
+fn changed_display_zones(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(String, ZoneChangeKind)> {
+    let mut changed = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let HypercolorEvent::ZoneChanged {
+            zone_id,
+            role: ZoneRole::Display,
+            kind,
+            ..
+        } = event.event
+        {
+            changed.push((zone_id.to_string(), kind));
+        }
+    }
+    changed
+}
+
+#[tokio::test]
+async fn a_view_changed_through_its_owning_zone_is_published_under_its_own_id() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", true).await;
+    let other = rig.screen("Fan", true).await;
+    let primary = rig.primary().await.id;
+    let mut events = rig.state.event_bus.subscribe_all();
+
+    // A layer scoped to the screen, written to the zone that places it.
+    let mut body = effect_body(face);
+    body["scope"] = json!({ "outputs": [screen.output] });
+    rig.ok(
+        Method::POST,
+        &format!("/api/v1/scene/zones/{primary}/layers"),
+        Some(body),
+    )
+    .await;
+    assert_eq!(
+        changed_display_zones(&mut events),
+        vec![(screen.view.clone(), ZoneChangeKind::Updated)],
+        "the screen's view changed, and only that screen's"
+    );
+
+    // Pausing the owning zone stops the face without touching the view.
+    rig.rewrite(|scene| scene.primary_zone_mut().expect("primary").enabled = false)
+        .await;
+    assert_eq!(
+        changed_display_zones(&mut events),
+        vec![(screen.view.clone(), ZoneChangeKind::Updated)]
+    );
+
+    // A write that changes no screen publishes nothing for any view.
+    rig.rewrite(|scene| scene.primary_zone_mut().expect("primary").name = "Main".to_owned())
+        .await;
+    assert_eq!(changed_display_zones(&mut events), Vec::new());
+    assert_eq!(layer_ids(&rig.view(&other).await).len(), 0);
+}
+
 // ── The zone's own effect ────────────────────────────────────────────────
 
 #[tokio::test]

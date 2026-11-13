@@ -681,7 +681,7 @@ impl SceneService {
             candidate,
             base_revision,
             run_epoch: _,
-            events,
+            mut events,
             persists_scene_content,
             preview_scenes_to_clear,
             preview_zones_to_clear,
@@ -756,6 +756,8 @@ impl SceneService {
                     &preview_zones_to_clear.into_iter().collect::<Vec<_>>(),
                 )
                 .await;
+            let view_events = screen_view_events(&manager, &candidate, &events);
+            events.extend(view_events);
             *manager = candidate;
             if store_changes {
                 self.move_store_projection(ticket.generation());
@@ -3501,6 +3503,94 @@ pub fn zone_changed_event(scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) 
         role: zone.role,
         kind,
     }
+}
+
+/// The `ZoneChanged` events a commit owes the screens whose views it
+/// changed without addressing them.
+///
+/// A screen's view is derived from the zone that places it, so a write to
+/// that zone changes the view with no write to the view: a layer scoped to
+/// the screen added through the owner, the owner paused or deleted, the
+/// screen carried to another zone. Comparing the views of the live scene
+/// before and after the commit sees every such change in one place. A view
+/// the mutation already announced is left to that event, and a commit that
+/// switches the live scene announces the switch instead.
+fn screen_view_events(
+    before: &SceneManager,
+    after: &SceneManager,
+    announced: &[HypercolorEvent],
+) -> Vec<HypercolorEvent> {
+    let Some(scene_id) = after.active_scene_id().copied() else {
+        return Vec::new();
+    };
+    if before.active_scene_id() != Some(&scene_id) {
+        return Vec::new();
+    }
+    // What a client sees of a screen: its view, and whether the stack in
+    // it draws, which a paused owner changes with the view left as it was.
+    // A view carries its owner's version counters, which move on every
+    // write to the owner, so they are left out: a write about another
+    // screen or about the lighting is not a change to this one.
+    let seen = |manager: &SceneManager| {
+        manager
+            .screen_views(&scene_id)
+            .into_iter()
+            .map(|mut view| {
+                view.zone.layers_version = 0;
+                view.zone.controls_version = 0;
+                let rendering = manager
+                    .active_screen_stack(view.device_id)
+                    .is_some_and(screens::ScreenStack::rendering);
+                (view, rendering)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (before, after) = (seen(before), seen(after));
+    if before == after {
+        return Vec::new();
+    }
+    let announced = |zone_id: ZoneId| {
+        announced.iter().any(|event| {
+            matches!(
+                event,
+                HypercolorEvent::ZoneChanged {
+                    scene_id: event_scene,
+                    zone_id: event_zone,
+                    ..
+                } if *event_scene == scene_id && *event_zone == zone_id
+            )
+        })
+    };
+    let mut events = Vec::new();
+    for now in &after {
+        if announced(now.0.zone.id) {
+            continue;
+        }
+        match before.iter().find(|was| was.0.zone.id == now.0.zone.id) {
+            None => events.push(zone_changed_event(
+                scene_id,
+                &now.0.zone,
+                ZoneChangeKind::Created,
+            )),
+            Some(was) if was != now => events.push(zone_changed_event(
+                scene_id,
+                &now.0.zone,
+                ZoneChangeKind::Updated,
+            )),
+            Some(_) => {}
+        }
+    }
+    for was in &before {
+        let gone = !after.iter().any(|now| now.0.zone.id == was.0.zone.id);
+        if gone && !announced(was.0.zone.id) {
+            events.push(zone_changed_event(
+                scene_id,
+                &was.0.zone,
+                ZoneChangeKind::Removed,
+            ));
+        }
+    }
+    events
 }
 
 /// The events a device binding migration owes observers, derived from the
