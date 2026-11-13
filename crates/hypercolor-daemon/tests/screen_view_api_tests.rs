@@ -1066,10 +1066,28 @@ async fn deleting_the_scene_face_of_a_listed_screen_is_announced_as_a_change() {
     assert_eq!(rig.view(&screen).await["id"], screen.view);
 }
 
+/// A layout publication rewrites a snapshot-locked scene's primary zone
+/// like any other: the lock refuses authored edits, and following the
+/// layout is not one. Following a rename and returning a face are part of
+/// that rewrite. Only conversion waits for the lock to lift.
 #[tokio::test]
 async fn a_snapshot_locked_scene_keeps_its_face_through_layouts_that_rename_and_drop_its_screen() {
     let rig = rig();
     let face = rig.face("clock").await;
+    let created = rig
+        .ok(
+            Method::POST,
+            "/api/v1/scenes",
+            Some(json!({ "name": "Desk" })),
+        )
+        .await;
+    let scene_id = created["id"].as_str().expect("scene id").to_owned();
+    rig.ok(
+        Method::POST,
+        &format!("/api/v1/scenes/{scene_id}/activate"),
+        Some(json!({})),
+    )
+    .await;
     let screen = rig.screen("Pump", false).await;
     let desk = rig.layout("Desk", vec![screen_output(&screen)]).await;
     let mut other_name = screen_output(&screen);
@@ -1081,43 +1099,41 @@ async fn a_snapshot_locked_scene_keeps_its_face_through_layouts_that_rename_and_
     let layer = layer_ids(&rig.view(&screen).await).remove(0);
     rig.rewrite(|scene| scene.mutation_mode = hypercolor_types::scene::SceneMutationMode::Snapshot)
         .await;
+    assert!(rig.scene().await.blocks_runtime_mutation());
 
-    for (layout, held_as) in [
-        (&renamed, Some("lcd-under-another-name")),
-        (&bare, None),
-        (&renamed, None),
+    for (layout, outputs, stored) in [
+        (&renamed, vec!["lcd-under-another-name"], false),
+        (&bare, Vec::new(), true),
+        (&renamed, vec!["lcd-under-another-name"], true),
     ] {
         rig.apply_layout(layout).await;
 
         let scene = rig.scene().await;
         let primary = scene.primary_zone().expect("primary zone");
-        // Whether a publication rewrites a locked scene's zone is the
-        // layout transaction's call. Either way the face is in one place:
-        // scoped to an output the zone holds, or stored.
+        assert_eq!(
+            primary
+                .layout
+                .zones
+                .iter()
+                .map(|output| output.id.as_str())
+                .collect::<Vec<_>>(),
+            outputs,
+            "the locked scene's primary zone took the published layout"
+        );
         let layers = scoped(primary);
-        if let Some(output_id) = held_as {
+        if stored {
+            assert!(layers.is_empty(), "no layer is left behind in the zone");
+            let zone = scene
+                .display_zone_for(screen.device)
+                .expect("a locked scene's face is returned, and not converted back");
+            assert_eq!(zone.layers[0].id.to_string(), layer);
+        } else {
             assert_eq!(
                 layers,
-                vec![(layer.clone(), vec![output_id.to_owned()])],
+                vec![(layer.clone(), vec![outputs[0].to_owned()])],
                 "the face follows its screen to the id the layout gives it"
             );
-        } else if let Some(zone) = scene.display_zone_for(screen.device) {
-            assert!(layers.is_empty(), "no layer is left behind in the zone");
-            assert_eq!(
-                zone.layers[0].id.to_string(),
-                layer,
-                "a locked scene's face is returned, and not converted back"
-            );
-        } else {
-            assert_eq!(layers.len(), 1);
-            assert!(
-                primary
-                    .layout
-                    .zones
-                    .iter()
-                    .any(|output| output.id == layers[0].1[0]),
-                "the face is scoped to an output the zone holds after {layout}"
-            );
+            assert!(scene.display_zone_for(screen.device).is_none());
         }
         let manager = rig.state.scene_manager.snapshot().await;
         assert!(
