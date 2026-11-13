@@ -1462,7 +1462,9 @@ is idempotent. It has two halves:
 
 - **Unplaced to placed (conversion).** A stored display zone whose screen a
   zone now holds becomes screen layers in that zone, when the result is exact
-  (below).
+  (below). The zone's version counters are raised to at least the stored
+  zone's, so the screen's view never answers with counters lower than a client
+  saw for it.
 - **Placed to unplaced (return).** A screen whose output was in a zone before
   the write and is in none after it gets its layers back as a stored display
   zone: the layers of that zone scoped only to it, in order, under their ids,

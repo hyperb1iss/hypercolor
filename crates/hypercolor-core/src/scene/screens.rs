@@ -651,7 +651,14 @@ fn convert_zone(
         }
         owner.layers.push(layer);
     }
-    owner.layers_version = owner.layers_version.saturating_add(1);
+    // The screen's view answers under the stored zone's id with the
+    // owner's counters. A client fenced on the stored zone, so the
+    // counters it saw must not come around again.
+    owner.controls_version = owner.controls_version.max(legacy.controls_version);
+    owner.layers_version = owner
+        .layers_version
+        .max(legacy.layers_version)
+        .saturating_add(1);
     report.converted.push((legacy, owner_id));
 }
 

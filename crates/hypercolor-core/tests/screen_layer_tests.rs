@@ -2091,6 +2091,30 @@ fn assigning_a_screen_to_another_zone_takes_its_copy_of_a_shared_face() {
     assert!(lowered_for(&manager, rig.fan).is_some());
 }
 
+// ── Counters ─────────────────────────────────────────────────────────────
+
+#[test]
+fn conversion_never_hands_a_view_counters_lower_than_its_stored_zone_had() {
+    let rig = rig();
+    let mut stored = legacy_zone(vec![effect_layer()], DisplayFaceTarget::new(rig.pump));
+    stored.controls_version = 4;
+    stored.layers_version = 9;
+    let mut converted = scene(vec![
+        primary(vec![screen(PUMP_SCREEN, PUMP)], Vec::new()),
+        stored,
+    ]);
+
+    let report = convert(&mut converted, &rig);
+
+    assert_eq!(report.converted.len(), 1);
+    let view = screen_view(&converted, &rig.surfaces, rig.pump).expect("view");
+    assert!(
+        view.zone.layers_version > 9,
+        "a fence on the stack is stale"
+    );
+    assert!(view.zone.controls_version >= 4);
+}
+
 // ── Renderers ────────────────────────────────────────────────────────────
 
 /// The effect slots a render list asks for. A slot is keyed by zone and
