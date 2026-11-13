@@ -1231,6 +1231,72 @@ async fn a_screen_moved_away_from_a_layer_it_shares_keeps_its_face() {
     );
 }
 
+/// The assign route moves a device by its layout device id. It plans its
+/// carry in the same place the member edit does, so a screen that shares
+/// a face with others takes its own copy along on this route too.
+#[tokio::test]
+async fn a_screen_assigned_away_from_a_layer_it_shares_keeps_its_face() {
+    let rig = rig();
+    let screen = rig.screen("Pump", true).await;
+    let fan = rig.screen("Fan", true).await;
+    let rear = rig.screen("Rear", true).await;
+    let shared = rig
+        .scoped_layer(fill_source(), &[&screen, &fan, &rear])
+        .await;
+    let desk = rig
+        .ok(
+            Method::POST,
+            "/api/v1/scene/zones",
+            Some(json!({ "name": "Desk" })),
+        )
+        .await;
+    let desk_id = desk["id"].as_str().expect("zone id").to_owned();
+
+    rig.ok(
+        Method::POST,
+        &format!("/api/v1/scene/zones/{desk_id}/members"),
+        Some(json!({ "device_id": screen.layout_id })),
+    )
+    .await;
+
+    let scene = rig.scene().await;
+    assert_eq!(
+        scoped(scene.primary_zone().expect("primary zone")),
+        vec![(
+            shared.clone(),
+            sorted(vec![fan.output.clone(), rear.output.clone()])
+        )],
+        "the screens that stayed keep the layer"
+    );
+    let desk_zone = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id.to_string() == desk_id)
+        .expect("the destination zone");
+    let moved = scoped(desk_zone);
+    assert_eq!(moved.len(), 1, "the moved screen arrives with its own copy");
+    assert_ne!(moved[0].0, shared);
+    assert_eq!(moved[0].1, vec![screen.output.clone()]);
+    assert_eq!(
+        layer_ids(&rig.view(&screen).await),
+        vec![moved[0].0.clone()]
+    );
+    for stayed in [&fan, &rear] {
+        assert_eq!(layer_ids(&rig.view(stayed).await), vec![shared.clone()]);
+    }
+    let manager = rig.state.scene_manager.snapshot().await;
+    for panel in [&screen, &fan, &rear] {
+        assert!(
+            manager.resolved_zones().iter().any(|zone| zone
+                .display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == panel.device)
+                && !zone.layers.is_empty()),
+            "all three panels show a face"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_layer_write_that_makes_a_stored_zone_convertible_answers_with_the_view() {
     let rig = rig();

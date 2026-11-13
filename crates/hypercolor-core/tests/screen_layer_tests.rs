@@ -10,7 +10,9 @@ use hypercolor_core::scene::screens::{
     screen_placements, screen_stack, screen_view, screen_views, screen_zone_id, settle_screens,
     split_for_screen,
 };
-use hypercolor_core::scene::{SceneManager, ZoneMutationError, default_primary_zone, make_scene};
+use hypercolor_core::scene::{
+    OutputPlacement, SceneManager, ZoneMutationError, default_primary_zone, make_scene,
+};
 use hypercolor_core::spatial::DISPLAY_ZONE_NAME;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -1945,6 +1947,53 @@ fn a_scope_is_left_alone_when_no_segment_or_more_than_one_could_be_meant() {
         .and_then(Scene::primary_zone)
         .expect("primary zone");
     assert_eq!(zone.layers, vec![keys]);
+}
+
+// ── Shared faces on a move ───────────────────────────────────────────────
+
+#[test]
+fn assigning_a_screen_to_another_zone_takes_its_copy_of_a_shared_face() {
+    let rig = rig();
+    let shared = scoped(effect_layer(), &[FAN_SCREEN, PUMP_SCREEN]);
+    let desk = custom("Desk", vec![strip("desk-strip")], Vec::new());
+    let desk_id = desk.id;
+    let authored = scene(vec![
+        primary(
+            vec![screen(PUMP_SCREEN, PUMP), screen(FAN_SCREEN, FAN)],
+            vec![shared.clone()],
+        ),
+        desk,
+    ]);
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
+
+    manager
+        .assign_outputs_to_zone(
+            &scene_id,
+            desk_id,
+            vec![screen(PUMP_SCREEN, PUMP)],
+            OutputPlacement::Preserve,
+        )
+        .expect("the screen should move");
+
+    let scene = manager.get(&scene_id).expect("scene");
+    assert_eq!(
+        scene.zones[0].layers,
+        vec![scoped(shared.clone(), &[FAN_SCREEN])],
+        "the screen that stays keeps the layer"
+    );
+    let moved = &scene.zones[1].layers;
+    assert_eq!(moved.len(), 1, "the moved screen arrives with its face");
+    assert_ne!(moved[0].id, shared.id);
+    assert_eq!(moved[0].source, shared.source);
+    assert_eq!(
+        moved[0].scope,
+        Some(LayerScope {
+            outputs: vec![PUMP_SCREEN.to_owned()]
+        })
+    );
+    assert!(lowered_for(&manager, rig.pump).is_some());
+    assert!(lowered_for(&manager, rig.fan).is_some());
 }
 
 // ── Renderers ────────────────────────────────────────────────────────────

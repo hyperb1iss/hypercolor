@@ -832,7 +832,7 @@ impl SceneManager {
         let active_scene_id = self.active_scene_id().copied();
         let scene = self
             .scenes
-            .get_mut(scene_id)
+            .get(scene_id)
             .ok_or(ZoneMutationError::SceneMissing)?;
         if scene.blocks_runtime_mutation() {
             return Err(ZoneMutationError::SnapshotLocked);
@@ -862,7 +862,11 @@ impl SceneManager {
                 })
             })
             .collect::<Vec<_>>();
-        let layer_moves = plan_layer_carry(scene, &moves);
+        let layer_moves = self.plan_output_moves(*scene_id, &moves);
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
 
         for device_zone in outputs {
             if owner_of(scene, &device_zone.id) == Some(target_index) {
@@ -1693,19 +1697,28 @@ impl SceneManager {
         report
     }
 
+    /// Plan the scoped layers that follow a set of output moves, to apply
+    /// once the outputs have moved. Every membership edit plans here, so
+    /// each one treats a shared face the same way: a screen that moves
+    /// away from screens it shares a layer with is given its own copy
+    /// first, and the plan carries the copy with it.
+    pub fn plan_output_moves(&mut self, scene_id: SceneId, moves: &[OutputMove]) -> Vec<LayerMove> {
+        self.split_shared_screen_layers(scene_id, moves);
+        self.scenes
+            .get(&scene_id)
+            .map(|scene| plan_layer_carry(scene, moves))
+            .unwrap_or_default()
+    }
+
     /// Give each screen a move is about to take out of a zone its own copy
     /// of the screen layers it shares with screens that stay behind, so
     /// the carry that follows moves the copy with it. Without this the
     /// shared layer is narrowed and the moved screen arrives faceless.
     /// Layers whose screens all move to one zone are left whole: they
-    /// carry as they are. Returns the zones whose stacks changed.
-    pub fn split_shared_screen_layers(
-        &mut self,
-        scene_id: SceneId,
-        moves: &[OutputMove],
-    ) -> Vec<ZoneId> {
+    /// carry as they are.
+    fn split_shared_screen_layers(&mut self, scene_id: SceneId, moves: &[OutputMove]) {
         let Some(scene) = self.scenes.get(&scene_id) else {
-            return Vec::new();
+            return;
         };
         let mut splits: Vec<(ZoneId, SceneLayerId, String)> = Vec::new();
         for zone in &scene.zones {
@@ -1737,18 +1750,13 @@ impl SceneManager {
                 );
             }
         }
-        let mut touched = Vec::new();
         for (zone_id, layer_id, output_id) in splits {
-            let split = self.edit_zone_layers(scene_id, zone_id, |zone| {
+            let _ = self.edit_zone_layers(scene_id, zone_id, |zone| {
                 screens::split_for_screen(zone, layer_id, &output_id)
                     .map(|_| ())
                     .ok_or(LayerMutationError::LayerMissing { layer_id })
             });
-            if split.is_ok() && !touched.contains(&zone_id) {
-                touched.push(zone_id);
-            }
         }
-        touched
     }
 
     /// The outputs each scene's zones hold, to settle a write against.

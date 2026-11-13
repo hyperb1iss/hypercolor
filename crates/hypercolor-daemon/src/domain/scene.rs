@@ -2143,22 +2143,14 @@ impl SceneMutation {
         self.candidate.screen_view(scene_id, device_id)
     }
 
-    /// Give each screen a membership edit moves its own copy of the screen
-    /// layers it shares with screens that stay, before the carry is
-    /// planned. See [`SceneManager::split_shared_screen_layers`].
-    pub fn split_shared_screen_layers(
+    /// Plan the scoped layers that follow a set of output moves. See
+    /// [`SceneManager::plan_output_moves`].
+    pub fn plan_output_moves(
         &mut self,
         scene_id: SceneId,
         moves: &[hypercolor_core::scene::OutputMove],
-    ) -> bool {
-        let touched = self.candidate.split_shared_screen_layers(scene_id, moves);
-        for zone_id in &touched {
-            self.persists_scene_content = true;
-            if let Some(zone) = self.zone_in(scene_id, *zone_id) {
-                self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Updated);
-            }
-        }
-        !touched.is_empty()
+    ) -> Vec<LayerMove> {
+        self.candidate.plan_output_moves(scene_id, moves)
     }
 
     /// Settle the scene and answer with a zone as the commit will leave

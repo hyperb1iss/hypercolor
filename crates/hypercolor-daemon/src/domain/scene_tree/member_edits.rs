@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 
-use hypercolor_core::scene::{LayerMutationError, OutputMove, plan_layer_carry};
+use hypercolor_core::scene::{LayerMutationError, OutputMove};
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, LayerMove, MemberAssignmentTarget, MemberEdit,
     MemberState, SceneFence,
@@ -164,14 +164,7 @@ pub async fn edit_members(
             })
             .collect()
     } else {
-        let moves = output_moves(&changes);
-        // A screen that moves away from screens it shares a layer with
-        // takes its own copy along, so it keeps its face where it lands.
-        if mutation.split_shared_screen_layers(scene_id, &moves) {
-            plan_layer_carry(&active_scene(&mutation)?, &moves)
-        } else {
-            plan_layer_carry(&previous, &moves)
-        }
+        mutation.plan_output_moves(scene_id, &output_moves(&changes))
     };
 
     // Remove the complete touched set first, allowing a move between zones
