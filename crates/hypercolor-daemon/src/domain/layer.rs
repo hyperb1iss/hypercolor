@@ -184,15 +184,18 @@ pub async fn patch_layer_controls(
 /// the new stack in the session snapshot.
 async fn finish(
     ctx: &SceneContext,
-    mutation: SceneMutation,
+    mut mutation: SceneMutation,
     zone: Zone,
 ) -> Result<LayerResult, DomainError> {
+    // The write may have made a stored display zone convertible, and the
+    // answer is the zone as the commit leaves it.
+    let (zone, view_of) = mutation.settled_zone(zone);
     let commit = ctx.commit(mutation).await?;
     ctx.save_runtime_session().await;
 
     Ok(Ok(LayerStackWritten {
         zone,
-        view_of: None,
+        view_of,
         commit,
     }))
 }

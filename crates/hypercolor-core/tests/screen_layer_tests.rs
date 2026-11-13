@@ -5,9 +5,10 @@
 use std::collections::HashMap;
 
 use hypercolor_core::scene::screens::{
-    LegacyReason, ScreenSettle, ScreenStack, ScreenSurface, ScreenSurfaces, clear_screen_layers,
-    convert_legacy_display_zones, is_screen_layer, remove_screen_from_layer, screen_placements,
-    screen_stack, screen_view, screen_views, screen_zone_id, settle_screens, split_for_screen,
+    LegacyReason, ScenePlacements, ScreenSettle, ScreenStack, ScreenSurface, ScreenSurfaces,
+    clear_screen_layers, convert_legacy_display_zones, is_screen_layer, remove_screen_from_layer,
+    screen_placements, screen_stack, screen_view, screen_views, screen_zone_id, settle_screens,
+    split_for_screen,
 };
 use hypercolor_core::scene::{SceneManager, ZoneMutationError, default_primary_zone, make_scene};
 use hypercolor_core::spatial::DISPLAY_ZONE_NAME;
@@ -1252,19 +1253,19 @@ fn every_reader_names_the_same_effect_for_a_zone_with_two_whole_zone_effects() {
 /// Take a screen's output out of a scene and settle it, as any write that
 /// removes the output does.
 fn unplace(scene: &mut Scene, rig: &Rig, output_id: &str) -> ScreenSettle {
-    let held = screen_placements(scene, &rig.surfaces);
+    let held = screen_placements(scene);
     for zone in &mut scene.zones {
         zone.layout.zones.retain(|output| output.id != output_id);
     }
-    settle_screens(scene, &rig.surfaces, &held)
+    settle_screens(scene, &rig.surfaces, &held, &[])
 }
 
 /// Give a zone a screen's output and settle it, as any write that adds
 /// the output does.
 fn place(scene: &mut Scene, rig: &Rig, zone: usize, output: Output) -> ScreenSettle {
-    let held = screen_placements(scene, &rig.surfaces);
+    let held = screen_placements(scene);
     scene.zones[zone].layout.zones.push(output);
-    settle_screens(scene, &rig.surfaces, &held)
+    settle_screens(scene, &rig.surfaces, &held, &[])
 }
 
 /// A scene with the counters a settle pass moves set aside, so two scenes
@@ -1301,7 +1302,7 @@ fn a_screen_whose_output_leaves_gets_its_layers_back_as_a_stored_display_zone() 
     let owner = settled.zones[0].id;
     assert_eq!(
         report.returned,
-        vec![(rig.pump, screen_zone_id(settled.id, rig.pump), vec![owner])]
+        vec![(rig.pump, screen_zone_id(settled.id, rig.pump), owner)]
     );
     assert_eq!(
         settled.zones[0].layers,
@@ -1341,7 +1342,13 @@ fn a_screen_whose_output_leaves_gets_its_layers_back_as_a_stored_display_zone() 
     assert_eq!(after.enabled, rendered.enabled);
 
     assert!(
-        !settle_screens(&mut settled.clone(), &rig.surfaces, &[]).changed(),
+        !settle_screens(
+            &mut settled.clone(),
+            &rig.surfaces,
+            &ScenePlacements::default(),
+            &[]
+        )
+        .changed(),
         "a settled scene stays as it is"
     );
 }
@@ -1390,24 +1397,87 @@ fn a_departed_screen_takes_a_copy_of_a_layer_other_screens_keep() {
 }
 
 #[test]
-fn a_face_paused_with_its_zone_stays_paused_when_its_screen_leaves() {
+fn a_face_that_leaves_a_paused_zone_is_not_left_switched_off() {
     let rig = rig();
     let mut owner = primary(
         vec![screen(PUMP_SCREEN, PUMP)],
         vec![scoped(effect_layer(), &[PUMP_SCREEN])],
     );
     owner.enabled = false;
+    owner.layers_version = 7;
+    owner.controls_version = 3;
     let mut settled = scene(vec![owner]);
 
     unplace(&mut settled, &rig, PUMP_SCREEN);
 
     let stored = settled.display_zone_for(rig.pump).expect("stored zone");
-    assert!(!stored.enabled, "leaving the zone does not start the face");
-    assert!(lower(&rig, &settled, rig.pump).is_some_and(|zone| !zone.enabled));
+    assert!(
+        stored.enabled,
+        "a screen no zone places is not paused by any zone"
+    );
+    assert_eq!(
+        (stored.controls_version, stored.layers_version),
+        (3, 8),
+        "the stored zone carries the counters of the zone its layers left"
+    );
 }
 
 #[test]
-fn a_screen_that_leaves_a_snapshot_or_already_has_a_stored_zone_is_left_alone() {
+fn a_layer_on_a_screen_and_leds_that_leave_together_is_not_read_as_a_face() {
+    let rig = rig();
+    let mixed = scoped(effect_layer(), &["keys", PUMP_SCREEN]);
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    let mut settled = scene(vec![primary(
+        vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+        vec![effect_layer(), mixed.clone(), face.clone()],
+    )]);
+    let held = screen_placements(&settled);
+
+    // One write takes the keyboard and the screen away, as a layout
+    // without the device does.
+    settled.zones[0].layout.zones.clear();
+    settle_screens(&mut settled, &rig.surfaces, &held, &[]);
+
+    let stored = settled.display_zone_for(rig.pump).expect("stored zone");
+    assert_eq!(
+        stored
+            .layers
+            .iter()
+            .map(|layer| layer.id)
+            .collect::<Vec<_>>(),
+        vec![face.id],
+        "only the layer that was the screen's own goes with it"
+    );
+    assert!(
+        settled.zones[0].layers.contains(&mixed),
+        "the canvas layer waits for its outputs, as any scoped layer does"
+    );
+}
+
+#[test]
+fn a_disabled_layer_under_the_base_is_stored_and_reported_as_approximate() {
+    let rig = rig();
+    let mut below = scoped(effect_layer(), &[PUMP_SCREEN]);
+    below.enabled = false;
+    let mut base = scoped(color_layer(), &[PUMP_SCREEN]);
+    base.blend = BlendMode::Multiply;
+    base.opacity = 0.5;
+    let mut settled = scene(vec![primary(
+        vec![screen(PUMP_SCREEN, PUMP)],
+        vec![below, base],
+    )]);
+    let rendered = lower(&rig, &settled, rig.pump).expect("the placed stack renders");
+
+    let report = unplace(&mut settled, &rig, PUMP_SCREEN);
+
+    assert_eq!(report.approximated, vec![rig.pump]);
+    let after = lower(&rig, &settled, rig.pump).expect("the stored stack renders");
+    assert_eq!(after.layers, rendered.layers, "the panel keeps its picture");
+    assert_eq!(after.display_target, rendered.display_target);
+}
+
+#[test]
+fn a_snapshot_locked_scene_returns_a_departed_face_and_converts_nothing() {
     let rig = rig();
     let face = scoped(effect_layer(), &[PUMP_SCREEN]);
     let mut locked = scene(vec![primary(
@@ -1415,9 +1485,71 @@ fn a_screen_that_leaves_a_snapshot_or_already_has_a_stored_zone_is_left_alone() 
         vec![face.clone()],
     )]);
     locked.mutation_mode = SceneMutationMode::Snapshot;
-    assert!(!unplace(&mut locked, &rig, PUMP_SCREEN).changed());
-    assert_eq!(locked.zones[0].layers, vec![face.clone()]);
 
+    // A layout publication rewrites a locked scene's primary zone too.
+    let report = unplace(&mut locked, &rig, PUMP_SCREEN);
+    assert_eq!(report.returned.len(), 1);
+    assert_eq!(
+        locked
+            .display_zone_for(rig.pump)
+            .map(|zone| zone.layers[0].id),
+        Some(face.id)
+    );
+    assert!(lower(&rig, &locked, rig.pump).is_some());
+
+    let report = place(&mut locked, &rig, 0, screen(PUMP_SCREEN, PUMP));
+    assert!(
+        report.conversion.converted.is_empty(),
+        "a locked scene's stored zones are not converted"
+    );
+    assert!(lower(&rig, &locked, rig.pump).is_some());
+}
+
+#[test]
+fn a_face_whose_device_is_not_known_yet_waits_and_is_stored_once_it_is() {
+    let rig = rig();
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    let authored = scene(vec![primary(
+        vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+        vec![effect_layer(), face.clone()],
+    )]);
+    let scene_id = authored.id;
+    // The daemon has just started: the scene is active and no device has
+    // been discovered.
+    let mut manager = SceneManager::with_default();
+    manager.create(authored).expect("scene should be created");
+    manager
+        .activate(&scene_id, None)
+        .expect("scene should activate");
+    let held = manager.screen_placements();
+
+    // The startup realign takes a layout that does not hold the screen.
+    assert!(manager.sync_primary_zone_layout(&layout(vec![strip("keys")])));
+    let report = manager.settle_screens(&held);
+    assert_eq!(report.waiting.len(), 1, "the face cannot be stored yet");
+    assert!(!report.changed());
+
+    // Discovery finds the device, and the next write stores the face.
+    let held = manager.screen_placements();
+    manager.set_screen_surfaces(rig.surfaces.clone());
+    let report = manager.settle_screens(&held);
+    assert_eq!(report.returned.len(), 1);
+    assert_eq!(
+        lowered_for(&manager, rig.pump).map(|zone| zone.layers[0].id),
+        Some(face.id)
+    );
+    assert!(
+        manager
+            .settle_screens(&manager.screen_placements())
+            .waiting
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_screen_that_already_has_a_stored_zone_keeps_it_as_its_whole_stack() {
+    let rig = rig();
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
     // A stored zone that cannot convert is the screen's whole stack. The
     // layer it covered was never showing, and stays where it is.
     let mut partial = effect_layer();
@@ -1433,24 +1565,49 @@ fn a_screen_that_leaves_a_snapshot_or_already_has_a_stored_zone_is_left_alone() 
 }
 
 #[test]
-fn deleting_a_zone_takes_the_faces_of_the_screens_it_placed() {
+fn deleting_a_zone_takes_its_lighting_and_returns_the_faces_of_its_screens() {
     let rig = rig();
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    let shared = scoped(color_layer(), &[FAN_SCREEN, PUMP_SCREEN]);
     let desk = custom(
         "Desk",
-        vec![screen(PUMP_SCREEN, PUMP)],
-        vec![scoped(effect_layer(), &[PUMP_SCREEN])],
+        vec![
+            strip("desk"),
+            screen(PUMP_SCREEN, PUMP),
+            screen(FAN_SCREEN, FAN),
+        ],
+        vec![
+            effect_layer(),
+            scoped(effect_layer(), &["desk"]),
+            face.clone(),
+            shared,
+        ],
     );
-    let mut settled = scene(vec![primary(vec![strip("keys")], Vec::new()), desk]);
-    let held = screen_placements(&settled, &rig.surfaces);
+    let desk_id = desk.id;
+    let authored = scene(vec![primary(vec![strip("keys")], Vec::new()), desk]);
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
 
-    settled.zones.remove(1);
-    let report = settle_screens(&mut settled, &rig.surfaces, &held);
+    manager
+        .delete_zone(&scene_id, desk_id)
+        .expect("the zone should be deleted");
 
-    assert!(
-        !report.changed(),
-        "a zone's layers go with it, faces included: nothing is left to return"
+    let stored = manager.get(&scene_id).expect("scene");
+    assert_eq!(
+        stored.zones.len(),
+        3,
+        "the primary zone and a stored zone per screen"
     );
-    assert!(settled.display_zone_for(rig.pump).is_none());
+    let pump = stored.display_zone_for(rig.pump).expect("the pump's face");
+    assert_eq!(pump.layers.len(), 2);
+    assert_eq!(pump.layers[0].id, face.id);
+    let fan = stored.display_zone_for(rig.fan).expect("the fan's face");
+    assert_eq!(fan.layers.len(), 1);
+    assert_eq!(
+        display_zones(&manager).len(),
+        2,
+        "both panels keep their picture"
+    );
 }
 
 #[test]
@@ -1651,6 +1808,143 @@ fn placing_unplacing_and_placing_a_screen_starts_no_renderer() {
         );
         assert_eq!(display_zones(&manager).len(), 1);
     }
+}
+
+// ── Following an output across a realign ─────────────────────────────────
+
+fn renamed(id: &str, like: &Output) -> Output {
+    Output {
+        id: id.to_owned(),
+        ..like.clone()
+    }
+}
+
+#[test]
+fn a_scoped_layer_follows_its_segment_when_a_layout_names_it_differently() {
+    let rig = rig();
+    let keys = scoped(effect_layer(), &["keys"]);
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    let authored = scene(vec![primary(
+        vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+        vec![effect_layer(), keys.clone(), face.clone()],
+    )]);
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
+    let slots = effect_slots(&manager);
+
+    // Another stored layout holds the same keyboard and the same screen
+    // under ids of its own.
+    let other = layout(vec![
+        renamed("zone-keys", &strip("keys")),
+        renamed("zone-lcd", &screen(PUMP_SCREEN, PUMP)),
+    ]);
+    let held = manager.screen_placements();
+    assert!(manager.sync_primary_zone_layout(&other));
+    let report = manager.settle_screens(&held);
+
+    assert!(report.returned.is_empty(), "the screen never left the zone");
+    let zone = manager
+        .get(&scene_id)
+        .and_then(Scene::primary_zone)
+        .expect("primary zone");
+    assert_eq!(zone.layers[1], scoped(keys, &["zone-keys"]));
+    assert_eq!(zone.layers[2], scoped(face.clone(), &["zone-lcd"]));
+    assert!(
+        zone.layers
+            .iter()
+            .all(|layer| !zone.layer_is_dormant(layer))
+    );
+    assert_eq!(
+        effect_slots(&manager),
+        slots,
+        "the face keeps rendering from the same slot"
+    );
+}
+
+#[test]
+fn one_screen_named_three_ways_keeps_its_face_through_each_layout_and_a_clear() {
+    let rig = rig();
+    let face = scoped(effect_layer(), &["lcd-a"]);
+    let authored = scene(vec![primary(
+        vec![strip("keys"), renamed("lcd-a", &screen(PUMP_SCREEN, PUMP))],
+        vec![effect_layer(), face.clone()],
+    )]);
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
+    let zone_id = manager
+        .get(&scene_id)
+        .and_then(Scene::primary_zone)
+        .map(|zone| zone.id)
+        .expect("primary zone");
+    let slots = effect_slots(&manager);
+
+    for name in ["lcd-b", "lcd-c", "lcd-a", "lcd-c"] {
+        let next = layout(vec![
+            strip("keys"),
+            renamed(name, &screen(PUMP_SCREEN, PUMP)),
+        ]);
+        let held = manager.screen_placements();
+        assert!(manager.sync_primary_zone_layout(&next));
+        manager.settle_screens(&held);
+
+        let zone = manager
+            .get(&scene_id)
+            .and_then(Scene::primary_zone)
+            .expect("primary zone");
+        assert_eq!(
+            zone.layers[1].scope,
+            Some(LayerScope {
+                outputs: vec![name.to_owned()]
+            }),
+            "the face is scoped to the screen under the id this layout gives it"
+        );
+        assert_eq!(effect_slots(&manager), slots, "and renders throughout");
+    }
+
+    let cleared = manager.clear_zone_effect(zone_id).expect("zone").clone();
+    assert_eq!(
+        cleared
+            .layers
+            .iter()
+            .map(|layer| layer.id)
+            .collect::<Vec<_>>(),
+        vec![face.id],
+        "a clear leaves the face alone under any of its names"
+    );
+    assert_eq!(effect_slots(&manager), slots);
+}
+
+#[test]
+fn a_scope_is_left_alone_when_no_segment_or_more_than_one_could_be_meant() {
+    let rig = rig();
+    let keys = scoped(effect_layer(), &["keys"]);
+    let authored = scene(vec![primary(
+        vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+        vec![keys.clone()],
+    )]);
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
+
+    // The layout holds the keyboard's segment twice: nothing says which
+    // one the layer meant.
+    let twice = layout(vec![
+        renamed("keys-left", &strip("keys")),
+        renamed("keys-right", &strip("keys")),
+    ]);
+    assert!(manager.sync_primary_zone_layout(&twice));
+    let zone = manager
+        .get(&scene_id)
+        .and_then(Scene::primary_zone)
+        .expect("primary zone");
+    assert_eq!(zone.layers, vec![keys.clone()], "the id waits, as R5 says");
+
+    // And a layout without the segment leaves the id waiting too.
+    assert!(manager.sync_primary_zone_layout(&layout(Vec::new())));
+    let zone = manager
+        .get(&scene_id)
+        .and_then(Scene::primary_zone)
+        .expect("primary zone");
+    assert_eq!(zone.layers, vec![keys]);
 }
 
 // ── Renderers ────────────────────────────────────────────────────────────

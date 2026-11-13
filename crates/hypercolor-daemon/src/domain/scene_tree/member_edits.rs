@@ -147,25 +147,31 @@ pub async fn edit_members(
 
     // A replay names its layer moves. A forward edit plans them here, from
     // the zones as they stand, against everything the edit moves at once.
-    let layer_moves = match request.layer_moves {
-        Some(replayed) => {
-            for moved in &replayed {
-                ensure_live_zone_mutable(&mutation, moved.from.zone_id)?;
-                ensure_live_zone_mutable(&mutation, moved.to.zone_id)?;
-            }
-            // Scopes are stored sorted and unique. Normalizing here makes
-            // the moves this edit reports the moves it committed, so the
-            // receipt reverses cleanly however the request spelled them.
-            replayed
-                .into_iter()
-                .map(|moved| LayerMove {
-                    scope_before: moved.scope_before.normalized(),
-                    scope_after: moved.scope_after.normalized(),
-                    ..moved
-                })
-                .collect()
+    let layer_moves = if let Some(replayed) = request.layer_moves {
+        for moved in &replayed {
+            ensure_live_zone_mutable(&mutation, moved.from.zone_id)?;
+            ensure_live_zone_mutable(&mutation, moved.to.zone_id)?;
         }
-        None => plan_layer_carry(&previous, &output_moves(&changes)),
+        // Scopes are stored sorted and unique. Normalizing here makes
+        // the moves this edit reports the moves it committed, so the
+        // receipt reverses cleanly however the request spelled them.
+        replayed
+            .into_iter()
+            .map(|moved| LayerMove {
+                scope_before: moved.scope_before.normalized(),
+                scope_after: moved.scope_after.normalized(),
+                ..moved
+            })
+            .collect()
+    } else {
+        let moves = output_moves(&changes);
+        // A screen that moves away from screens it shares a layer with
+        // takes its own copy along, so it keeps its face where it lands.
+        if mutation.split_shared_screen_layers(scene_id, &moves) {
+            plan_layer_carry(&active_scene(&mutation)?, &moves)
+        } else {
+            plan_layer_carry(&previous, &moves)
+        }
     };
 
     // Remove the complete touched set first, allowing a move between zones

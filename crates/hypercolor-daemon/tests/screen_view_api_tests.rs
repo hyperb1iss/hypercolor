@@ -1066,6 +1066,213 @@ async fn deleting_the_scene_face_of_a_listed_screen_is_announced_as_a_change() {
     assert_eq!(rig.view(&screen).await["id"], screen.view);
 }
 
+#[tokio::test]
+async fn a_snapshot_locked_scene_keeps_its_face_through_layouts_that_rename_and_drop_its_screen() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let desk = rig.layout("Desk", vec![screen_output(&screen)]).await;
+    let mut other_name = screen_output(&screen);
+    other_name.id = "lcd-under-another-name".to_owned();
+    let renamed = rig.layout("Renamed", vec![other_name]).await;
+    let bare = rig.layout("Bare", Vec::new()).await;
+    rig.apply_layout(&desk).await;
+    rig.put_face(&screen, face, "scene").await;
+    let layer = layer_ids(&rig.view(&screen).await).remove(0);
+    rig.rewrite(|scene| scene.mutation_mode = hypercolor_types::scene::SceneMutationMode::Snapshot)
+        .await;
+
+    for (layout, held_as) in [
+        (&renamed, Some("lcd-under-another-name")),
+        (&bare, None),
+        (&renamed, None),
+    ] {
+        rig.apply_layout(layout).await;
+
+        let scene = rig.scene().await;
+        let primary = scene.primary_zone().expect("primary zone");
+        // Whether a publication rewrites a locked scene's zone is the
+        // layout transaction's call. Either way the face is in one place:
+        // scoped to an output the zone holds, or stored.
+        let layers = scoped(primary);
+        if let Some(output_id) = held_as {
+            assert_eq!(
+                layers,
+                vec![(layer.clone(), vec![output_id.to_owned()])],
+                "the face follows its screen to the id the layout gives it"
+            );
+        } else if let Some(zone) = scene.display_zone_for(screen.device) {
+            assert!(layers.is_empty(), "no layer is left behind in the zone");
+            assert_eq!(
+                zone.layers[0].id.to_string(),
+                layer,
+                "a locked scene's face is returned, and not converted back"
+            );
+        } else {
+            assert_eq!(layers.len(), 1);
+            assert!(
+                primary
+                    .layout
+                    .zones
+                    .iter()
+                    .any(|output| output.id == layers[0].1[0]),
+                "the face is scoped to an output the zone holds after {layout}"
+            );
+        }
+        let manager = rig.state.scene_manager.snapshot().await;
+        assert!(
+            manager.resolved_zones().iter().any(|zone| zone
+                .display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == screen.device)
+                && zone.layers.iter().any(|held| held.id.to_string() == layer)),
+            "the face reaches the render list"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_screen_moved_away_from_a_layer_it_shares_keeps_its_face() {
+    let rig = rig();
+    let screen = rig.screen("Pump", true).await;
+    let other = rig.screen("Fan", true).await;
+    let shared = rig.scoped_layer(fill_source(), &[&screen, &other]).await;
+    let desk = rig
+        .ok(
+            Method::POST,
+            "/api/v1/scene/zones",
+            Some(json!({ "name": "Desk" })),
+        )
+        .await;
+    let desk_id = desk["id"].as_str().expect("zone id").to_owned();
+    let document = rig.ok(Method::GET, "/api/v1/scene", None).await;
+    let primary = document["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .find(|zone| zone["role"] == "primary")
+        .expect("primary zone");
+    let index = primary["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .position(|member| member["id"] == screen.output)
+        .expect("the screen is a member");
+    let placed = rig
+        .scene()
+        .await
+        .primary_zone()
+        .expect("primary zone")
+        .layout
+        .zones
+        .iter()
+        .find(|output| output.id == screen.output)
+        .cloned()
+        .expect("the screen's output");
+
+    let receipt = rig
+        .edit_members(json!([{
+            "before": { "zone_id": primary["id"], "index": index, "output": placed },
+            "after": { "zone_id": desk_id, "index": 0, "output": placed },
+        }]))
+        .await;
+
+    let scene = rig.scene().await;
+    assert_eq!(
+        scoped(scene.primary_zone().expect("primary zone")),
+        vec![(shared.clone(), vec![other.output.clone()])],
+        "the screen that stayed keeps the layer under its id"
+    );
+    let desk_zone = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id.to_string() == desk_id)
+        .expect("the destination zone");
+    let moved = scoped(desk_zone);
+    assert_eq!(moved.len(), 1, "the moved screen arrives with its own copy");
+    assert_ne!(moved[0].0, shared);
+    assert_eq!(moved[0].1, vec![screen.output.clone()]);
+    assert_eq!(
+        layer_ids(&rig.view(&screen).await),
+        vec![moved[0].0.clone()]
+    );
+    assert_eq!(layer_ids(&rig.view(&other).await), vec![shared.clone()]);
+
+    // Undoing the move brings the copy back as a layer of its own.
+    rig.reverse(&receipt).await;
+    let scene = rig.scene().await;
+    assert_eq!(
+        sorted(
+            scoped(scene.primary_zone().expect("primary zone"))
+                .into_iter()
+                .map(|(id, outputs)| format!("{id}:{}", outputs.join(",")))
+                .collect()
+        ),
+        sorted(vec![
+            format!("{shared}:{}", other.output),
+            format!("{}:{}", moved[0].0, screen.output),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn a_layer_write_that_makes_a_stored_zone_convertible_answers_with_the_view() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", true).await;
+    // A stored zone from an older build, under an id of its own, that
+    // cannot convert while its first layer is translucent.
+    let mut layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        face,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    layer.opacity = 0.5;
+    let layer_id = layer.id;
+    let stored_id = ZoneId::new();
+    rig.rewrite(|scene| {
+        scene.zones.push(Zone {
+            id: stored_id,
+            name: "Pump Face".to_owned(),
+            description: None,
+            layers: vec![layer],
+            layout: face_layout(screen.device),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: Some(DisplayFaceTarget::new(screen.device)),
+            role: ZoneRole::Display,
+            controls_version: 0,
+            layers_version: 0,
+        });
+    })
+    .await;
+    assert!(rig.scene().await.display_zone_for(screen.device).is_some());
+
+    let mut opaque = effect_body(face);
+    opaque["opacity"] = json!(1.0);
+    let answered = rig
+        .ok(
+            Method::PUT,
+            &format!("/api/v1/scene/zones/{stored_id}/layers/{layer_id}"),
+            Some(opaque),
+        )
+        .await;
+
+    assert!(
+        rig.scene().await.display_zone_for(screen.device).is_none(),
+        "the write made the zone convertible, and the commit converted it"
+    );
+    assert_eq!(
+        answered["id"], screen.view,
+        "the answer is the zone the commit left, not the one it removed"
+    );
+    assert_eq!(answered["view_of"]["member"], screen.output);
+    assert_eq!(layer_ids(&answered), layer_ids(&rig.view(&screen).await));
+}
+
 // ── Screens that leave ───────────────────────────────────────────────────
 
 #[tokio::test]

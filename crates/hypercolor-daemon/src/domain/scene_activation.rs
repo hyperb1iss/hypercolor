@@ -148,7 +148,13 @@ pub async fn activate_selected_fields(
             Some(transition),
             SceneChangeReason::UserActivate,
         )?;
-        mutation.realign_primary_layout(&ctx.layout.current());
+        // The selected layout is published right after this commit, so the
+        // primary zone is aligned with it here and each screen's stack is
+        // placed once, against the outputs the scene will have.
+        match &command.layout {
+            Some(layout) => mutation.realign_primary_layout(layout),
+            None => mutation.realign_primary_layout(&ctx.layout.current()),
+        }
         // The scene read back here fences the layout step that follows, so
         // it has to be the scene as the commit will leave it.
         mutation.settle_screens();

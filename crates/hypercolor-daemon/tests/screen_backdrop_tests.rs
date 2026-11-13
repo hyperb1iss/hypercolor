@@ -3962,3 +3962,162 @@ async fn gpu_faces_survive_activating_scenes_that_follow_a_layout_without_screen
     )
     .await;
 }
+
+// ── Published layouts ────────────────────────────────────────────────────
+
+impl Rig {
+    /// Publish `layout` through the layout transaction's own write to the
+    /// scene manager, the path a layout apply takes.
+    async fn publish(&self, layout: SpatialLayout) {
+        assert!(
+            self.state
+                .scene_manager
+                .publish_layout_for_test(&self.state.spatial_engine, layout)
+                .await,
+            "the layout should publish"
+        );
+    }
+}
+
+/// The moving screen's layout with its screen held under another output
+/// id, as a second stored layout names the same panel.
+fn renamed_layout(screen: &Screen, output_id: &str) -> SpatialLayout {
+    let mut layout = moving_layout(screen, true);
+    for output in &mut layout.zones {
+        if output.zone_name.as_deref() == Some(DISPLAY_ZONE_NAME) {
+            output_id.clone_into(&mut output.id);
+        }
+    }
+    layout
+}
+
+/// A translucent face holds the panel byte for byte through published
+/// layouts that name its screen differently, drop it, and bring it back.
+async fn face_holds_through_published_layouts(mode: RenderAccelerationMode) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let scene = placed_face_scene(&rig.effects, &screen, "Published");
+    let authored_id = screen.output(DEVICE_BOX.0, DEVICE_BOX.1).id;
+    let running = rig.run_scene(scene.clone()).await;
+    let placed = settled(&rig.writes, screen.device_id).await;
+
+    for (layout, held_as) in [
+        (renamed_layout(&screen, "lcd-other"), Some("lcd-other")),
+        (moving_layout(&screen, false), None),
+        (renamed_layout(&screen, "lcd-third"), Some("lcd-third")),
+        (moving_layout(&screen, true), Some(authored_id.as_str())),
+    ] {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.publish(layout).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let held = rig.stored(&scene).await;
+        let scopes = held.zones[0]
+            .layers
+            .iter()
+            .filter_map(|layer| layer.scope.as_ref())
+            .map(|scope| scope.outputs.join(","))
+            .collect::<Vec<_>>();
+        if let Some(output_id) = held_as {
+            assert!(held.display_zone_for(screen.device_id).is_none());
+            assert_eq!(
+                scopes,
+                vec![output_id.to_owned(), output_id.to_owned()],
+                "the face follows its screen to the id this layout gives it"
+            );
+        } else {
+            assert!(held.display_zone_for(screen.device_id).is_some());
+            assert!(scopes.is_empty(), "no layer is left behind in the zone");
+        }
+        assert_frames_held(&rig.writes, screen.device_id, seen, &placed);
+        let now = settled(&rig.writes, screen.device_id).await;
+        assert_same_frame("after the layout was published", &placed, &now);
+    }
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_face_holds_through_published_layouts() {
+    face_holds_through_published_layouts(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_face_holds_through_published_layouts() {
+    face_holds_through_published_layouts(RenderAccelerationMode::Gpu).await;
+}
+
+/// A face that changes every frame keeps changing through the same
+/// layouts: its renderer is never stopped, and the panel never falls back
+/// to its bare backdrop.
+async fn animated_face_keeps_running_through_published_layouts(mode: RenderAccelerationMode) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut scene = placed_face_scene(&rig.effects, &screen, "Animated");
+    let output_id = screen.output(DEVICE_BOX.0, DEVICE_BOX.1).id;
+    let mut face = rig.effects.moving();
+    face.scope = Some(LayerScope {
+        outputs: vec![output_id],
+    });
+    scene.zones[0].layers.truncate(1);
+    scene.zones[0].layers.push(face);
+    let mut bare = scene.clone();
+    bare.id = hypercolor_types::scene::SceneId::new();
+    bare.zones[0].layers.truncate(1);
+
+    let mut backdrop_rig = Rig::new(mode);
+    backdrop_rig
+        .connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    backdrop_rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let backdrop_run = backdrop_rig.run_scene(bare).await;
+    let backdrop = settled(&backdrop_rig.writes, screen.device_id).await;
+    backdrop_run.stop().await;
+
+    let running = rig.run_scene(scene.clone()).await;
+    let moves = |from: usize| {
+        let frames = rig.writes.of(screen.device_id);
+        let mut distinct: Vec<&Vec<u8>> = Vec::new();
+        for write in frames.iter().skip(from) {
+            assert_ne!(write.data, backdrop, "the panel fell back to its backdrop");
+            if !distinct.contains(&&write.data) {
+                distinct.push(&write.data);
+            }
+        }
+        distinct.len()
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(moves(0) >= 3, "the face animates before any layout changes");
+
+    for layout in [
+        renamed_layout(&screen, "lcd-other"),
+        moving_layout(&screen, false),
+        moving_layout(&screen, true),
+    ] {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.publish(layout).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            moves(seen) >= 3,
+            "the face keeps animating after the layout was published"
+        );
+    }
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_animated_face_keeps_running_through_published_layouts() {
+    animated_face_keeps_running_through_published_layouts(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_animated_face_keeps_running_through_published_layouts() {
+    animated_face_keeps_running_through_published_layouts(RenderAccelerationMode::Gpu).await;
+}

@@ -961,14 +961,15 @@ async fn undo_zone_layout_save(
 
 async fn finish_zone_mutation(
     ctx: &SceneTreeContext,
-    mutation: SceneMutation,
+    mut mutation: SceneMutation,
     _scene_id: SceneId,
     zone: Zone,
 ) -> Result<ZoneWritten, DomainError> {
+    let (zone, owner) = mutation.settled_zone(zone);
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
     Ok(ZoneWritten {
-        zone: zone_resource(&zone),
+        zone: screen_zone_resource(&zone, owner.as_ref()),
         revision: commit.revision(),
         commit,
     })
@@ -976,13 +977,14 @@ async fn finish_zone_mutation(
 
 async fn finish_layer_mutation(
     ctx: &SceneTreeContext,
-    mutation: SceneMutation,
+    mut mutation: SceneMutation,
     zone: Zone,
 ) -> Result<ZoneWritten, DomainError> {
+    let (zone, owner) = mutation.settled_zone(zone);
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
     Ok(ZoneWritten {
-        zone: zone_resource(&zone),
+        zone: screen_zone_resource(&zone, owner.as_ref()),
         revision: commit.revision(),
         commit,
     })

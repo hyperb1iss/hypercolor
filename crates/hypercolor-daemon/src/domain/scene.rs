@@ -1003,6 +1003,36 @@ impl SceneService {
         .map(|_| ())
     }
 
+    /// Publish a layout the way a layout transaction does, for a test that
+    /// runs the render thread against a bare scene service.
+    #[cfg(feature = "persistence-test-hooks")]
+    #[doc(hidden)]
+    pub async fn publish_layout_for_test(
+        &self,
+        spatial_engine: &SpatialService,
+        layout: SpatialLayout,
+    ) -> bool {
+        let expected = spatial_engine.snapshot().layout().as_ref().clone();
+        let (active_scene_id, resolved_zones_revision) = {
+            let manager = self.0.manager.read().await;
+            (
+                manager.active_scene_id().copied(),
+                manager.resolved_zones_revision(),
+            )
+        };
+        self.publish_guarded_layout_activation(
+            spatial_engine,
+            SpatialEngine::new(layout),
+            &expected,
+            active_scene_id,
+            resolved_zones_revision,
+            None,
+            |_| Ok(()),
+        )
+        .await
+        .is_ok()
+    }
+
     pub(crate) async fn publish_guarded_layout_activation<F>(
         &self,
         spatial_engine: &SpatialService,
@@ -1256,7 +1286,7 @@ pub struct SceneMutation {
     /// write removes an output, this is the only record of which screen
     /// it was, which the settle pass needs to return that screen's layers
     /// to a stored display zone.
-    screens_before: HashMap<SceneId, screens::ScreenPlacements>,
+    screens_before: HashMap<SceneId, screens::ScenePlacements>,
     candidate: SceneManager,
     base_revision: SceneRevision,
     /// The run `base_revision` belongs to, so a stale fence refusal can
@@ -2111,6 +2141,46 @@ impl SceneMutation {
     pub fn screen_view(&self, device_id: DeviceId) -> Option<ScreenView> {
         let scene_id = self.candidate.active_scene_id()?;
         self.candidate.screen_view(scene_id, device_id)
+    }
+
+    /// Give each screen a membership edit moves its own copy of the screen
+    /// layers it shares with screens that stay, before the carry is
+    /// planned. See [`SceneManager::split_shared_screen_layers`].
+    pub fn split_shared_screen_layers(
+        &mut self,
+        scene_id: SceneId,
+        moves: &[hypercolor_core::scene::OutputMove],
+    ) -> bool {
+        let touched = self.candidate.split_shared_screen_layers(scene_id, moves);
+        for zone_id in &touched {
+            self.persists_scene_content = true;
+            if let Some(zone) = self.zone_in(scene_id, *zone_id) {
+                self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Updated);
+            }
+        }
+        !touched.is_empty()
+    }
+
+    /// Settle the scene and answer with a zone as the commit will leave
+    /// it: the zone itself, or the view of its screen when the settle
+    /// turned a stored display zone into screen layers. The second value
+    /// is the zone and member that place that screen.
+    pub fn settled_zone(&mut self, zone: Zone) -> (Zone, Option<(ZoneId, String)>) {
+        self.settle_screens();
+        let Some(scene) = self.candidate.active_scene() else {
+            return (zone, None);
+        };
+        if let Some(held) = scene.zones.iter().find(|held| held.id == zone.id) {
+            return (held.clone(), None);
+        }
+        let view = zone
+            .display_target
+            .as_ref()
+            .and_then(|target| self.candidate.screen_view(&scene.id, target.device_id));
+        match view {
+            Some(view) => (view.zone, view.owner),
+            None => (zone, None),
+        }
     }
 
     /// Put every known screen's stack of the live scene where its
@@ -3110,6 +3180,13 @@ pub async fn replace_scene(
         return Err(DomainError::validation(errors.join("; ")));
     }
     mutation.update_scene(updated.clone())?;
+    // The answer is the scene as the commit will leave it.
+    mutation.settle_screens();
+    let updated = mutation
+        .scenes()
+        .get(&updated.id)
+        .cloned()
+        .unwrap_or(updated);
     crate::domain::layer::validate_candidate_media_admission(&ctx.scene, &mutation, updated.id)
         .await?;
     mutation.retire_scene_previews(updated.id);
@@ -3519,12 +3596,8 @@ fn settled_layer_events(scene: &Scene, settled: &screens::ScreenSettle) -> Vec<H
         .converted
         .iter()
         .map(|(_, owner)| *owner)
-        .chain(
-            settled
-                .returned
-                .iter()
-                .flat_map(|(_, _, owners)| owners.iter().copied()),
-        )
+        .chain(settled.returned.iter().map(|(_, _, owner)| *owner))
+        .chain(settled.rescoped.iter().copied())
         .collect::<HashSet<_>>();
     scene
         .zones

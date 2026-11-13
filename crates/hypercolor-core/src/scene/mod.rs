@@ -176,6 +176,11 @@ pub struct SceneManager {
     /// Runtime state: it says which outputs are screens the engine can
     /// drive and at what size, and is never written into a scene.
     screen_surfaces: screens::ScreenSurfaces,
+
+    /// Screens whose output left a scene's zone while their device was
+    /// not known, with the layers that wait for them. Runtime state: it
+    /// lasts until the device is seen or the daemon stops.
+    waiting_screens: HashMap<SceneId, Vec<screens::WaitingScreen>>,
 }
 
 impl SceneManager {
@@ -192,6 +197,7 @@ impl SceneManager {
             resolved_zones_revision: 0,
             default_display_zones: Vec::new(),
             screen_surfaces: screens::ScreenSurfaces::new(),
+            waiting_screens: HashMap::new(),
         }
     }
 
@@ -584,7 +590,7 @@ impl SceneManager {
                 active_preset_id,
             );
             if zone.layout != next_primary_layout {
-                zone.layout = next_primary_layout;
+                replace_zone_layout(zone, next_primary_layout);
                 structural_changed = true;
             }
             zone.enabled = true;
@@ -704,7 +710,15 @@ impl SceneManager {
             return Err(ZoneMutationError::InvalidRole { role });
         }
 
-        scene.zones.remove(index);
+        // The zone's lighting goes with it. Its screens are unplaced, and
+        // an unplaced screen keeps its stack in a stored display zone.
+        let removed = scene.zones.remove(index);
+        let faces =
+            screens::stored_faces_of(*scene_id, &removed, &self.screen_surfaces, |device_id| {
+                scene.display_zone_for(device_id).is_some()
+                    || screens::screen_placement(scene, &self.screen_surfaces, device_id).is_some()
+            });
+        scene.zones.extend(faces);
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
             self.refresh_resolved_zones();
@@ -1668,28 +1682,86 @@ impl SceneManager {
         report
     }
 
-    /// The screen outputs each scene's zones hold, to settle a write
-    /// against. See [`screens::screen_placements`].
+    /// Give each screen a move is about to take out of a zone its own copy
+    /// of the screen layers it shares with screens that stay behind, so
+    /// the carry that follows moves the copy with it. Without this the
+    /// shared layer is narrowed and the moved screen arrives faceless.
+    /// Layers whose screens all move to one zone are left whole: they
+    /// carry as they are. Returns the zones whose stacks changed.
+    pub fn split_shared_screen_layers(
+        &mut self,
+        scene_id: SceneId,
+        moves: &[OutputMove],
+    ) -> Vec<ZoneId> {
+        let Some(scene) = self.scenes.get(&scene_id) else {
+            return Vec::new();
+        };
+        let mut splits: Vec<(ZoneId, SceneLayerId, String)> = Vec::new();
+        for zone in &scene.zones {
+            let destination = |output_id: &str| {
+                moves
+                    .iter()
+                    .find(|moved| moved.from == zone.id && moved.output_id == output_id)
+                    .map_or(zone.id, |moved| moved.to)
+            };
+            for layer in zone
+                .layers
+                .iter()
+                .filter(|layer| screens::is_screen_layer(zone, layer))
+            {
+                let Some(scope) = &layer.scope else { continue };
+                let live = zone
+                    .scoped_outputs(scope)
+                    .map(|output| output.id.clone())
+                    .collect::<Vec<_>>();
+                let mut destinations = live.iter().map(|id| destination(id));
+                let first = destinations.next();
+                if destinations.all(|to| Some(to) == first) {
+                    continue;
+                }
+                splits.extend(
+                    live.iter()
+                        .filter(|id| destination(id) != zone.id)
+                        .map(|id| (zone.id, layer.id, id.clone())),
+                );
+            }
+        }
+        let mut touched = Vec::new();
+        for (zone_id, layer_id, output_id) in splits {
+            let split = self.edit_zone_layers(scene_id, zone_id, |zone| {
+                screens::split_for_screen(zone, layer_id, &output_id)
+                    .map(|_| ())
+                    .ok_or(LayerMutationError::LayerMissing { layer_id })
+            });
+            if split.is_ok() && !touched.contains(&zone_id) {
+                touched.push(zone_id);
+            }
+        }
+        touched
+    }
+
+    /// The outputs each scene's zones hold, to settle a write against.
+    /// See [`screens::screen_placements`].
     #[must_use]
-    pub fn screen_placements(&self) -> HashMap<SceneId, screens::ScreenPlacements> {
+    pub fn screen_placements(&self) -> HashMap<SceneId, screens::ScenePlacements> {
         self.scenes
             .iter()
-            .map(|(scene_id, scene)| {
-                (
-                    *scene_id,
-                    screens::screen_placements(scene, &self.screen_surfaces),
-                )
-            })
-            .filter(|(_, held)| !held.is_empty())
+            .map(|(scene_id, scene)| (*scene_id, screens::screen_placements(scene)))
+            .filter(|(_, held)| !held.screens.is_empty())
             .collect()
     }
 
     /// Put every known screen's stack of the active scene where its
     /// placement says it belongs, given the outputs each scene held before
     /// the write being settled. See [`screens::settle_screens`].
+    ///
+    /// A screen whose output left while its device was unknown is kept
+    /// here and offered again on every later settle, so a face dropped by
+    /// a realign before its device was discovered is stored for it as soon
+    /// as the device is.
     pub fn settle_screens(
         &mut self,
-        held_before: &HashMap<SceneId, screens::ScreenPlacements>,
+        held_before: &HashMap<SceneId, screens::ScenePlacements>,
     ) -> screens::ScreenSettle {
         let Some(scene_id) = self.active_scene_id().copied() else {
             return screens::ScreenSettle::default();
@@ -1697,8 +1769,14 @@ impl SceneManager {
         let Some(scene) = self.scenes.get_mut(&scene_id) else {
             return screens::ScreenSettle::default();
         };
-        let held = held_before.get(&scene_id).map_or(&[][..], Vec::as_slice);
-        let report = screens::settle_screens(scene, &self.screen_surfaces, held);
+        let none = screens::ScenePlacements::default();
+        let held = held_before.get(&scene_id).unwrap_or(&none);
+        let waiting = self.waiting_screens.remove(&scene_id).unwrap_or_default();
+        let report = screens::settle_screens(scene, &self.screen_surfaces, held, &waiting);
+        if !report.waiting.is_empty() {
+            self.waiting_screens
+                .insert(scene_id, report.waiting.clone());
+        }
         if report.changed() {
             self.refresh_resolved_zones();
         }
@@ -1985,6 +2063,15 @@ fn remap_zone_device_bindings(
     migrated
 }
 
+/// Replace a zone's layout whole, carrying its layer scopes across to the
+/// outputs the new layout holds for the same device segments.
+fn replace_zone_layout(zone: &mut Zone, layout: SpatialLayout) {
+    if screens::follow_outputs(zone, &layout.zones) {
+        zone.layers_version = zone.layers_version.saturating_add(1);
+    }
+    zone.layout = layout;
+}
+
 /// Align one zone with the active layout: a primary zone in a scene without
 /// custom LED zones takes the layout whole; any other LED zone keeps its
 /// placements and takes the layout's canvas. Display zones are untouched.
@@ -1994,7 +2081,7 @@ fn align_led_zone(zone: &mut Zone, layout: &SpatialLayout, custom_scene: bool) -
     }
     if !custom_scene {
         if zone.role == ZoneRole::Primary && zone.layout != *layout {
-            zone.layout = layout.clone();
+            replace_zone_layout(zone, layout.clone());
             return true;
         }
         return false;

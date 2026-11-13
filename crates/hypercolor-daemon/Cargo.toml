@@ -48,6 +48,10 @@ name = "output_demand_tests"
 required-features = ["persistence-test-hooks"]
 
 [[test]]
+name = "screen_backdrop_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
 name = "screen_view_api_tests"
 required-features = ["persistence-test-hooks"]
 

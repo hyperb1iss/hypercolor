@@ -638,27 +638,53 @@ fn convert_zone(
     report.converted.push((legacy, owner_id));
 }
 
-/// The screen outputs a scene's zones hold: each known screen's device
-/// with the id of an output that places it.
-pub type ScreenPlacements = Vec<(DeviceId, String)>;
+/// One screen output a scene's zone held before a write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldScreen {
+    /// The layout device id the output carried.
+    pub layout_device_id: String,
+    /// The output's id.
+    pub output_id: String,
+    /// The zone that held it.
+    pub zone_id: ZoneId,
+}
 
-/// Every screen output a scene's zones hold. Taken before a write, this is
-/// the only record of which device an output belonged to once the write
-/// has removed it.
+/// The outputs a scene's zones held before a write: once the write has
+/// removed one, this is the only record of what it was.
+///
+/// It is read from the scene alone, with no table of known screens, so it
+/// is as good at startup, before any device is known, as later.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScenePlacements {
+    /// Every screen output.
+    pub screens: Vec<HeldScreen>,
+    /// The id of every LED output. A layer that named one of these was a
+    /// canvas layer, whatever its scope names once the write is done.
+    pub leds: HashSet<String>,
+}
+
+/// Record the outputs a scene's zones hold.
 #[must_use]
-pub fn screen_placements(scene: &Scene, surfaces: &ScreenSurfaces) -> ScreenPlacements {
-    scene
+pub fn screen_placements(scene: &Scene) -> ScenePlacements {
+    let mut held = ScenePlacements::default();
+    for zone in scene
         .zones
         .iter()
         .filter(|zone| zone.display_target.is_none())
-        .flat_map(|zone| zone.layout.zones.iter())
-        .filter(|output| is_display_zone(output))
-        .filter_map(|output| {
-            surfaces
-                .get(&output.device_id)
-                .map(|surface| (surface.device_id, output.id.clone()))
-        })
-        .collect()
+    {
+        for output in &zone.layout.zones {
+            if is_display_zone(output) {
+                held.screens.push(HeldScreen {
+                    layout_device_id: output.device_id.clone(),
+                    output_id: output.id.clone(),
+                    zone_id: zone.id,
+                });
+            } else {
+                held.leds.insert(output.id.clone());
+            }
+        }
+    }
+    held
 }
 
 /// The display zone a scene stores for a screen no zone places, empty.
@@ -688,13 +714,34 @@ pub fn stored_display_zone(scene_id: SceneId, surface: &ScreenSurface) -> Zone {
     }
 }
 
+/// A screen whose output has left its zone while its device is not known,
+/// so its layers cannot be stored for it yet. They wait in the zone, and
+/// this record is what ties them to their screen once the device appears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitingScreen {
+    /// The departed output.
+    pub held: HeldScreen,
+    /// The layers that were the screen's own, classified while the zone
+    /// still held the LED outputs that tell a canvas layer from a face.
+    pub layers: Vec<SceneLayerId>,
+}
+
 /// What settling a scene's screens did.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScreenSettle {
     /// Screens whose output left every zone and whose layers went back
     /// into a stored display zone: the device, the stored zone, and the
-    /// zones the layers came from.
-    pub returned: Vec<(DeviceId, ZoneId, Vec<ZoneId>)>,
+    /// zone the layers came from.
+    pub returned: Vec<(DeviceId, ZoneId, ZoneId)>,
+    /// Screens whose stack could be stored only approximately: the panel
+    /// shows the same frames now, but a later edit will not compose as it
+    /// would have in the zone. See [`settle_screens`].
+    pub approximated: Vec<DeviceId>,
+    /// Zones whose layers were re-scoped to the output that now places a
+    /// screen under another id.
+    pub rescoped: Vec<ZoneId>,
+    /// Departed screens whose device is not known yet.
+    pub waiting: Vec<WaitingScreen>,
     /// Stored display zones that became screen layers, and the ones left.
     pub conversion: ScreenConversion,
 }
@@ -703,7 +750,7 @@ impl ScreenSettle {
     /// Whether the scene was changed at all.
     #[must_use]
     pub fn changed(&self) -> bool {
-        !self.returned.is_empty() || self.conversion.changed()
+        !self.returned.is_empty() || !self.rescoped.is_empty() || self.conversion.changed()
     }
 }
 
@@ -714,143 +761,318 @@ impl ScreenSettle {
 /// no zone places holds its stack as a stored display zone, so no layer
 /// scoped only to it is left dormant in the zone its output left.
 ///
-/// `held_before` is [`screen_placements`] of the scene before the write
-/// being settled. A screen it names that no zone places now has left, and
-/// its layers go back into a stored display zone exactly as lowering
-/// rendered them: same layers in the same order under the same ids, the
-/// bottom enabled one's blend and opacity as the target. Then every
-/// stored display zone whose screen is placed converts, as
-/// [`convert_legacy_display_zones`] says. The two are inverses, so a
-/// screen that leaves and returns holds the document it started with.
+/// `held` is [`screen_placements`] of the scene before the write being
+/// settled, and `waiting` the departed screens an earlier settle could not
+/// store. For each screen output that is gone:
+///
+/// - Its device is still placed in the same zone under another id: the
+///   layers follow it there.
+/// - Its device is placed nowhere: its layers go back into a stored
+///   display zone exactly as lowering rendered them, the same layers in
+///   the same order under the same ids, with the bottom enabled one's
+///   blend and opacity as the target.
+/// - Its device is not known: the layers wait, and the screen is reported
+///   in [`ScreenSettle::waiting`] to be offered again.
+///
+/// Then every stored display zone whose screen is placed converts, as
+/// [`convert_legacy_display_zones`] says. Return and conversion are
+/// inverses, so a screen that leaves and returns holds the document it
+/// started with.
 ///
 /// A layer the departed screen shared with screens still placed stays
 /// with them, and the departed screen gets a copy under a new id. A layer
-/// that also reaches an LED output is a canvas layer and is left alone.
-/// A snapshot-locked scene is not rewritten.
+/// that reached an LED output before the write is a canvas layer and is
+/// left alone. The return and the re-scope are internal rewrites and run
+/// for a snapshot-locked scene too, whose zones a layout publication
+/// rewrites like any other; only conversion honors the lock.
+///
+/// A stored zone has one composition, and the bottom enabled layer takes
+/// it. When a disabled layer sits below that one, enabling it later in
+/// the stored zone composes differently than it would have as a screen
+/// layer, where it would have become the base. Such a stack is stored
+/// anyway, because the panel keeps its picture, and reported in
+/// [`ScreenSettle::approximated`].
 pub fn settle_screens(
     scene: &mut Scene,
     surfaces: &ScreenSurfaces,
-    held_before: &[(DeviceId, String)],
+    held: &ScenePlacements,
+    waiting: &[WaitingScreen],
 ) -> ScreenSettle {
     let mut report = ScreenSettle::default();
-    if !scene.blocks_runtime_mutation() {
-        let departed = held_before
+    let mut departed = waiting.to_vec();
+    for screen in &held.screens {
+        if departed.iter().any(|known| known.held == *screen) {
+            continue;
+        }
+        let Some(zone) = scene.zones.iter().find(|zone| zone.id == screen.zone_id) else {
+            continue;
+        };
+        let layers = screen_layers_of(zone, &screen.output_id, &held.leds);
+        departed.push(WaitingScreen {
+            held: screen.clone(),
+            layers,
+        });
+    }
+    for screen in departed {
+        let output_id = screen.held.output_id.as_str();
+        let still_held = scene
+            .zones
             .iter()
-            .filter(|(device_id, _)| {
-                surface_of(surfaces, *device_id).is_some()
-                    && screen_placement(scene, surfaces, *device_id).is_none()
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        for (device_id, _) in &departed {
-            if report.returned.iter().any(|(held, ..)| held == device_id) {
-                continue;
+            .filter(|zone| zone.display_target.is_none())
+            .any(|zone| {
+                zone.layout
+                    .zones
+                    .iter()
+                    .any(|output| output.id == output_id)
+            });
+        let Some(index) = scene
+            .zones
+            .iter()
+            .position(|zone| zone.id == screen.held.zone_id)
+        else {
+            continue;
+        };
+        let named = scene.zones[index].layers.iter().any(|layer| {
+            screen.layers.contains(&layer.id)
+                && layer
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.contains(output_id))
+        });
+        if still_held || !named {
+            continue;
+        }
+        let Some(surface) = surfaces.get(&screen.held.layout_device_id) else {
+            report.waiting.push(screen);
+            continue;
+        };
+        let device_id = surface.device_id;
+        match screen_placement(scene, surfaces, device_id)
+            .map(|(zone, output)| (zone.id, output.id.clone()))
+        {
+            Some((zone_id, now)) if zone_id == screen.held.zone_id => {
+                let zone = &mut scene.zones[index];
+                for layer in &mut zone.layers {
+                    if let Some(scope) = layer.scope.as_mut()
+                        && scope.contains(output_id)
+                    {
+                        for id in &mut scope.outputs {
+                            if id == output_id {
+                                id.clone_from(&now);
+                            }
+                        }
+                        *scope = scope.normalized();
+                    }
+                }
+                zone.layers_version = zone.layers_version.saturating_add(1);
+                report.rescoped.push(zone_id);
             }
-            if let Some((zone_id, owners)) =
-                return_to_stored_zone(scene, surfaces, *device_id, &departed)
-            {
-                report.returned.push((*device_id, zone_id, owners));
+            // Placed by another zone: its layers there are its stack.
+            Some(_) => {}
+            None => {
+                // A stored display zone is already the screen's whole
+                // stack. Layers it covered were never showing.
+                if scene.display_zone_for(device_id).is_some() {
+                    continue;
+                }
+                let surface = surface.clone();
+                let zone = &mut scene.zones[index];
+                let stack = take_screen_stack(zone, output_id, &screen.layers);
+                if stack.is_empty() {
+                    continue;
+                }
+                zone.layers_version = zone.layers_version.saturating_add(1);
+                let counters = (zone.controls_version, zone.layers_version);
+                let (stored, exact) = store_screen_stack(scene.id, &surface, stack, counters);
+                if !exact {
+                    report.approximated.push(device_id);
+                }
+                report
+                    .returned
+                    .push((device_id, stored.id, screen.held.zone_id));
+                scene.zones.push(stored);
             }
         }
-        if !report.returned.is_empty() {
-            scene.zones_revision = scene.zones_revision.saturating_add(1);
-        }
+    }
+    if !report.returned.is_empty() || !report.rescoped.is_empty() {
+        scene.zones_revision = scene.zones_revision.saturating_add(1);
     }
     report.conversion = convert_legacy_display_zones(scene, surfaces);
     report
 }
 
-/// Move a departed screen's layers out of the zones its output left and
-/// into a stored display zone. Returns the stored zone and the zones the
-/// layers came from, or nothing when the screen had no layers of its own.
-fn return_to_stored_zone(
-    scene: &mut Scene,
-    surfaces: &ScreenSurfaces,
-    device_id: DeviceId,
-    departed: &[(DeviceId, String)],
-) -> Option<(ZoneId, Vec<ZoneId>)> {
-    // A stored display zone is already the screen's whole stack. Layers it
-    // covered were never showing, and stay with the zone that holds them.
-    if scene.display_zone_for(device_id).is_some() {
-        return None;
-    }
-    let surface = surface_of(surfaces, device_id)?;
-    let own = departed
+/// The layers of a zone that are one screen's own: they name its output
+/// and reach no LED output, by the zone's outputs now or by `leds`, the
+/// LED outputs the scene held before the write that is being settled.
+#[must_use]
+pub fn screen_layers_of(zone: &Zone, output_id: &str, leds: &HashSet<String>) -> Vec<SceneLayerId> {
+    zone.layers
         .iter()
-        .filter(|(held, _)| *held == device_id)
-        .map(|(_, output_id)| output_id.as_str())
-        .collect::<Vec<_>>();
+        .filter(|layer| {
+            layer.scope.as_ref().is_some_and(|scope| {
+                scope.contains(output_id)
+                    && !scope.outputs.iter().any(|id| {
+                        leds.contains(id)
+                            || zone
+                                .layout
+                                .zones
+                                .iter()
+                                .any(|output| output.id == *id && !is_display_zone(output))
+                    })
+            })
+        })
+        .map(|layer| layer.id)
+        .collect()
+}
+
+/// Take one screen's layers out of a zone, in order: a layer scoped to it
+/// alone leaves the zone and keeps its id, and a layer other outputs
+/// still share stays, narrowed, while the screen gets a copy under an id
+/// of its own.
+fn take_screen_stack(zone: &mut Zone, output_id: &str, layers: &[SceneLayerId]) -> Vec<SceneLayer> {
     let mut stack = Vec::new();
-    let mut owners = Vec::new();
-    let mut paused = false;
-    for zone in scene
-        .zones
-        .iter_mut()
-        .filter(|zone| zone.display_target.is_none())
-    {
-        let leds = zone
-            .layout
-            .zones
-            .iter()
-            .filter(|output| !is_display_zone(output))
-            .map(|output| output.id.clone())
-            .collect::<HashSet<_>>();
-        let before = stack.len();
-        zone.layers.retain_mut(|layer| {
-            let Some(scope) = layer.scope.as_ref() else {
-                return true;
-            };
-            // A layer that reaches an LED output of the zone is a canvas
-            // layer; the screen only ever saw it through its backdrop.
-            if !scope.outputs.iter().any(|id| own.contains(&id.as_str()))
-                || scope.outputs.iter().any(|id| leds.contains(id))
-            {
-                return true;
-            }
-            let remaining = scope
-                .outputs
-                .iter()
-                .filter(|id| !own.contains(&id.as_str()))
-                .cloned()
-                .collect::<Vec<_>>();
-            let mut copy = layer.clone();
-            copy.scope = None;
-            // Other screens keep the layer under its id, so this screen's
-            // copy needs one of its own.
-            if scope.outputs.len() > 1 {
-                copy.id = SceneLayerId::new();
-            }
-            stack.push(copy);
-            let kept = !remaining.is_empty();
-            layer.scope = Some(LayerScope { outputs: remaining });
-            kept
-        });
-        if stack.len() != before {
-            zone.layers_version = zone.layers_version.saturating_add(1);
-            owners.push(zone.id);
-            paused |= !zone.enabled;
+    zone.layers.retain_mut(|layer| {
+        let Some(scope) = layer.scope.as_ref() else {
+            return true;
+        };
+        if !layers.contains(&layer.id) || !scope.contains(output_id) {
+            return true;
         }
-    }
-    if stack.is_empty() {
-        return None;
-    }
-    // Lowering took the bottom enabled layer's blend and opacity as the
-    // target and rendered that layer as the opaque base. Stored the same
-    // way, the zone renders the frames the layers did.
+        let remaining = scope
+            .outputs
+            .iter()
+            .filter(|id| *id != output_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut copy = layer.clone();
+        copy.scope = None;
+        if !remaining.is_empty() {
+            copy.id = SceneLayerId::new();
+        }
+        stack.push(copy);
+        let kept = !remaining.is_empty();
+        layer.scope = Some(LayerScope { outputs: remaining });
+        kept
+    });
+    stack
+}
+
+/// Store a screen's stack as a display zone that renders what lowering
+/// rendered: the bottom enabled layer's blend and opacity as the target,
+/// and that layer as the opaque base. Returns the zone and whether the
+/// stored form is exact for later edits too, which it is unless a disabled
+/// layer sits below the base.
+///
+/// The zone is enabled whatever its screen's zone was: a screen no zone
+/// places is not paused by any zone. It carries the version counters of
+/// the zone its layers came from, so a client's fence keeps moving forward.
+fn store_screen_stack(
+    scene_id: SceneId,
+    surface: &ScreenSurface,
+    mut stack: Vec<SceneLayer>,
+    counters: (u64, u64),
+) -> (Zone, bool) {
     let base = stack.iter().position(|layer| layer.enabled).unwrap_or(0);
-    let mut zone = stored_display_zone(scene.id, surface);
+    let mut zone = stored_display_zone(scene_id, surface);
     zone.display_target = Some(normalize_face_target(DisplayFaceTarget {
-        device_id,
+        device_id: surface.device_id,
         blend_mode: stack[base].blend,
         opacity: stack[base].opacity,
     }));
     stack[base].blend = BlendMode::Replace;
     stack[base].opacity = 1.0;
     zone.layers = stack;
-    zone.enabled = !paused;
-    let zone_id = zone.id;
-    scene.zones.push(zone);
-    Some((zone_id, owners))
+    zone.controls_version = counters.0;
+    zone.layers_version = counters.1;
+    (zone, base == 0)
+}
+
+/// Store the faces of the screens a zone places, for a zone that is about
+/// to be deleted: deleting a zone unplaces its screens, and an unplaced
+/// screen keeps its stack in a stored display zone. Lighting layers go
+/// with the zone. A screen whose device is not known, or that already has
+/// a stored display zone, has nothing stored here.
+pub(super) fn stored_faces_of(
+    scene_id: SceneId,
+    zone: &Zone,
+    surfaces: &ScreenSurfaces,
+    held_elsewhere: impl Fn(DeviceId) -> bool,
+) -> Vec<Zone> {
+    let mut source = zone.clone();
+    let mut stored = Vec::new();
+    for output in zone
+        .layout
+        .zones
+        .iter()
+        .filter(|output| is_display_zone(output))
+    {
+        let Some(surface) = surfaces.get(&output.device_id) else {
+            continue;
+        };
+        if held_elsewhere(surface.device_id)
+            || stored.iter().any(|held: &Zone| {
+                held.display_target
+                    .as_ref()
+                    .is_some_and(|target| target.device_id == surface.device_id)
+            })
+        {
+            continue;
+        }
+        let layers = screen_layers_of(&source, &output.id, &HashSet::new());
+        let stack = take_screen_stack(&mut source, &output.id, &layers);
+        if stack.is_empty() {
+            continue;
+        }
+        let counters = (zone.controls_version, zone.layers_version);
+        stored.push(store_screen_stack(scene_id, surface, stack, counters).0);
+    }
+    stored
+}
+
+/// Carry a zone's layer scopes across a wholesale replacement of its
+/// outputs.
+///
+/// A stored layout mints its own output ids, so the same device segment
+/// can come back from another layout under another id. A scope names an
+/// output by id, and a layer scoped to the old id would go dormant while
+/// its device sits right there. For each scope id the new outputs lack,
+/// the old output it named is matched by device and segment: when exactly
+/// one new output is that same segment, the id is rewritten to it. That
+/// is identity, not widening: the layer follows the same physical segment.
+/// With no match the id stays, as any id whose output left does. With
+/// more than one the layout holds the segment several times and nothing
+/// says which the layer meant, so the id is left alone too.
+///
+/// Returns whether any scope changed.
+pub(super) fn follow_outputs(zone: &mut Zone, new: &[Output]) -> bool {
+    let mut changed = false;
+    let old = &zone.layout.zones;
+    for layer in &mut zone.layers {
+        let Some(scope) = layer.scope.as_mut() else {
+            continue;
+        };
+        let mut renamed = false;
+        for id in &mut scope.outputs {
+            if new.iter().any(|output| output.id == *id) {
+                continue;
+            }
+            let Some(was) = old.iter().find(|output| output.id == *id) else {
+                continue;
+            };
+            let mut same = new.iter().filter(|output| {
+                output.device_id == was.device_id && output.zone_name == was.zone_name
+            });
+            if let (Some(now), None) = (same.next(), same.next()) {
+                id.clone_from(&now.id);
+                renamed = true;
+            }
+        }
+        if renamed {
+            *scope = scope.normalized();
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Take one screen out of a shared layer's scope and give it a copy of its

@@ -2310,6 +2310,175 @@ async fn shutdown_leaves_the_patched_state_on_disk_with_a_write_in_flight() {
     );
 }
 
+/// A screen placed only in a scene's primary zone is not in the layout the
+/// daemon starts on, so the startup realign takes its output away, before
+/// any device has been discovered. The face waits, and is stored for the
+/// screen as soon as its device is known.
+#[tokio::test]
+async fn daemon_start_keeps_a_face_whose_screen_the_startup_layout_does_not_hold() {
+    use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
+
+    let guard = TestDataDirGuard::new();
+    let device_id = hypercolor_types::device::DeviceId::new();
+    let mut info = hypercolor_types::device::DeviceInfo {
+        id: device_id,
+        name: "Pump LCD".to_owned(),
+        vendor: "test".to_owned(),
+        family: hypercolor_types::device::DeviceFamily::new_static("test", "Test"),
+        model: None,
+        connection_type: hypercolor_types::device::ConnectionType::Usb,
+        origin: hypercolor_types::device::DeviceOrigin::native(
+            "test",
+            "usb",
+            hypercolor_types::device::ConnectionType::Usb,
+        ),
+        segments: vec![hypercolor_types::device::SegmentInfo {
+            name: "Display".to_owned(),
+            led_count: 0,
+            topology: hypercolor_types::device::DeviceTopologyHint::Display {
+                width: 480,
+                height: 480,
+                circular: true,
+                format: hypercolor_types::device::DisplayFrameFormat::Jpeg,
+            },
+            color_format: hypercolor_types::device::DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: hypercolor_types::device::DeviceCapabilities::default(),
+    };
+    info.sync_display_capabilities();
+    // The layout device id the daemon will know this device by.
+    let layout_device_id = {
+        let registry = hypercolor_core::device::DeviceRegistry::new();
+        let _ = registry.add(info.clone()).await;
+        let fingerprint = registry.fingerprint_for_id(&device_id).await;
+        hypercolor_core::device::DeviceLifecycleManager::canonical_layout_device_id(
+            &info,
+            fingerprint.as_ref(),
+        )
+    };
+
+    let mut face = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        hypercolor_types::effect::EffectId::new(uuid::Uuid::now_v7()),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+        None,
+    );
+    face.scope = Some(LayerScope {
+        outputs: vec!["pump-lcd".to_owned()],
+    });
+    let face_id = face.id;
+    let mut primary = hypercolor_core::scene::default_primary_zone(SpatialLayout {
+        id: "scene-local".to_owned(),
+        name: "Scene Local".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![hypercolor_types::spatial::Output {
+            id: "pump-lcd".to_owned(),
+            name: "Pump LCD".to_owned(),
+            device_id: layout_device_id,
+            zone_name: Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned()),
+            position: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5),
+            size: hypercolor_types::spatial::NormalizedPosition::new(0.2, 0.2),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: hypercolor_types::spatial::LedTopology::Point,
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    });
+    primary.layers.push(face);
+    let mut named_scene = hypercolor_core::scene::make_scene("Focus");
+    named_scene.zones.push(primary);
+    let named_scene_id = named_scene.id;
+    write_scene_store(&guard.scenes_path(), [named_scene]);
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(named_scene_id.to_string()),
+            default_scene_zones: Vec::new(),
+            active_layout_id: None,
+            manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
+        },
+    )
+    .expect("runtime state should save");
+
+    let mut config = default_config();
+    config.daemon.start_scene = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+        guard.host(),
+    )
+    .expect("initialization should succeed");
+    state.start().await.expect("start should succeed");
+
+    {
+        let scenes = state.scene_manager.snapshot().await;
+        assert_eq!(scenes.active_scene_id(), Some(&named_scene_id));
+        let primary = scenes
+            .active_scene()
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
+            .expect("primary zone");
+        assert!(
+            primary
+                .layout
+                .zones
+                .iter()
+                .all(|output| output.id != "pump-lcd"),
+            "the startup realign took the layout, which does not hold the screen"
+        );
+    }
+
+    // Discovery finds the display.
+    let api_state = AppState::from_daemon_state(&state);
+    let _ = state.device_registry.add(info).await;
+    api_state.domains.display.sync_connected_surfaces().await;
+
+    let scenes = state.scene_manager.snapshot().await;
+    let scene = scenes.active_scene().expect("active scene");
+    let stored = scene
+        .display_zone_for(device_id)
+        .expect("the face is stored for its screen once the device is known");
+    assert_eq!(stored.layers.len(), 1);
+    assert_eq!(stored.layers[0].id, face_id);
+    assert!(
+        scene
+            .primary_zone()
+            .expect("primary zone")
+            .layers
+            .iter()
+            .all(|layer| layer.scope.is_none()),
+        "no layer scoped to the screen is left waiting in the zone"
+    );
+    assert!(
+        scenes.resolved_zones().iter().any(|zone| zone
+            .display_target
+            .as_ref()
+            .is_some_and(|target| target.device_id == device_id)),
+        "and it reaches the render list"
+    );
+    drop(scenes);
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
 #[tokio::test]
 async fn daemon_start_restores_named_active_scene_and_default_zones() {
     let guard = TestDataDirGuard::new();
