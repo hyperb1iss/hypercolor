@@ -883,10 +883,15 @@ impl Rig {
     }
 
     /// Take one output out of the active layout, as Studio does for a
-    /// screen that left a zone following that layout.
+    /// screen that left a zone following that layout: the stored layout
+    /// loses the output, and applying it makes that live.
     async fn forget_in_active_layout(&self, output_id: &str) {
-        let layout = self.ok(Method::GET, "/api/v1/layouts/active", None).await;
-        let kept = layout["zones"]
+        let active = self.ok(Method::GET, "/api/v1/layouts/active", None).await;
+        let id = active["id"].as_str().expect("layout id");
+        let stored = self
+            .ok(Method::GET, &format!("/api/v1/layouts/{id}"), None)
+            .await;
+        let kept = stored["zones"]
             .as_array()
             .expect("the layout lists its outputs")
             .iter()
@@ -895,13 +900,12 @@ impl Rig {
             .collect::<Vec<_>>();
         self.ok(
             Method::PUT,
-            &format!(
-                "/api/v1/layouts/{}",
-                layout["id"].as_str().expect("layout id")
-            ),
+            &format!("/api/v1/layouts/{id}"),
             Some(json!({ "zones": kept })),
         )
         .await;
+        self.ok(Method::POST, &format!("/api/v1/layouts/{id}/apply"), None)
+            .await;
     }
 
     async fn put_scene_face(&self, screen: &Screen, face: EffectId) -> Vec<String> {

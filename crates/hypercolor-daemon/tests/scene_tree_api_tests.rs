@@ -2719,16 +2719,27 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert_eq!(assigned.status(), StatusCode::OK);
     let assigned: EditMembersResponse =
         serde_json::from_value(body_json(assigned).await["data"].clone()).expect("receipt");
+    // Assigning the device is placing it, so its screen comes with its
+    // lights: a box of its own, never part of the lights' output.
+    let minted = assigned
+        .changes
+        .iter()
+        .map(|change| &change.after.as_ref().expect("minted output").output)
+        .collect::<Vec<_>>();
     assert_eq!(
-        assigned.changes.len(),
-        1,
-        "display segments never enter LED membership"
+        minted.len(),
+        2,
+        "one output for the lights, one for the screen"
     );
-    let output = &assigned.changes[0]
-        .after
-        .as_ref()
-        .expect("minted output")
-        .output;
+    let screen = minted
+        .iter()
+        .find(|output| output.zone_name.as_deref() == Some("Display"))
+        .expect("the screen is placed");
+    assert!(screen.led_positions.len() <= 1);
+    let output = minted
+        .iter()
+        .find(|output| output.zone_name.as_deref() == Some("Lights"))
+        .expect("the lights are placed");
     assert_eq!(Some(output.topology.clone()), hint.topology);
     assert_eq!(Some(output.size), hint.size);
     assert_eq!(output.shape, hint.shape);
@@ -2747,6 +2758,16 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert!(unchanged.changes.is_empty());
     assert_eq!(unchanged.document.revision, assigned.document.revision);
 
+    let lights = assigned
+        .changes
+        .iter()
+        .map(|change| &change.after)
+        .find(|after| {
+            after
+                .as_ref()
+                .is_some_and(|state| state.output.zone_name.as_deref() == Some("Lights"))
+        })
+        .expect("the lights' change");
     let removed = send(
         &app,
         if_match(
@@ -2757,7 +2778,7 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
                     scene_id,
                     assignment: None,
                     changes: vec![hypercolor_types::api::scene::MemberEdit {
-                        before: assigned.changes[0].after.clone(),
+                        before: lights.clone(),
                         after: None,
                     }],
                     layer_moves: None,
@@ -2791,6 +2812,9 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert_eq!(seeded.status(), StatusCode::OK);
     let seeded: EditMembersResponse =
         serde_json::from_value(body_json(seeded).await["data"].clone()).expect("receipt");
+    // The screen stayed where the first assignment put it, so only the
+    // lights come back.
+    assert_eq!(seeded.changes.len(), 1);
     let output = &seeded.changes[0]
         .after
         .as_ref()
