@@ -28,6 +28,7 @@ use leptos_icons::Icon;
 use super::layer_target::target_outputs_for;
 use super::phone_view::StudioPhoneView;
 use super::screen_model::{PlacedScreen, ScreenLine, zone_screen_lines};
+use super::screen_model::{UnplacedDisplay, unplaced_screen_lines};
 use super::screens::{ScreenSheet, use_kept_names, use_placed_screens};
 use crate::api;
 use crate::app::EffectsContext;
@@ -178,6 +179,23 @@ struct EditedLayer {
 }
 
 /// Studio's phone layout.
+/// What a layer is called: its own name, else its effect's.
+fn layer_name(fx: EffectsContext, layer: &hypercolor_types::layer::SceneLayer) -> String {
+    let effect = match &layer.source {
+        LayerSource::Effect { effect_id, .. } => {
+            let effect_id = effect_id.to_string();
+            fx.effects_index.with(|effects| {
+                effects
+                    .iter()
+                    .find(|entry| entry.effect.id == effect_id)
+                    .map(|entry| entry.effect.name.clone())
+            })
+        }
+        _ => None,
+    };
+    layer_label(layer, effect.as_deref())
+}
+
 #[component]
 pub fn StudioPhoneSummary() -> impl IntoView {
     let zones_ctx = expect_context::<ZonesContext>();
@@ -197,21 +215,7 @@ pub fn StudioPhoneSummary() -> impl IntoView {
             let Some(scene) = scene.as_ref() else {
                 return HashMap::new();
             };
-            let name = |layer: &hypercolor_types::layer::SceneLayer| {
-                let effect = match &layer.source {
-                    LayerSource::Effect { effect_id, .. } => {
-                        let effect_id = effect_id.to_string();
-                        fx.effects_index.with(|effects| {
-                            effects
-                                .iter()
-                                .find(|entry| entry.effect.id == effect_id)
-                                .map(|entry| entry.effect.name.clone())
-                        })
-                    }
-                    _ => None,
-                };
-                layer_label(layer, effect.as_deref())
-            };
+            let name = |layer: &hypercolor_types::layer::SceneLayer| layer_name(fx, layer);
             scene
                 .zones
                 .iter()
@@ -221,6 +225,44 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                     (zone_id, lines)
                 })
                 .collect::<HashMap<_, _>>()
+        })
+    });
+
+    // The screens no zone places. Automatic layout leaves every screen
+    // there until someone places it, and each still shows a face.
+    let devices = expect_context::<crate::app::DevicesContext>().devices_resource;
+    let unplaced_lines = Memo::new(move |_| {
+        let placed = placed.get();
+        let kept = kept_names.get();
+        let displays: Vec<UnplacedDisplay> = devices
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|device| {
+                device.segments.iter().any(|segment| {
+                    matches!(
+                        segment.topology_hint,
+                        Some(api::SegmentTopologySummary::Display { .. })
+                    )
+                })
+            })
+            .map(|device| UnplacedDisplay {
+                device_id: device.id,
+                layout_id: device.layout_device_id,
+                name: device.name,
+            })
+            .collect();
+        active_scene.with(|scene| {
+            scene.as_ref().map_or_else(Vec::new, |scene| {
+                unplaced_screen_lines(
+                    &scene.zones,
+                    &placed,
+                    &displays,
+                    |layer| layer_name(fx, layer),
+                    &kept,
+                )
+            })
         })
     });
 
@@ -343,6 +385,20 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                         </div>
                     </section>
 
+                    <Show when=move || !unplaced_lines.with(Vec::is_empty)>
+                        <section aria-label="Unassigned" class="mt-5" data-unassigned-screens="">
+                            <h2 class=format!("{} mb-2", label_class(LabelSize::Small, LabelTone::Default))>
+                                "Unassigned"
+                            </h2>
+                            <div class="rounded-2xl border border-edge-subtle bg-surface-overlay/40 px-4 py-2">
+                                <ScreenLines
+                                    screens=unplaced_lines
+                                    on_screen=Callback::new(move |screen| set_open_screen.set(Some(screen)))
+                                />
+                            </div>
+                        </section>
+                    </Show>
+
                 </div>
             </div>
 
@@ -356,6 +412,59 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                 <ScreenSheet screen=screen on_close=Callback::new(move |()| set_open_screen.set(None)) />
             })}
         </div>
+    }
+}
+
+/// A list of screens, each with the face it shows, each opening its
+/// sheet.
+#[component]
+fn ScreenLines(
+    #[prop(into)] screens: Signal<Vec<ScreenLine>>,
+    on_screen: Callback<PlacedScreen>,
+) -> impl IntoView {
+    view! {
+        <ul class="mt-1 divide-y divide-edge-subtle/40">
+                        <For
+                            each=move || screens.get()
+                            key=|line| (line.screen.zone_id.clone(), line.screen.output_id.clone(), line.screen.name.clone(), line.face.clone())
+                            children=move |line| {
+                                let label = match &line.face {
+                                    Some(face) => format!("{}, showing {face}", line.screen.name),
+                                    None => format!("{}, no face", line.screen.name),
+                                };
+                                let named = line.face.is_some();
+                                let screen = line.screen.clone();
+                                view! {
+                                    <li>
+                                        <button
+                                            type="button"
+                                            class="flex min-h-11 w-full items-center gap-3 py-1 text-left btn-press"
+                                            aria-haspopup="dialog"
+                                            aria-label=label
+                                            on:click=move |_| on_screen.run(screen.clone())
+                                        >
+                                            <span class="flex shrink-0 text-accent/75">
+                                                <Icon icon=LuMonitor width="14px" height="14px" />
+                                            </span>
+                                            <span class="min-w-0 flex-1 truncate text-sm text-fg-primary">
+                                                {line.screen.name.clone()}
+                                            </span>
+                                            <span
+                                                class="min-w-0 max-w-[50%] shrink truncate text-xs"
+                                                class=("text-fg-secondary", named)
+                                                class=("text-fg-tertiary", !named)
+                                            >
+                                                {line.face.clone().unwrap_or_else(|| "No face".to_owned())}
+                                            </span>
+                                            <span class="flex shrink-0 text-fg-tertiary">
+                                                <Icon icon=LuChevronRight width="14px" height="14px" />
+                                            </span>
+                                        </button>
+                                    </li>
+                                }
+                            }
+                        />
+        </ul>
     }
 }
 
@@ -479,48 +588,7 @@ fn ZoneCard(
             <Show when=move || !screens.with(Vec::is_empty)>
                 <div class="mt-3" data-zone-screens="">
                     <div class=label_class(LabelSize::Micro, LabelTone::Default)>"Screens"</div>
-                    <ul class="mt-1 divide-y divide-edge-subtle/40">
-                        <For
-                            each=move || screens.get()
-                            key=|line| (line.screen.output_id.clone(), line.screen.name.clone(), line.face.clone())
-                            children=move |line| {
-                                let label = match &line.face {
-                                    Some(face) => format!("{}, showing {face}", line.screen.name),
-                                    None => format!("{}, no face", line.screen.name),
-                                };
-                                let named = line.face.is_some();
-                                let screen = line.screen.clone();
-                                view! {
-                                    <li>
-                                        <button
-                                            type="button"
-                                            class="flex min-h-11 w-full items-center gap-3 py-1 text-left btn-press"
-                                            aria-haspopup="dialog"
-                                            aria-label=label
-                                            on:click=move |_| on_screen.run(screen.clone())
-                                        >
-                                            <span class="flex shrink-0 text-accent/75">
-                                                <Icon icon=LuMonitor width="14px" height="14px" />
-                                            </span>
-                                            <span class="min-w-0 flex-1 truncate text-sm text-fg-primary">
-                                                {line.screen.name.clone()}
-                                            </span>
-                                            <span
-                                                class="min-w-0 max-w-[50%] shrink truncate text-xs"
-                                                class=("text-fg-secondary", named)
-                                                class=("text-fg-tertiary", !named)
-                                            >
-                                                {line.face.clone().unwrap_or_else(|| "No face".to_owned())}
-                                            </span>
-                                            <span class="flex shrink-0 text-fg-tertiary">
-                                                <Icon icon=LuChevronRight width="14px" height="14px" />
-                                            </span>
-                                        </button>
-                                    </li>
-                                }
-                            }
-                        />
-                    </ul>
+                    <ScreenLines screens=screens on_screen=on_screen />
                 </div>
             </Show>
             <Show when=move || !limited.with(Vec::is_empty)>

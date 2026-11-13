@@ -1458,12 +1458,22 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
     let zone_id = screen.zone_id.clone();
     // The screen as the scene has it now: a write may change where its
     // layers live.
+    let unplaced = (!screen.placed).then(|| UnplacedDisplay {
+        device_id: screen.device_id.clone().unwrap_or_default(),
+        layout_id: screen.layout_id.clone(),
+        name: screen.name.clone(),
+    });
     let current = Memo::new(move |_| {
-        placed.with(|placed| {
-            placed
+        placed.with(|placed| match &unplaced {
+            // A screen no zone places is read through the zone the scene
+            // keeps for it, for as long as no zone claims it.
+            Some(display) => {
+                active_scene.with(|scene| unplaced_screen(&scene.as_ref()?.zones, placed, display))
+            }
+            None => placed
                 .iter()
                 .find(|placed| placed.zone_id == zone_id && placed.output_id == output_id)
-                .cloned()
+                .cloned(),
         })
     });
     let view = Memo::new(move |_| {
@@ -1510,7 +1520,27 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
         all_screens: Signal::stored(None),
         leave: on_close,
         copy: Callback::new(|_| {}),
-        lead: ViewFn::from(move || view! { <KeptFaceCard kept=kept /> }),
+        lead: ViewFn::from(move || {
+            view! {
+                {move || {
+                    current
+                        .get()
+                        .filter(|screen| !screen.placed)
+                        .map(|screen| view! {
+                            <p
+                                class="rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 px-3 py-2.5 text-[11px] leading-relaxed text-fg-tertiary"
+                                data-unplaced-note=""
+                            >
+                                {format!(
+                                    "{} is not on the canvas, so it shows its own layers with nothing behind them. Place it from the editor.",
+                                    screen.name
+                                )}
+                            </p>
+                        })
+                }}
+                <KeptFaceCard kept=kept />
+            }
+        }),
         faces: Signal::stored(Vec::new()),
         select: Callback::new(|_| {}),
         add_requests: Signal::stored(0),
