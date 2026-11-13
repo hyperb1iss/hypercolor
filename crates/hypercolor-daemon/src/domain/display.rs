@@ -544,6 +544,9 @@ pub async fn sync_screen_surfaces(
 
     if let Some(((), commit)) = outcome.as_ref() {
         commit.log_if_retrying("Failed to persist converted screen layers");
+        // The default scene lives in the runtime session, so a conversion
+        // of it is saved here, as every other write to it is.
+        ctx.save_runtime_session().await;
     }
     Ok(outcome.is_some())
 }
@@ -581,6 +584,7 @@ pub async fn sync_known_screens(ctx: &SceneContext) -> Result<bool, DomainError>
         match ctx.commit(mutation).await {
             Ok(commit) => {
                 commit.log_if_retrying("Failed to persist converted screen layers");
+                ctx.save_runtime_session().await;
                 return Ok(true);
             }
             Err(conflict @ DomainError::Conflict { .. }) => last_conflict = Some(conflict),

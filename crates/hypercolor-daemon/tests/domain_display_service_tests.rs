@@ -879,6 +879,46 @@ async fn syncing_screens_converts_a_stored_display_zone_once() {
 }
 
 #[tokio::test]
+async fn syncing_screens_saves_the_converted_default_scene() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = DeviceId::new();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+    place_output(&state, screen_output(SCREEN, LAYOUT_ID)).await;
+    store_zone(&state, legacy_zone(device_id, effect.id)).await;
+
+    assert!(
+        sync_screen_surfaces(&state.domains.scene, surface(device_id))
+            .await
+            .expect("the sync should commit")
+    );
+
+    hypercolor_daemon::persistence::AtomicFileWriter::new(&state.runtime_state_path)
+        .expect("runtime state writer should open")
+        .flush(std::time::Duration::from_secs(5))
+        .expect("the runtime session write should land");
+    let saved = hypercolor_daemon::runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load")
+        .expect("the sync should write the runtime session");
+    assert!(
+        saved
+            .default_scene_zones
+            .iter()
+            .all(|zone| zone.role != ZoneRole::Display),
+        "the converted default scene is what a restart would load"
+    );
+    assert_eq!(
+        saved
+            .default_scene_zones
+            .iter()
+            .flat_map(|zone| zone.layers.iter())
+            .filter(|layer| layer.scope.is_some())
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn syncing_screens_leaves_a_snapshot_locked_scene_as_stored() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
