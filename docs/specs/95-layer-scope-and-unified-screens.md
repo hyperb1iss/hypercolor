@@ -430,9 +430,11 @@ scoped layers.
   screens is read from the zone's own layout. Clear is the "stop" gesture
   (`hypercolor-types/src/api/scene.rs:331`) and today it skips display zones
   (`scene_tree.rs:421-426`), so faces already survive it. A keyboard layer is
-  lighting and goes dark with the rest. The cost of one rule with no
-  exceptions is accepted: a face whose screen has been unassigned is dormant,
-  cannot be shown to be a face, and is removed by a clear.
+  lighting and goes dark with the rest. The cost of one rule is accepted: a
+  face whose screen has been unassigned is dormant, cannot be shown to be a
+  face, and is removed by a clear. The one layer a clear keeps beyond the rule
+  is a face waiting for its device (§6.6), which the scene manager remembers is
+  a face.
 
 ### 4.5 REST, OpenAPI, MCP, events
 
@@ -1472,13 +1474,16 @@ is idempotent. It has two halves:
 
 The return and the scope rewrite of R5 are internal rewrites and run for a
 snapshot-locked scene, whose primary zone a layout publication rewrites like
-any other. Only conversion honors the lock.
+any other: the lock refuses authored edits at their entry points, and
+`SceneManager::sync_primary_zone_layout` is not one of them. Only conversion
+honors the lock.
 
 A screen whose output leaves while its device is not known cannot be stored
 yet: a stored display zone names its device. This is the startup case, where
 the realign runs before discovery. The layers wait in the zone, the scene
 manager remembers which screen they belonged to, and the first settle after
-the device is known stores them. That memory lasts for the run.
+the device is known stores them. A clear in between keeps them. That memory
+lasts for the run.
 
 A stored zone has one composition, and the bottom enabled layer takes it. When
 a disabled layer sits below that one, enabling it later in the stored zone
@@ -1526,6 +1531,29 @@ conversion again whenever it changes.
 | Backup scenes with display zones | Restored as stored, converted on activation | |
 | The runtime session's default scene | Converted on its first activation after upgrade | |
 | `hypercolor.toml` | No change | |
+
+**Known limits.** Four states leave a face that does not render. None has a
+mechanism of its own; each is a condition and what follows from it.
+
+- **A waiting face's device stays away for the whole run.** The memory of
+  which screen the layers belonged to ends with the run. On the next run they
+  are dormant layers in their zone, and they render again only if an output
+  comes back to that zone under the id their scope names.
+- **A zone is deleted while its screen's device is unknown.** The face is
+  deleted with the zone, because a stored display zone has to name a device.
+- **One edit takes a screen's output out of one zone and adds an output with a
+  different id for the same device to another.** The layers stay dormant in
+  the first zone and the screen has no face in the second. A move in Studio
+  keeps the output id and is not affected.
+- **A whole-document write to a scene that is not live removes a screen's
+  output and keeps its layers.** The settle pass runs for the live scene, so
+  the layers are dormant when that scene is activated, and activation has no
+  earlier state to return them from.
+
+The startup write that rebinds device ids in stored scenes installs its
+scenes without settling, because the store has already taken them. It removes
+no output, so it leaves nothing to return, and a conversion it makes possible
+happens on the scene's next write.
 
 After this wave the daemon writes a display zone into a scene in one case
 only: a face or a layer written for a screen no zone places (§6.7), which has
