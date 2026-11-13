@@ -371,11 +371,14 @@ can be held under a different id by each layout. Two rules follow.
 - **A wholesale replacement of a zone's outputs carries its scopes across.**
   When a primary zone that follows the active layout takes a layout whole, or
   an effect apply does the same, each scope id the new outputs lack is matched
-  through the old output it named: if exactly one new output is the same
-  device and segment, the id is rewritten to it. That is identity, not
-  widening. It needs nothing but the zone, so it holds at startup and in a
-  snapshot-locked scene. If more than one new output is that segment, nothing
-  says which the layer meant and the id is left alone.
+  through the old output it named: if that device and segment is held exactly
+  once among the outputs being replaced and exactly once among the outputs
+  replacing them, the id is rewritten to the new output's. That is identity,
+  not widening. It needs nothing but the zone, so it holds at startup and in a
+  snapshot-locked scene. If either side holds the segment more than once,
+  nothing says which one the layer means and the id is left alone: it is
+  dormant until its own output returns, so a trip through another layout and
+  back leaves the layer where it was.
 - **An id whose segment is gone stays and goes dormant.** When an output is
   unassigned (`core/src/scene/mod.rs:1016-1043`), when its device is
   forgotten, or when a layout holds no output for its segment, its id stays in

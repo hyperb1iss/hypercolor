@@ -1949,6 +1949,47 @@ fn a_scope_is_left_alone_when_no_segment_or_more_than_one_could_be_meant() {
     assert_eq!(zone.layers, vec![keys]);
 }
 
+/// A layout that holds one device segment twice next to a layout that
+/// holds it once. A scope authored under either comes back live after a
+/// trip through the other, because an id is only rewritten when the
+/// segment is single on both sides.
+#[test]
+fn a_scope_survives_a_round_trip_through_a_layout_that_holds_its_segment_differently() {
+    let rig = rig();
+    let twice = layout(vec![
+        renamed("board-a", &strip("keys")),
+        renamed("board-b", &strip("keys")),
+    ]);
+    let once = layout(vec![renamed("board-one", &strip("keys"))]);
+
+    for (home, away, id) in [(&twice, &once, "board-a"), (&once, &twice, "board-one")] {
+        let overlay = scoped(effect_layer(), &[id]);
+        let authored = scene(vec![primary(home.zones.clone(), vec![overlay.clone()])]);
+        let scene_id = authored.id;
+        let mut manager = active(&rig, authored);
+        let zone = |manager: &SceneManager| {
+            manager
+                .get(&scene_id)
+                .and_then(Scene::primary_zone)
+                .expect("primary zone")
+                .clone()
+        };
+
+        assert!(manager.sync_primary_zone_layout(away));
+        let abroad = zone(&manager);
+        assert_eq!(abroad.layers, vec![overlay.clone()], "the id is kept");
+        assert!(abroad.layer_is_dormant(&abroad.layers[0]));
+
+        assert!(manager.sync_primary_zone_layout(home));
+        let back = zone(&manager);
+        assert_eq!(back.layers, vec![overlay]);
+        assert!(
+            !back.layer_is_dormant(&back.layers[0]),
+            "the layer lights the output it was authored for again"
+        );
+    }
+}
+
 // ── One screen, one output ───────────────────────────────────────────────
 
 /// A layout can name one panel twice. The face sits on the second output

@@ -1053,12 +1053,14 @@ pub(super) fn stored_faces_of(
 /// can come back from another layout under another id. A scope names an
 /// output by id, and a layer scoped to the old id would go dormant while
 /// its device sits right there. For each scope id the new outputs lack,
-/// the old output it named is matched by device and segment: when exactly
-/// one new output is that same segment, the id is rewritten to it. That
-/// is identity, not widening: the layer follows the same physical segment.
-/// With no match the id stays, as any id whose output left does. With
-/// more than one the layout holds the segment several times and nothing
-/// says which the layer meant, so the id is left alone too.
+/// the old output it named is matched by device and segment: when the
+/// segment is held exactly once on each side, the id is rewritten to the
+/// new output's. That is identity, not widening: the layer follows the
+/// same physical segment. With no match the id stays, as any id whose
+/// output left does. When either side holds the segment more than once,
+/// nothing says which one the layer means, so the id is left alone too:
+/// it is dormant until its own output returns, and a round trip through
+/// another layout brings it back where it was.
 ///
 /// Returns whether any scope changed.
 pub(super) fn follow_outputs(zone: &mut Zone, new: &[Output]) -> bool {
@@ -1076,10 +1078,13 @@ pub(super) fn follow_outputs(zone: &mut Zone, new: &[Output]) -> bool {
             let Some(was) = old.iter().find(|output| output.id == *id) else {
                 continue;
             };
-            let mut same = new.iter().filter(|output| {
+            let same_segment = |output: &&Output| {
                 output.device_id == was.device_id && output.zone_name == was.zone_name
-            });
-            if let (Some(now), None) = (same.next(), same.next()) {
+            };
+            let mut now = new.iter().filter(same_segment);
+            if old.iter().filter(same_segment).count() == 1
+                && let (Some(now), None) = (now.next(), now.next())
+            {
                 id.clone_from(&now.id);
                 renamed = true;
             }
