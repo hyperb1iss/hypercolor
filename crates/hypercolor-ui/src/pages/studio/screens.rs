@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
@@ -51,6 +51,7 @@ use super::screen_model::{
     screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screen,
     unplaced_screens,
 };
+use super::screen_model::{FaceRemoval, face_removal};
 
 /// Flush debounce for face-setting edits, the layer inspector's cadence.
 const FACE_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
@@ -338,6 +339,39 @@ impl Screens {
         }
     }
 
+    /// What the layer `layer_id` of the zone `zone_id` stays limited to
+    /// once the selected screens are taken out of it. `None` when they
+    /// are every screen it is on, or it has no target: the layer goes.
+    fn kept_after_removal(
+        self,
+        studio: StudioContext,
+        zone_id: &str,
+        layer_id: SceneLayerId,
+    ) -> Option<LayerScope> {
+        let shown: Vec<String> = self.selected.with_untracked(|selected| {
+            selected
+                .iter()
+                .filter(|screen| screen.placed && screen.zone_id == zone_id)
+                .map(|screen| screen.output_id.clone())
+                .collect()
+        });
+        let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+        studio.active_scene.with_untracked(|scene| {
+            let layer = scene
+                .as_ref()?
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == zone_id)?
+                .layers
+                .iter()
+                .find(|layer| layer.id == layer_id)?;
+            match face_removal(layer.scope.as_ref(), &shown) {
+                FaceRemoval::Narrow(kept) => Some(kept),
+                FaceRemoval::Delete => None,
+            }
+        })
+    }
+
     /// Open the layers of `display`, which no zone places. Answers
     /// whether the scene keeps a stack to open.
     pub fn open_unplaced(self, studio: StudioContext, display: UnplacedDisplay) -> bool {
@@ -589,6 +623,17 @@ impl Screens {
                     name,
                 }));
             }),
+            narrow: Callback::new(
+                move |(zone_id, layer_id, name): (String, SceneLayerId, String)| {
+                    let Some(kept) = self.kept_after_removal(studio, &zone_id, layer_id) else {
+                        return false;
+                    };
+                    studio
+                        .history
+                        .set_layer_scope(zone_id, layer_id, name, Some(kept));
+                    true
+                },
+            ),
             lead: {
                 let kept = KeptFace {
                     devices: self.face_devices,
@@ -699,6 +744,23 @@ pub(crate) fn screen_view(
                 health_zones,
                 targets: owned,
                 copies: on_canvas,
+                remove_title: (owned
+                    && layer_of(&row.zone_id, row.layer_id)
+                        .and_then(|layer| layer.scope.as_ref())
+                        .is_some_and(|scope| {
+                            scope
+                                .outputs
+                                .iter()
+                                .any(|id| !selected.iter().any(|screen| screen.output_id == *id))
+                        }))
+                .then(|| {
+                    if selected.len() > 1 {
+                        "Remove from these screens"
+                    } else {
+                        "Remove from this screen"
+                    }
+                    .to_owned()
+                }),
             }
         })
         .collect();
@@ -1523,6 +1585,49 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
         all_screens: Signal::stored(None),
         leave: on_close,
         copy: Callback::new(|_| {}),
+        // No journal here: the layer is limited to its other screens
+        // with one write.
+        narrow: Callback::new(
+            move |(zone_id, layer_id, name): (String, SceneLayerId, String)| {
+                let (Some(scene), Some(screen)) =
+                    (active_scene.get_untracked(), current.get_untracked())
+                else {
+                    return false;
+                };
+                let Some(layer) = scene
+                    .zones
+                    .iter()
+                    .find(|zone| zone.id.to_string() == zone_id)
+                    .and_then(|zone| zone.layers.iter().find(|layer| layer.id == layer_id))
+                else {
+                    return false;
+                };
+                let FaceRemoval::Narrow(kept) =
+                    face_removal(layer.scope.as_ref(), &[screen.output_id.as_str()])
+                else {
+                    return false;
+                };
+                let request = api::scope_request(layer, Some(kept));
+                let fence = api::Fence::of(&scene);
+                spawn_local(async move {
+                    match api::update_layer(&zone_id, &layer_id.to_string(), &request, Some(&fence))
+                        .await
+                    {
+                        Ok(api::LayerStackOutcome::Applied(_)) => {
+                            toasts::toast_success(&format!("{name} removed from {}", screen.name));
+                        }
+                        Ok(api::LayerStackOutcome::Stale { .. }) => {
+                            toasts::toast_error("The scene changed elsewhere. Try again.");
+                        }
+                        Err(error) => {
+                            toasts::toast_error(&format!("Could not remove {name}: {error}"));
+                        }
+                    }
+                    let _ = refresh.try_run(());
+                });
+                true
+            },
+        ),
         lead: ViewFn::from(move || {
             view! {
                 {move || {

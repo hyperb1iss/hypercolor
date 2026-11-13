@@ -548,6 +548,35 @@ fn a_stored_zone_lists_its_whole_stack_and_holds_the_composition_itself() {
 }
 
 #[test]
+fn removing_a_shared_face_takes_only_the_screens_shown_out_of_it() {
+    use hypercolor_ui::pages::studio::screen_model::{FaceRemoval, face_removal};
+
+    let scope = LayerScope {
+        outputs: vec!["lcd1".to_owned(), "lcd2".to_owned(), "lcd3".to_owned()],
+    };
+    // One of three selected: the other two keep the face.
+    assert_eq!(
+        face_removal(Some(&scope), &["lcd2"]),
+        FaceRemoval::Narrow(LayerScope {
+            outputs: vec!["lcd1".to_owned(), "lcd3".to_owned()],
+        })
+    );
+    assert_eq!(
+        face_removal(Some(&scope), &["lcd1", "lcd3"]),
+        FaceRemoval::Narrow(LayerScope {
+            outputs: vec!["lcd2".to_owned()],
+        })
+    );
+    // Every screen it is on is selected: the layer goes.
+    assert_eq!(
+        face_removal(Some(&scope), &["lcd3", "lcd1", "lcd2"]),
+        FaceRemoval::Delete
+    );
+    // A layer of a screen's own zone has no target to narrow.
+    assert_eq!(face_removal(None, &["lcd1"]), FaceRemoval::Delete);
+}
+
+#[test]
 fn layers_reorder_within_a_screens_stack_without_moving_the_rest() {
     let [base, clock, ripples, badge] = [
         SceneLayerId::new(),

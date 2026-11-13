@@ -150,6 +150,14 @@ pub fn LayerRow(
     /// Offer to copy the layer onto its screens in every scene.
     #[prop(optional_no_strip)]
     on_copy: Option<Callback<String>>,
+    /// Asked first when the row is removed: a host that shows the layer
+    /// for some of its outputs takes those out of it and answers `true`,
+    /// and the layer is not deleted.
+    #[prop(optional_no_strip)]
+    on_remove: Option<Callback<String, bool>>,
+    /// What the remove button says when it will not delete the layer.
+    #[prop(optional_no_strip)]
+    remove_title: Option<Signal<Option<String>>>,
     /// Whether a screen row's blend disclosure starts open, and where it
     /// reports being opened or closed.
     #[prop(optional)]
@@ -693,16 +701,26 @@ pub fn LayerRow(
                     <button
                         type="button"
                         class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-status-error btn-press"
-                        title="Delete layer"
+                        title=move || {
+                            remove_title
+                                .and_then(|title| title.get())
+                                .unwrap_or_else(|| "Delete layer".to_owned())
+                        }
+                        data-layer-remove=""
                         on:click={
                             let zone_id = zone_id.clone();
                             let layer_id = layer_id.clone();
-                            move |_| delete_layer(
-                                zone_id.clone(),
-                                layer_id.clone(),
-                                fence.get_untracked(),
-                                on_layers_mutated,
-                            )
+                            move |_| {
+                                if on_remove.is_some_and(|ask| ask.run(title.get_untracked())) {
+                                    return;
+                                }
+                                delete_layer(
+                                    zone_id.clone(),
+                                    layer_id.clone(),
+                                    fence.get_untracked(),
+                                    on_layers_mutated,
+                                );
+                            }
                         }
                     >
                         <Icon icon=LuTrash2 width="14px" height="14px" />

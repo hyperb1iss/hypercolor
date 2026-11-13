@@ -150,6 +150,10 @@ pub struct ScreenViewRow {
     pub targets: bool,
     /// Whether the layer can be copied to every scene.
     pub copies: bool,
+    /// What removing the row does when the layer is also on screens that
+    /// are not shown: it leaves those alone, and says so. `None` when
+    /// removing it deletes the layer.
+    pub remove_title: Option<String>,
 }
 
 /// A selection of screens, as the panel shows it in place of the zone's
@@ -197,6 +201,10 @@ pub struct ScreenHost {
     pub leave: Callback<()>,
     /// Copy a layer to every scene: its zone, id, and name.
     pub copy: Callback<(String, SceneLayerId, String)>,
+    /// Take the screens shown out of a layer other screens share: its
+    /// zone, id, and name. Answers whether it did. When it did not, the
+    /// layer is on no other screen and removing the row deletes it.
+    pub narrow: Callback<(String, SceneLayerId, String), bool>,
     /// What leads the screens' own layers: a face saved with the screen.
     pub lead: ViewFn,
     /// The zone's faces, for the line each gets in the zone's own list.
@@ -903,6 +911,21 @@ pub fn LayerPanel(
                                     ));
                                 })
                             });
+                        let on_remove = on_screen
+                            .then(|| screens.with_value(|host| host.as_ref().map(|host| host.narrow)))
+                            .flatten()
+                            .map(|narrow| {
+                                Callback::new(move |name: String| {
+                                    narrow.run((
+                                        row_zone.get_value(),
+                                        current_layer.with_untracked(|layer| layer.id),
+                                        name,
+                                    ))
+                                })
+                            });
+                        let remove_title = Signal::derive(move || {
+                            view_row.with(|row| row.as_ref().and_then(|row| row.remove_title.clone()))
+                        });
                         view! {
                             <LayerRow
                                 zone_id=zone_id
@@ -920,6 +943,8 @@ pub fn LayerPanel(
                                 backdrop=backdrop
                                 on_screen=on_screen
                                 on_copy=on_copy
+                                on_remove=on_remove
+                                remove_title=Some(remove_title)
                                 blend_open=blend_open
                                 on_blend_disclosure=Some(on_blend_disclosure)
                             />

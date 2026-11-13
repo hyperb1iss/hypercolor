@@ -450,6 +450,38 @@ pub fn screen_panel(zones: &[ZoneResource], screens: &[&PlacedScreen]) -> Option
     })
 }
 
+/// What removing a layer from the screens shown comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FaceRemoval {
+    /// Every screen the layer is on is among them: the layer goes.
+    Delete,
+    /// Other screens show it too: it stays on those, limited to them.
+    Narrow(LayerScope),
+}
+
+/// What removing a layer limited to `scope` from the screens `shown`
+/// comes to. A layer on three screens, removed with one of them selected,
+/// leaves the other two as they were: the row stands for the screens
+/// shown, and what is not shown is not touched. A layer with no target of
+/// its own is its zone's and goes whole.
+#[must_use]
+pub fn face_removal(scope: Option<&LayerScope>, shown: &[&str]) -> FaceRemoval {
+    let Some(scope) = scope else {
+        return FaceRemoval::Delete;
+    };
+    let kept: Vec<String> = scope
+        .outputs
+        .iter()
+        .filter(|id| !shown.contains(&id.as_str()))
+        .cloned()
+        .collect();
+    if kept.is_empty() || kept.len() == scope.outputs.len() {
+        FaceRemoval::Delete
+    } else {
+        FaceRemoval::Narrow(LayerScope { outputs: kept })
+    }
+}
+
 /// A face saved with its screen that is what the screen shows now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeptFaceRow {
