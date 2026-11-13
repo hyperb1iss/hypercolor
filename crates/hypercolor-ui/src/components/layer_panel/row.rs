@@ -50,6 +50,9 @@ pub struct Backdrop {
     /// the layer, with what it holds. `None` when they are the layer's
     /// own.
     pub display: Option<DisplayComposition>,
+    /// Nothing can write that blend and amount as the stack stands, so
+    /// the row offers neither.
+    pub fixed: bool,
 }
 
 /// How a display's stored zone meets what is behind it.
@@ -711,6 +714,9 @@ pub fn LayerRow(
                 // A layer on a screen leads with what it is: a face's own
                 // settings come before how it blends.
                 {on_screen.then(&source_controls)}
+                // While nothing can write how this stack meets what is
+                // behind it, no control pretends to.
+                <div class:hidden=move || backdrop.with(|backdrop| backdrop.as_ref().is_some_and(|backdrop| backdrop.fixed))>
                 {if on_screen {
                     // A face's settings are what the panel is for. How the
                     // stack blends waits under them, closed until asked for.
@@ -764,6 +770,7 @@ pub fn LayerRow(
                 } else {
                     blend_controls().into_any()
                 }}
+                </div>
                 {(!on_screen).then(source_controls)}
 
                 // ── Transform & color disclosure ──────────────────────

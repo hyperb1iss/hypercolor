@@ -678,7 +678,7 @@ pub(crate) fn screen_view(
                 vec![row.zone_id.clone()]
             };
             let display = match &row.composition {
-                Composition::Layer => None,
+                Composition::Layer | Composition::Fixed => None,
                 Composition::Display(device_id) => zones
                     .iter()
                     .find(|zone| zone.id.to_string() == row.zone_id)
@@ -692,10 +692,13 @@ pub(crate) fn screen_view(
             ScreenViewRow {
                 zone_id: row.zone_id.clone(),
                 layer_id: row.layer_id,
-                backdrop: row.meets_backdrop.then_some(Backdrop { display }),
+                backdrop: row.meets_backdrop.then_some(Backdrop {
+                    display,
+                    fixed: row.composition == Composition::Fixed,
+                }),
                 health_zones,
                 targets: owned,
-                copies: true,
+                copies: on_canvas,
             }
         })
         .collect();

@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use hypercolor_types::api::displays::{DisplayFaceRendering, DisplayFaceScope};
 use hypercolor_types::api::scene::{ZoneMember, ZoneMemberId, ZoneResource, ZoneViewOf};
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{
     BlendMode, LayerAdjust, LayerScope, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
@@ -502,7 +503,13 @@ fn several_screens_share_one_row_for_a_layer_on_all_of_them() {
 fn a_stored_zone_lists_its_whole_stack_and_holds_the_composition_itself() {
     let mut rig = Rig::new();
     rig.zones[2].view_of = None;
-    let face = layer("Neon Clock", None);
+    let mut face = layer("Neon Clock", None);
+    face.source = LayerSource::Effect {
+        effect_id: EffectId::new(uuid::Uuid::now_v7()),
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+    };
     let overlay = layer("Badge", None);
     rig.zones[2].layers = vec![face.clone(), overlay.clone()];
     rig.main().layers = vec![layer("Bubbles", None)];
@@ -525,6 +532,19 @@ fn a_stored_zone_lists_its_whole_stack_and_holds_the_composition_itself() {
     assert_eq!(panel.rows[1].composition, Composition::Display(device));
     assert_eq!(panel.rows[0].composition, Composition::Layer);
     assert_eq!(panel.behind.len(), 1);
+
+    // With no face in the stack, the display's route would change the
+    // face saved with the screen, or find nothing. The bottom row then
+    // has no blend to offer.
+    rig.zones[2].layers = vec![layer("Photo", None), overlay.clone()];
+    let panel = screen_panel(
+        &rig.zones,
+        &selected_screens(&screens, &main, &ids(&["lcd1"])),
+    )
+    .expect("the zone holds the screen");
+    assert_eq!(panel.rows[1].composition, Composition::Fixed);
+    assert!(panel.rows[1].meets_backdrop);
+    assert_eq!(panel.rows[0].composition, Composition::Layer);
 }
 
 #[test]

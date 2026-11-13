@@ -18,7 +18,7 @@ use hypercolor_types::api::displays::{
     DisplayFaceRendering, DisplayFaceResponse, DisplayFaceScope,
 };
 use hypercolor_types::api::scene::{ZoneMember, ZoneResource};
-use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneMutationMode, ZoneId, ZoneRole};
 
 use crate::components::layer_panel::scope::is_screen_member;
@@ -249,6 +249,10 @@ pub enum Composition {
     /// They are how this display's stored zone meets what is behind it,
     /// which that zone holds apart from its layers.
     Display(String),
+    /// That stored zone holds them, and nothing writes them while its
+    /// stack has no face: the display's own route changes the face saved
+    /// with the screen instead, or finds nothing. The row offers no blend.
+    Fixed,
 }
 
 /// One layer of a screen's stack, as the panel lists it.
@@ -386,6 +390,10 @@ pub fn screen_panel(zones: &[ZoneResource], screens: &[&PlacedScreen]) -> Option
             continue;
         };
         let bottom = bottom_of(stored.layers.iter());
+        let has_face = stored
+            .layers
+            .iter()
+            .any(|layer| matches!(layer.source, LayerSource::Effect { .. }));
         rows.extend(
             stored
                 .layers
@@ -400,7 +408,10 @@ pub fn screen_panel(zones: &[ZoneResource], screens: &[&PlacedScreen]) -> Option
                         stack_index,
                         meets_backdrop,
                         composition: match (&screen.device_id, meets_backdrop) {
-                            (Some(device_id), true) => Composition::Display(device_id.clone()),
+                            (Some(device_id), true) if has_face => {
+                                Composition::Display(device_id.clone())
+                            }
+                            (Some(_), true) => Composition::Fixed,
                             _ => Composition::Layer,
                         },
                     }
