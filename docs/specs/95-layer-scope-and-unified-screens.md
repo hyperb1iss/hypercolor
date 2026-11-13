@@ -2118,6 +2118,47 @@ on, least healthy first, as §6.8 left it. The daemon was not changed.
 everywhere in the UI; the UI's own rule, which fell back to a limited layer,
 is deleted.
 
+**A screen is placed by assigning its device, and the daemon mints its box.**
+Automatic layout still leaves screens off the canvas. A member assignment
+(`POST /scene/members/edit` with `assignment`) is someone placing the device,
+so it mints one output per screen as well: the panel's shape fitted to a
+fifth of the canvas, centered on the device's lights when the layout holds
+them. Empty `segments` brings every segment the device has. "+" on a device
+in Unassigned therefore brings its lights and its screen, and a device whose
+lights are placed while its screen is not shows the screen in Unassigned as a
+row of its own. A screen no zone places keeps rendering the face stored under
+its view id (§6.6), so its card names that face, and placing it brings the
+face along as its layer.
+
+**A zone that follows the rig's layout tells that layout about its screens.**
+A scene with one zone of lights rebuilds that zone from the active layout on
+every scene switch, effect change, and restart, so a screen placed only in
+the zone was gone at the next one. After a membership write lands a screen in
+such a zone Studio saves the zone's layout (`PUT /scene/zones/{id}/layout`),
+which carries an output neither layout knows into both. After one takes a
+screen out, Studio removes the output from the stored layout and applies it,
+since the followed layout never loses an output on its own. Both run inside
+the journal's operation, for undo and redo too. Applying brings any other
+stored edit to that layout live with it.
+
+**A screen's row leads with the face's settings.** How the layer blends
+(mode, amount, and the looks) sits under them in a disclosure that starts
+closed and names what it holds: "Blend with what is behind", then the mode
+and amount. One screen and several read the same way.
+
+**A saved face shared by several selected screens gets one row.** Studio
+reads the face of every selected screen. When each shows a saved face and it
+is the same one, the row stands for all of them and writes to each. When they
+differ, or only some show a saved face, one line says so and points at a
+single screen.
+
+**On a phone** a screen's sheet says which screens each layer is on, as a
+chip that cannot be opened: there is no canvas to choose other screens on,
+and a change to a layer shared with other screens changes those too, so the
+row has to say so. "Copy to every scene" stays off the phone. It runs through
+Studio's journal, which the phone summary does not have, and it asks for a
+confirmation that has no room in the sheet.
+
 ---
 
 ## 8. Delivery waves
