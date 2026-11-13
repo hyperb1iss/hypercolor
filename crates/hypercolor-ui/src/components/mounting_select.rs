@@ -6,7 +6,6 @@
 use hypercolor_types::scene::DisplayRotation;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::{DevicesContext, DisplaysContext};
@@ -14,7 +13,6 @@ use crate::components::silk_select::SilkSelect;
 use crate::display_rotation::{
     display_rotation_select_options, display_rotation_value, parse_display_rotation,
 };
-use crate::icons::*;
 use crate::toasts;
 
 /// Picker for a display's mounting rotation. Renders nothing while
@@ -86,8 +84,7 @@ pub fn MountingSelect(
 
     view! {
         <Show when=move || rotation.get().is_some()>
-            <div class="flex items-center gap-3" title="How the panel is mounted; everything drawn on it turns to match">
-                <Icon icon=LuRotateCcw width="12px" height="12px" style="color: rgba(139, 133, 160, 0.5)" />
+            <div class="flex items-center" title="How the panel is mounted; everything drawn on it turns to match">
                 <SilkSelect
                     value=value
                     options=Signal::derive(display_rotation_select_options)
