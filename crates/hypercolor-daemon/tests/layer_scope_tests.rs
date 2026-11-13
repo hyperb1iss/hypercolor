@@ -959,6 +959,31 @@ async fn the_error_fallback_removes_a_failed_layer_that_clear_would_keep() {
     );
 }
 
+#[tokio::test]
+async fn the_error_fallback_removes_a_failed_scoped_layer_and_keeps_the_lighting() {
+    let rig = rig().await;
+    let lighting = rig.stack(rig.main).await;
+    assert_eq!(lighting.len(), 1, "the zone runs one whole-zone effect");
+    rig.add(rig.main, &[SCREEN]).await;
+    rig.add(rig.main, &[KEYS]).await;
+
+    let applied = hypercolor_daemon::domain::effect::apply_error_fallback(
+        &rig.state.domains.effects,
+        &rig.ripple.id.to_string(),
+        EffectErrorFallbackPolicy::ClearZones,
+    )
+    .await
+    .expect("fallback")
+    .expect("layers of the primary zone ran the failed effect");
+
+    assert_eq!(applied.cleared_zone_count, 1);
+    assert_eq!(
+        rig.stack(rig.main).await,
+        lighting,
+        "a failing face or overlay goes alone; the zone's lighting keeps running"
+    );
+}
+
 // ── Whole-scene replacement ──────────────────────────────────────────────
 
 /// A named copy of the rig's scene with a keyboard layer on top, and the
