@@ -12,12 +12,12 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{DisplayFaceTarget, SceneMutationMode, ZoneId, ZoneRole};
 use hypercolor_ui::pages::studio::screen_model::{
-    Composition, FaceReport, FollowedLayoutStep, KEPT_CHIP, KEPT_NOTICE, PlacedScreen, ScreenMove,
-    ScreenRef, StackHome, add_outcome_words, card_face, copy_layer_to_scene, copy_prompt,
-    faceless_displays, followed_layout_step, is_screen_layer, kept_face_row, placed_screens,
-    plan_add_to_all_screens, plan_screen_adds, reorder_within, screen_chip, screen_panel,
-    screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screens,
-    zone_screen_lines,
+    Composition, FaceReport, FollowedLayoutStep, KEPT_CHIP, KEPT_NOTICE, KeptFaceRow,
+    KeptSelection, PlacedScreen, ScreenMove, ScreenRef, StackHome, add_outcome_words, card_face,
+    copy_layer_to_scene, copy_prompt, faceless_displays, followed_layout_step, is_screen_layer,
+    kept_face_row, kept_selection, placed_screens, plan_add_to_all_screens, plan_screen_adds,
+    reorder_within, screen_chip, screen_panel, screens_label, selected_screens, takes_copies,
+    unplaced_face, unplaced_screens, zone_screen_lines,
 };
 
 fn member(id: &str, device: &str, segment: Option<&str>, name: &str) -> ZoneMember {
@@ -631,6 +631,70 @@ fn a_saved_face_gets_a_row_only_while_it_is_what_the_screen_shows() {
     // whenever it reported one.
     let older = report(DisplayFaceScope::Default, None);
     assert!(kept_face_row(Some(&older)).is_some());
+}
+
+fn saved(name: &str, effect_id: &str) -> Option<FaceReport> {
+    Some(FaceReport {
+        live_scope: DisplayFaceScope::Default,
+        rendering: Some(DisplayFaceRendering::Default),
+        name: name.to_owned(),
+        effect_id: effect_id.to_owned(),
+    })
+}
+
+#[test]
+fn screens_showing_the_same_saved_face_share_its_row() {
+    let clock = KeptFaceRow {
+        name: "Clock".to_owned(),
+        effect_id: "clock".to_owned(),
+    };
+    let both = kept_selection(&[saved("Clock", "clock"), saved("Clock", "clock")]);
+    assert_eq!(both, KeptSelection::Shared(clock.clone()));
+    assert_eq!(both.row(), Some(&clock));
+    assert_eq!(both.note(), None);
+
+    // One screen alone is the same rule.
+    assert_eq!(
+        kept_selection(&[saved("Clock", "clock")]),
+        KeptSelection::Shared(clock)
+    );
+    assert_eq!(kept_selection(&[None, None]), KeptSelection::None);
+    assert_eq!(kept_selection(&[]), KeptSelection::None);
+}
+
+#[test]
+fn screens_showing_different_saved_faces_get_one_line_instead_of_a_row() {
+    let differ = kept_selection(&[saved("Clock", "clock"), saved("Gauge", "gauge")]);
+    assert_eq!(differ, KeptSelection::Differ);
+    assert_eq!(differ.row(), None);
+    assert_eq!(
+        differ.note().as_deref(),
+        Some("These screens show different saved faces. Select one screen to change its face.")
+    );
+
+    // A screen the scene gives layers of its own shows no saved face, so
+    // the row cannot stand for the selection either.
+    let scene_face = Some(FaceReport {
+        live_scope: DisplayFaceScope::Scene,
+        rendering: Some(DisplayFaceRendering::Scene),
+        name: "Clock".to_owned(),
+        effect_id: "clock".to_owned(),
+    });
+    let one = kept_selection(&[saved("Clock", "clock"), scene_face.clone(), None]);
+    assert_eq!(one, KeptSelection::Some { kept: 1, of: 3 });
+    assert_eq!(
+        one.note().as_deref(),
+        Some(
+            "One of these screens shows a face saved with it. Select that screen alone to change it."
+        )
+    );
+    let two = kept_selection(&[saved("Clock", "clock"), saved("Gauge", "gauge"), scene_face]);
+    assert_eq!(
+        two.note().as_deref(),
+        Some(
+            "2 of these 3 screens show faces saved with them. Select one alone to change its face."
+        )
+    );
 }
 
 #[test]

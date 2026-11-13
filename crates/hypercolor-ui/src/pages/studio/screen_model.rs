@@ -30,6 +30,9 @@ use super::tab_model::{ScreenName, screen_labels};
 /// The chip a face saved with its screen, outside any scene, wears.
 pub const KEPT_CHIP: &str = "Saved with this screen";
 
+/// The same chip on a row that stands for several screens' saved faces.
+pub const KEPT_CHIP_SEVERAL: &str = "Saved with these screens";
+
 /// What editing such a face means, said beside its controls.
 pub const KEPT_NOTICE: &str = "Changes apply in every scene using this saved face.";
 
@@ -464,6 +467,83 @@ pub fn card_face<'a>(zones: &'a [ZoneResource], screen: &PlacedScreen) -> Option
 #[must_use]
 pub fn unplaced_face<'a>(zones: &'a [ZoneResource], device_id: &str) -> Option<&'a SceneLayer> {
     stored_zone(zones, device_id)?.layers.last()
+}
+
+/// What the saved faces of a selection of screens come to.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum KeptSelection {
+    /// No selected screen shows a face saved with it.
+    #[default]
+    None,
+    /// Every selected screen shows this saved face: one row edits them
+    /// all.
+    Shared(KeptFaceRow),
+    /// Every selected screen shows a saved face, and they are not the
+    /// same face.
+    Differ,
+    /// This many of the `of` selected screens show a saved face; the rest
+    /// show layers of the scene.
+    Some { kept: usize, of: usize },
+}
+
+impl KeptSelection {
+    /// The one row that stands for every selected screen.
+    #[must_use]
+    pub fn row(&self) -> Option<&KeptFaceRow> {
+        match self {
+            Self::Shared(row) => Some(row),
+            _ => None,
+        }
+    }
+
+    /// The line said in place of a row that cannot stand for them all.
+    #[must_use]
+    pub fn note(&self) -> Option<String> {
+        match self {
+            Self::None | Self::Shared(_) => None,
+            Self::Differ => Some(
+                "These screens show different saved faces. Select one screen to change its face."
+                    .to_owned(),
+            ),
+            Self::Some { kept: 1, .. } => Some(
+                "One of these screens shows a face saved with it. Select that screen alone to change it."
+                    .to_owned(),
+            ),
+            Self::Some { kept, of } => Some(format!(
+                "{kept} of these {of} screens show faces saved with them. Select one alone to change its face."
+            )),
+        }
+    }
+}
+
+/// What the saved faces of the selected screens come to, from what each
+/// screen's display reports, in selection order. A display that reports
+/// nothing shows no saved face.
+#[must_use]
+pub fn kept_selection(reports: &[Option<FaceReport>]) -> KeptSelection {
+    let rows = reports
+        .iter()
+        .map(|report| kept_face_row(report.as_ref()))
+        .collect::<Vec<_>>();
+    let kept = rows.iter().flatten().count();
+    if kept == 0 {
+        return KeptSelection::None;
+    }
+    if kept < rows.len() {
+        return KeptSelection::Some {
+            kept,
+            of: rows.len(),
+        };
+    }
+    let mut shown = rows.into_iter().flatten();
+    let Some(first) = shown.next() else {
+        return KeptSelection::None;
+    };
+    if shown.all(|row| row.effect_id == first.effect_id) {
+        KeptSelection::Shared(first)
+    } else {
+        KeptSelection::Differ
+    }
 }
 
 /// One screen output a membership write touched: the zone that held it
