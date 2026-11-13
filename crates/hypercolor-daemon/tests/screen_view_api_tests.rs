@@ -1362,6 +1362,133 @@ async fn a_screen_a_layout_names_twice_has_one_face_everywhere() {
     assert_eq!(lowered[0].layers.len(), 1);
 }
 
+/// An ordinary, unlocked scene whose layout is swapped over REST for one
+/// that names the same panel differently.
+#[tokio::test]
+async fn applying_a_layout_that_renames_a_screen_takes_its_face_along() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let desk = rig.layout("Desk", vec![screen_output(&screen)]).await;
+    let mut other_name = screen_output(&screen);
+    other_name.id = "lcd-under-another-name".to_owned();
+    let renamed = rig.layout("Renamed", vec![other_name]).await;
+    rig.apply_layout(&desk).await;
+    rig.put_face(&screen, face, "scene").await;
+    let layer = layer_ids(&rig.view(&screen).await).remove(0);
+
+    for (layout, output_id) in [
+        (&renamed, "lcd-under-another-name"),
+        (&desk, screen.output.as_str()),
+        (&renamed, "lcd-under-another-name"),
+    ] {
+        rig.apply_layout(layout).await;
+
+        let scene = rig.scene().await;
+        assert_eq!(
+            scoped(scene.primary_zone().expect("primary zone")),
+            vec![(layer.clone(), vec![output_id.to_owned()])],
+            "the face is scoped to the id this layout gives the screen"
+        );
+        assert!(
+            scene.display_zone_for(screen.device).is_none(),
+            "the screen never left, so nothing is stored for it"
+        );
+        assert_eq!(layer_ids(&rig.view(&screen).await), vec![layer.clone()]);
+        let read = rig.get_face(&screen).await;
+        assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+        let manager = rig.state.scene_manager.snapshot().await;
+        assert!(
+            manager.resolved_zones().iter().any(|zone| zone
+                .display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == screen.device)
+                && zone.layers.iter().any(|held| held.id.to_string() == layer)),
+            "the face reaches the render list"
+        );
+    }
+}
+
+/// Two scenes, each following a layout that names the same panel its own
+/// way. A scene saved under one id and activated under a layout that uses
+/// the other keeps its face on the panel.
+#[tokio::test]
+async fn activating_a_scene_whose_layout_renames_its_screen_keeps_the_face() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let desk = rig.layout("Desk", vec![screen_output(&screen)]).await;
+    let mut other_name = screen_output(&screen);
+    other_name.id = "lcd-under-another-name".to_owned();
+    let renamed = rig.layout("Renamed", vec![other_name.clone()]).await;
+    // Each scene holds the screen under the id of the layout the other
+    // one follows.
+    let mut scenes = Vec::new();
+    for (name, follows, held, now) in [
+        (
+            "Follows Renamed",
+            &renamed,
+            screen_output(&screen),
+            "lcd-under-another-name",
+        ),
+        ("Follows Desk", &desk, other_name, screen.output.as_str()),
+    ] {
+        let mut scene = hypercolor_core::scene::make_scene(name);
+        scene.layout_id = Some(follows.parse().expect("a layout id"));
+        let mut primary = hypercolor_core::scene::default_primary_zone(face_layout(screen.device));
+        primary.layout.zones = vec![held.clone()];
+        let mut layer = SceneLayer::from_effect(
+            SceneLayerId::new(),
+            face,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        layer.scope = Some(LayerScope {
+            outputs: vec![held.id.clone()],
+        });
+        primary.layers.push(layer.clone());
+        scene.zones.push(primary);
+        scenes.push((scene.id, layer.id.to_string(), now.to_owned()));
+        let mut mutation = rig.state.scene_manager.begin_mutation().await;
+        mutation
+            .create_scene(scene)
+            .expect("scene should be created");
+        commit_scene(&rig.state.domains.scene, mutation)
+            .await
+            .expect("the scene should commit");
+    }
+
+    for _ in 0..2 {
+        for (scene_id, layer, output_id) in &scenes {
+            rig.ok(
+                Method::POST,
+                &format!("/api/v1/scenes/{scene_id}/activate"),
+                Some(json!({})),
+            )
+            .await;
+
+            let scene = rig.scene().await;
+            assert_eq!(scene.id, *scene_id);
+            assert_eq!(
+                scoped(scene.primary_zone().expect("primary zone")),
+                vec![(layer.clone(), vec![output_id.clone()])],
+                "the face follows the screen to the id the scene's layout uses"
+            );
+            assert!(scene.display_zone_for(screen.device).is_none());
+            let manager = rig.state.scene_manager.snapshot().await;
+            assert!(
+                manager.resolved_zones().iter().any(|zone| zone
+                    .display_target
+                    .as_ref()
+                    .is_some_and(|target| target.device_id == screen.device)
+                    && zone.layers.iter().any(|held| held.id.to_string() == *layer)),
+                "the face reaches the render list"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_layer_write_that_makes_a_stored_zone_convertible_answers_with_the_view() {
     let rig = rig();

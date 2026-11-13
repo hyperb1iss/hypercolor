@@ -1003,36 +1003,6 @@ impl SceneService {
         .map(|_| ())
     }
 
-    /// Publish a layout the way a layout transaction does, for a test that
-    /// runs the render thread against a bare scene service.
-    #[cfg(feature = "persistence-test-hooks")]
-    #[doc(hidden)]
-    pub async fn publish_layout_for_test(
-        &self,
-        spatial_engine: &SpatialService,
-        layout: SpatialLayout,
-    ) -> bool {
-        let expected = spatial_engine.snapshot().layout().as_ref().clone();
-        let (active_scene_id, resolved_zones_revision) = {
-            let manager = self.0.manager.read().await;
-            (
-                manager.active_scene_id().copied(),
-                manager.resolved_zones_revision(),
-            )
-        };
-        self.publish_guarded_layout_activation(
-            spatial_engine,
-            SpatialEngine::new(layout),
-            &expected,
-            active_scene_id,
-            resolved_zones_revision,
-            None,
-            |_| Ok(()),
-        )
-        .await
-        .is_ok()
-    }
-
     pub(crate) async fn publish_guarded_layout_activation<F>(
         &self,
         spatial_engine: &SpatialService,

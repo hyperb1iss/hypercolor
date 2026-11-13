@@ -1926,6 +1926,19 @@ fn a_scope_is_left_alone_when_no_segment_or_more_than_one_could_be_meant() {
     )]);
     let scene_id = authored.id;
     let mut manager = active(&rig, authored);
+    let layers = |manager: &SceneManager| {
+        manager
+            .get(&scene_id)
+            .and_then(Scene::primary_zone)
+            .expect("primary zone")
+            .layers
+            .clone()
+    };
+
+    // One segment on each side is the same segment: the id follows.
+    assert!(manager.sync_primary_zone_layout(&layout(vec![renamed("keys-one", &strip("keys"))])));
+    let followed = scoped(keys, &["keys-one"]);
+    assert_eq!(layers(&manager), vec![followed.clone()]);
 
     // The layout holds the keyboard's segment twice: nothing says which
     // one the layer meant.
@@ -1934,19 +1947,11 @@ fn a_scope_is_left_alone_when_no_segment_or_more_than_one_could_be_meant() {
         renamed("keys-right", &strip("keys")),
     ]);
     assert!(manager.sync_primary_zone_layout(&twice));
-    let zone = manager
-        .get(&scene_id)
-        .and_then(Scene::primary_zone)
-        .expect("primary zone");
-    assert_eq!(zone.layers, vec![keys.clone()], "the id waits, as R5 says");
+    assert_eq!(layers(&manager), vec![followed.clone()], "the id waits");
 
     // And a layout without the segment leaves the id waiting too.
     assert!(manager.sync_primary_zone_layout(&layout(Vec::new())));
-    let zone = manager
-        .get(&scene_id)
-        .and_then(Scene::primary_zone)
-        .expect("primary zone");
-    assert_eq!(zone.layers, vec![keys]);
+    assert_eq!(layers(&manager), vec![followed]);
 }
 
 /// A layout that holds one device segment twice next to a layout that

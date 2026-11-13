@@ -3966,49 +3966,85 @@ async fn gpu_faces_survive_activating_scenes_that_follow_a_layout_without_screen
 // ── Published layouts ────────────────────────────────────────────────────
 
 impl Rig {
-    /// Publish `layout` through the layout transaction's own write to the
-    /// scene manager, the path a layout apply takes.
+    /// Apply `layout` as a layout transaction, the path a layout apply
+    /// takes: the running render thread prepares it and commits it with
+    /// the scene write.
     async fn publish(&self, layout: SpatialLayout) {
         assert!(
             self.state
-                .scene_manager
-                .publish_layout_for_test(&self.state.spatial_engine, layout)
+                .scene_transactions
+                .apply_layout_for_test(
+                    &self.state.spatial_engine,
+                    &self.state.scene_manager,
+                    layout
+                )
                 .await,
             "the layout should publish"
         );
     }
 }
 
-/// The moving screen's layout with its screen held under another output
-/// id, as a second stored layout names the same panel.
+/// The moving screen's layout with the device's screen and ring held
+/// under other output ids, as a second stored layout names the same
+/// hardware.
 fn renamed_layout(screen: &Screen, output_id: &str) -> SpatialLayout {
     let mut layout = moving_layout(screen, true);
     for output in &mut layout.zones {
         if output.zone_name.as_deref() == Some(DISPLAY_ZONE_NAME) {
             output_id.clone_into(&mut output.id);
+        } else if output.device_id == screen.layout_id {
+            output.id = ring_id_beside(output_id);
         }
     }
     layout
 }
 
+fn ring_id_beside(screen_output_id: &str) -> String {
+    format!("{screen_output_id}-ring")
+}
+
 /// A translucent face holds the panel byte for byte through published
 /// layouts that name its screen differently, drop it, and bring it back.
+/// A layer scoped to the device's ring rides along: only the scope follow
+/// keeps a layer on an LED output through a rename, so its scope is what
+/// shows the follow ran inside the publication. It is switched off so it
+/// draws nothing: an unplaced screen's backdrop is the whole canvas, and
+/// a lit ring layer would change the picture this test holds still.
 async fn face_holds_through_published_layouts(mode: RenderAccelerationMode) {
     let screen = Screen::named("pump");
     let mut rig = Rig::new(mode);
     rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
         .await;
     rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
-    let scene = placed_face_scene(&rig.effects, &screen, "Published");
+    let mut scene = placed_face_scene(&rig.effects, &screen, "Published");
     let authored_id = screen.output(DEVICE_BOX.0, DEVICE_BOX.1).id;
+    let authored_ring = device_ring(&screen).id;
+    let mut ring_overlay = fill_layer(GREEN);
+    ring_overlay.enabled = false;
+    ring_overlay.scope = Some(LayerScope {
+        outputs: vec![authored_ring.clone()],
+    });
+    scene.zones[0].layers.insert(1, ring_overlay);
     let running = rig.run_scene(scene.clone()).await;
     let placed = settled(&rig.writes, screen.device_id).await;
 
-    for (layout, held_as) in [
-        (renamed_layout(&screen, "lcd-other"), Some("lcd-other")),
-        (moving_layout(&screen, false), None),
-        (renamed_layout(&screen, "lcd-third"), Some("lcd-third")),
-        (moving_layout(&screen, true), Some(authored_id.as_str())),
+    for (layout, held_as, ring) in [
+        (
+            renamed_layout(&screen, "lcd-other"),
+            Some("lcd-other"),
+            ring_id_beside("lcd-other"),
+        ),
+        (moving_layout(&screen, false), None, authored_ring.clone()),
+        (
+            renamed_layout(&screen, "lcd-third"),
+            Some("lcd-third"),
+            ring_id_beside("lcd-third"),
+        ),
+        (
+            moving_layout(&screen, true),
+            Some(authored_id.as_str()),
+            authored_ring.clone(),
+        ),
     ] {
         let seen = rig.writes.of(screen.device_id).len();
         rig.publish(layout).await;
@@ -4025,12 +4061,12 @@ async fn face_holds_through_published_layouts(mode: RenderAccelerationMode) {
             assert!(held.display_zone_for(screen.device_id).is_none());
             assert_eq!(
                 scopes,
-                vec![output_id.to_owned(), output_id.to_owned()],
-                "the face follows its screen to the id this layout gives it"
+                vec![ring, output_id.to_owned(), output_id.to_owned()],
+                "each layer follows its segment to the id this layout gives it"
             );
         } else {
             assert!(held.display_zone_for(screen.device_id).is_some());
-            assert!(scopes.is_empty(), "no layer is left behind in the zone");
+            assert_eq!(scopes, vec![ring], "no face is left behind in the zone");
         }
         assert_frames_held(&rig.writes, screen.device_id, seen, &placed);
         let now = settled(&rig.writes, screen.device_id).await;
