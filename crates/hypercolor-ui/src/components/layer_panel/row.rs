@@ -559,7 +559,7 @@ pub fn LayerRow(
             <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
                 // A layer on a screen leads with what it is: a face's own
                 // settings come before how it blends.
-                {on_screen.then(|| source_controls())}
+                {on_screen.then(&source_controls)}
                 <div class=blend_class>
                 // ── Blend ─────────────────────────────────────────────
                 <div class="min-w-0 space-y-1.5">
@@ -675,7 +675,7 @@ pub fn LayerRow(
                 </Show>
 
                 </div>
-                {(!on_screen).then(|| source_controls())}
+                {(!on_screen).then(source_controls)}
 
                 // ── Transform & color disclosure ──────────────────────
                 <details
