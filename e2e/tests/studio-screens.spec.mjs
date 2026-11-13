@@ -105,7 +105,7 @@ test.beforeAll(async ({ playwright }) => {
     const simulator = await readEnvelope(await api.post("/api/v1/simulators/displays", {
       data: { name: uniqueName(name), width: 240, height: 240, circular, enabled: true },
     }));
-    simulators.push({ id: simulator.id });
+    simulators.push({ id: simulator.id, name: simulator.name });
   }
   await expect.poll(async () => {
     const devices = await readEnvelope(await api.get("/api/v1/devices?limit=200"));
@@ -316,4 +316,88 @@ test("A daemon from before screen layers still takes a face, through the screen'
   ]);
   await expect(chip).toContainText(effect.name);
   await expect(chip).toContainText("Face settings");
+});
+
+test("a screen in Unassigned is placed with its face, and stays where it was put", async ({ page }) => {
+  // One zone of lights takes its outputs from the rig's layout, which
+  // knows nothing of the panels: both sit in Unassigned, and the first
+  // goes on showing the face the scene stores for it.
+  const read = await api.get(`/api/v1/scenes/${sceneId}`);
+  const stored = await readEnvelope(read);
+  const replacement = { ...stored, zones: stored.zones.filter((zone) => zone.role === "primary") };
+  delete replacement.is_default;
+  delete replacement.revision;
+  await readEnvelope(await api.put(`/api/v1/scenes/${sceneId}`, {
+    headers: { "If-Match": read.headers().etag },
+    data: replacement,
+  }));
+  await readEnvelope(await api.post(`/api/v1/scenes/${sceneId}/activate`));
+  const panel = simulators[0];
+  const own = (await liveScene()).zones.find(
+    (candidate) => candidate.role === "display" && candidate.display_target?.device_id === panel.id,
+  );
+  await readEnvelope(await api.post(`/api/v1/scene/zones/${own.id}/layers`, {
+    data: face("Clock", null),
+  }));
+  // How many layers the primary zone holds for the panel, or null while
+  // no zone places it.
+  const faces = async () => {
+    const zone = (await liveScene()).zones.find((candidate) => candidate.role === "primary");
+    const member = zone.members.find(
+      (candidate) => candidate.device_id === panel.layout && candidate.segment === "Display",
+    );
+    if (!member) return null;
+    return zone.layers.filter((layer) => layer.scope?.outputs.includes(member.id)).length;
+  };
+  // Whether the rig's layout holds a box for the panel. Studio tells the
+  // layout after the membership write lands, so the layout is what says
+  // a placement or its undo is finished.
+  const inLayout = async () => {
+    const active = await readEnvelope(await api.get("/api/v1/layouts/active"));
+    return active.zones.some((output) => output.device_id === panel.layout);
+  };
+  const switchAwayAndBack = async () => {
+    await readEnvelope(await api.post("/api/v1/scene/deactivate"));
+    await readEnvelope(await api.post(`/api/v1/scenes/${sceneId}/activate`));
+  };
+  expect(await faces()).toBe(null);
+
+  const add = page.getByRole("button", { name: `Add ${panel.name} to Main`, exact: true });
+  try {
+    await page.goto(getStack().appOrigin + "/studio", { waitUntil: "networkidle" });
+    await expect(add).toBeVisible();
+    // Its card names the face it is showing, placed or not.
+    await expect(
+      page.locator("div").filter({ has: add }).filter({ hasText: "Clock" }).last(),
+    ).toBeVisible();
+
+    // Placing it brings the face along as its layer. Taking that back
+    // has to reach the rig's layout too, or the layout that just learned
+    // of the box hands it back on the next scene switch.
+    await add.click();
+    await expect.poll(faces).toBe(1);
+    await expect.poll(inLayout).toBe(true);
+    await page.getByRole("button", { name: /^Undo/ }).click();
+    await expect.poll(faces).toBe(null);
+    await expect.poll(inLayout).toBe(false);
+    await switchAwayAndBack();
+    expect(await faces()).toBe(null);
+
+    // Placed again, it is still there after the zone is rebuilt.
+    await page.goto(getStack().appOrigin + "/studio", { waitUntil: "networkidle" });
+    await add.click();
+    await expect.poll(faces).toBe(1);
+    await expect.poll(inLayout).toBe(true);
+    await expect(add).toHaveCount(0);
+    await switchAwayAndBack();
+    expect(await faces()).toBe(1);
+  } finally {
+    // The rig's layout is shared by every spec: leave it without the box.
+    const active = await readEnvelope(await api.get("/api/v1/layouts/active"));
+    const kept = await readEnvelope(await api.get(`/api/v1/layouts/${active.id}`));
+    await api.put(`/api/v1/layouts/${active.id}`, {
+      data: { zones: kept.zones.filter((output) => output.device_id !== panel.layout) },
+    });
+    await api.post(`/api/v1/layouts/${active.id}/apply`);
+  }
 });
