@@ -69,6 +69,10 @@ struct RowTarget {
 }
 
 /// The dark pill a layer's target shows in.
+/// A disclosure's chevron, which turns down while its `details` is open.
+const DISCLOSURE_CHEVRON: &str =
+    "flex shrink-0 transition-transform duration-150 group-open/disclosure:rotate-90";
+
 const TARGET_CHIP: &str = "group/target inline-flex min-w-0 max-w-[13rem] items-center gap-1 rounded-full border \
      border-edge-subtle bg-surface-overlay py-0.5 pl-1.5 pr-1 text-[10px] font-medium \
      text-fg-secondary transition-colors hover:border-accent-muted hover:text-fg-primary";
@@ -712,7 +716,7 @@ pub fn LayerRow(
                     // stack blends waits under them, closed until asked for.
                     view! {
                         <details
-                            class="rounded-lg border border-edge-subtle/55 bg-surface-overlay/25"
+                            class="group/disclosure rounded-lg border border-edge-subtle/55 bg-surface-overlay/25"
                             open=blend_open
                             data-blend-disclosure=""
                             on:toggle=move |event| {
@@ -725,7 +729,9 @@ pub fn LayerRow(
                             }
                         >
                             <summary class="flex cursor-pointer items-center gap-1.5 px-3 py-2 text-[11px] font-semibold text-fg-secondary">
-                                <Icon icon=LuChevronRight width="12px" height="12px" />
+                                <span class=DISCLOSURE_CHEVRON>
+                                    <Icon icon=LuChevronRight width="12px" height="12px" />
+                                </span>
                                 <span class="shrink-0">
                                     {move || if meets_backdrop.get() { "Blend with what is behind" } else { "Blend" }}
                                 </span>
@@ -762,7 +768,7 @@ pub fn LayerRow(
 
                 // ── Transform & color disclosure ──────────────────────
                 <details
-                    class="rounded-lg border border-edge-subtle/55 bg-surface-overlay/25"
+                    class="group/disclosure rounded-lg border border-edge-subtle/55 bg-surface-overlay/25"
                     open=expanded
                     on:toggle=move |event| {
                         let element: web_sys::Element = event_target(&event);
@@ -774,7 +780,9 @@ pub fn LayerRow(
                     }
                 >
                     <summary class="flex cursor-pointer items-center gap-1.5 px-3 py-2 text-[11px] font-semibold text-fg-secondary">
-                        <Icon icon=LuChevronRight width="12px" height="12px" />
+                        <span class=DISCLOSURE_CHEVRON>
+                            <Icon icon=LuChevronRight width="12px" height="12px" />
+                        </span>
                         "Transform & Color"
                     </summary>
                     <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
