@@ -17,7 +17,7 @@ use crate::api;
 use crate::app::WsContext;
 use crate::toasts;
 use crate::ws::SceneEventHint;
-use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_zones};
+use surface::{Surface, led_zone_count, surfaces_from_zones};
 
 /// Zone-level view of the active scene, provided at the app root.
 #[derive(Clone, Copy)]
@@ -77,15 +77,11 @@ impl ZonesContext {
     }
 
     /// Untracked focused-zone id, validated against the current scene.
-    /// `None` when unset, stale, or pointing at a Screen.
+    /// `None` when unset or stale.
     pub fn focused_zone_id_untracked(&self) -> Option<String> {
         let id = self.focused_zone.get_untracked()?;
-        self.zones.with_untracked(|zones| {
-            zones
-                .iter()
-                .any(|zone| zone.id == id && zone.kind == SurfaceKind::Light)
-                .then_some(id)
-        })
+        self.zones
+            .with_untracked(|zones| zones.iter().any(|zone| zone.id == id).then_some(id))
     }
 
     /// Immutable effect-layer identity and scene revision at the write target.
@@ -157,19 +153,21 @@ pub struct ZoneEffectState {
     pub layer_labels: Vec<String>,
     /// The place in `layer_labels` of the layer the zone is known by: the
     /// topmost that covers the whole zone (see
-    /// [`surface::featured_layer`]). `None` reads as the top.
+    /// [`surface::featured_position`]). `None` reads as the top.
     pub featured_layer: Option<usize>,
 }
 
-/// The labels of `zone`'s enabled layers, bottom to top, and the place
-/// among them of the layer the zone is known by. `effect_name` resolves
-/// an effect id to its name.
+/// The labels of `zone`'s own enabled layers, bottom to top, and the
+/// place among them of the layer the zone is known by. A screen's layers
+/// are that screen's, and are left out. `effect_name` resolves an effect
+/// id to its name.
 #[must_use]
 pub fn zone_layer_labels(
     zone: &api::ZoneResource,
     effect_name: impl Fn(&str) -> Option<String>,
 ) -> (Vec<String>, Option<usize>) {
-    let enabled = || zone.layers.iter().filter(|layer| layer.enabled);
+    let own = surface::zone_own_layers(zone);
+    let enabled = || own.iter().copied().filter(|layer| layer.enabled);
     let labels = enabled()
         .map(|layer| {
             let effect = match &layer.source {
@@ -378,15 +376,7 @@ pub fn provide_scene_contexts(
             .map(|scene| surfaces_from_zones(&scene.zones))
             .unwrap_or_default()
     });
-    let led_zones = Memo::new(move |_| {
-        zones.with(|zones| {
-            zones
-                .iter()
-                .filter(|zone| zone.kind == SurfaceKind::Light)
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-    });
+    let led_zones = zones;
     let multi_zone = Memo::new(move |_| {
         active_scene
             .get()

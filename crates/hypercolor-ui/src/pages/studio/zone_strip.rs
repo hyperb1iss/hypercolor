@@ -1,8 +1,8 @@
 //! The Studio zone tab strip, in the page header's second row.
 //!
-//! One tab per LED zone in scene order, then a single Screens tab after a
-//! divider whenever the scene has display surfaces, then "+" outside the
-//! tablist. The active tab is Studio's selected zone. A tab renames in
+//! One tab per zone in scene order, then "+" outside the tablist. The
+//! active tab is Studio's selected zone. A screen has no tab: it is an
+//! output of the zone that places it. A tab renames in
 //! place on double-click; right-click (or the kebab on the active tab, or
 //! Shift+F10) opens its menu: Rename, Color, Pause or Resume, Move left,
 //! Move right, Delete. Tabs reorder by dragging along the strip. When the
@@ -33,7 +33,7 @@ use crate::toasts;
 use super::StudioContext;
 use super::drag::{DragController, DropLook};
 use super::drag_model::DropTarget;
-use super::surface::{Surface, SurfaceKind, surfaces_from_zones};
+use super::surface::{Surface, surfaces_from_zones};
 use super::tab_model::{
     DeletePrompt, ZONE_COLOR_PRESETS, deletable, delete_prompt, drag_target, drop_slot,
     fit_tab_count, nudge_target, split_overflow, zone_device_count,
@@ -45,20 +45,14 @@ use super::zone_controls::{
 
 /// Element id of the panel every tab controls: the pane and Stage below.
 pub const ZONE_PANEL_ID: &str = "studio-zone-panel";
-/// Element id of the Screens tab.
-pub const SCREENS_TAB_ID: &str = "zone-tab-screens";
-/// The Screens tab's slot in keyboard order, after every zone tab.
-const SCREENS_KEY: &str = "\u{0}screens";
 
 /// The narrowest a zone tab shrinks before the tail overflows. Every tab
 /// holds room for the active tab's kebab, so selecting a tab never
 /// resizes it or shifts the tabs after it.
 const TAB_MIN_PX: f64 = 116.0;
 const TAB_GAP_PX: f64 = 4.0;
-/// Room held back for the overflow button, the Screens tab with its
-/// divider, and "+", when each is present.
+/// Room held back for the overflow button and "+", when each is present.
 const MORE_BUTTON_PX: f64 = 84.0;
-const SCREENS_TAB_PX: f64 = 124.0;
 const ADD_BUTTON_PX: f64 = 36.0;
 const MENU_ITEM_CLASS: &str = "dropdown-option flex w-full items-center gap-2.5 rounded-md px-2.5 \
     py-1.5 text-left text-[12px] text-fg-secondary transition-colors hover:text-fg-primary \
@@ -77,12 +71,8 @@ pub fn zone_tab_dom_id(zone_id: &str) -> String {
 
 /// The element id of the tab that owns the current selection.
 #[must_use]
-pub fn active_tab_dom_id(selected: Option<&str>, on_screens: bool) -> Option<String> {
-    if on_screens {
-        Some(SCREENS_TAB_ID.to_owned())
-    } else {
-        selected.map(zone_tab_dom_id)
-    }
+pub fn active_tab_dom_id(selected: Option<&str>) -> Option<String> {
+    selected.map(zone_tab_dom_id)
 }
 
 /// An open tab menu: which zone, and where on screen.
@@ -133,13 +123,7 @@ pub fn ZoneStrip() -> impl IntoView {
                 .unwrap_or_default()
         })
     });
-    let lights = Memo::new(move |_| {
-        surfaces
-            .get()
-            .into_iter()
-            .filter(|surface| surface.kind == SurfaceKind::Light)
-            .collect::<Vec<_>>()
-    });
+    let lights = surfaces;
     let light_ids = Memo::new(move |_| {
         lights.with(|lights| {
             lights
@@ -148,41 +132,10 @@ pub fn ZoneStrip() -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-    let screen_ids = Memo::new(move |_| {
-        surfaces.with(|surfaces| {
-            surfaces
-                .iter()
-                .filter(|surface| surface.kind == SurfaceKind::Screen)
-                .map(|surface| surface.id.clone())
-                .collect::<Vec<_>>()
-        })
-    });
-    let on_screens = Memo::new(move |_| {
-        let selected = studio.selected_surface_id.get();
-        screen_ids.with(|ids| selected.as_ref().is_some_and(|id| ids.contains(id)))
-    });
     let active_light = Memo::new(move |_| {
         let selected = studio.selected_surface_id.get()?;
         light_ids.with(|ids| ids.iter().position(|id| *id == selected))
     });
-
-    // The last Screen shown, so returning to the Screens tab reopens it.
-    let last_screen = StoredValue::new(None::<String>);
-    Effect::new(move |_| {
-        if on_screens.get() {
-            last_screen.set_value(studio.selected_surface_id.get());
-        }
-    });
-    let select_screens = move || {
-        let ids = screen_ids.get_untracked();
-        let target = last_screen
-            .get_value()
-            .filter(|id| ids.contains(id))
-            .or_else(|| ids.first().cloned());
-        if let Some(target) = target {
-            studio.selected_surface_id.set(Some(target));
-        }
-    };
 
     let strip_ref = NodeRef::<html::Div>::new();
     let strip_width = RwSignal::new(f64::MAX);
@@ -191,9 +144,6 @@ pub fn ZoneStrip() -> impl IntoView {
     let layout = Memo::new(move |_| {
         let ids = light_ids.get();
         let mut reserved = 0.0;
-        if !screen_ids.with(Vec::is_empty) {
-            reserved += SCREENS_TAB_PX;
-        }
         if can_create.get() {
             reserved += ADD_BUTTON_PX;
         }
@@ -288,39 +238,22 @@ pub fn ZoneStrip() -> impl IntoView {
         request_delete,
     };
 
-    // Keyboard order: every zone tab (folded ones included), then Screens.
-    let tab_order = move || {
-        let mut order = light_ids.get_untracked();
-        if !screen_ids.with_untracked(Vec::is_empty) {
-            order.push(SCREENS_KEY.to_owned());
-        }
-        order
-    };
-    // Selection follows focus: a step selects the next tab and focuses it.
+    // Keyboard order: every zone tab, folded ones included. Selection
+    // follows focus: a step selects the next tab and focuses it.
     let step = move |key: &str| {
-        let order = tab_order();
-        let current = if on_screens.get_untracked() {
-            order.iter().position(|id| id == SCREENS_KEY)
-        } else {
-            let selected = studio.selected_surface_id.get_untracked();
-            order
-                .iter()
-                .position(|id| selected.as_deref() == Some(id.as_str()))
-        };
+        let order = light_ids.get_untracked();
+        let selected = studio.selected_surface_id.get_untracked();
+        let current = order
+            .iter()
+            .position(|id| selected.as_deref() == Some(id.as_str()));
         let Some(next) = next_tab(current, order.len(), key) else {
             return false;
         };
         let Some(target) = order.get(next).cloned() else {
             return false;
         };
-        let dom_id = if target == SCREENS_KEY {
-            select_screens();
-            SCREENS_TAB_ID.to_owned()
-        } else {
-            let dom_id = zone_tab_dom_id(&target);
-            studio.selected_surface_id.set(Some(target));
-            dom_id
-        };
+        let dom_id = zone_tab_dom_id(&target);
+        studio.selected_surface_id.set(Some(target));
         focus_soon(dom_id);
         true
     };
@@ -336,11 +269,7 @@ pub fn ZoneStrip() -> impl IntoView {
             return;
         }
         let key = ev.key();
-        let zone_id = target
-            .id()
-            .strip_prefix("zone-tab-")
-            .filter(|_| target.id() != SCREENS_TAB_ID)
-            .map(str::to_owned);
+        let zone_id = target.id().strip_prefix("zone-tab-").map(str::to_owned);
         if key == "ContextMenu" || (key == "F10" && ev.shift_key()) {
             if let Some(zone_id) = zone_id {
                 ev.prevent_default();
@@ -390,12 +319,9 @@ pub fn ZoneStrip() -> impl IntoView {
     });
     on_cleanup(move || brackets.remove());
 
-    let has_screens = Memo::new(move |_| !screen_ids.with(Vec::is_empty));
-    let screen_count = Memo::new(move |_| screen_ids.with(Vec::len));
     let indicator = RwSignal::new(None::<(f64, f64)>);
     Effect::new(move |_| {
         studio.selected_surface_id.track();
-        on_screens.track();
         visible_ids.track();
         lights.track();
         strip_width.track();
@@ -408,10 +334,7 @@ pub fn ZoneStrip() -> impl IntoView {
             let Some(selected) = studio.selected_surface_id.try_get_untracked() else {
                 return;
             };
-            let dom_id = active_tab_dom_id(
-                selected.as_deref(),
-                on_screens.try_get_untracked().unwrap_or(false),
-            );
+            let dom_id = active_tab_dom_id(selected.as_deref());
             let geometry = dom_id
                 .and_then(|id| document().get_element_by_id(&id))
                 .and_then(|tab| tab.parent_element())
@@ -447,7 +370,6 @@ pub fn ZoneStrip() -> impl IntoView {
                 node_ref=handles.tabs_ref
                 role="tablist"
                 aria-label="Zones"
-                aria-owns=move || has_screens.get().then_some(SCREENS_TAB_ID)
                 class="relative flex min-w-0 items-end gap-1"
             >
                 <For each=move || visible_ids.get() key=|id: &String| id.clone() let:zone_id>
@@ -483,34 +405,6 @@ pub fn ZoneStrip() -> impl IntoView {
                     <Icon icon=LuChevronDown width="12px" height="12px" />
                     {move || format!("{} more", hidden_ids.with(Vec::len))}
                 </button>
-            </Show>
-            <Show when=move || has_screens.get()>
-                <span class="mx-1 mb-2.5 h-4 w-px shrink-0 bg-edge-subtle" aria-hidden="true" />
-                <div
-                    class="relative flex h-8 shrink-0 items-center rounded-t-lg transition-colors md:h-9"
-                    class=("bg-surface-base", move || on_screens.get())
-                    class=("text-fg-primary", move || on_screens.get())
-                    class=("text-fg-tertiary", move || !on_screens.get())
-                    class=("hover:bg-surface-hover/30", move || !on_screens.get())
-                    class=("hover:text-fg-secondary", move || !on_screens.get())
-                >
-                    <button
-                        type="button"
-                        role="tab"
-                        id=SCREENS_TAB_ID
-                        aria-selected=move || on_screens.get().to_string()
-                        aria-controls=ZONE_PANEL_ID
-                        tabindex=move || if on_screens.get() { "0" } else { "-1" }
-                        class="flex h-full items-center gap-2 px-3 text-[12px] font-medium"
-                        on:click=move |_| select_screens()
-                    >
-                        <Icon icon=LuMonitor width="12px" height="12px" />
-                        "Screens"
-                        <span class="font-mono text-[10px] tabular-nums text-fg-tertiary">
-                            {move || screen_count.get()}
-                        </span>
-                    </button>
-                </div>
             </Show>
             <Show when=move || can_create.get()>
                 <button

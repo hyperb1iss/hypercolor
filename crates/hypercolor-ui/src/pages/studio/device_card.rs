@@ -364,12 +364,7 @@ pub fn StudioDeviceCard(
     let shape_style = format!("color: rgba({primary}, 0.7)");
 
     let select_body = select.clone();
-    // A display device's home surface is its Screen entry: the card sits
-    // under an LED zone but owns no output boxes on the spatial canvas,
-    // so a zone-select from here is a dead click. Clicking it jumps to
-    // the screen surface instead.
     let is_display = resolution.is_some();
-    let click_device_id = device.id.clone();
     let physical_id = device.id.clone();
     // The Placed card's operations menu (identify / move / remove) expands
     // inline below the body and is toggled by the action cluster's kebab.
@@ -498,18 +493,6 @@ pub fn StudioDeviceCard(
                         }
                     }
                     on:click=move |_| {
-                        // A display with no boxes in this zone lives on its
-                        // Screen surface; one with boxes is selected here like
-                        // any other card, so the eye and channel rows beneath
-                        // it keep acting on the zone that stays on the Stage.
-                        if is_display
-                            && click_outputs.is_empty()
-                            && let Some(screen_id) =
-                                screen_surface_id_for_device(studio, &click_device_id)
-                        {
-                            studio.selected_surface_id.set(Some(screen_id));
-                            return;
-                        }
                         if studio.selected_surface_id.get_untracked().as_deref() != Some(select_body.as_str()) {
                             studio.selected_surface_id.set(Some(select_body.clone()));
                         }
@@ -1395,9 +1378,6 @@ fn transport_label(transport: &str) -> Option<&'static str> {
     }
 }
 
-/// The Screen surface backed by a physical display device, if the active
-/// scene carries one. Looked up at click time so the redirect always
-/// follows the current scene.
 /// Select one output on the canvas, bringing its zone onto the Stage
 /// first when the row was clicked under a zone that is not the current
 /// surface. The surface switch clears the selection, so the output is
@@ -1446,22 +1426,4 @@ fn release_hover_on_unmount(studio: StudioContext, outputs: Vec<String>) {
             studio.hovered_output_ids.try_set(HashSet::new());
         }
     });
-}
-
-fn screen_surface_id_for_device(studio: StudioContext, device_id: &str) -> Option<String> {
-    studio.active_scene.with_untracked(|scene| {
-        scene.as_ref().and_then(|scene| {
-            scene
-                .zones
-                .iter()
-                .find(|zone| {
-                    zone.role == ZoneRole::Display
-                        && zone
-                            .display_target
-                            .as_ref()
-                            .is_some_and(|target| target.device_id.to_string() == device_id)
-                })
-                .map(|zone| zone.id.to_string())
-        })
-    })
 }

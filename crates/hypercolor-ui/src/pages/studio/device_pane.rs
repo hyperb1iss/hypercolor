@@ -39,8 +39,7 @@ use super::pane_model::{
     PaneInputs, PaneModel, ZoneSection, build_pane, normalize_search, parse_unassigned_policy,
     section_count, shows_unassigned, unassigned_policy_options, unassigned_policy_value,
 };
-use super::screen_list::ScreenList;
-use super::surface::{Surface, SurfaceKind, surfaces_from_zones};
+use super::surface::{Surface, surfaces_from_zones};
 
 /// Element id of an Other zones row, the target a split device's
 /// "more outputs" hint scrolls to.
@@ -92,18 +91,6 @@ pub fn DevicePane() -> impl IntoView {
     let devices = expect_context::<DevicesContext>();
     let search = RwSignal::new(String::new());
     let query = Memo::new(move |_| normalize_search(&search.get()));
-    let on_screens = Memo::new(move |_| {
-        let selected = studio.selected_surface_id.get();
-        studio.active_scene.with(|scene| {
-            scene.as_ref().is_some_and(|scene| {
-                scene.zones.iter().any(|zone| {
-                    zone.role == ZoneRole::Display
-                        && selected.as_deref() == Some(zone.id.to_string().as_str())
-                })
-            })
-        })
-    });
-
     provide_context(super::offline_device_card::SavedControllersRefresh(
         studio.refresh_rig_layout,
     ));
@@ -120,19 +107,14 @@ pub fn DevicePane() -> impl IntoView {
         studio.active_scene.with(|scene| {
             scene
                 .as_ref()
-                .map(|scene| {
-                    surfaces_from_zones(&scene.zones)
-                        .into_iter()
-                        .filter(|surface| surface.kind == SurfaceKind::Light)
-                        .collect::<Vec<_>>()
-                })
+                .map(|scene| surfaces_from_zones(&scene.zones))
                 .unwrap_or_default()
         })
     });
 
     // Every name a device answers to in search beyond its own: its
-    // channels (as the hardware and the user name them) and the
-    // components bound to them.
+    // channels (as the hardware and the user name them), the components
+    // bound to them, and "screen" for a device that has one.
     let search_terms = Memo::new(move |_| {
         let attachments = studio.attachment_cache.get();
         registry
@@ -141,6 +123,12 @@ pub fn DevicePane() -> impl IntoView {
             .map(|device| {
                 let mut terms = Vec::new();
                 for channel in &device.segments {
+                    if matches!(
+                        channel.topology_hint,
+                        Some(api::SegmentTopologySummary::Display { .. })
+                    ) {
+                        terms.push("Screen".to_owned());
+                    }
                     terms.push(channel.name.clone());
                     terms.push(channel_names::effective_channel_name(
                         &device.id,
@@ -222,19 +210,11 @@ pub fn DevicePane() -> impl IntoView {
             class="flex h-full flex-col border-r border-edge-subtle/70 bg-surface-raised/40"
             on:touchmove=move |ev| drag.on_touch_move(&ev)
         >
-            <PaneSearch search=search on_screens=on_screens />
+            <PaneSearch search=search />
             <div class="studio-zone-content scrollbar-none flex-1 overflow-y-auto px-3 pb-3" data-pane-scroll="">
-                {move || {
-                    if on_screens.get() {
-                        return view! { <ScreenList query=query /> }.into_any();
-                    }
-                    view! {
-                        <ActiveZoneSection pane=pane lights=lights registry=registry />
-                        <OtherZones pane=pane lights=lights registry=registry />
-                        <UnassignedSection pane=pane lights=lights registry=registry />
-                    }
-                        .into_any()
-                }}
+                <ActiveZoneSection pane=pane lights=lights registry=registry />
+                <OtherZones pane=pane lights=lights registry=registry />
+                <UnassignedSection pane=pane lights=lights registry=registry />
             </div>
         </div>
     }
@@ -797,15 +777,9 @@ fn UnassignedPolicy(lights: Memo<Vec<Surface>>) -> impl IntoView {
 /// `/` shortcut lands here; focusing it on a narrow viewport opens the
 /// drawer it lives in. Escape clears a term, then leaves the field.
 #[component]
-fn PaneSearch(search: RwSignal<String>, on_screens: Memo<bool>) -> impl IntoView {
+fn PaneSearch(search: RwSignal<String>) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
-    let placeholder = move || {
-        if on_screens.get() {
-            "Search screens"
-        } else {
-            "Search devices"
-        }
-    };
+    let placeholder = "Search devices";
     view! {
         <div class="relative shrink-0 px-3 pb-2 pt-3">
             <span class="pointer-events-none absolute left-5.5 top-1/2 mt-0.5 -translate-y-1/2 text-fg-tertiary">

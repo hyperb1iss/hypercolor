@@ -40,6 +40,9 @@ pub fn EffectControlsSection(
     layer: Signal<SceneLayer>,
     effect_cache: super::LayerEffectCache,
     on_layers_mutated: Callback<()>,
+    /// What the controls are called: an effect's controls, a face's
+    /// settings.
+    label: &'static str,
 ) -> impl IntoView {
     let LayerSource::Effect {
         effect_id,
@@ -145,7 +148,7 @@ pub fn EffectControlsSection(
 
     view! {
         <div class="space-y-2">
-            <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Effect controls"</span>
+            <span class=label_class(LabelSize::Micro, LabelTone::Default)>{label}</span>
             <Show
                 when=move || detail_value.get().is_some()
                 fallback=move || view! {

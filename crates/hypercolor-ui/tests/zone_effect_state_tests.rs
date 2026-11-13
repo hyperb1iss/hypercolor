@@ -8,18 +8,16 @@ use hypercolor_types::scene::ZoneRole;
 use uuid::Uuid;
 
 use hypercolor_ui::zones::ZoneEffectState;
-use hypercolor_ui::zones::surface::{Surface, SurfaceKind, layer_label};
+use hypercolor_ui::zones::surface::{Surface, layer_label};
 
 fn state(layer_count: usize, effect_id: Option<&str>, labels: &[&str]) -> ZoneEffectState {
     ZoneEffectState {
         zone: Surface {
             id: "zone-a".to_owned(),
             name: "ROLI".to_owned(),
-            kind: SurfaceKind::Light,
             enabled: true,
             role: ZoneRole::Custom,
             color: None,
-            display_device_id: None,
             layer_ids: (0..layer_count)
                 .map(|index| format!("layer-{index}"))
                 .collect(),

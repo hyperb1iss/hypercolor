@@ -20,8 +20,12 @@ fn jpeg_frame_blob_url(frame: &CanvasFrame) -> Option<String> {
     blob_url_from_bytes(frame.pixels_js(), "image/jpeg").ok()
 }
 
-/// Empty state shown while the display has not produced a preview frame yet.
-fn preview_pending_state() -> impl IntoView {
+/// Empty state shown while the display has not produced a preview frame
+/// yet. A `quiet` host is too small for words and shows the bare panel.
+fn preview_pending_state(quiet: bool) -> impl IntoView {
+    if quiet {
+        return view! { <div class="h-full w-full bg-black/40" /> }.into_any();
+    }
     view! {
         <div class="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-black/40 text-center">
             <span class="text-[11px] font-medium tracking-wide text-fg-tertiary">
@@ -32,6 +36,7 @@ fn preview_pending_state() -> impl IntoView {
             </span>
         </div>
     }
+    .into_any()
 }
 
 #[component]
@@ -46,6 +51,10 @@ pub fn DisplayPreviewSurface(
     mounted: Option<MountedPreview>,
     #[prop(into)] aria_label: String,
     #[prop(into)] container_class: String,
+    /// Show no words while there is no picture: for a host the size of a
+    /// thumbnail.
+    #[prop(optional)]
+    quiet: bool,
 ) -> impl IntoView {
     let (host_style, frame_style) = mounted.map_or_else(
         || (format!("aspect-ratio: {aspect_ratio};"), String::new()),
@@ -114,7 +123,7 @@ pub fn DisplayPreviewSurface(
                                 view! {
                                     <Show
                                         when=move || !fallback_missing.get()
-                                        fallback=preview_pending_state
+                                        fallback=move || preview_pending_state(quiet)
                                     >
                                         <img
                                             class="h-full w-full object-cover"
@@ -153,7 +162,7 @@ pub fn DisplayPreviewSurface(
                 view! {
                     <Show
                         when=move || has_live || !fallback_missing.get()
-                        fallback=preview_pending_state
+                        fallback=move || preview_pending_state(quiet)
                     >
                         <img
                             class="h-full w-full object-cover"

@@ -40,7 +40,7 @@ use crate::effect_search::IndexedEffect;
 use crate::icons::*;
 use crate::style_utils::category_accent_rgb;
 use crate::toasts;
-use crate::zones::surface::{Surface, SurfaceKind, apply_zone_id, layer_label};
+use crate::zones::surface::{Surface, apply_zone_id, layer_label};
 use crate::zones::{ZoneEffectState, ZonesContext};
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::layer::{LayerSource, SceneLayerId};
@@ -193,15 +193,6 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                 .unwrap_or_default()
         })
     });
-    let screens = Memo::new(move |_| {
-        zones_ctx.zones.with(|zones| {
-            zones
-                .iter()
-                .filter(|zone| zone.kind == SurfaceKind::Screen)
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-    });
     let toolbar_summary = Memo::new(move |_| {
         let zones = zones_ctx.led_zones.with(Vec::len);
         let outputs: usize = zones_ctx.led_zones.with(|led| {
@@ -299,28 +290,6 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                         </div>
                     </section>
 
-                    {move || (!screens.with(Vec::is_empty)).then(|| view! {
-                        <section aria-label="Screens">
-                            <h2 class=format!("{} mb-2", label_class(LabelSize::Small, LabelTone::Default))>
-                                "Screens"
-                            </h2>
-                            <div class="divide-y divide-edge-subtle/40 rounded-xl border border-edge-subtle bg-surface-overlay/60">
-                                {move || screens.get().into_iter().map(|screen| view! {
-                                    <div class="flex min-h-13 items-center gap-3 px-3.5 py-2.5">
-                                        <span class="flex shrink-0 text-fg-tertiary">
-                                            <Icon icon=LuMonitor width="16px" height="16px" />
-                                        </span>
-                                        <div class="min-w-0 flex-1">
-                                            <div class="truncate text-sm font-medium text-fg-primary">{screen.name.clone()}</div>
-                                            <div class="truncate text-xs text-fg-tertiary">
-                                                {screen.top_layer.clone().unwrap_or_else(|| "Nothing showing".to_owned())}
-                                            </div>
-                                        </div>
-                                    </div>
-                                }).collect_view()}
-                            </div>
-                        </section>
-                    })}
                 </div>
             </div>
 
@@ -365,7 +334,7 @@ fn ZoneCard(
                 }) else {
                     return Vec::new();
                 };
-                let outputs = target_outputs_for(zone, &devices);
+                let outputs = target_outputs_for(zone, &devices, &[]);
                 limited_layers(zone, &outputs, |effect_id| {
                     fx.effects_index.with(|effects| {
                         effects
@@ -535,7 +504,7 @@ fn LayerTargetSheet(layer: EditedLayer, on_close: Callback<()>) -> impl IntoView
                         .iter()
                         .find(|zone| zone.id.to_string() == zone_id)
                 })
-                .map(|zone| target_outputs_for(zone, &devices))
+                .map(|zone| target_outputs_for(zone, &devices, &[]))
                 .unwrap_or_default()
         })
     });

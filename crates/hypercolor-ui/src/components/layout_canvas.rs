@@ -133,6 +133,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     let layer_focus = editor.layer_focus;
     let picking = editor.picking;
     let pick_blocked = editor.pick_blocked;
+    let screen_tiles = editor.screen_tiles;
     let pick_mode = Memo::new(move |_| picking.with(Option::is_some));
     // When anything is focused (selected or hovered), the rest of the canvas
     // recedes so a dense layout reads clearly around the focus.
@@ -1175,6 +1176,14 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         swallow_next_click.set_value(false);
                                     }
                                 >
+                                    // A screen's box carries the panel's live picture.
+                                    {
+                                        let zid = zid.clone();
+                                        let tile = Memo::new(move |_| {
+                                            screen_tiles.with(|tiles| tiles.get(&zid).cloned())
+                                        });
+                                        move || tile.get().map(|tile| view! { <ScreenTileView tile=tile /> })
+                                    }
                                     {move || zone_style.get().and_then(|zd| zd.polygon_points.map(|points| {
                                         view! {
                                             <svg
@@ -1481,4 +1490,48 @@ pub fn LayoutCanvas() -> impl IntoView {
             </div>
         </div>
     }
+}
+
+/// The live picture inside a screen's box: the panel as its viewer sees
+/// it, masked round for a round panel. It takes no pointer events, so the
+/// box under it selects, drags, and resizes as any other.
+#[component]
+fn ScreenTileView(tile: crate::components::layout_builder::ScreenTile) -> impl IntoView {
+    use crate::components::display_preview_surface::DisplayPreviewSurface;
+    use crate::display_preview_state::display_preview_frame;
+    use crate::display_rotation::mounted_preview;
+
+    let Some(ws) = use_context::<WsContext>() else {
+        return ().into_any();
+    };
+    let device_id = tile.device_id.clone();
+    let frame = display_preview_frame(ws, Signal::stored(Some(device_id)));
+    // The still the box shows until its stream starts follows the scene's
+    // structure, as a face that changed is a new picture.
+    let generation = ws
+        .last_scene_event
+        .with_untracked(|hint| hint.as_ref().map_or(0, |hint| hint.structural_generation));
+    let shape = if tile.circular {
+        "rounded-full"
+    } else {
+        "rounded-[5px]"
+    };
+    view! {
+        <div
+            class="pointer-events-none absolute inset-[2px] overflow-hidden bg-black"
+            class=(shape, true)
+            data-screen-tile=tile.device_id.clone()
+        >
+            <DisplayPreviewSurface
+                frame=frame
+                fallback_route=api::display_preview_route(&tile.device_id, Some(generation))
+                aspect_ratio=format!("{} / {}", tile.width.max(1), tile.height.max(1))
+                mounted=mounted_preview(tile.width, tile.height, tile.rotation)
+                aria_label=format!("Live picture of {}", tile.name)
+                container_class="h-full w-full"
+                quiet=true
+            />
+        </div>
+    }
+    .into_any()
 }

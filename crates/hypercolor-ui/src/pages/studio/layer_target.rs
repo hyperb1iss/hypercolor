@@ -10,8 +10,9 @@
 //! [`LayerTargets::add_layer_to`]: "+ Layer" in the output properties bar,
 //! "Add layer to this device" on a device card, and the target line under
 //! "Add layer" in the stack. A change to a layer already in the stack is
-//! one step in Studio's history. Screens take faces through their own tab
-//! and are never offered here.
+//! one step in Studio's history. A screen is a target like any output once
+//! the daemon keeps its layers in the zone that places it: a layer on
+//! screens alone is their face, and the picker offers faces for it.
 
 use std::collections::HashSet;
 
@@ -27,8 +28,8 @@ use wasm_bindgen::JsCast;
 use crate::api::{self, DeviceSummary};
 use crate::components::bottom_sheet::BottomSheet;
 use crate::components::layer_panel::scope::{
-    Target, TargetOutput, draft_words, is_new_selection, is_screen_member, outputs_label,
-    zone_target_outputs,
+    Target, TargetOutput, draft_words, is_new_selection, is_screen_member, offers_targets,
+    outputs_label, zone_target_outputs,
 };
 use crate::components::layer_panel::target_checklist::{TargetChecklist, hang_popover};
 use crate::components::layer_panel::{LayerTargetHost, TargetSubject};
@@ -36,6 +37,8 @@ use crate::icons::*;
 use crate::layout_utils;
 
 use super::StudioContext;
+use super::screen_model::{PlacedScreen, StackHome};
+use super::screens::Screens;
 
 /// The viewport width from which the composition panel docks beside the
 /// Stage instead of covering it: Tailwind's `xl`.
@@ -70,7 +73,7 @@ pub(crate) struct TargetPick {
 pub(crate) struct LayerTargets {
     /// Whether the daemon can limit a layer to outputs.
     pub enabled: Memo<bool>,
-    /// The open zone's outputs, as targets name them. Empty on a Screen.
+    /// The open zone's outputs, as targets name them.
     pub outputs: Memo<Vec<TargetOutput>>,
     /// A target chosen for the next added layer, with the zone it was
     /// chosen in. It lasts until that layer is added or the selection
@@ -97,20 +100,32 @@ pub(crate) struct LayerTargets {
 }
 
 /// A zone's outputs as targets name them: each by the name its device
-/// card shows, under its device's name.
+/// card shows, under its device's name. A screen goes by the name its box
+/// carries, and is open to targets when `screens` holds it with its layers
+/// in this zone: one whose stack is stored apart is edited from its own
+/// selection, where a layer of this zone would never show.
 #[must_use]
 pub(crate) fn target_outputs_for(
     zone: &ZoneResource,
     devices: &[DeviceSummary],
+    screens: &[PlacedScreen],
 ) -> Vec<TargetOutput> {
     let placed = api::zone_outputs(zone);
-    zone_target_outputs(zone, |member| {
+    let zone_id = zone.id.to_string();
+    let screen_of = |member: &hypercolor_types::api::scene::ZoneMember| {
+        screens
+            .iter()
+            .find(|screen| screen.zone_id == zone_id && screen.output_id == member.id.0)
+    };
+    let mut outputs = zone_target_outputs(zone, |member| {
         let device_name = devices
             .iter()
             .find(|device| device.layout_device_id == member.device_id)
             .map_or_else(|| member.name.clone(), |device| device.name.clone());
         if is_screen_member(member) {
-            return (member.name.clone(), device_name);
+            let name =
+                screen_of(member).map_or_else(|| member.name.clone(), |screen| screen.name.clone());
+            return (name, device_name);
         }
         let name = placed
             .iter()
@@ -118,7 +133,15 @@ pub(crate) fn target_outputs_for(
             .and_then(|output| layout_utils::rail_output_name(output, devices))
             .map_or_else(|| member.name.clone(), |rail| rail.name);
         (name, device_name)
-    })
+    });
+    for output in outputs.iter_mut().filter(|output| output.screen) {
+        output.pickable = screens.iter().any(|screen| {
+            screen.zone_id == zone_id
+                && screen.output_id == output.id
+                && screen.home == Some(StackHome::Owner)
+        });
+    }
+    outputs
 }
 
 /// Whether the composition panel sits beside the Stage at this width.
@@ -135,6 +158,7 @@ impl LayerTargets {
         active_scene: Signal<Option<api::SceneDocument>>,
         selected_surface_id: RwSignal<Option<String>>,
         selected_output_ids: RwSignal<HashSet<String>>,
+        screens: Screens,
     ) -> Self {
         let caps = expect_context::<crate::app::CapabilitiesContext>();
         let devices = expect_context::<crate::app::DevicesContext>().devices_resource;
@@ -155,7 +179,9 @@ impl LayerTargets {
                 return Vec::new();
             };
             let devices = devices.get().and_then(Result::ok).unwrap_or_default();
-            target_outputs_for(&zone, &devices)
+            screens
+                .placed
+                .with(|placed| target_outputs_for(&zone, &devices, placed))
         });
         let chosen = RwSignal::new(None::<(String, Target)>);
         let add_target = Memo::new(move |_| {
@@ -197,7 +223,9 @@ impl LayerTargets {
             selected
         });
         let emphasis = Memo::new(move |_| {
-            if !enabled.get() || emphasis_off.get() {
+            // A selection of screens has the panel to itself: every row
+            // shown is theirs, so nothing stands back.
+            if !enabled.get() || emphasis_off.get() || screens.selected.with(|on| !on.is_empty()) {
                 return HashSet::new();
             }
             let limited = open_zone()
@@ -835,30 +863,52 @@ pub(super) fn ShowingStrip() -> impl IntoView {
 }
 
 /// "+ Layer" in the output properties bar: add a layer that applies to
-/// the selected outputs alone. Renders nothing outside Studio, on a daemon
-/// that cannot limit a layer, in a zone with nothing to choose between, or
-/// for a selection of screens.
+/// the selected outputs alone. For a selection of screens it is their
+/// next layer, and "Face settings" beside it opens the ones they have.
+/// Renders nothing outside Studio, on a daemon that cannot limit a layer,
+/// or in a zone with nothing to choose between.
 #[component]
 pub(crate) fn OutputLayerButton(output_ids: Vec<String>) -> impl IntoView {
     let Some(studio) = use_context::<StudioContext>() else {
         return ().into_any();
     };
     let ids = StoredValue::new(output_ids);
+    let on_screens = Memo::new(move |_| studio.screens.selected.with(|on| !on.is_empty()));
     let offered = Memo::new(move |_| {
-        studio
-            .selected_surface_id
-            .get()
-            .is_some_and(|zone_id| ids.with_value(|ids| offers_layer(studio, &zone_id, ids)))
+        on_screens.get()
+            || studio
+                .selected_surface_id
+                .get()
+                .is_some_and(|zone_id| ids.with_value(|ids| offers_layer(studio, &zone_id, ids)))
     });
+    const BUTTON: &str = "btn-press mr-1 flex h-7 shrink-0 items-center gap-1 rounded-md border border-edge-subtle px-2 text-[11px] font-medium text-fg-secondary transition-colors hover:border-accent-muted hover:bg-surface-overlay hover:text-fg-primary";
     view! {
+        <Show when=move || on_screens.get()>
+            <button
+                type="button"
+                id="output-face-settings"
+                class=BUTTON
+                title="Open this screen's layers and their settings"
+                on:click=move |_| studio.screens.open(studio, false)
+            >
+                <span class="flex text-accent">
+                    <Icon icon=LuLayers width="12px" height="12px" />
+                </span>
+                "Face settings"
+            </button>
+        </Show>
         <Show when=move || offered.get()>
             <button
                 type="button"
                 id="output-add-layer"
-                class="btn-press mr-1 flex h-7 shrink-0 items-center gap-1 rounded-md border border-edge-subtle px-2 text-[11px] font-medium text-fg-secondary transition-colors hover:border-accent-muted hover:bg-surface-overlay hover:text-fg-primary"
+                class=BUTTON
                 title="Add a layer that plays on this selection alone"
                 aria-label="Add layer to the selection"
                 on:click=move |_| {
+                    if on_screens.get_untracked() {
+                        studio.screens.open(studio, true);
+                        return;
+                    }
                     let Some(zone_id) = studio.selected_surface_id.get_untracked() else {
                         return;
                     };
@@ -876,22 +926,25 @@ pub(crate) fn OutputLayerButton(output_ids: Vec<String>) -> impl IntoView {
 }
 
 /// Whether a layer can be limited to some of `outputs` in the zone
-/// `zone_id`: the daemon limits layers, the zone has LED outputs to choose
+/// `zone_id`: the daemon limits layers, the zone has targets to choose
 /// between, and at least one of `outputs` is among them.
 #[must_use]
 pub(crate) fn offers_layer(studio: StudioContext, zone_id: &str, outputs: &[String]) -> bool {
     studio.targets.enabled.get()
-        && studio
-            .active_scene
-            .with(|scene| !pickable_in(scene.as_ref(), zone_id, outputs).is_empty())
+        && studio.screens.placed.with(|screens| {
+            studio
+                .active_scene
+                .with(|scene| !pickable_in(scene.as_ref(), screens, zone_id, outputs).is_empty())
+        })
 }
 
 /// The ids of `outputs` a layer can be limited to in the zone `zone_id`
-/// of `scene`: its LED outputs among them, and none at all when the zone
+/// of `scene`: the ones a target can pick, and none at all when the zone
 /// has nothing to choose between.
 #[must_use]
 pub(crate) fn pickable_in(
     scene: Option<&api::SceneDocument>,
+    screens: &[PlacedScreen],
     zone_id: &str,
     outputs: &[String],
 ) -> Vec<String> {
@@ -903,26 +956,24 @@ pub(crate) fn pickable_in(
     }) else {
         return Vec::new();
     };
-    let lights: Vec<&str> = zone
-        .members
-        .iter()
-        .filter(|member| !is_screen_member(member))
-        .map(|member| member.id.0.as_str())
-        .collect();
-    if lights.len() < 2 {
+    // Names play no part in what can be picked.
+    let targets = target_outputs_for(zone, &[], screens);
+    if !offers_targets(&targets) {
         return Vec::new();
     }
-    lights
+    targets
         .into_iter()
-        .filter(|id| outputs.iter().any(|output| output == id))
-        .map(str::to_owned)
+        .filter(|target| target.pickable && outputs.contains(&target.id))
+        .map(|target| target.id)
         .collect()
 }
 
 /// Add a layer limited to the pickable ones of `outputs` in `zone_id`.
 pub(crate) fn add_layer_to_outputs(studio: StudioContext, zone_id: &str, outputs: &[String]) {
-    let pickable = studio
-        .active_scene
-        .with_untracked(|scene| pickable_in(scene.as_ref(), zone_id, outputs));
+    let pickable = studio.screens.placed.with_untracked(|screens| {
+        studio
+            .active_scene
+            .with_untracked(|scene| pickable_in(scene.as_ref(), screens, zone_id, outputs))
+    });
     studio.targets.add_layer_to(studio, zone_id, &pickable);
 }

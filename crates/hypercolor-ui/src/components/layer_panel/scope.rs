@@ -9,7 +9,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use hypercolor_types::api::scene::{ZoneMember, ZoneResource};
-use hypercolor_types::layer::{LayerScope, SceneLayer};
+use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
 
 /// The segment name a screen's output carries in a zone's membership.
 const SCREEN_SEGMENT: &str = "Display";
@@ -494,6 +494,42 @@ pub fn is_screen_scope(scope: Option<&LayerScope>, outputs: &[TargetOutput]) -> 
         .filter(|output| scope.outputs.contains(&output.id))
         .peekable();
     live.peek().is_some() && live.all(|output| output.screen)
+}
+
+/// Whether `layer` of `zone` is a screen's own, by [`is_screen_scope`]'s
+/// rule read off the zone's members.
+#[must_use]
+pub fn is_screen_layer(zone: &ZoneResource, layer: &SceneLayer) -> bool {
+    let Some(scope) = &layer.scope else {
+        return false;
+    };
+    let mut live = zone
+        .members
+        .iter()
+        .filter(|member| scope.outputs.contains(&member.id.0))
+        .peekable();
+    live.peek().is_some() && live.all(is_screen_member)
+}
+
+/// The order a zone's stack takes when the layer `moving` trades places
+/// with its neighbor inside `group`: `delta` of 1 moves it up, -1 down.
+/// `stack` and `group` are bottom first, and the group's layers keep the
+/// slots they hold in the stack, so no layer outside it moves. `None`
+/// when the layer is at the group's edge, or either list does not hold it.
+#[must_use]
+pub fn reorder_within(
+    stack: &[SceneLayerId],
+    group: &[SceneLayerId],
+    moving: SceneLayerId,
+    delta: isize,
+) -> Option<Vec<SceneLayerId>> {
+    let place = group.iter().position(|id| *id == moving)?;
+    let neighbor = *group.get(place.checked_add_signed(delta)?)?;
+    let from = stack.iter().position(|id| *id == moving)?;
+    let to = stack.iter().position(|id| *id == neighbor)?;
+    let mut order = stack.to_vec();
+    order.swap(from, to);
+    Some(order)
 }
 
 /// Whether `layer` names outputs and none of them is a member of its

@@ -12,9 +12,7 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{EffectCategory, EffectId};
 use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::ZoneRole;
 
-use crate::api::ZoneResource;
 use crate::preferences::EffectPreferences;
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
@@ -40,8 +38,8 @@ impl LayerSourceKind {
     }
 }
 
-/// Which effect category domain the picker should show for the current
-/// target surfaces.
+/// Which effect category domain the picker shows for what the new layer
+/// will play on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectPickerMode {
     Effects,
@@ -92,34 +90,11 @@ impl EffectPickerMode {
     }
 }
 
-/// Where an Add-layer action sends the new layer. A layer lands on the
-/// active tab. Screens share one tab, so on a screen the picker can also
-/// send the layer to every screen at once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddLayerScope {
-    /// The selected surface only — the default.
-    ThisSurface,
-    /// Every display-face screen.
-    AllScreens,
-}
-
-impl AddLayerScope {
-    /// User-facing label for the scope selector, which only a screen shows.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ThisSurface => "This screen",
-            Self::AllScreens => "All screens",
-        }
-    }
-}
-
+/// The picker's mode for a new layer: faces when screens are all it will
+/// play on, effects when any other output is among them.
 #[must_use]
-pub fn effect_picker_mode(
-    scope: AddLayerScope,
-    selected_role: Option<ZoneRole>,
-) -> EffectPickerMode {
-    if scope == AddLayerScope::AllScreens || selected_role == Some(ZoneRole::Display) {
+pub fn effect_picker_mode(screens_only: bool) -> EffectPickerMode {
+    if screens_only {
         EffectPickerMode::Faces
     } else {
         EffectPickerMode::Effects
@@ -144,44 +119,6 @@ pub fn effect_picker_matches_query(name: &str, category: EffectCategory, query: 
         || effect_category_label(category)
             .to_lowercase()
             .contains(&query)
-}
-
-/// The scopes worth offering for the selected surface. An LED zone adds
-/// to itself alone; a screen can also add to every screen when the scene
-/// has more than one. A result shorter than two means "show no selector".
-#[must_use]
-pub fn available_add_layer_scopes(
-    zones: &[ZoneResource],
-    selected_role: Option<ZoneRole>,
-) -> Vec<AddLayerScope> {
-    let screens = zones
-        .iter()
-        .filter(|zone| zone.role == ZoneRole::Display)
-        .count();
-    if selected_role == Some(ZoneRole::Display) && screens > 1 {
-        vec![AddLayerScope::ThisSurface, AddLayerScope::AllScreens]
-    } else {
-        Vec::new()
-    }
-}
-
-/// Resolve a scope to the render-zone ids that should receive the layer,
-/// in scene order. Targets are deduplicated so a scope can never queue the
-/// same surface twice.
-#[must_use]
-pub fn resolve_add_layer_targets(
-    scope: AddLayerScope,
-    zones: &[ZoneResource],
-    selected_zone_id: &str,
-) -> Vec<String> {
-    match scope {
-        AddLayerScope::ThisSurface => vec![selected_zone_id.to_owned()],
-        AddLayerScope::AllScreens => zones
-            .iter()
-            .filter(|zone| zone.role == ZoneRole::Display)
-            .map(|zone| zone.id.to_string())
-            .collect(),
-    }
 }
 
 /// Build an effect layer source from a registry effect id string.

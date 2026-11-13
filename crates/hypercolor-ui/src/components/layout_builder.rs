@@ -200,7 +200,7 @@ pub mod keyed;
 pub mod ledger;
 pub(crate) mod writer;
 
-pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
+pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext, ScreenTile};
 use editor_session::{LayoutEditorSession, embedded_attachment_profiles, reconcile_replay};
 
 /// The layout editor body: the canvas viewport above a resizable

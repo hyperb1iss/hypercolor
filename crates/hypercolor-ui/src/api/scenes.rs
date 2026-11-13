@@ -159,21 +159,20 @@ pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
     replace_stored_scene(scene_id, |document| name.clone_into(&mut document.name)).await
 }
 
-/// Read one stored scene, edit it, and write it back at the revision it
-/// was read at, so a concurrent change is refused rather than clobbered.
-async fn replace_stored_scene(
-    scene_id: &str,
-    edit: impl FnOnce(&mut SceneDocument),
-) -> ApiResult<()> {
-    let url = format!("/api/v1/scenes/{scene_id}");
-    let mut document = client::fetch_json::<SceneDocument>(&url).await?;
-    edit(&mut document);
-    let request = ReplaceSceneRequest::from(&document);
+/// Read one stored scene.
+pub async fn fetch_stored_scene(scene_id: &str) -> ApiResult<SceneDocument> {
+    client::fetch_json::<SceneDocument>(&format!("/api/v1/scenes/{scene_id}")).await
+}
+
+/// Write a stored scene back at the revision it was read at, so a
+/// concurrent change is refused rather than clobbered.
+pub async fn save_stored_scene(document: &SceneDocument) -> ApiResult<()> {
+    let request = ReplaceSceneRequest::from(document);
     match client::send_json_versioned::<_, SceneDocument>(
         HttpMethod::Put,
-        &url,
+        &format!("/api/v1/scenes/{}", document.id),
         Some(&request),
-        Some(&client::Fence::of(&document)),
+        Some(&client::Fence::of(document)),
     )
     .await?
     {
@@ -182,6 +181,16 @@ async fn replace_stored_scene(
             "Scene changed while it was being saved; reload revision {current}"
         ))),
     }
+}
+
+/// Read one stored scene, edit it, and write it back.
+async fn replace_stored_scene(
+    scene_id: &str,
+    edit: impl FnOnce(&mut SceneDocument),
+) -> ApiResult<()> {
+    let mut document = fetch_stored_scene(scene_id).await?;
+    edit(&mut document);
+    save_stored_scene(&document).await
 }
 
 /// Delete a scene.

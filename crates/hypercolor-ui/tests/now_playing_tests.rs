@@ -9,7 +9,7 @@ use hypercolor_ui::components::now_playing::{
     CaptionInputs, NowPlayingCaption, now_playing_caption, shuffle_effect, step_effect,
 };
 use hypercolor_ui::zones::ZoneEffectState;
-use hypercolor_ui::zones::surface::{Surface, SurfaceKind};
+use hypercolor_ui::zones::surface::Surface;
 
 fn ids(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
@@ -20,11 +20,9 @@ fn zone(name: &str, effect: Option<&str>) -> ZoneEffectState {
         zone: Surface {
             id: format!("{name}-id"),
             name: name.to_owned(),
-            kind: SurfaceKind::Light,
             enabled: true,
             role: ZoneRole::Custom,
             color: None,
-            display_device_id: None,
             layer_ids: effect
                 .map(|_| vec![format!("{name}-layer")])
                 .unwrap_or_default(),

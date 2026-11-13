@@ -118,6 +118,25 @@ pub(crate) struct LayoutEditorContext {
     pub picking: RwSignal<Option<HashSet<String>>>,
     /// Outputs a pick cannot take.
     pub pick_blocked: RwSignal<HashSet<String>>,
+    /// The screens among the boxes, by output id: each box shows its
+    /// panel's live picture.
+    pub screen_tiles: RwSignal<HashMap<String, ScreenTile>>,
+}
+
+/// A screen behind a box on the canvas.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenTile {
+    /// The display, which its preview frames arrive under.
+    pub device_id: String,
+    /// What the screen is called.
+    pub name: String,
+    /// The panel's size in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The panel is round.
+    pub circular: bool,
+    /// How the panel is mounted.
+    pub rotation: hypercolor_types::scene::DisplayRotation,
 }
 
 #[derive(Clone, Copy)]
@@ -165,6 +184,7 @@ pub(super) struct LayoutEditorSession {
     pub(super) layer_focus: RwSignal<HashSet<String>>,
     pub(super) picking: RwSignal<Option<HashSet<String>>>,
     pub(super) pick_blocked: RwSignal<HashSet<String>>,
+    pub(super) screen_tiles: RwSignal<HashMap<String, ScreenTile>>,
 }
 
 impl LayoutEditorSession {
@@ -216,6 +236,7 @@ impl LayoutEditorSession {
             layer_focus: RwSignal::new(HashSet::new()),
             picking: RwSignal::new(None),
             pick_blocked: RwSignal::new(HashSet::new()),
+            screen_tiles: RwSignal::new(HashMap::new()),
         }
     }
 
@@ -241,6 +262,7 @@ impl LayoutEditorSession {
             layer_focus: self.layer_focus,
             picking: self.picking,
             pick_blocked: self.pick_blocked,
+            screen_tiles: self.screen_tiles,
         });
     }
 }

@@ -6,6 +6,10 @@
 //! transform/color disclosure. With one layer in the stack the reorder
 //! affordances are suppressed: a single layer has nowhere to move.
 //!
+//! A layer that is the bottom of a screen's stack carries how that stack
+//! meets what is behind the screen: its blend and amount read in a face's
+//! words, with the one-tap looks beside them.
+//!
 //! Under the name the card says what the layer applies to, when its host
 //! can show that: "Whole zone" in plain text, a chip naming its outputs,
 //! or a warning once they have all left the zone. Each opens the target
@@ -16,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::event::LayerHealth;
-use hypercolor_types::layer::{LayerSource, SceneLayer};
+use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -29,9 +33,33 @@ use super::source::{blend_options, blend_value, fit_options, fit_value, parse_bl
 use super::{
     LayerTargetHost, LayerWrites, TargetSubject, delete_layer, reorder_layer, update_layer,
 };
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
+use crate::face_blend::{
+    FACE_BLEND_PRESETS, face_blend_option, face_blend_select_options, face_blend_value,
+    parse_face_blend,
+};
 use crate::icons::*;
 use crate::pointer_gesture::listener_element;
+use crate::{api, toasts};
+
+/// A layer that is the bottom of a screen's stack: its blend and amount
+/// are how the whole stack meets what is behind the screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Backdrop {
+    /// A display whose stored zone holds that blend and amount apart from
+    /// the layer, with what it holds. `None` when they are the layer's
+    /// own.
+    pub display: Option<DisplayComposition>,
+}
+
+/// How a display's stored zone meets what is behind it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayComposition {
+    pub device_id: String,
+    pub blend: BlendMode,
+    pub opacity: f32,
+}
 
 /// What a row says its layer applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +119,6 @@ pub fn layer_title(
 pub fn LayerRow(
     zone_id: String,
     layer: Signal<SceneLayer>,
-    stack_index: Signal<usize>,
     fence: Signal<crate::api::Fence>,
     media_names: Memo<HashMap<String, String>>,
     effect_names: Memo<HashMap<String, String>>,
@@ -104,11 +131,27 @@ pub fn LayerRow(
     /// to.
     #[prop(into)]
     targets: Signal<Option<LayerTargetHost>>,
+    /// The layers this one is ordered among, bottom first: the whole
+    /// stack, or the part of it listed beside this row.
+    #[prop(into)]
+    group: Signal<Vec<SceneLayerId>>,
+    /// Set while the layer is the bottom of a screen's stack.
+    #[prop(optional, into)]
+    backdrop: Signal<Option<Backdrop>>,
+    /// The layer plays on screens alone: an effect there is a face.
+    #[prop(optional)]
+    on_screen: bool,
+    /// Offer to copy the layer onto its screens in every scene.
+    #[prop(optional_no_strip)]
+    on_copy: Option<Callback<String>>,
 ) -> impl IntoView {
     let initial = layer.get_untracked();
     let stack = writes.stack;
     let on_layers_mutated = writes.mutated;
     let (icon, accent_rgb, kind_word) = source_meta(&initial.source);
+    let is_face = on_screen && matches!(initial.source, LayerSource::Effect { .. });
+    let kind_word = if is_face { "Face" } else { kind_word };
+    let icon = if is_face { LuMonitor } else { icon };
     let title = Memo::new(move |_| {
         layer_title(
             &layer.get(),
@@ -191,9 +234,64 @@ pub fn LayerRow(
     let layer_id = initial.id.to_string();
     let is_effect = matches!(initial.source, LayerSource::Effect { .. });
     let is_media = matches!(initial.source, LayerSource::Media { .. });
-    let show_reorder = move || stack.with(|layers| layers.len() > 1);
-    let can_move_up = move || stack_index.get() + 1 < stack.with(Vec::len);
-    let can_move_down = move || stack_index.get() > 0;
+    let place = Memo::new(move |_| {
+        let id = layer.with(|layer| layer.id);
+        group.with(|group| (group.iter().position(|member| *member == id), group.len()))
+    });
+    let show_reorder = move || place.get().1 > 1;
+    let can_move_up = move || matches!(place.get(), (Some(at), count) if at + 1 < count);
+    let can_move_down = move || matches!(place.get(), (Some(at), _) if at > 0);
+
+    // How the layer blends. The bottom of a screen's stack reads in a
+    // face's words; a stored zone holds its blend and amount itself.
+    let meets_backdrop = Memo::new(move |_| backdrop.with(Option::is_some));
+    let held_by_display = Memo::new(move |_| {
+        backdrop.with(|held| held.as_ref().and_then(|held| held.display.clone()))
+    });
+    let blend_mode = Memo::new(move |_| {
+        held_by_display
+            .get()
+            .map_or_else(|| layer.with(|layer| layer.blend), |held| held.blend)
+    });
+    let amount = Memo::new(move |_| {
+        held_by_display
+            .get()
+            .map_or_else(|| layer.with(|layer| layer.opacity), |held| held.opacity)
+            .clamp(0.0, 1.0)
+    });
+    let composition_zone = zone_id.clone();
+    let set_composition = Callback::new(move |(mode, opacity): (BlendMode, f32)| {
+        // A stack that replaces what is behind it has no amount to blend by.
+        let opacity = if meets_backdrop.get_untracked() && !mode.blends_with_base() {
+            1.0
+        } else {
+            opacity.clamp(0.0, 1.0)
+        };
+        if let Some(held) = held_by_display.get_untracked() {
+            leptos::task::spawn_local(async move {
+                let result = api::update_display_face_composition(
+                    &held.device_id,
+                    Some(mode),
+                    Some(opacity),
+                )
+                .await;
+                if let Err(error) = result {
+                    toasts::toast_error(&format!("Couldn't change how the face blends: {error}"));
+                }
+                let _ = on_layers_mutated.try_run(());
+            });
+            return;
+        }
+        let mut next = layer.get_untracked();
+        next.blend = mode;
+        next.opacity = opacity;
+        update_layer(
+            composition_zone.clone(),
+            next,
+            fence.get_untracked(),
+            writes,
+        );
+    });
 
     let dormant_zone_id = zone_id.clone();
     let dormant_layer_id = layer_id.clone();
@@ -338,6 +436,17 @@ pub fn LayerRow(
                         }}
                     </div>
                 <div class="col-start-3 row-start-1 flex shrink-0 items-center gap-1">
+                    {on_copy.map(|on_copy| view! {
+                        <button
+                            type="button"
+                            class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-fg-primary btn-press"
+                            title="Copy to every scene"
+                            aria-label=move || format!("Copy {} to every scene", title.get())
+                            on:click=move |_| on_copy.run(title.get_untracked())
+                        >
+                            <Icon icon=LuCopy width="14px" height="14px" />
+                        </button>
+                    })}
                     {let zone_id = zone_id.clone(); move || show_reorder()
                         .then(|| {
                             let zone_up = zone_id.clone();
@@ -352,8 +461,9 @@ pub fn LayerRow(
                                     title="Move layer up"
                                     on:click=move |_| reorder_layer(
                                         zone_up.clone(),
-                                        up_stack.get_untracked(),
-                                        stack_index.get_untracked(),
+                                        &up_stack.get_untracked(),
+                                        &group.get_untracked(),
+                                        layer.get_untracked().id,
                                         1,
                                         fence.get_untracked(),
                                         on_layers_mutated,
@@ -368,8 +478,9 @@ pub fn LayerRow(
                                     title="Move layer down"
                                     on:click=move |_| reorder_layer(
                                         zone_down.clone(),
-                                        down_stack.get_untracked(),
-                                        stack_index.get_untracked(),
+                                        &down_stack.get_untracked(),
+                                        &group.get_untracked(),
+                                        layer.get_untracked().id,
                                         -1,
                                         fence.get_untracked(),
                                         on_layers_mutated,
@@ -401,68 +512,117 @@ pub fn LayerRow(
 
             <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
                 // ── Blend ─────────────────────────────────────────────
-                <div class="min-w-0">
-                        <SilkSelect
-                            aria_label="Blend mode"
-                            value=Signal::derive(move || blend_value(layer.get().blend).to_owned())
-                            options=Signal::derive(blend_options)
-                            on_change=Callback::new({
-                                let zone_id = zone_id.clone();
-                                move |value: String| {
-                                    let mut next = layer.get_untracked();
-                                    next.blend = parse_blend(&value);
-                                    update_layer(
-                                        zone_id.clone(),
-                                        next,
-                                        fence.get_untracked(),
-                                        writes,
-                                    );
-                                }
-                            })
-                            placeholder="Blend"
-                            class="w-full border border-edge-subtle bg-surface-overlay/45 px-2.5 py-1.5 text-xs text-fg-primary"
-                            label_class="font-medium"
-                        />
+                <div class="min-w-0 space-y-1.5">
+                    <Show when=move || meets_backdrop.get()>
+                        <span class=label_class(LabelSize::Micro, LabelTone::Default)>
+                            "Blend with what is behind"
+                        </span>
+                    </Show>
+                    <SilkSelect
+                        aria_label=Signal::derive(move || {
+                            if meets_backdrop.get() {
+                                "Blend with what is behind".to_owned()
+                            } else {
+                                "Blend mode".to_owned()
+                            }
+                        })
+                        value=Signal::derive(move || {
+                            let mode = blend_mode.get();
+                            if meets_backdrop.get() {
+                                face_blend_value(mode).to_owned()
+                            } else {
+                                blend_value(mode).to_owned()
+                            }
+                        })
+                        options=Signal::derive(move || {
+                            if meets_backdrop.get() {
+                                face_blend_select_options()
+                            } else {
+                                blend_options()
+                            }
+                        })
+                        on_change=Callback::new(move |value: String| {
+                            let mode = if meets_backdrop.get_untracked() {
+                                parse_face_blend(&value)
+                            } else {
+                                parse_blend(&value)
+                            };
+                            set_composition.run((mode, amount.get_untracked()));
+                        })
+                        placeholder="Blend"
+                        class="w-full border border-edge-subtle bg-surface-overlay/45 px-2.5 py-1.5 text-xs text-fg-primary"
+                        label_class="font-medium"
+                    />
+                    <Show when=move || meets_backdrop.get()>
+                        <p class="px-1 text-[10px] leading-relaxed text-fg-tertiary">
+                            {move || face_blend_option(blend_mode.get()).blurb}
+                        </p>
+                    </Show>
                 </div>
 
                 // ── Opacity — same slider chrome as the Effects controls ──
-                <div
-                    class="flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-surface-hover/20"
-                    style="--glow-rgb: 225, 53, 255"
-                >
-                    <span class="min-w-[64px] shrink-0 truncate text-xs font-medium text-fg-secondary">
-                        "Opacity"
-                    </span>
-                    <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                        class="slider-silk min-w-0 flex-1 cursor-pointer"
-                        prop:value=move || format!("{:.2}", layer.get().opacity)
-                        on:change={
-                            let zone_id = zone_id.clone();
-                            move |event| {
+                <Show when=move || !meets_backdrop.get() || blend_mode.get().blends_with_base()>
+                    <div
+                        class="flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-surface-hover/20"
+                        style="--glow-rgb: 225, 53, 255"
+                    >
+                        <span class="min-w-[64px] shrink-0 truncate text-xs font-medium text-fg-secondary">
+                            {move || if meets_backdrop.get() { "Amount" } else { "Opacity" }}
+                        </span>
+                        <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            class="slider-silk min-w-0 flex-1 cursor-pointer"
+                            aria-label=move || if meets_backdrop.get() { "Blend amount" } else { "Opacity" }
+                            prop:value=move || format!("{:.2}", amount.get())
+                            on:change=move |event| {
                                 if let Some(value) = Change::from_event(event).value::<f32>() {
-                                    let mut next = layer.get_untracked();
-                                    next.opacity = value.clamp(0.0, 1.0);
-                                    update_layer(
-                                        zone_id.clone(),
-                                        next,
-                                        fence.get_untracked(),
-                                        writes,
-                                    );
+                                    set_composition.run((blend_mode.get_untracked(), value));
                                 }
                             }
-                        }
-                    />
-                    <span
-                        class="w-[40px] shrink-0 rounded px-1.5 py-0.5 text-right font-mono text-[10px] tabular-nums"
-                        style="color: rgba(225, 53, 255, 0.85); background: rgba(225, 53, 255, 0.1)"
-                    >
-                        {move || format!("{:.0}%", layer.get().opacity * 100.0)}
-                    </span>
-                </div>
+                        />
+                        <span
+                            class="w-[40px] shrink-0 rounded px-1.5 py-0.5 text-right font-mono text-[10px] tabular-nums"
+                            style="color: rgba(225, 53, 255, 0.85); background: rgba(225, 53, 255, 0.1)"
+                        >
+                            {move || format!("{:.0}%", amount.get() * 100.0)}
+                        </span>
+                    </div>
+                </Show>
+
+                // One-tap looks for how a face sits on what is behind it.
+                <Show when=move || meets_backdrop.get()>
+                    <div class="flex flex-wrap gap-1.5" role="group" aria-label="Looks">
+                        {FACE_BLEND_PRESETS
+                            .iter()
+                            .copied()
+                            .map(|preset| {
+                                let is_active = move || {
+                                    blend_mode.get() == preset.mode
+                                        && (amount.get() - preset.opacity).abs() <= 0.01
+                                };
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="rounded-md border px-2 py-1 text-[10px] font-medium transition-colors btn-press"
+                                        class=("border-accent-muted", is_active)
+                                        class=("bg-accent/10", is_active)
+                                        class=("text-fg-primary", is_active)
+                                        class=("border-edge-subtle/70", move || !is_active())
+                                        class=("text-fg-tertiary", move || !is_active())
+                                        class=("hover:text-fg-secondary", move || !is_active())
+                                        aria-pressed=move || is_active().to_string()
+                                        on:click=move |_| set_composition.run((preset.mode, preset.opacity))
+                                    >
+                                        {preset.label}
+                                    </button>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
+                </Show>
 
                 // ── Source-specific controls ──────────────────────────
                 {is_effect
@@ -474,6 +634,7 @@ pub fn LayerRow(
                                     layer=layer
                                     effect_cache=effect_cache
                                     on_layers_mutated=on_layers_mutated
+                                    label=if is_face { "Face settings" } else { "Effect controls" }
                                 />
                             </div>
                         }

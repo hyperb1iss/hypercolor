@@ -23,7 +23,7 @@ use super::drag_model::{
 };
 use super::history::{EditDone, MovePlan, Moved, NewZone};
 use super::placement;
-use super::surface::{SurfaceKind, surfaces_from_zones};
+use super::surface::surfaces_from_zones;
 
 /// Run `action` on `payload`. `focus` names where focus goes once the move
 /// lands; a drag passes `None`. A move asked for while another write runs
@@ -109,7 +109,6 @@ pub(crate) fn zone_name_in(scene: Option<&api::SceneDocument>, zone_id: &str) ->
 pub(crate) fn led_zones(scene: &api::SceneDocument) -> Vec<(String, String, Option<String>)> {
     surfaces_from_zones(&scene.zones)
         .into_iter()
-        .filter(|surface| surface.kind == SurfaceKind::Light)
         .map(|surface| (surface.id, surface.name, surface.color))
         .collect()
 }

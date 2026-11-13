@@ -10,8 +10,7 @@ use uuid::Uuid;
 
 use hypercolor_ui::api::ZoneResource;
 use hypercolor_ui::pages::studio::surface::{
-    Surface, SurfaceKind, led_zone_count, now_playing, selected_screen_device_id,
-    surfaces_from_zones,
+    Surface, led_zone_count, now_playing, surfaces_from_zones,
 };
 
 fn zone_resource(
@@ -42,8 +41,6 @@ fn a_named_primary_zone_shows_its_authored_name() {
     assert_eq!(surfaces.len(), 1);
     let surface = &surfaces[0];
     assert_eq!(surface.name, "Zone A");
-    assert_eq!(surface.kind, SurfaceKind::Light);
-    assert_eq!(surface.display_device_id, None);
 }
 
 #[test]
@@ -56,33 +53,23 @@ fn multiple_led_zones_keep_their_authored_names() {
     // Every LED zone keeps its authored name, in scene order.
     let names: Vec<&str> = surfaces.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["Desk Zone", "Shelf Zone"]);
-    assert!(surfaces.iter().all(|s| s.kind == SurfaceKind::Light));
 }
 
 #[test]
-fn display_zone_becomes_a_screen_carrying_its_device_id() {
-    let device_id = DeviceId::new();
-    let target = DisplayFaceTarget::new(device_id);
-    let surfaces = surfaces_from_zones(&[zone_resource(
-        "Corsair LCD",
-        ZoneRole::Display,
-        Some(target),
-    )]);
+fn a_display_zone_is_no_surface() {
+    // A display zone is a screen's stack, or a view of it for an older
+    // client. The screen is an output of the zone that places it.
+    let surfaces = surfaces_from_zones(&[
+        zone_resource("Zone A", ZoneRole::Primary, None),
+        zone_resource(
+            "Corsair LCD",
+            ZoneRole::Display,
+            Some(DisplayFaceTarget::new(DeviceId::new())),
+        ),
+    ]);
 
     assert_eq!(surfaces.len(), 1);
-    let surface = &surfaces[0];
-    assert_eq!(surface.kind, SurfaceKind::Screen);
-    assert_eq!(surface.name, "Corsair LCD");
-    assert_eq!(surface.display_device_id, Some(device_id.to_string()));
-}
-
-#[test]
-fn display_zone_without_a_target_has_no_preview_device() {
-    let surfaces = surfaces_from_zones(&[zone_resource("Pending Face", ZoneRole::Display, None)]);
-
-    let surface = &surfaces[0];
-    assert_eq!(surface.kind, SurfaceKind::Screen);
-    assert_eq!(surface.display_device_id, None);
+    assert_eq!(surfaces[0].name, "Zone A");
 }
 
 #[test]
@@ -109,30 +96,6 @@ fn a_surface_carries_backing_zone_live_layer_ids() {
     // set the degraded check filters streamed health against.
     let surfaces = surfaces_from_zones(&[zone]);
     assert_eq!(surfaces[0].layer_ids, expected);
-}
-
-#[test]
-fn led_and_display_zones_split_into_lights_and_screens() {
-    let surfaces = surfaces_from_zones(&[
-        zone_resource("Zone A", ZoneRole::Primary, None),
-        zone_resource(
-            "AIO Screen",
-            ZoneRole::Display,
-            Some(DisplayFaceTarget::new(DeviceId::new())),
-        ),
-    ]);
-
-    let lights = surfaces
-        .iter()
-        .filter(|s| s.kind == SurfaceKind::Light)
-        .count();
-    let screens = surfaces
-        .iter()
-        .filter(|s| s.kind == SurfaceKind::Screen)
-        .count();
-    assert_eq!((lights, screens), (1, 1));
-    // The lone LED zone keeps its authored name; the screen is separate.
-    assert_eq!(surfaces[0].name, "Zone A");
 }
 
 #[test]
@@ -182,81 +145,46 @@ fn led_zone_count_excludes_display_zones() {
     assert_eq!(led_zone_count(&zones), 2);
 }
 
-fn surface(kind: SurfaceKind, top_layer: Option<&str>) -> Surface {
+fn surface(top_layer: Option<&str>) -> Surface {
     Surface {
         id: "surface".to_owned(),
         name: "Surface".to_owned(),
-        kind,
         enabled: true,
-        role: match kind {
-            SurfaceKind::Screen => ZoneRole::Display,
-            SurfaceKind::Light => ZoneRole::Custom,
-        },
+        role: ZoneRole::Custom,
         color: None,
-        display_device_id: None,
         layer_ids: Vec::new(),
         top_layer: top_layer.map(str::to_owned),
     }
 }
 
 #[test]
-fn now_playing_prefers_the_scene_top_layer() {
-    let screen = surface(SurfaceKind::Screen, Some("Neon Clock"));
-    let playing = now_playing(Some(&screen), Some("Sensor Grid"));
-    assert_eq!(playing.label, "Neon Clock");
-    assert!(!playing.is_default_face);
+fn now_playing_names_the_layer_a_zone_is_known_by() {
+    assert_eq!(now_playing(Some(&surface(Some("Bubbles")))), "Bubbles");
+    assert_eq!(now_playing(Some(&surface(None))), "No layers");
+    assert_eq!(now_playing(None), "No layers");
 }
 
 #[test]
-fn now_playing_names_the_default_face_on_an_empty_screen() {
-    let screen = surface(SurfaceKind::Screen, None);
-    let playing = now_playing(Some(&screen), Some("Neon Clock"));
-    assert_eq!(playing.label, "Neon Clock");
-    assert!(playing.is_default_face);
+fn a_zone_holding_only_a_screens_face_has_no_layer_of_its_own() {
+    // The face plays on the panel. It is not what the zone is showing,
+    // so the zone's caption does not borrow its name.
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    zone.members = vec![hypercolor_types::api::scene::ZoneMember {
+        id: hypercolor_types::api::scene::ZoneMemberId("lcd".to_owned()),
+        device_id: "sim:lcd".to_owned(),
+        segment: Some("Display".to_owned()),
+        name: "TL LCD 1".to_owned(),
+    }];
+    zone.layers = vec![effect_layer("Neon Clock", Some(&["lcd"]))];
 
-    let blank = now_playing(Some(&screen), Some("   "));
-    assert_eq!(blank.label, "No layers");
-    assert!(!blank.is_default_face);
-}
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer, None);
+    assert_eq!(now_playing(surfaces.first()), "No layers");
 
-#[test]
-fn now_playing_ignores_default_faces_for_lights_and_no_selection() {
-    let light = surface(SurfaceKind::Light, None);
-    let playing = now_playing(Some(&light), Some("Neon Clock"));
-    assert_eq!(playing.label, "No layers");
-    assert!(!playing.is_default_face);
-
-    let none = now_playing(None, Some("Neon Clock"));
-    assert_eq!(none.label, "No layers");
-    assert!(!none.is_default_face);
-}
-
-#[test]
-fn selected_screen_device_id_resolves_only_bound_display_zones() {
-    let device_id = DeviceId::new();
-    let zones = vec![
-        zone_resource("Default zone", ZoneRole::Primary, None),
-        zone_resource(
-            "Screen",
-            ZoneRole::Display,
-            Some(DisplayFaceTarget::new(device_id)),
-        ),
-        zone_resource("Unbound screen", ZoneRole::Display, None),
-    ];
-
-    assert_eq!(
-        selected_screen_device_id(&zones, &zones[1].id.to_string()),
-        Some(device_id.to_string())
-    );
-    assert_eq!(
-        selected_screen_device_id(&zones, &zones[0].id.to_string()),
-        None
-    );
-    assert_eq!(
-        selected_screen_device_id(&zones, &zones[2].id.to_string()),
-        None
-    );
-    assert_eq!(selected_screen_device_id(&zones, "missing"), None);
+    // Lighting under the face is what the zone is known by.
+    zone.layers.insert(0, effect_layer("Bubbles", None));
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer.as_deref(), Some("Bubbles"));
 }
 
 // ── The layer a zone is known by ─────────────────────────────────────────

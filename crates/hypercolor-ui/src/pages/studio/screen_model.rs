@@ -22,6 +22,7 @@ use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneMutationMode, ZoneRole};
 
 use crate::components::layer_panel::scope::is_screen_member;
+pub use crate::components::layer_panel::scope::{is_screen_layer, reorder_within};
 use crate::zones::surface::zone_display_name;
 
 use super::tab_model::{ScreenName, screen_labels};
@@ -183,21 +184,6 @@ pub fn screens_label(screens: &[&PlacedScreen]) -> String {
         [first, second] => format!("{} and {}", first.name, second.name),
         more => format!("{} screens", more.len()),
     }
-}
-
-/// Whether `layer` of `zone` is a screen's own: its scope names at least
-/// one output the zone holds, and every one it holds is a screen.
-#[must_use]
-pub fn is_screen_layer(zone: &ZoneResource, layer: &SceneLayer) -> bool {
-    let Some(scope) = &layer.scope else {
-        return false;
-    };
-    let mut live = zone
-        .members
-        .iter()
-        .filter(|member| scope.outputs.contains(&member.id.0))
-        .peekable();
-    live.peek().is_some() && live.all(is_screen_member)
 }
 
 /// How a row's blend and amount are held.
@@ -369,27 +355,6 @@ pub fn screen_panel(zones: &[ZoneResource], screens: &[&PlacedScreen]) -> Option
         ),
         behind,
     })
-}
-
-/// The order a zone's stack takes when the layer `moving` trades places
-/// with its neighbor inside `group`: `delta` of 1 moves it up, -1 down.
-/// `stack` and `group` are bottom first, and the group's layers keep the
-/// slots they hold in the stack, so no layer outside it moves. `None`
-/// when the layer is at the group's edge, or either list does not hold it.
-#[must_use]
-pub fn reorder_within(
-    stack: &[SceneLayerId],
-    group: &[SceneLayerId],
-    moving: SceneLayerId,
-    delta: isize,
-) -> Option<Vec<SceneLayerId>> {
-    let place = group.iter().position(|id| *id == moving)?;
-    let neighbor = *group.get(place.checked_add_signed(delta)?)?;
-    let from = stack.iter().position(|id| *id == moving)?;
-    let to = stack.iter().position(|id| *id == neighbor)?;
-    let mut order = stack.to_vec();
-    order.swap(from, to);
-    Some(order)
 }
 
 /// A face saved with its screen that is what the screen shows now.
