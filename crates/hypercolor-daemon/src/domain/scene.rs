@@ -764,7 +764,7 @@ impl SceneService {
                     &preview_zones_to_clear.into_iter().collect::<Vec<_>>(),
                 )
                 .await;
-            announce_display_zones(&manager, &candidate, &mut events);
+            announce_display_zones(listed_display_zones(&manager), &candidate, &mut events);
             *manager = candidate;
             if store_changes {
                 self.move_store_projection(ticket.generation());
@@ -1064,18 +1064,25 @@ impl SceneService {
         // A layout publication rewrites a primary zone that follows the
         // layout, which can take a screen's output away or bring one in.
         // It is a scene write like any other, so the screens are settled
-        // and their zones announced here as a commit does.
-        let before = manager.clone();
+        // and their zones announced here as a commit does. This runs on
+        // the render thread, so it reads the two things the settle and
+        // the announcement compare against and copies nothing else: both
+        // are empty for a scene with no screen.
+        let held_before = manager
+            .active_scene()
+            .map(|scene| (scene.id, screens::screen_placements(scene)))
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let listed_before = listed_display_zones(&manager);
         manager.sync_primary_zone_layout(candidate_spatial_engine.layout().as_ref());
-        let settled = manager.settle_screens(&before.screen_placements());
+        let settled = manager.settle_screens(&held_before);
         let mut events = Vec::new();
         if settled.changed()
             && let Some(scene) = manager.active_scene()
         {
             events.extend(settled_layer_events(scene, &settled));
         }
-        announce_display_zones(&before, &manager, &mut events);
-        drop(before);
+        announce_display_zones(listed_before, &manager, &mut events);
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
         // The synced primary zone may belong to a named scene, which only a
         // later store save persists.
@@ -3616,6 +3623,42 @@ fn settled_layer_events(scene: &Scene, settled: &screens::ScreenSettle) -> Vec<H
         .collect()
 }
 
+/// The live scene and what it lists for its screens.
+type ListedDisplayZones = (SceneId, Vec<(Zone, bool)>);
+
+/// What a client sees of the live scene's screens: each one's zone, and
+/// whether the stack in it draws, which a paused owner changes with the
+/// zone left as it was. The zone carries its owner's version counters,
+/// which move on every write to the owner, so they are left out: a write
+/// about another screen or about the lighting is not a change to this one.
+fn listed_display_zones(manager: &SceneManager) -> Option<ListedDisplayZones> {
+    let scene_id = manager.active_scene_id().copied()?;
+    let stored = manager
+        .get(&scene_id)
+        .into_iter()
+        .flat_map(|scene| scene.zones.iter())
+        .filter(|zone| zone.display_target.is_some())
+        .cloned();
+    let views = manager
+        .screen_views(&scene_id)
+        .into_iter()
+        .map(|view| view.zone);
+    let listed = stored
+        .chain(views)
+        .map(|mut zone| {
+            zone.layers_version = 0;
+            zone.controls_version = 0;
+            let rendering = zone
+                .display_target
+                .as_ref()
+                .and_then(|target| manager.active_screen_stack(target.device_id))
+                .is_some_and(screens::ScreenStack::rendering);
+            (zone, rendering)
+        })
+        .collect();
+    Some((scene_id, listed))
+}
+
 /// Make `events` say what is true of the live scene's display zones.
 ///
 /// A screen is listed as one `display` zone: its stored display zone, or
@@ -3632,48 +3675,15 @@ fn settled_layer_events(scene: &Scene, settled: &screens::ScreenSettle) -> Vec<H
 /// changed keeps the event a writer recorded, or gets `Updated`. A write
 /// that switches the live scene announces the switch instead.
 fn announce_display_zones(
-    before: &SceneManager,
+    before: Option<ListedDisplayZones>,
     after: &SceneManager,
     events: &mut Vec<HypercolorEvent>,
 ) {
-    let Some(scene_id) = after.active_scene_id().copied() else {
+    let (Some((scene_id, before)), Some((now_id, after))) = (before, listed_display_zones(after))
+    else {
         return;
     };
-    if before.active_scene_id() != Some(&scene_id) {
-        return;
-    }
-    // What a client sees of a screen: its zone, and whether the stack in
-    // it draws, which a paused owner changes with the zone left as it was.
-    // The zone carries its owner's version counters, which move on every
-    // write to the owner, so they are left out: a write about another
-    // screen or about the lighting is not a change to this one.
-    let listed = |manager: &SceneManager| {
-        let stored = manager
-            .get(&scene_id)
-            .into_iter()
-            .flat_map(|scene| scene.zones.iter())
-            .filter(|zone| zone.display_target.is_some())
-            .cloned();
-        let views = manager
-            .screen_views(&scene_id)
-            .into_iter()
-            .map(|view| view.zone);
-        stored
-            .chain(views)
-            .map(|mut zone| {
-                zone.layers_version = 0;
-                zone.controls_version = 0;
-                let rendering = zone
-                    .display_target
-                    .as_ref()
-                    .and_then(|target| manager.active_screen_stack(target.device_id))
-                    .is_some_and(screens::ScreenStack::rendering);
-                (zone, rendering)
-            })
-            .collect::<Vec<_>>()
-    };
-    let (before, after) = (listed(before), listed(after));
-    if before == after {
+    if scene_id != now_id || before == after {
         return;
     }
     let mut announce = |zone: &Zone, kind: Option<ZoneChangeKind>| {
