@@ -3004,17 +3004,30 @@ pub async fn replace_scene(
             "scene id must match the route path",
         ));
     }
+    let _effect_admission = ctx
+        .effects
+        .admit_layer_sources(
+            command
+                .document
+                .zones
+                .iter_mut()
+                .flat_map(|zone| zone.layers.iter_mut())
+                .map(|layer| &mut layer.source),
+        )
+        .await?;
+
+    let default_layout = ctx.layout.current();
+    let mut mutation = ctx.scene.begin_mutation().await;
     // A document read from the live scene lists each screen's view. A view
     // is not stored content: the screen's layers arrive with the zone that
-    // places it, so the view is dropped here and never becomes a zone.
-    // A stored display zone written for an unplaced screen carries the
+    // places it, so the view is dropped here and never becomes a zone. A
+    // stored display zone written for an unplaced screen carries the
     // view's id too, and it is content: only an id the scene does not hold
-    // is an echoed view.
+    // is an echoed view. The scene is read from this mutation, so the
+    // write is judged against the state it will be committed over.
     let scene_id = command.scene_id;
-    let stored = ctx
-        .scene
-        .snapshot()
-        .await
+    let stored = mutation
+        .scenes()
         .get(&scene_id)
         .map(|scene| {
             scene
@@ -3034,20 +3047,6 @@ pub async fn replace_scene(
                         })
                 }))
     });
-    let _effect_admission = ctx
-        .effects
-        .admit_layer_sources(
-            command
-                .document
-                .zones
-                .iter_mut()
-                .flat_map(|zone| zone.layers.iter_mut())
-                .map(|layer| &mut layer.source),
-        )
-        .await?;
-
-    let default_layout = ctx.layout.current();
-    let mut mutation = ctx.scene.begin_mutation().await;
     // A read-back body echoes the fence it was read at, run included. That
     // echo is a precondition in its own right, so a request carrying both
     // it and `If-Match` lands only when each one is current, and a document
