@@ -643,7 +643,10 @@ fn the_chip_opens_the_layers_of_screens_that_already_show_faces() {
     // click opens their layers, never the picker.
     for kept in [
         KeptSelection::Differ,
-        KeptSelection::Some { kept: 1, of: 2 },
+        KeptSelection::Some {
+            screens: vec!["LCD 2".to_owned()],
+            of: 2,
+        },
     ] {
         let chip = screen_chip(None, &kept, 2);
         assert!(!chip.offers_face(), "{kept:?}");
@@ -808,6 +811,7 @@ fn report(scope: DisplayFaceScope, rendering: Option<DisplayFaceRendering>) -> F
         rendering,
         name: "Neon Clock".to_owned(),
         effect_id: "effect-1".to_owned(),
+        settings: "{}".to_owned(),
     }
 }
 
@@ -836,11 +840,16 @@ fn a_saved_face_gets_a_row_only_while_it_is_what_the_screen_shows() {
 }
 
 fn saved(name: &str, effect_id: &str) -> Option<FaceReport> {
+    saved_with(name, effect_id, "{}")
+}
+
+fn saved_with(name: &str, effect_id: &str, settings: &str) -> Option<FaceReport> {
     Some(FaceReport {
         live_scope: DisplayFaceScope::Default,
         rendering: Some(DisplayFaceRendering::Default),
         name: name.to_owned(),
         effect_id: effect_id.to_owned(),
+        settings: settings.to_owned(),
     })
 }
 
@@ -850,23 +859,59 @@ fn screens_showing_the_same_saved_face_share_its_row() {
         name: "Clock".to_owned(),
         effect_id: "clock".to_owned(),
     };
-    let both = kept_selection(&[saved("Clock", "clock"), saved("Clock", "clock")]);
+    let both = kept_selection(&[
+        ("LCD 1", saved("Clock", "clock")),
+        ("LCD 2", saved("Clock", "clock")),
+    ]);
     assert_eq!(both, KeptSelection::Shared(clock.clone()));
     assert_eq!(both.row(), Some(&clock));
     assert_eq!(both.note(), None);
 
     // One screen alone is the same rule.
     assert_eq!(
-        kept_selection(&[saved("Clock", "clock")]),
+        kept_selection(&[("LCD 1", saved("Clock", "clock"))]),
         KeptSelection::Shared(clock)
     );
-    assert_eq!(kept_selection(&[None, None]), KeptSelection::None);
+    assert_eq!(
+        kept_selection(&[("LCD 1", None), ("LCD 2", None)]),
+        KeptSelection::None
+    );
     assert_eq!(kept_selection(&[]), KeptSelection::None);
 }
 
 #[test]
+fn one_face_saved_under_different_settings_is_not_one_row() {
+    // The row would show the first screen's hour format and write it to
+    // the second the moment anything was touched.
+    let apart = kept_selection(&[
+        (
+            "LCD 1",
+            saved_with("Clock", "clock", r#"{"hourFormat":"12h"}"#),
+        ),
+        (
+            "LCD 2",
+            saved_with("Clock", "clock", r#"{"hourFormat":"24h"}"#),
+        ),
+    ]);
+    assert_eq!(apart, KeptSelection::SettingsDiffer("Clock".to_owned()));
+    assert_eq!(apart.row(), None);
+    assert_eq!(
+        apart.note().as_deref(),
+        Some(
+            "These screens show Clock, saved with each of them under different settings. Select one screen to change its settings."
+        )
+    );
+    // The chip still opens their layers; they are not screens without a
+    // face.
+    assert!(!screen_chip(None, &apart, 2).offers_face());
+}
+
+#[test]
 fn screens_showing_different_saved_faces_get_one_line_instead_of_a_row() {
-    let differ = kept_selection(&[saved("Clock", "clock"), saved("Gauge", "gauge")]);
+    let differ = kept_selection(&[
+        ("LCD 1", saved("Clock", "clock")),
+        ("LCD 2", saved("Gauge", "gauge")),
+    ]);
     assert_eq!(differ, KeptSelection::Differ);
     assert_eq!(differ.row(), None);
     assert_eq!(
@@ -875,26 +920,48 @@ fn screens_showing_different_saved_faces_get_one_line_instead_of_a_row() {
     );
 
     // A screen the scene gives layers of its own shows no saved face, so
-    // the row cannot stand for the selection either.
+    // the row cannot stand for the selection either, and the line names
+    // the screen it means.
     let scene_face = Some(FaceReport {
         live_scope: DisplayFaceScope::Scene,
         rendering: Some(DisplayFaceRendering::Scene),
         name: "Clock".to_owned(),
         effect_id: "clock".to_owned(),
+        settings: "{}".to_owned(),
     });
-    let one = kept_selection(&[saved("Clock", "clock"), scene_face.clone(), None]);
-    assert_eq!(one, KeptSelection::Some { kept: 1, of: 3 });
+    let one = kept_selection(&[
+        ("LCD 1", scene_face.clone()),
+        ("LCD 2", saved("Clock", "clock")),
+        ("LCD 3", None),
+    ]);
+    assert_eq!(
+        one,
+        KeptSelection::Some {
+            screens: vec!["LCD 2".to_owned()],
+            of: 3
+        }
+    );
     assert_eq!(
         one.note().as_deref(),
-        Some(
-            "One of these screens shows a face saved with it. Select that screen alone to change it."
-        )
+        Some("LCD 2 shows a face saved with it. Select it alone to change that face.")
     );
-    let two = kept_selection(&[saved("Clock", "clock"), saved("Gauge", "gauge"), scene_face]);
+    let two = kept_selection(&[
+        ("LCD 1", saved("Clock", "clock")),
+        ("LCD 2", saved("Gauge", "gauge")),
+        ("LCD 3", scene_face),
+    ]);
     assert_eq!(
         two.note().as_deref(),
+        Some("LCD 1 and LCD 2 show faces saved with them. Select one alone to change its face.")
+    );
+    let many = KeptSelection::Some {
+        screens: vec!["A".to_owned(), "B".to_owned(), "C".to_owned()],
+        of: 5,
+    };
+    assert_eq!(
+        many.note().as_deref(),
         Some(
-            "2 of these 3 screens show faces saved with them. Select one alone to change its face."
+            "3 of these 5 screens show faces saved with them. Select one alone to change its face."
         )
     );
 }

@@ -177,6 +177,7 @@ pub(crate) fn use_kept_names(
 /// saved faces come to together.
 pub(crate) fn use_display_faces(
     devices: Signal<Vec<String>>,
+    names: Signal<Vec<String>>,
     tick: ReadSignal<u64>,
 ) -> (
     Signal<Vec<Option<api::DisplayFaceResponse>>>,
@@ -213,10 +214,17 @@ pub(crate) fn use_display_faces(
         read.into_iter().map(|(_, face)| face).collect()
     });
     let kept = Memo::new(move |_| {
+        let names = names.get();
         let reports = faces.with(|faces| {
             faces
                 .iter()
-                .map(|face| face.as_ref().map(FaceReport::from))
+                .enumerate()
+                .map(|(index, face)| {
+                    (
+                        names.get(index).map_or("", String::as_str),
+                        face.as_ref().map(FaceReport::from),
+                    )
+                })
                 .collect::<Vec<_>>()
         });
         kept_selection(&reports)
@@ -308,7 +316,18 @@ impl Screens {
             })
         });
         let (face_tick, set_face_tick) = signal(0_u64);
-        let (faces, kept) = use_display_faces(face_devices.into(), face_tick);
+        // Their names, one for one, for a line that has to say which
+        // screen it means.
+        let face_names = Memo::new(move |_| {
+            selected.with(|selected| {
+                selected
+                    .iter()
+                    .filter(|screen| screen.device_id.is_some())
+                    .map(|screen| screen.name.clone())
+                    .collect::<Vec<_>>()
+            })
+        });
+        let (faces, kept) = use_display_faces(face_devices.into(), face_names.into(), face_tick);
         let face = Signal::derive(move || faces.with(|faces| faces.first().cloned().flatten()));
         let kept_names = use_kept_names(active_scene, face_tick);
 
@@ -1560,7 +1579,13 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
         Signal::derive(move || current.with(|screen| screen.as_ref()?.device_id.clone()));
     let (face_tick, set_face_tick) = signal(0_u64);
     let devices = Signal::derive(move || device_id.get().into_iter().collect::<Vec<_>>());
-    let (faces, kept_row) = use_display_faces(devices, face_tick);
+    let names = Signal::derive(move || {
+        current
+            .with(|screen| screen.as_ref().map(|screen| screen.name.clone()))
+            .into_iter()
+            .collect::<Vec<_>>()
+    });
+    let (faces, kept_row) = use_display_faces(devices, names, face_tick);
     let face = Signal::derive(move || faces.with(|faces| faces.first().cloned().flatten()));
     let refresh = zones_ctx.refresh;
     let kept = KeptFace {

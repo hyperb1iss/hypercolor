@@ -502,15 +502,34 @@ pub struct FaceReport {
     pub rendering: Option<DisplayFaceRendering>,
     pub name: String,
     pub effect_id: String,
+    /// The face's settings in one fixed spelling, so two faces can be
+    /// told apart by them.
+    pub settings: String,
 }
 
 impl From<&DisplayFaceResponse> for FaceReport {
     fn from(face: &DisplayFaceResponse) -> Self {
+        // The first effect layer is the face; its controls in key order.
+        let settings = face
+            .zone
+            .layers
+            .iter()
+            .find_map(|layer| match &layer.source {
+                LayerSource::Effect { controls, .. } => Some(
+                    controls
+                        .iter()
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                ),
+                _ => None,
+            })
+            .and_then(|controls| serde_json::to_string(&controls).ok())
+            .unwrap_or_default();
         Self {
             live_scope: face.live_scope,
             rendering: face.rendering,
             name: face.effect.name.clone(),
             effect_id: face.effect.id.to_string(),
+            settings,
         }
     }
 }
@@ -587,8 +606,13 @@ pub fn screen_chip(top: Option<&str>, kept: &KeptSelection, count: usize) -> Scr
         .or_else(|| {
             // Saved faces that differ, or that only some of the screens
             // show, are still faces on those screens.
-            matches!(kept, KeptSelection::Differ | KeptSelection::Some { .. })
-                .then(|| "Faces".to_owned())
+            matches!(
+                kept,
+                KeptSelection::Differ
+                    | KeptSelection::SettingsDiffer(_)
+                    | KeptSelection::Some { .. }
+            )
+            .then(|| "Faces".to_owned())
         });
     ScreenChip {
         face,
@@ -628,15 +652,18 @@ pub enum KeptSelection {
     /// No selected screen shows a face saved with it.
     #[default]
     None,
-    /// Every selected screen shows this saved face: one row edits them
-    /// all.
+    /// Every selected screen shows this saved face, with the same
+    /// settings: one row edits them all.
     Shared(KeptFaceRow),
     /// Every selected screen shows a saved face, and they are not the
     /// same face.
     Differ,
-    /// This many of the `of` selected screens show a saved face; the rest
-    /// show layers of the scene.
-    Some { kept: usize, of: usize },
+    /// Every selected screen shows the saved face of this name, but not
+    /// with the same settings, so no one row can show them.
+    SettingsDiffer(String),
+    /// Only the screens of these names show a saved face; the rest of the
+    /// `of` selected show layers of the scene, or nothing.
+    Some { screens: Vec<String>, of: usize },
 }
 
 impl KeptSelection {
@@ -658,45 +685,64 @@ impl KeptSelection {
                 "These screens show different saved faces. Select one screen to change its face."
                     .to_owned(),
             ),
-            Self::Some { kept: 1, .. } => Some(
-                "One of these screens shows a face saved with it. Select that screen alone to change it."
-                    .to_owned(),
-            ),
-            Self::Some { kept, of } => Some(format!(
-                "{kept} of these {of} screens show faces saved with them. Select one alone to change its face."
+            Self::SettingsDiffer(name) => Some(format!(
+                "These screens show {name}, saved with each of them under different settings. Select one screen to change its settings."
             )),
+            Self::Some { screens, of } => Some(match screens.as_slice() {
+                [one] => format!(
+                    "{one} shows a face saved with it. Select it alone to change that face."
+                ),
+                [first, second] => format!(
+                    "{first} and {second} show faces saved with them. Select one alone to change its face."
+                ),
+                more => format!(
+                    "{} of these {of} screens show faces saved with them. Select one alone to change its face.",
+                    more.len()
+                ),
+            }),
         }
     }
 }
 
-/// What the saved faces of the selected screens come to, from what each
-/// screen's display reports, in selection order. A display that reports
-/// nothing shows no saved face.
+/// What the saved faces of the selected screens come to, from each
+/// screen's name and what its display reports, in selection order. A
+/// display that reports nothing shows no saved face.
 #[must_use]
-pub fn kept_selection(reports: &[Option<FaceReport>]) -> KeptSelection {
-    let rows = reports
+pub fn kept_selection(reports: &[(&str, Option<FaceReport>)]) -> KeptSelection {
+    let shown: Vec<(&str, &FaceReport)> = reports
         .iter()
-        .map(|report| kept_face_row(report.as_ref()))
-        .collect::<Vec<_>>();
-    let kept = rows.iter().flatten().count();
-    if kept == 0 {
-        return KeptSelection::None;
-    }
-    if kept < rows.len() {
-        return KeptSelection::Some {
-            kept,
-            of: rows.len(),
-        };
-    }
-    let mut shown = rows.into_iter().flatten();
-    let Some(first) = shown.next() else {
+        .filter_map(|(name, report)| {
+            let report = report.as_ref()?;
+            kept_face_row(Some(report)).map(|_| (*name, report))
+        })
+        .collect();
+    let Some((_, first)) = shown.first() else {
         return KeptSelection::None;
     };
-    if shown.all(|row| row.effect_id == first.effect_id) {
-        KeptSelection::Shared(first)
-    } else {
-        KeptSelection::Differ
+    if shown.len() < reports.len() {
+        return KeptSelection::Some {
+            screens: shown.iter().map(|(name, _)| (*name).to_owned()).collect(),
+            of: reports.len(),
+        };
     }
+    if shown
+        .iter()
+        .any(|(_, report)| report.effect_id != first.effect_id)
+    {
+        return KeptSelection::Differ;
+    }
+    // One row shows one set of values and writes it to every screen, so
+    // it stands for them only while they already agree.
+    if shown
+        .iter()
+        .any(|(_, report)| report.settings != first.settings)
+    {
+        return KeptSelection::SettingsDiffer(first.name.clone());
+    }
+    KeptSelection::Shared(KeptFaceRow {
+        name: first.name.clone(),
+        effect_id: first.effect_id.clone(),
+    })
 }
 
 /// One screen output a membership write touched: the zone that held it
