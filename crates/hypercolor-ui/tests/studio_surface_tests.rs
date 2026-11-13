@@ -314,7 +314,9 @@ fn a_zone_with_only_limited_layers_is_known_by_the_top_of_them() {
     ];
     let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
     assert_eq!(surfaces[0].top_layer.as_deref(), Some("Glow"));
-    assert!(hypercolor_ui::api::zone_effect(&zone).is_some());
+    // The caption names what is there to see. The zone's effect is another
+    // question: a layer on some outputs is never it, so there is none.
+    assert!(hypercolor_ui::api::zone_effect(&zone).is_none());
 }
 
 /// A zone whose base effect also plays, as a second layer, on the keys
@@ -379,7 +381,10 @@ fn the_layer_a_write_answers_with_is_the_whole_zone_one() {
 }
 
 #[test]
-fn an_effect_only_limited_layers_play_resolves_to_the_top_of_them() {
+fn an_effect_only_limited_layers_play_is_not_the_zones_effect() {
+    // A write to "the zone's effect" never lands on a layer limited to
+    // some outputs, a keyboard's ripples or a screen's face, however many
+    // of them play it.
     let mut zone = zone_resource("Main", ZoneRole::Primary, None);
     let keys = effect_layer("Ripples", Some(&["keys"]));
     let mut mouse = effect_layer("Ripples", Some(&["mouse"]));
@@ -388,10 +393,10 @@ fn an_effect_only_limited_layers_play_resolves_to_the_top_of_them() {
     let zone_id = zone.id.to_string();
     let scene = scene_of(zone);
 
-    let (target, _) =
+    assert!(
         hypercolor_ui::zones::effect_target_in_scene(&scene, &effect_id_of(&keys), Some(&zone_id))
-            .expect("the zone plays the effect");
-    assert_eq!(target.layer_id, mouse.id.to_string());
+            .is_none()
+    );
 
     // An effect no layer plays resolves to nothing.
     let other = hypercolor_types::effect::EffectId::new(uuid::Uuid::new_v4()).to_string();
