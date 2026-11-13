@@ -44,6 +44,7 @@ pub fn replay_announcement(
         StudioEdit::Layout { zone_id, .. } => format!("layout change on {}", zone(zone_id)),
         StudioEdit::Members { changes, .. } => members_action(changes, redo, &zone, device)?,
         StudioEdit::LayerScope { name, .. } => format!("changed where {name} applies"),
+        StudioEdit::LayersAdded { name, .. } => format!("adding {name}"),
         StudioEdit::ZoneCreated { name, filled, .. } if filled.is_empty() => {
             format!("created {}", zone_display_name(name, ZoneRole::Custom))
         }

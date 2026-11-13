@@ -33,11 +33,13 @@ pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 
 mod announce;
 mod held;
+mod layers;
 mod zones;
 
 pub use announce::{DeviceLookup, ZoneLookup, carried_announcement, replay_announcement};
 
 pub use held::{members_landed, resolve_deletion, settles_by_key};
+pub use layers::{AddOutcome, AddedLayer, LayerAdd, recreate_request};
 pub use zones::{
     DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
 };
@@ -85,6 +87,12 @@ pub enum StudioEdit {
         name: String,
         before: Option<LayerScope>,
         after: Option<LayerScope>,
+    },
+    /// Layers added together: one face on the screens of several zones is
+    /// one layer in each. `name` is what was added, for the announcement.
+    LayersAdded {
+        name: String,
+        layers: Vec<AddedLayer>,
     },
     /// A zone Studio made, with the move that filled it as it was made:
     /// the outputs that went in, and the scoped layers the daemon carried
@@ -134,6 +142,7 @@ fn carried_layers(edit: &StudioEdit) -> &[LayerMove] {
         }
         StudioEdit::Layout { .. }
         | StudioEdit::LayerScope { .. }
+        | StudioEdit::LayersAdded { .. }
         | StudioEdit::ZonePatched { .. }
         | StudioEdit::ZoneDeleted(_)
         | StudioEdit::Unresolved { .. } => &[],
@@ -303,6 +312,11 @@ impl StudioJournal {
                         record.zone_id.clone_from(&new_key);
                     }
                 }
+                StudioEdit::LayersAdded { layers, .. } => {
+                    for added in layers.iter_mut().filter(|added| added.zone_id == old) {
+                        added.zone_id.clone_from(&new_key);
+                    }
+                }
                 StudioEdit::Unresolved { .. } => {}
             }
         }
@@ -333,6 +347,17 @@ impl StudioJournal {
                         named.push((index, None));
                     }
                 }
+                // An added layer is only there to rename while its step
+                // is applied.
+                StudioEdit::LayersAdded { layers, .. } if index < self.cursor => {
+                    for (place, added) in layers.iter().enumerate() {
+                        if added.layer.id == old
+                            && self.zone_now(index, added.zone_id.clone(), old) == zone_id
+                        {
+                            named.push((index, Some(place)));
+                        }
+                    }
+                }
                 edit => {
                     for (place, moved) in carried_layers(edit).iter().enumerate() {
                         // An applied move left its layer where it ends;
@@ -355,6 +380,11 @@ impl StudioJournal {
         for (index, place) in named {
             match (&mut self.entries[index].edit, place) {
                 (StudioEdit::LayerScope { layer_id, .. }, None) => *layer_id = new,
+                (StudioEdit::LayersAdded { layers, .. }, Some(place)) => {
+                    if let Some(added) = layers.get_mut(place) {
+                        added.layer.id = new;
+                    }
+                }
                 (
                     StudioEdit::Members { layer_moves, .. }
                     | StudioEdit::ZoneCreated { layer_moves, .. },
@@ -536,6 +566,12 @@ enum Waiting {
         name: String,
         scope: Option<LayerScope>,
     },
+    /// Layers to create as one step called `name`.
+    AddLayers {
+        name: String,
+        adds: Vec<LayerAdd>,
+        done: Callback<layers::AddOutcome>,
+    },
     /// The rest of the undo or redo `item` held, now its first write is
     /// known to have landed: `did` is the entry that undoes what that
     /// write did.
@@ -556,6 +592,7 @@ impl Waiting {
                 | Self::PatchZone { .. }
                 | Self::DeleteZone { .. }
                 | Self::LayerScope { .. }
+                | Self::AddLayers { .. }
         )
     }
 
@@ -570,6 +607,7 @@ impl Waiting {
             | Self::UndoDeletion(_)
             | Self::UnassignedBehavior(_)
             | Self::LayerScope { .. }
+            | Self::AddLayers { .. }
             | Self::Resume { .. } => {}
         }
     }
@@ -1040,6 +1078,7 @@ impl StudioHistory {
                 name,
                 scope,
             } => self.set_layer_scope_now(zone_id, layer_id, name, scope),
+            Waiting::AddLayers { name, adds, done } => self.add_layers_now(name, adds, done),
             Waiting::Resume { item, did } => self.resume_now(*item, did),
         }
     }
@@ -1776,6 +1815,9 @@ impl StudioHistory {
                 before,
                 after,
             } => self.replay_layer_scope(id, redo, zone_id, layer_id, name, before, after),
+            StudioEdit::LayersAdded { name, layers } => {
+                self.replay_layers_added(id, redo, name, layers);
+            }
             StudioEdit::ZoneCreated {
                 zone_id,
                 name,
