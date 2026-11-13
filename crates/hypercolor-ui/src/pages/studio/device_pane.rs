@@ -302,7 +302,7 @@ fn ActiveZoneSection(
                             let note = if searching.get() {
                                 "No devices here match"
                             } else {
-                                "No devices yet. Add some from Unassigned below."
+                                "No devices yet. Move some here from another zone, or add them from Unassigned."
                             };
                             view! {
                                 <div class="rounded-lg border border-dashed border-edge-subtle/45 px-3 py-4 text-center text-[11px] text-fg-tertiary/60">
