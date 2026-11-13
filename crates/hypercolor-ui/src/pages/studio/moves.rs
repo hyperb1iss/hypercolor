@@ -217,6 +217,16 @@ fn plan_move(
     if payload.origin == Origin::Unassigned {
         let segments = payload.segments.clone();
         let device = registry_device(drag, &payload.device_id);
+        // A device that is a screen and nothing else has no light segment
+        // for the daemon's assignment to mint, so its box is placed here.
+        if let Some(device) = &device
+            && light_segment_count(device) == 0
+        {
+            let arrivals = placement::screen_arrivals(scene, device, zone_id, point, canvas);
+            if !arrivals.is_empty() {
+                return Planned::Write(MovePlan::Edit(arrivals));
+            }
+        }
         // A channel brings only its own segment, so only its hint counts.
         let mut seeds = device
             .as_ref()

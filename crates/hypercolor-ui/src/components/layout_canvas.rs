@@ -1435,7 +1435,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         </span>
                                     </Show>
 
-                                    // Zone identity — full-bleed radial vignette for
+                                    // Zone identity: a full-bleed radial vignette for
                                     // contrast, which a picture has no use for.
                                     <div
                                         class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden p-1"

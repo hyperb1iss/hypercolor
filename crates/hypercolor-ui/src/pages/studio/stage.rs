@@ -1,4 +1,4 @@
-//! The Studio Stage — the center workspace for the open zone.
+//! The Studio Stage: the center workspace for the open zone.
 //!
 //! The Stage *is* the spatial layout editor: the live effect renders
 //! under the device boxes, always on, with no view toggle. Its header
@@ -44,7 +44,7 @@ use super::{StudioContext, hidden_outputs_storage_key};
 /// The longer side of a focused screen on the Stage, in CSS pixels.
 const FOCUS_EXTENT: f64 = 640.0;
 
-/// Preview FPS ceiling for the Stage — the canvas is always live, so it
+/// Preview FPS ceiling for the Stage: the canvas is always live, so it
 /// reserves the same headroom the retired `/layout` page did.
 const LAYOUT_PREVIEW_FPS_CAP: u32 = 60;
 

@@ -625,6 +625,88 @@ pub fn fit_outputs(
     true
 }
 
+/// How much of the canvas a screen's box takes on its longer side when
+/// it first arrives in a zone.
+const SCREEN_ARRIVAL_EXTENT: f32 = 0.22;
+
+/// The edits that place the screens of `device` in the zone `zone_id`,
+/// one output per screen segment, each a box of the panel's own shape
+/// centered on `point` (the middle of the canvas without one). The
+/// daemon's own assignment mints light segments only and leaves a screen
+/// off the canvas, so a screen is placed by saying where it goes. Empty
+/// when the device has no screen or the scene lacks the zone.
+#[must_use]
+pub fn screen_arrivals(
+    scene: &SceneDocument,
+    device: &DeviceSummary,
+    zone_id: &str,
+    point: Option<NormalizedPosition>,
+    canvas: (u32, u32),
+) -> Vec<MemberEdit> {
+    let Some(zone) = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id.to_string() == zone_id && zone.role != ZoneRole::Display)
+    else {
+        return Vec::new();
+    };
+    let center = point.unwrap_or_else(|| NormalizedPosition::new(0.5, 0.5));
+    let (canvas_w, canvas_h) = (canvas.0.max(1) as f32, canvas.1.max(1) as f32);
+    device
+        .segments
+        .iter()
+        .filter_map(|segment| match segment.topology_hint {
+            Some(SegmentTopologySummary::Display { width, height, .. }) => {
+                Some((segment, width.max(1), height.max(1)))
+            }
+            _ => None,
+        })
+        .enumerate()
+        .map(|(offset, (segment, width, height))| {
+            // The panel's shape in canvas pixels, fitted to the arrival
+            // box, then back to the canvas's own units.
+            let (panel_w, panel_h) = (width as f32, height as f32);
+            let fit = (SCREEN_ARRIVAL_EXTENT * canvas_w / panel_w)
+                .min(SCREEN_ARRIVAL_EXTENT * canvas_h / panel_h);
+            let size = NormalizedPosition::new(panel_w * fit / canvas_w, panel_h * fit / canvas_h);
+            let index = zone.members.len() + offset;
+            MemberEdit {
+                before: None,
+                after: Some(MemberState {
+                    zone_id: zone.id,
+                    output: Output {
+                        id: format!("{}:{}", device.layout_device_id, segment.name),
+                        name: device.name.clone(),
+                        device_id: device.layout_device_id.clone(),
+                        zone_name: Some(segment.name.clone()),
+                        position: center,
+                        size,
+                        rotation: 0.0,
+                        scale: 1.0,
+                        display_order: i32::try_from(index).unwrap_or(i32::MAX),
+                        orientation: None,
+                        topology: hypercolor_types::spatial::LedTopology::Matrix {
+                            width,
+                            height,
+                            serpentine: false,
+                            start_corner: hypercolor_types::spatial::Corner::TopLeft,
+                        },
+                        led_positions: Vec::new(),
+                        led_mapping: None,
+                        sampling_mode: None,
+                        edge_behavior: None,
+                        shape: None,
+                        shape_preset: None,
+                        attachment: None,
+                        brightness: None,
+                    },
+                    index,
+                }),
+            }
+        })
+        .collect()
+}
+
 /// The segments of a device that carry LEDs, the ones an assignment mints.
 fn light_segments(device: &DeviceSummary) -> Vec<SegmentSummary> {
     device
