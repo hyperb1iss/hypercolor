@@ -131,6 +131,13 @@ impl Zone {
         })
     }
 
+    /// The layer that is this zone's effect. See
+    /// [`crate::layer::zone_effect_layer`].
+    #[must_use]
+    pub fn effect_layer(&self) -> Option<&SceneLayer> {
+        crate::layer::zone_effect_layer(&self.layers)
+    }
+
     #[must_use]
     pub fn has_effect(&self, effect_id: crate::effect::EffectId) -> bool {
         self.effect_ids().any(|candidate| candidate == effect_id)

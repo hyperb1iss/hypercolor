@@ -455,11 +455,8 @@ impl DaemonClient {
             },
         );
         let zone = zone.context("The active scene has no target zone")?;
-        let layer = zone
-            .layers
-            .iter()
-            .rev()
-            .find_map(|layer| match &layer.source {
+        let layer = hypercolor_types::layer::zone_effect_layer(&zone.layers)
+            .and_then(|layer| match &layer.source {
                 LayerSource::Effect {
                     effect_id,
                     control_bindings,

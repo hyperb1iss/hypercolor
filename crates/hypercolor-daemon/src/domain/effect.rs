@@ -431,7 +431,8 @@ impl EffectContext {
             .collect()
     }
 
-    /// Resolve the active scene's primary zone and its first effect.
+    /// Resolve the active scene's primary zone and its effect. A scoped
+    /// overlay or a screen's face on top of the stack is not it.
     pub async fn active_primary_effect(&self) -> Option<(Zone, EffectMetadata)> {
         let zone = self
             .scene
@@ -440,7 +441,7 @@ impl EffectContext {
             .active_scene()?
             .primary_zone()
             .cloned()?;
-        let effect_id = zone.effect_ids().next()?;
+        let effect_id = zone.effect_layer()?.effect_id()?;
         let metadata = self.metadata(effect_id).await?;
         Some((zone, metadata))
     }

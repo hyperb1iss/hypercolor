@@ -14,7 +14,7 @@ use hypercolor_types::api::scene::{
 };
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlDefinition, EffectCategory};
-use hypercolor_types::layer::{LayerSource, SceneLayer};
+use hypercolor_types::layer::{LayerSource, SceneLayer, zone_effect_layer};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
 use super::effect_authoring::{self, EffectCaptureArgs, EffectConsoleArgs, EffectInstallArgs};
@@ -447,24 +447,30 @@ async fn active_effect_layer(
         .find(|zone| zone.role == ZoneRole::Primary)
         .or_else(|| scene.zones.first())
         .ok_or_else(|| anyhow::anyhow!("The active scene has no zones"))?;
-    let layer = zone
-        .layers
-        .iter()
-        .rev()
-        .find_map(|layer| match &layer.source {
-            LayerSource::Effect {
-                effect_id,
-                control_bindings,
-                ..
-            } => Some((
-                layer.clone(),
-                effect_id.to_string(),
-                control_bindings.keys().cloned().collect(),
-            )),
-            _ => None,
-        })
+    let (layer, effect_id, bindings) = effect_layer_of(&zone.layers)
         .ok_or_else(|| anyhow::anyhow!("The active zone has no effect layer"))?;
-    Ok((zone.id, layer.0, layer.1, layer.2))
+    Ok((zone.id, layer, effect_id, bindings))
+}
+
+/// The layer `effects patch` and `effects reset` act on, with its effect id
+/// and bound control names: the zone's effect, never an overlay scoped to
+/// some of its outputs or a screen's face stacked above it.
+#[must_use]
+pub fn effect_layer_of(layers: &[SceneLayer]) -> Option<(SceneLayer, String, Vec<String>)> {
+    let layer = zone_effect_layer(layers)?;
+    let LayerSource::Effect {
+        effect_id,
+        control_bindings,
+        ..
+    } = &layer.source
+    else {
+        return None;
+    };
+    Some((
+        layer.clone(),
+        effect_id.to_string(),
+        control_bindings.keys().cloned().collect(),
+    ))
 }
 
 async fn effect_control_definitions(

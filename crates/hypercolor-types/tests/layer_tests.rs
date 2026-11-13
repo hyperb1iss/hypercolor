@@ -425,3 +425,70 @@ fn layer_scope_contains_matches_whole_ids_only() {
     assert!(!scope.contains("usb:keyboard"));
     assert!(!scope.contains(""));
 }
+
+// ── A zone's effect ──────────────────────────────────────────────────────
+
+fn effect_layer_scoped_to(outputs: Option<&[&str]>) -> SceneLayer {
+    let mut layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::new(Uuid::now_v7()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    layer.scope = outputs.map(|outputs| hypercolor_types::layer::LayerScope {
+        outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+    });
+    layer
+}
+
+#[test]
+fn a_zones_effect_is_its_top_effect_layer_with_no_scope() {
+    use hypercolor_types::layer::zone_effect_layer;
+
+    let base = effect_layer_scoped_to(None);
+    let upper = effect_layer_scoped_to(None);
+    let fill = SceneLayer {
+        source: LayerSource::ColorFill {
+            rgba: [1.0, 0.0, 0.0, 1.0],
+        },
+        ..effect_layer_scoped_to(None)
+    };
+    let face = effect_layer_scoped_to(Some(&["pump-display"]));
+    let keys = effect_layer_scoped_to(Some(&["keyboard"]));
+
+    assert_eq!(
+        zone_effect_layer(&[base.clone(), face.clone()]).map(|layer| layer.id),
+        Some(base.id),
+        "a screen's face on top of the stack is not the zone's effect"
+    );
+    assert_eq!(
+        zone_effect_layer(&[base.clone(), keys.clone()]).map(|layer| layer.id),
+        Some(base.id),
+        "nor is a layer scoped to a keyboard"
+    );
+    assert_eq!(
+        zone_effect_layer(&[
+            base.clone(),
+            upper.clone(),
+            fill,
+            keys.clone(),
+            face.clone()
+        ])
+        .map(|layer| layer.id),
+        Some(upper.id),
+        "the topmost whole-zone effect wins, above it only overlays and fills"
+    );
+    assert!(
+        zone_effect_layer(&[keys.clone(), face.clone()]).is_none(),
+        "a zone with only scoped layers has no effect of its own"
+    );
+    assert!(zone_effect_layer(&[]).is_none());
+
+    let mut stack = vec![base.clone(), face];
+    assert_eq!(
+        hypercolor_types::layer::zone_effect_layer_mut(&mut stack).map(|layer| layer.id),
+        Some(base.id)
+    );
+    assert_eq!(base.effect_id(), stack[0].effect_id());
+}

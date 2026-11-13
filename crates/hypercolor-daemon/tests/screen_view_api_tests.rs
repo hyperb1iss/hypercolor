@@ -670,6 +670,57 @@ async fn a_view_is_refused_where_a_display_zone_always_was() {
     );
 }
 
+// ── The zone's own effect ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_active_effect_is_never_a_face_or_a_scoped_overlay() {
+    let rig = rig();
+    let aurora = rig.effect("aurora", EffectCategory::Ambient).await;
+    let ripple = rig.effect("ripple", EffectCategory::Ambient).await;
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", true).await;
+    let active = || async {
+        rig.state
+            .domains
+            .effects
+            .active_primary_effect()
+            .await
+            .map(|(_, effect)| effect.id)
+    };
+    let layer = |effect: EffectId, scope: Option<&str>| {
+        let mut layer = SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        layer.scope = scope.map(|output| LayerScope {
+            outputs: vec![output.to_owned()],
+        });
+        layer
+    };
+
+    // A screen's face on top of the lighting.
+    let stack = vec![layer(aurora, None), layer(face, Some(&screen.output))];
+    rig.rewrite(|scene| scene.primary_zone_mut().expect("primary").layers = stack)
+        .await;
+    assert_eq!(active().await, Some(aurora));
+
+    // An overlay scoped to one output on top of the lighting.
+    let stack = vec![layer(aurora, None), layer(ripple, Some(&screen.output))];
+    rig.rewrite(|scene| scene.primary_zone_mut().expect("primary").layers = stack)
+        .await;
+    assert_eq!(active().await, Some(aurora));
+
+    // Only scoped layers: the zone runs no effect of its own, which is what
+    // clearing the lighting under a face leaves behind.
+    let stack = vec![layer(face, Some(&screen.output))];
+    rig.rewrite(|scene| scene.primary_zone_mut().expect("primary").layers = stack)
+        .await;
+    assert_eq!(active().await, None);
+}
+
 // ── Layer routes addressed to a view ─────────────────────────────────────
 
 #[tokio::test]

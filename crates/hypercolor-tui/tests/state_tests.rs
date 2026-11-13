@@ -359,3 +359,72 @@ fn target_zone_uses_focus_with_primary_fallback() {
     state.active_scene = None;
     assert!(state.target_zone().is_none());
 }
+
+// ── A zone's effect ──────────────────────────────────────────────────────
+
+fn zone_with_layers(layers: serde_json::Value) -> ZoneResource {
+    serde_json::from_value(serde_json::json!({
+        "id": "019a0000-0000-7000-8000-0000000000a1",
+        "name": "Main",
+        "role": "primary",
+        "enabled": true,
+        "brightness": 1.0,
+        "members": [],
+        "layers": layers
+    }))
+    .expect("zone fixture should decode")
+}
+
+fn effect_layer_json(layer: u8, effect: u8, scope: Option<&str>) -> serde_json::Value {
+    let mut layer = serde_json::json!({
+        "id": format!("019a0000-0000-7000-8000-0000000000b{layer}"),
+        "source": {
+            "type": "effect",
+            "effect_id": format!("019a0000-0000-7000-8000-0000000000c{effect}"),
+            "controls": { "speed": { "kind": "float", "value": 0.5 } }
+        }
+    });
+    if let Some(output) = scope {
+        layer["scope"] = serde_json::json!({ "outputs": [output] });
+    }
+    layer
+}
+
+#[test]
+fn the_zones_effect_is_not_a_face_or_a_scoped_overlay_stacked_above_it() {
+    use hypercolor_tui::state::{set_zone_effect_control, zone_effect_controls, zone_effect_id};
+
+    const LIGHTING: &str = "019a0000-0000-7000-8000-0000000000c1";
+    for overlay in ["pump-display", "keyboard"] {
+        let mut zone = zone_with_layers(serde_json::json!([
+            effect_layer_json(1, 1, None),
+            effect_layer_json(2, 2, Some(overlay)),
+        ]));
+
+        assert_eq!(
+            zone_effect_id(&zone).as_deref(),
+            Some(LIGHTING),
+            "a layer scoped to {overlay} is not what the zone is running"
+        );
+        set_zone_effect_control(&mut zone, "speed", &ControlValue::Float(0.9));
+        assert_eq!(
+            zone_effect_controls(&zone).get("speed"),
+            Some(&ControlValue::Float(0.9))
+        );
+        let overlay_speed = serde_json::to_value(&zone.layers[1]).expect("layer encodes")["source"]
+            ["controls"]["speed"]["value"]
+            .clone();
+        assert_eq!(
+            overlay_speed,
+            serde_json::json!(0.5),
+            "a control edit lands on the zone's effect, never on the layer above it"
+        );
+    }
+
+    let only_scoped = zone_with_layers(serde_json::json!([
+        effect_layer_json(1, 1, Some("keyboard")),
+        effect_layer_json(2, 2, Some("pump-display")),
+    ]));
+    assert_eq!(zone_effect_id(&only_scoped), None);
+    assert!(zone_effect_controls(&only_scoped).is_empty());
+}
