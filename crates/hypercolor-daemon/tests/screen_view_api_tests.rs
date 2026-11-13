@@ -12,6 +12,7 @@ use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::scene::screens::screen_zone_id;
+use hypercolor_core::spatial::DISPLAY_ZONE_NAME;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::scene::commit_scene;
@@ -25,7 +26,7 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::layer::{BlendMode, LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, Scene, SceneId, Zone, ZoneId, ZoneRole};
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, SpatialLayout};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -62,6 +63,7 @@ struct Screen {
     device: DeviceId,
     view: String,
     output: String,
+    layout_id: String,
 }
 
 impl Rig {
@@ -89,31 +91,92 @@ impl Rig {
         .await
         .expect("simulated display should activate");
         self.state.domains.display.sync_connected_surfaces().await;
-        let output = self
-            .state
-            .scene_manager
-            .snapshot()
-            .await
-            .screen_surfaces()
-            .values()
-            .find(|surface| surface.device_id == config.id)
-            .and_then(|surface| surface.output.as_ref())
-            .map(|output| output.id.clone())
-            .expect("a registered display offers a screen output");
-        if placed {
-            let mut mutation = self.state.scene_manager.begin_mutation().await;
-            mutation
-                .place_screen(SceneId::DEFAULT, config.id, (640, 480))
-                .expect("the screen should be placed");
-            commit_scene(&self.state.domains.scene, mutation)
-                .await
-                .expect("the placement should commit");
-        }
-        Screen {
+        let (scene_id, layout_id) = {
+            let manager = self.state.scene_manager.snapshot().await;
+            (
+                *manager.active_scene_id().expect("a scene is active"),
+                manager
+                    .screen_surfaces()
+                    .iter()
+                    .find(|(_, surface)| surface.device_id == config.id)
+                    .map(|(layout_id, _)| layout_id.clone())
+                    .expect("a registered display is a known screen"),
+            )
+        };
+        let screen = Screen {
             device: config.id,
-            view: screen_zone_id(SceneId::DEFAULT, config.id).to_string(),
-            output,
+            view: screen_zone_id(scene_id, config.id).to_string(),
+            output: format!("{layout_id}-display"),
+            layout_id,
+        };
+        if placed {
+            self.place(&screen).await;
         }
+        screen
+    }
+
+    /// Give the primary zone the screen's output through the member edit
+    /// route, the way a client places a screen.
+    async fn place(&self, screen: &Screen) {
+        let document = self.ok(Method::GET, "/api/v1/scene", None).await;
+        let primary = document["zones"]
+            .as_array()
+            .expect("zones")
+            .iter()
+            .find(|zone| zone["role"] == "primary")
+            .expect("the scene has a primary zone");
+        let request = json!({
+            "scene_id": document["id"],
+            "changes": [{
+                "before": null,
+                "after": {
+                    "zone_id": primary["id"],
+                    "index": primary["members"].as_array().map_or(0, Vec::len),
+                    "output": Output {
+                        id: screen.output.clone(),
+                        name: "Screen".to_owned(),
+                        device_id: screen.layout_id.clone(),
+                        zone_name: Some(DISPLAY_ZONE_NAME.to_owned()),
+                        position: NormalizedPosition::new(0.5, 0.5),
+                        size: NormalizedPosition::new(0.2, 0.2),
+                        rotation: 0.0,
+                        scale: 1.0,
+                        display_order: 0,
+                        orientation: None,
+                        topology: LedTopology::Point,
+                        led_positions: Vec::new(),
+                        led_mapping: None,
+                        sampling_mode: None,
+                        edge_behavior: None,
+                        shape: None,
+                        shape_preset: None,
+                        attachment: None,
+                        brightness: None,
+                    },
+                },
+            }],
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/scene/members/edit")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(
+                http::header::IF_MATCH,
+                format!("\"{}\"", document["revision"]),
+            )
+            .body(Body::from(request.to_string()))
+            .expect("request should build");
+        let response = self
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("request should run");
+        assert!(
+            response.status().is_success(),
+            "placing the screen answered {}",
+            response.status()
+        );
     }
 
     /// Register a face effect with one numeric control, `speed`.
@@ -502,8 +565,12 @@ async fn a_view_written_back_in_a_scene_replace_is_skipped() {
         Some(json!({})),
     )
     .await;
-    let screen = rig.screen("Pump", false).await;
+    let screen = rig.screen("Pump", true).await;
     rig.put_face(&screen, face, "scene").await;
+    // A screen no zone places keeps its face in a stored display zone that
+    // carries the view's id, and that zone is content, not an echo.
+    let unplaced = rig.screen("Fan", false).await;
+    rig.put_face(&unplaced, face, "scene").await;
     let stored_before = rig.scene().await;
 
     // A client that edits the live document and saves it as the scene
@@ -520,13 +587,15 @@ async fn a_view_written_back_in_a_scene_replace_is_skipped() {
     let mut document = rig
         .ok(Method::GET, &format!("/api/v1/scenes/{scene_id}"), None)
         .await;
-    assert!(
+    assert_eq!(
         document["zones"]
             .as_array()
             .expect("zones")
             .iter()
-            .all(|zone| zone["role"] != "display"),
-        "a stored scene lists no views"
+            .filter(|zone| zone["role"] == "display")
+            .count(),
+        1,
+        "a stored scene lists its display zone and no views"
     );
     document["zones"] = live["zones"].clone();
 
@@ -538,12 +607,23 @@ async fn a_view_written_back_in_a_scene_replace_is_skipped() {
     .await;
 
     let stored = rig.scene().await;
-    assert!(
+    assert_eq!(
         stored
             .zones
             .iter()
-            .all(|zone| zone.role != ZoneRole::Display),
-        "the view did not become a display zone"
+            .filter(|zone| zone.role == ZoneRole::Display)
+            .map(|zone| zone.id.to_string())
+            .collect::<Vec<_>>(),
+        vec![unplaced.view.clone()],
+        "the view did not become a display zone, and the stored one was kept"
+    );
+    assert_eq!(
+        stored
+            .display_zone_for(unplaced.device)
+            .map(|zone| &zone.layers),
+        stored_before
+            .display_zone_for(unplaced.device)
+            .map(|zone| &zone.layers)
     );
     assert_eq!(
         scoped(stored.primary_zone().expect("primary zone")),
@@ -618,18 +698,10 @@ async fn listing_a_views_layers_answers_the_screens_stack_bottom_to_top() {
 }
 
 #[tokio::test]
-async fn creating_a_layer_on_a_view_scopes_it_to_the_screen_and_places_the_screen() {
+async fn creating_a_layer_on_a_view_scopes_it_to_the_screen() {
     let rig = rig();
     let face = rig.face("clock").await;
-    let screen = rig.screen("Pump", false).await;
-    assert!(
-        rig.scene().await.primary_zone().is_none_or(|zone| zone
-            .layout
-            .zones
-            .iter()
-            .all(|output| output.id != screen.output)),
-        "no zone places the screen yet"
-    );
+    let screen = rig.screen("Pump", true).await;
 
     let (status, created) = rig
         .call(
@@ -646,14 +718,6 @@ async fn creating_a_layer_on_a_view_scopes_it_to_the_screen_and_places_the_scree
     let ids = layer_ids(view);
     assert_eq!(ids.len(), 1);
     let primary = rig.primary().await;
-    assert!(
-        primary
-            .layout
-            .zones
-            .iter()
-            .any(|output| output.id == screen.output),
-        "the screen joined the primary zone"
-    );
     assert_eq!(view["view_of"]["zone"], primary.id.to_string());
     assert_eq!(
         scoped(&primary),
@@ -678,6 +742,53 @@ async fn creating_a_layer_on_a_view_scopes_it_to_the_screen_and_places_the_scree
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(refused["error"]["code"], "validation_error");
     assert_eq!(layer_ids(&rig.view(&screen).await).len(), 1);
+}
+
+#[tokio::test]
+async fn creating_a_layer_for_a_screen_no_zone_places_stores_a_display_zone() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let zones_before = rig.scene().await.zones;
+
+    let (status, created) = rig
+        .call(
+            Method::POST,
+            &format!("/api/v1/scene/zones/{}/layers", screen.view),
+            Some(effect_body(face)),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let zone = &created["data"];
+    assert_eq!(
+        zone["id"], screen.view,
+        "the stored zone answers to the id the client addressed"
+    );
+    assert_eq!(zone["role"], "display");
+    assert!(zone.get("view_of").is_none(), "no zone places the screen");
+    assert_eq!(layer_ids(zone).len(), 1);
+    let scene = rig.scene().await;
+    let stored = scene
+        .display_zone_for(screen.device)
+        .expect("the layer is stored in a display zone");
+    assert_eq!(stored.id.to_string(), screen.view);
+    assert_eq!(stored.layers.len(), 1);
+    assert_eq!(
+        scene
+            .zones
+            .iter()
+            .filter(|zone| zone.role != ZoneRole::Display)
+            .cloned()
+            .collect::<Vec<_>>(),
+        zones_before,
+        "no zone gains an output or a layer on the screen's behalf"
+    );
+    assert_eq!(
+        rig.get_face(&screen).await["effect"]["id"],
+        face.to_string()
+    );
+    assert_eq!(rig.get_face(&screen).await["rendering"], "scene");
 }
 
 #[tokio::test]
@@ -1146,11 +1257,10 @@ async fn reading_a_face_whose_effect_is_not_installed_is_not_found() {
 async fn putting_a_scene_face_makes_it_the_screens_whole_stack() {
     let rig = rig();
     let clock = rig.face("clock").await;
-    let screen = rig.screen("Pump", false).await;
+    let screen = rig.screen("Pump", true).await;
     let other = rig.screen("Fan", true).await;
     let uri = format!("/api/v1/displays/{}/face", screen.device);
 
-    // A screen no zone places is added to the primary zone first.
     let written = rig.put_face(&screen, clock, "scene").await;
     assert_face(
         &written,
@@ -1249,6 +1359,64 @@ async fn putting_a_scene_face_makes_it_the_screens_whole_stack() {
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "an unknown device");
+}
+
+#[tokio::test]
+async fn putting_a_scene_face_for_a_screen_no_zone_places_stores_a_display_zone() {
+    let rig = rig();
+    let clock = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let zones_before = rig.scene().await.zones;
+
+    let written = rig
+        .ok(
+            Method::PUT,
+            &format!("/api/v1/displays/{}/face", screen.device),
+            Some(json!({
+                "effect_id": clock.to_string(),
+                "scope": "scene",
+                "blend_mode": "screen",
+                "opacity": 0.5
+            })),
+        )
+        .await;
+
+    assert_face(
+        &written,
+        clock,
+        &screen.view,
+        "scene",
+        (true, false),
+        "scene",
+    );
+    assert_eq!(written["zone"]["display_target"]["blend_mode"], "screen");
+    assert!(written["zone"].get("view_of").is_none());
+    let scene = rig.scene().await;
+    let stored = scene
+        .display_zone_for(screen.device)
+        .expect("the face is stored as a display zone");
+    assert_eq!(stored.id.to_string(), screen.view);
+    assert_eq!(
+        scene
+            .zones
+            .iter()
+            .filter(|zone| zone.role != ZoneRole::Display)
+            .cloned()
+            .collect::<Vec<_>>(),
+        zones_before,
+        "no zone gains an output or a layer on the screen's behalf"
+    );
+
+    let deleted = rig
+        .ok(
+            Method::DELETE,
+            &format!("/api/v1/displays/{}/face?scope=scene", screen.device),
+            None,
+        )
+        .await;
+    assert_eq!(deleted["deleted"], true);
+    assert!(rig.scene().await.display_zone_for(screen.device).is_none());
+    assert!(layer_ids(&rig.view(&screen).await).is_empty());
 }
 
 #[tokio::test]

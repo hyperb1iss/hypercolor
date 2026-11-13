@@ -9,10 +9,10 @@ use hypercolor_core::scene::screens::{
     convert_legacy_display_zones, is_screen_layer, remove_screen_from_layer, screen_stack,
     screen_view, screen_views, screen_zone_id, split_for_screen,
 };
-use hypercolor_core::scene::{SceneManager, default_primary_zone, make_scene};
+use hypercolor_core::scene::{SceneManager, ZoneMutationError, default_primary_zone, make_scene};
 use hypercolor_core::spatial::DISPLAY_ZONE_NAME;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::EffectId;
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::layer::{BlendMode, LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     DisplayFaceTarget, Scene, SceneMutationMode, Zone, ZoneId, ZoneRole,
@@ -79,6 +79,27 @@ fn layout(outputs: Vec<Output>) -> SpatialLayout {
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         version: 1,
+    }
+}
+
+fn sample_effect(name: &str) -> EffectMetadata {
+    EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} description"),
+        category: EffectCategory::Display,
+        tags: Vec::new(),
+        controls: Vec::new(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        input_reactive: false,
+        source: EffectSource::Native {
+            path: format!("builtin/{name}").into(),
+        },
+        license: None,
     }
 }
 
@@ -152,14 +173,13 @@ fn target(device_id: DeviceId, blend_mode: BlendMode, opacity: f32) -> DisplayFa
     }
 }
 
-fn surface(device_id: DeviceId, name: &str, size: (u32, u32), output: Output) -> ScreenSurface {
+fn surface(device_id: DeviceId, name: &str, size: (u32, u32)) -> ScreenSurface {
     ScreenSurface {
         device_id,
         connected: true,
         name: name.to_owned(),
         width: size.0,
         height: size.1,
-        output: Some(output),
     }
 }
 
@@ -174,14 +194,8 @@ fn rig() -> Rig {
     let pump = DeviceId::new();
     let fan = DeviceId::new();
     let surfaces = ScreenSurfaces::from([
-        (
-            PUMP.to_owned(),
-            surface(pump, "Pump", (480, 480), screen(PUMP_SCREEN, PUMP)),
-        ),
-        (
-            FAN.to_owned(),
-            surface(fan, "Fan", (400, 400), screen(FAN_SCREEN, FAN)),
-        ),
+        (PUMP.to_owned(), surface(pump, "Pump", (480, 480))),
+        (FAN.to_owned(), surface(fan, "Fan", (400, 400))),
     ]);
     Rig {
         pump,
@@ -658,7 +672,7 @@ fn a_stored_display_zone_decides_the_kept_face_by_the_same_two_predicates() {
 // ── Conversion ───────────────────────────────────────────────────────────
 
 fn convert(scene: &mut Scene, rig: &Rig) -> hypercolor_core::scene::screens::ScreenConversion {
-    convert_legacy_display_zones(scene, &rig.surfaces, CANVAS)
+    convert_legacy_display_zones(scene, &rig.surfaces)
 }
 
 /// The display zone lowering produces for a device, from a bare scene.
@@ -694,7 +708,6 @@ fn a_convertible_zone_moves_onto_the_zone_that_places_its_screen() {
 
     assert_eq!(report.converted, vec![(stored.clone(), owner_id)]);
     assert!(report.legacy.is_empty());
-    assert!(report.placed.is_empty());
     assert_eq!(converted.zones.len(), 1, "the display zone is removed");
     let layers = &converted.zones[0].layers;
     assert_eq!(layers.len(), 4, "the stack lands at the top, in order");
@@ -814,56 +827,94 @@ fn a_layerless_display_zone_is_removed_and_the_screen_keeps_its_view() {
 }
 
 #[test]
-fn a_screen_no_zone_places_joins_the_primary_zone_before_it_converts() {
+fn a_zone_whose_screen_no_zone_places_stays_stored_until_the_screen_is_placed() {
     let rig = rig();
     let face = effect_layer();
     let stored = legacy_zone(vec![face.clone()], DisplayFaceTarget::new(rig.pump));
-    let owner = primary(vec![strip("keys")], vec![effect_layer()]);
-    let owner_id = owner.id;
-    let mut converted = scene(vec![owner, stored]);
+    // The pump's ring is in the zone, its screen is not: the render thread
+    // finds the screen through its device, and a box of the scene
+    // manager's choosing would move its backdrop.
+    let owner = primary(
+        vec![strip("keys"), output("pump-ring", PUMP, "Ring")],
+        vec![effect_layer()],
+    );
+    let authored = scene(vec![owner, stored.clone()]);
+    let mut converted = authored.clone();
 
     let report = convert(&mut converted, &rig);
 
-    assert_eq!(report.placed, vec![owner_id]);
-    assert!(!report.created_primary);
-    let zone = &converted.zones[0];
     assert_eq!(
-        zone.layout
-            .zones
-            .iter()
-            .map(|output| output.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["keys", PUMP_SCREEN]
+        report.legacy,
+        vec![(stored.id, LegacyReason::ScreenUnplaced)]
+    );
+    assert!(!report.changed());
+    assert_eq!(
+        converted, authored,
+        "no output is added on the screen's behalf"
     );
     assert_eq!(
-        zone.layers[1].scope,
-        Some(LayerScope {
-            outputs: vec![PUMP_SCREEN.to_owned()]
-        })
+        lower(&rig, &converted, rig.pump).map(|zone| zone.id),
+        Some(stored.id),
+        "the stored zone keeps rendering as it does"
     );
-    assert_eq!(zone.layers[1].id, face.id);
-    assert!(lower(&rig, &converted, rig.pump).is_some());
+
+    converted.zones[0]
+        .layout
+        .zones
+        .push(screen(PUMP_SCREEN, PUMP));
+    let report = convert(&mut converted, &rig);
+
+    assert_eq!(
+        report.converted.len(),
+        1,
+        "placing the screen offers it again"
+    );
+    assert!(converted.display_zone_for(rig.pump).is_none());
+    assert_eq!(converted.zones[0].layers[1].id, face.id);
 }
 
 #[test]
-fn a_scene_with_no_led_zone_gets_a_primary_zone_for_the_screen() {
+fn a_scene_that_holds_only_a_display_zone_keeps_it() {
     let rig = rig();
     let stored = legacy_zone(vec![effect_layer()], DisplayFaceTarget::new(rig.pump));
-    let mut converted = scene(vec![stored]);
+    let authored = scene(vec![stored.clone()]);
+    let mut converted = authored.clone();
 
     let report = convert(&mut converted, &rig);
 
-    assert!(report.created_primary);
-    assert_eq!(converted.zones.len(), 1);
-    let zone = &converted.zones[0];
-    assert_eq!(zone.role, ZoneRole::Primary);
     assert_eq!(
-        (zone.layout.canvas_width, zone.layout.canvas_height),
-        CANVAS
+        report.legacy,
+        vec![(stored.id, LegacyReason::ScreenUnplaced)]
     );
-    assert_eq!(zone.layout.zones.len(), 1);
-    assert_eq!(zone.layers.len(), 1);
-    assert!(lower(&rig, &converted, rig.pump).is_some());
+    assert_eq!(
+        converted, authored,
+        "no zone is created to place the screen"
+    );
+}
+
+#[test]
+fn a_zone_whose_owner_already_holds_layers_for_the_screen_stays_stored() {
+    let rig = rig();
+    let stored = legacy_zone(vec![effect_layer()], DisplayFaceTarget::new(rig.pump));
+    let authored = scene(vec![
+        primary(
+            vec![screen(PUMP_SCREEN, PUMP)],
+            vec![scoped(color_layer(), &[PUMP_SCREEN])],
+        ),
+        stored.clone(),
+    ]);
+    let mut converted = authored.clone();
+
+    let report = convert(&mut converted, &rig);
+
+    assert_eq!(
+        report.legacy,
+        vec![(stored.id, LegacyReason::OwnerHoldsScreenLayers)]
+    );
+    assert_eq!(
+        converted, authored,
+        "the covered layer would become the bottom of the stack and change the frames"
+    );
 }
 
 #[test]
@@ -872,7 +923,10 @@ fn a_zone_for_an_unknown_device_waits_until_the_device_binds() {
     let stranger = DeviceId::new();
     let stored = legacy_zone(vec![effect_layer()], DisplayFaceTarget::new(stranger));
     let authored = scene(vec![
-        primary(vec![strip("keys")], Vec::new()),
+        primary(
+            vec![strip("keys"), screen("usb:late-display", "usb:late")],
+            Vec::new(),
+        ),
         stored.clone(),
     ]);
     let mut converted = authored.clone();
@@ -885,16 +939,8 @@ fn a_zone_for_an_unknown_device_waits_until_the_device_binds() {
     assert_eq!(converted, authored);
 
     let mut bound = rig.surfaces.clone();
-    bound.insert(
-        "usb:late".to_owned(),
-        surface(
-            stranger,
-            "Late",
-            (320, 320),
-            screen("usb:late-display", "usb:late"),
-        ),
-    );
-    let report = convert_legacy_display_zones(&mut converted, &bound, CANVAS);
+    bound.insert("usb:late".to_owned(), surface(stranger, "Late", (320, 320)));
+    let report = convert_legacy_display_zones(&mut converted, &bound);
     assert_eq!(report.converted.len(), 1);
     assert!(converted.display_zone_for(stranger).is_none());
 }
@@ -931,7 +977,7 @@ fn conversion_leaves_the_kept_face_where_it_is_stored() {
     let kept = kept_face(rig.fan);
     manager.set_default_display_zone(kept.clone());
 
-    let report = manager.convert_legacy_display_zones(&scene_id, CANVAS);
+    let report = manager.convert_legacy_display_zones(&scene_id);
 
     assert_eq!(report.converted.len(), 1);
     assert_eq!(manager.default_display_zones(), std::slice::from_ref(&kept));
@@ -1037,71 +1083,107 @@ fn a_zone_whose_layer_id_the_owner_already_uses_stays_in_the_legacy_spelling() {
 }
 
 #[test]
-fn a_screen_with_no_output_to_place_stays_in_the_legacy_spelling() {
-    let mut rig = rig();
-    rig.surfaces.get_mut(PUMP).expect("pump surface").output = None;
-    let stored = legacy_zone(vec![effect_layer()], DisplayFaceTarget::new(rig.pump));
-    let authored = scene(vec![
-        primary(vec![strip("keys")], Vec::new()),
-        stored.clone(),
-    ]);
-    let mut converted = authored.clone();
+fn a_face_for_a_screen_no_zone_places_is_stored_as_a_display_zone() {
+    let rig = rig();
+    let owner = primary(vec![strip("keys")], vec![effect_layer()]);
+    let authored = scene(vec![owner.clone()]);
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
+    let clock = sample_effect("clock");
+    let weather = sample_effect("weather");
 
-    let report = convert(&mut converted, &rig);
+    let written = manager
+        .write_display_zone_face(
+            &scene_id,
+            rig.pump,
+            &clock,
+            HashMap::new(),
+            target(rig.pump, BlendMode::Replace, 0.4),
+        )
+        .expect("the face should be stored")
+        .clone();
 
-    assert_eq!(report.legacy, vec![(stored.id, LegacyReason::NoOutput)]);
-    assert_eq!(converted, authored);
+    assert_eq!(
+        written.id,
+        screen_zone_id(scene_id, rig.pump),
+        "the stored zone takes the id the screen's empty view had"
+    );
+    assert_eq!(written.role, ZoneRole::Display);
+    assert_eq!(written.name, "Pump Face");
+    assert_eq!(
+        written.display_target,
+        Some(target(rig.pump, BlendMode::Replace, 1.0)),
+        "a replacing face is stored at full opacity"
+    );
+    assert_eq!(
+        (written.layout.canvas_width, written.layout.canvas_height),
+        (480, 480)
+    );
+    assert_eq!(written.effect_ids().collect::<Vec<_>>(), vec![clock.id]);
+    let stored = manager.get(&scene_id).expect("scene");
+    assert_eq!(
+        stored.zones[0], owner,
+        "no zone gains an output for the screen"
+    );
+    assert_eq!(lowered_for(&manager, rig.pump), Some(written.clone()));
+    assert!(matches!(
+        manager.active_screen_stack(rig.pump),
+        Some(ScreenStack::Legacy(_))
+    ));
+
+    let again = manager
+        .write_display_zone_face(
+            &scene_id,
+            rig.pump,
+            &weather,
+            HashMap::new(),
+            DisplayFaceTarget::new(rig.pump),
+        )
+        .expect("the face should be replaced")
+        .clone();
+    assert_eq!(again.id, written.id, "the zone is updated in place");
+    assert_eq!(again.effect_ids().collect::<Vec<_>>(), vec![weather.id]);
+    assert_eq!(display_zones(&manager).len(), 1);
+
+    // Placing the screen converts the stored face, and the face keeps its
+    // effect slot: the derived zone has the id the stored one had.
+    let before = effect_slots(&manager);
+    let mut placed = manager.get(&scene_id).expect("scene").clone();
+    placed.zones[0].layout.zones.push(screen(PUMP_SCREEN, PUMP));
+    manager.update(placed).expect("scene should update");
+    let report = manager.convert_legacy_display_zones(&scene_id);
+    assert_eq!(report.converted.len(), 1);
+    assert_eq!(effect_slots(&manager), before);
 }
 
 #[test]
-fn a_placed_screen_with_a_face_stays_placed_when_the_primary_zone_realigns() {
+fn a_display_zone_is_stored_only_for_a_known_screen_in_a_live_scene() {
     let rig = rig();
-    let stored = legacy_zone(vec![effect_layer()], DisplayFaceTarget::new(rig.pump));
-    let active_layout = layout(vec![strip("keys")]);
-    let authored = scene(vec![default_primary_zone(active_layout.clone()), stored]);
-    let scene_id = authored.id;
-    let mut manager = active(&rig, authored);
-    manager.convert_legacy_display_zones(&scene_id, CANVAS);
-    assert!(lowered_for(&manager, rig.pump).is_some());
-
-    // The active layout never held the screen. A realign rewrites a primary
-    // zone that follows it, and must not strand the face.
-    let mut moved = active_layout.clone();
-    moved.zones[0].position = NormalizedPosition::new(0.1, 0.1);
-    assert!(manager.sync_primary_zone_layout(&moved));
-
-    let zone = manager
-        .get(&scene_id)
-        .and_then(Scene::primary_zone)
-        .cloned()
-        .expect("primary zone");
+    let mut locked = scene(vec![primary(vec![strip("keys")], Vec::new())]);
+    locked.mutation_mode = SceneMutationMode::Snapshot;
+    let locked_id = locked.id;
+    let mut manager = active(&rig, locked);
     assert_eq!(
-        zone.layout
-            .zones
-            .iter()
-            .map(|output| output.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["keys", PUMP_SCREEN]
-    );
-    assert!(lowered_for(&manager, rig.pump).is_some());
-    assert!(
-        !manager.sync_primary_zone_layout(&moved),
-        "a settled zone is left alone"
+        manager.ensure_display_zone(&locked_id, rig.pump),
+        Err(ZoneMutationError::SnapshotLocked)
     );
 
-    // Once the face is gone, so is the reason to keep the screen.
-    manager
-        .edit_zone_layers(scene_id, zone.id, |zone| {
-            clear_screen_layers(zone, PUMP_SCREEN);
-            Ok(())
-        })
-        .expect("clear the face");
-    assert!(manager.sync_primary_zone_layout(&moved));
-    let zone = manager
-        .get(&scene_id)
-        .and_then(Scene::primary_zone)
-        .expect("primary zone");
-    assert_eq!(zone.layout, moved);
+    let live = scene(vec![primary(vec![strip("keys")], Vec::new())]);
+    let live_id = live.id;
+    manager.create(live).expect("scene should be created");
+    assert_eq!(
+        manager.ensure_display_zone(&live_id, DeviceId::new()),
+        Err(ZoneMutationError::OutputMissing)
+    );
+    let first = manager
+        .ensure_display_zone(&live_id, rig.pump)
+        .expect("a bare display zone");
+    assert_eq!(manager.ensure_display_zone(&live_id, rig.pump), Ok(first));
+    assert_eq!(
+        manager.get(&live_id).expect("scene").zones.len(),
+        2,
+        "asking again adds nothing"
+    );
 }
 
 // ── Renderers ────────────────────────────────────────────────────────────
@@ -1136,7 +1218,7 @@ fn conversion_starts_a_faces_renderer_once_and_nothing_restarts_it_afterwards() 
     let mut manager = active(&rig, authored);
     assert_eq!(effect_slots(&manager), vec![(stored.id, face.id)]);
 
-    manager.convert_legacy_display_zones(&scene_id, CANVAS);
+    manager.convert_legacy_display_zones(&scene_id);
     let converted = vec![(screen_zone_id(scene_id, rig.pump), face.id)];
     assert_eq!(
         effect_slots(&manager),
@@ -1146,7 +1228,7 @@ fn conversion_starts_a_faces_renderer_once_and_nothing_restarts_it_afterwards() 
 
     // Converting again, the device table arriving again, and an unrelated
     // edit all leave the slot where it is.
-    manager.convert_legacy_display_zones(&scene_id, CANVAS);
+    manager.convert_legacy_display_zones(&scene_id);
     manager.set_screen_surfaces(rig.surfaces.clone());
     manager.invalidate_resolved_zones();
     assert_eq!(effect_slots(&manager), converted);
@@ -1176,15 +1258,8 @@ fn conversion_starts_a_faces_renderer_once_and_nothing_restarts_it_afterwards() 
 fn one_layer_on_three_panels_asks_for_as_many_renderers_as_three_display_zones() {
     let mut rig = rig();
     let third = DeviceId::new();
-    rig.surfaces.insert(
-        "usb:top".to_owned(),
-        surface(
-            third,
-            "Top",
-            (320, 320),
-            screen("usb:top-display", "usb:top"),
-        ),
-    );
+    rig.surfaces
+        .insert("usb:top".to_owned(), surface(third, "Top", (320, 320)));
     let outputs = vec![
         screen(PUMP_SCREEN, PUMP),
         screen(FAN_SCREEN, FAN),

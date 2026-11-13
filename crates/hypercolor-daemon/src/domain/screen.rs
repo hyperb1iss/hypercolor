@@ -67,12 +67,13 @@ impl ViewTarget {
     }
 
     /// Create a layer at the top of the owning zone's stack, scoped to the
-    /// screen. A screen no zone places is added to the primary zone first.
+    /// screen. A screen no zone places has no output to scope a layer to,
+    /// so the layer joins the scene's stored display zone for the screen,
+    /// which is created under the view's id when there is none.
     pub(crate) fn create_layer(
         self,
         mutation: &mut SceneMutation,
         mut layer: SceneLayer,
-        canvas: (u32, u32),
     ) -> Result<(), DomainError> {
         if layer.scope.is_some() {
             return Err(DomainError::validation_field(
@@ -80,22 +81,23 @@ impl ViewTarget {
                 "a screen's layers apply to that screen; its view takes no scope",
             ));
         }
-        let placed = mutation
-            .place_screen(self.scene, self.device, canvas)
-            .map_err(|_| {
-                DomainError::conflict(format!(
-                    "display {} offers no screen output a zone can place",
-                    self.device
-                ))
-            })?;
-        layer.scope = Some(LayerScope {
-            outputs: vec![placed.output_id],
-        });
         let layer_id = layer.id;
+        let Some((owner, output_id)) = self.view(mutation)?.owner else {
+            let zone_id = mutation
+                .ensure_display_zone(self.scene, self.device)
+                .map_err(|_| DomainError::not_found(ResourceKind::Zone, self.zone))?;
+            return mutation
+                .insert_layer(self.scene, zone_id, layer, None, None)
+                .map(|_| ())
+                .map_err(|error| layer_error(error, self.zone, Some(layer_id)));
+        };
+        layer.scope = Some(LayerScope {
+            outputs: vec![output_id],
+        });
         mutation
             .edit_screen_layers(
                 self.scene,
-                placed.zone_id,
+                owner,
                 self.device,
                 LayerStackChangeKind::Created,
                 |zone| {

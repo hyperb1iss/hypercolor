@@ -205,15 +205,13 @@ fn screen_zone(
         .map(|zone| (zone, None))
 }
 
-fn screen_not_placeable(error: &ZoneMutationError, device_id: DeviceId) -> DomainError {
+fn display_zone_error(error: &ZoneMutationError, device_id: DeviceId) -> DomainError {
     match error {
         ZoneMutationError::SnapshotLocked => {
             DomainError::conflict("Snapshot scene cannot be structurally edited")
         }
         ZoneMutationError::SceneMissing => DomainError::not_found(ResourceKind::Scene, "active"),
-        _ => DomainError::conflict(format!(
-            "display {device_id} offers no screen output a zone can place"
-        )),
+        _ => DomainError::not_found(ResourceKind::Device, device_id),
     }
 }
 
@@ -227,16 +225,17 @@ fn face_layer(stack: ScreenStack<'_>) -> Option<&SceneLayer> {
 
 /// Make a face the whole of a screen's stack in the active scene.
 ///
-/// The screen's own layers are removed, it leaves the scope of layers it
-/// shares, a stored display zone for it is replaced, and a screen no zone
-/// places is added to the primary zone first. Input bindings carry over
-/// when the face is the one already assigned.
+/// For a screen a zone places, the screen's own layers are removed, it
+/// leaves the scope of layers it shares, and a stored display zone for it
+/// is replaced. A screen no zone places has no output to scope a layer
+/// to, so its face is written to the scene's stored display zone for it.
+/// Input bindings carry over when the face is the one already assigned.
 ///
 /// # Errors
 ///
-/// [`DomainError::Conflict`] when the active scene is snapshot-locked,
-/// when the display offers no output a zone can place, and when a
-/// concurrent scene mutation lands first.
+/// [`DomainError::Conflict`] when the active scene is snapshot-locked or
+/// a concurrent scene mutation lands first, and
+/// [`DomainError::NotFound`] for a device that is not a known screen.
 pub async fn set_display_face(
     ctx: &EffectContext,
     command: SetDisplayFace,
@@ -246,7 +245,6 @@ pub async fn set_display_face(
     let admitted = admit_display_face_controls(ctx, command.effect, &command.controls).await?;
     let (effect, controls, _admission) = admitted.into_parts();
     let scene = ctx.scene_context();
-    let canvas = scene.render_canvas_size();
     // A face may be the first thing written for a display the surface
     // table has not seen yet, so the write reads the registry itself.
     let surfaces = scene.known_screen_surfaces().await;
@@ -259,42 +257,47 @@ pub async fn set_display_face(
     } else {
         ZoneChangeKind::Created
     };
-    let bindings = stack
-        .and_then(face_layer)
-        .and_then(|layer| match &layer.source {
-            LayerSource::Effect {
-                effect_id,
-                control_bindings,
-                ..
-            } if *effect_id == effect.id => Some(control_bindings.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
 
-    mutation.remove_legacy_display_zone(scene_id, device_id);
-    let placed = mutation
-        .place_screen(scene_id, device_id, canvas)
-        .map_err(|error| screen_not_placeable(&error, device_id))?;
-    let mut layer =
-        SceneLayer::from_effect(SceneLayerId::new(), effect.id, controls, bindings, None);
-    layer.blend = target.blend_mode;
-    layer.opacity = target.opacity;
-    layer.scope = Some(LayerScope {
-        outputs: vec![placed.output_id.clone()],
-    });
-    mutation
-        .edit_screen_layers(
-            scene_id,
-            placed.zone_id,
-            device_id,
-            LayerStackChangeKind::Updated,
-            |zone| {
-                screens::clear_screen_layers(zone, &placed.output_id);
-                zone.layers.push(layer);
-                Ok(())
-            },
-        )
-        .map_err(|error| layer_error(error, placed.zone_id, None))?;
+    if let Some((owner, output_id)) = mutation.screen_placement(device_id) {
+        let bindings = stack
+            .and_then(face_layer)
+            .and_then(|layer| match &layer.source {
+                LayerSource::Effect {
+                    effect_id,
+                    control_bindings,
+                    ..
+                } if *effect_id == effect.id => Some(control_bindings.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        mutation.remove_legacy_display_zone(scene_id, device_id);
+        let mut layer =
+            SceneLayer::from_effect(SceneLayerId::new(), effect.id, controls, bindings, None);
+        layer.blend = target.blend_mode;
+        layer.opacity = target.opacity;
+        layer.scope = Some(LayerScope {
+            outputs: vec![output_id.clone()],
+        });
+        mutation
+            .edit_screen_layers(
+                scene_id,
+                owner,
+                device_id,
+                LayerStackChangeKind::Updated,
+                |zone| {
+                    screens::clear_screen_layers(zone, &output_id);
+                    zone.layers.push(layer);
+                    Ok(())
+                },
+            )
+            .map_err(|error| layer_error(error, owner, None))?;
+    } else {
+        // No zone places the screen, so there is no output to scope a
+        // layer to: its face is stored as a display zone.
+        mutation
+            .write_display_zone_face(scene_id, device_id, &effect, controls, target)
+            .map_err(|error| display_zone_error(&error, device_id))?;
+    }
     let (zone, owner) = screen_zone(&mutation, device_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Device, device_id))?;
     let commit = scene.commit(mutation).await?;
@@ -530,14 +533,11 @@ pub async fn sync_screen_surfaces(
     ctx: &SceneContext,
     surfaces: ScreenSurfaces,
 ) -> Result<bool, DomainError> {
-    let canvas = ctx.render_canvas_size();
     let outcome = ctx
         .commit_retrying(|mutation| {
             let mut changed = mutation.set_screen_surfaces(surfaces.clone());
             if let Some(scene_id) = mutation.scenes().active_scene_id().copied() {
-                changed |= mutation
-                    .convert_legacy_display_zones(scene_id, canvas)
-                    .changed();
+                changed |= mutation.convert_legacy_display_zones(scene_id).changed();
             }
             Ok(changed.then_some(()))
         })

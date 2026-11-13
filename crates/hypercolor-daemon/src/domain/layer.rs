@@ -68,7 +68,7 @@ pub async fn insert_layer(
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a layer")?;
     crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
     if let Some(view) = screen::view_target(&mutation, zone_id) {
-        view.create_layer(&mut mutation, layer, ctx.render_canvas_size())?;
+        view.create_layer(&mut mutation, layer)?;
         if let Some(media_admission) = media_admission {
             let scene = mutation
                 .scenes()

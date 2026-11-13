@@ -1277,9 +1277,15 @@ and no newly written document says "display zone" after this spec.
   another zone. This is a behavior change (§10).
 - **Roles.** A scene authors `Primary` and `Custom` zones only. `Display`
   stays in the enum for stored documents and for the views in §6.7.
-- **A screen must be placed to show a face.** A screen that no zone claims
-  follows the scene's unassigned policy like any other output. §6.6 and §6.7
-  place such a screen in the primary zone whenever a face is written for it.
+- **A screen layer needs a placed screen.** A layer can only be scoped to an
+  output, so a screen holds its stack as screen layers once some zone has its
+  `Display` output. A screen no zone places has no output to scope to. Its
+  stack is a stored display zone, the legacy spelling of §6.6, written and
+  rendered as it is today, and its backdrop comes from wherever the render
+  thread finds its device (§5.10). Nothing places a screen on its own: a box
+  the daemon chose would move the backdrop under a blended face. Placing the
+  screen, which is a membership edit, converts its stored zone in the same
+  commit (§6.6).
 
 ### 6.4 Lowering
 
@@ -1397,9 +1403,10 @@ screen layers. It changes no schema number (§4.6 moved those in W2).
 Nothing is rewritten at load. A stored display zone is the **legacy spelling**
 of a screen's stack: it parses, lowering passes it through, and it renders as
 it does today. The scene domain converts a scene's legacy zones in one commit
-when the scene is activated, and again when a screen's surface first becomes
-known, because conversion needs the binding from a physical device to its
-output, which a file loader does not have. Conversion is idempotent.
+when the scene is activated, again when a screen's surface first becomes
+known, and again when a membership edit places a screen, because conversion
+needs the binding from a physical device to its output, which a file loader
+does not have. Conversion is idempotent.
 
 **Conversion is exact or it does not happen.** A legacy zone has two
 compositions the new model has one field for (§6.1, §6.3). A zone converts
@@ -1421,7 +1428,8 @@ conversion again whenever it changes.
 | Display zone whose first layer is disabled | Left as stored | The layer that meets the backdrop is not the one the target was authored for |
 | Display zone that is disabled, or whose brightness is not 1 | Left as stored | |
 | Display zone with no layers | Removed | The daemon created these as bare surfaces (`core/src/scene/mod.rs:711-725`). The screen stays addressable through its view (§6.7) |
-| Convertible display zone whose screen is in no zone | The screen's output is added to the primary zone through the daemon's own layout construction (`hypercolor-types/src/api/scene.rs:640-654`), then as the first row. A scene with no LED zone gets a primary zone first, as `effects/apply` does (`:539-540`) | Keeps a face that would otherwise vanish |
+| Convertible display zone whose screen is in no zone | Left as stored | Converts when the screen is placed: the membership edit that gives a zone the screen's `Display` output converts in the same commit, so no layer can be written for the screen beside the stored zone |
+| Convertible display zone whose owning zone already holds screen layers for the screen | Left as stored | Those layers are covered while the zone exists and would become the bottom of its stack |
 | Display zone whose device is unknown on this rig | Left as stored | Converts when the device first binds |
 | Display zone in a snapshot-locked scene | Left as stored | Converts if the scene is unlocked |
 | Per-display default face in the preference store | Unchanged | It is the kept face (§6.5) |
@@ -1430,11 +1438,14 @@ conversion again whenever it changes.
 | The runtime session's default scene | Converted on its first activation after upgrade | |
 | `hypercolor.toml` | No change | |
 
-After this wave the daemon never writes a new display zone into a scene.
-`ensure_display_zone_surface`, `clear_display_zone_assignment`, and
-`upsert_display_zone` (`core/src/scene/mod.rs:616-796`) are deleted with it. A
-legacy zone that cannot convert is still edited in place through the same
-routes as before.
+After this wave the daemon writes a display zone into a scene in one case
+only: a face or a layer written for a screen no zone places (§6.7), which has
+no output to scope a layer to. That zone takes the id of the screen's view, so
+the client that addressed the empty view keeps the same zone id, and a later
+conversion keeps the face's renderer. `ensure_display_zone_surface`,
+`clear_display_zone_assignment`, and `upsert_display_zone`
+(`core/src/scene/mod.rs:616-796`) are deleted. A legacy zone that cannot
+convert is still edited in place through the same routes as before.
 
 **Downgrade across W5.** A build from W2 to W4 reads a converted scene without
 refusal and treats a screen layer as a canvas layer scoped to the screen: the
@@ -1458,7 +1469,7 @@ be added. A view zone is independent of renderer allocation.
 
 | Field | Value |
 | --- | --- |
-| `id` | The derived zone id of §6.4. For a legacy zone, its stored id |
+| `id` | The derived zone id of §6.4. For a legacy zone, its stored id, which is the derived id too when the daemon stored the zone for an unplaced screen |
 | `name` | The screen's name |
 | `role` | `display` |
 | `enabled` | `true`, or the legacy zone's own flag |
@@ -1488,7 +1499,7 @@ as it does today.
 | Operation on a view | Effect on the owning zone |
 | --- | --- |
 | `GET .../layers` | The screen's layers, bottom to top |
-| `POST .../layers` | Creates the layer at the top of the owning zone's stack with `scope.outputs = [screen]`. A screen no zone places is added to the primary zone first. A `scope` in the request is a validation error: a view's target is fixed |
+| `POST .../layers` | Creates the layer at the top of the owning zone's stack with `scope.outputs = [screen]`. For a screen no zone places, the layer joins the scene's stored display zone for the screen, which is created under the view's id when there is none. A `scope` in the request is a validation error: a view's target is fixed |
 | `PUT .../layers/{layer}`, sole | Replaces the layer in place. The scope stays `[screen]` whatever the request says about it, including nothing (§4.5) |
 | `PUT .../layers/{layer}`, shared | Splits: the screen is removed from the shared layer's scope, and the replacement is inserted directly above it with `scope.outputs = [screen]`. Other screens keep the original |
 | `DELETE .../layers/{layer}`, sole | Deletes the layer |
@@ -1541,7 +1552,7 @@ omitted means `default`. An unknown effect is not found
 
 | `scope` | Effect | Response |
 | --- | --- | --- |
-| `scene` | The screen's stack becomes one layer: this effect, these controls, enabled, `scope.outputs = [screen]`, with the request's blend and opacity. Sole layers of the screen are removed; the screen is removed from shared ones. Input bindings carry over when the effect is the one already assigned, as today (`core/src/scene/mod.rs:629-635`). A screen no zone places is added to the primary zone first. A legacy zone for the screen is replaced by this layer in the same commit | `effect`, `zone` the view, `live_scope: scene`, `scene_assigned: true`, `default_assigned` as stored, `rendering: scene`. The existing rule that reports a default composition as `alpha` stays (`api/displays.rs:275-279`, `:701-709`) |
+| `scene` | The screen's stack becomes one layer: this effect, these controls, enabled, `scope.outputs = [screen]`, with the request's blend and opacity. Sole layers of the screen are removed; the screen is removed from shared ones. Input bindings carry over when the effect is the one already assigned, as today (`core/src/scene/mod.rs:629-635`). A legacy zone for a placed screen is replaced by this layer in the same commit. For a screen no zone places, the face is written to the scene's stored display zone for the screen as today: one face layer under a target carrying the request's blend and opacity, created under the view's id when there is none | `effect`, `zone` the view, `live_scope: scene`, `scene_assigned: true`, `default_assigned` as stored, `rendering: scene`. The existing rule that reports a default composition as `alpha` stays (`api/displays.rs:275-279`, `:701-709`) |
 | `default` | Unchanged: writes the kept face | Unchanged (`:221-250`): `default_assigned: true`, `zone` the kept face's zone, `live_scope` and `scene_assigned` by the assigned predicate. `rendering` follows §6.5 |
 
 **`DELETE /displays/{id}/face`.** The `scope` query defaults to `default`
@@ -1605,22 +1616,20 @@ entry is one the rig does not know. A scene face write reads the registry
 itself, because it may be the first thing written for a display the table has
 not seen.
 
-**The daemon builds a screen's box.** Automatic layout leaves screens off the
-canvas on purpose, so the member route §6.6 points at mints nothing for a
-screen. When a face is written or converted for a screen no zone places, the
-daemon builds one box for it, centered, with the panel's shape, and adds it to
-the primary zone.
-
-**A placed screen with a face stays placed.** A primary zone that follows the
-active layout is rewritten from that layout on activation and on every layout
-publication. A screen the daemon placed is not in that layout, so the rewrite
-keeps each screen of the zone that a screen layer is scoped to. Once the
-screen has no layer, the next rewrite drops its box.
+**Nothing places a screen but its owner.** Automatic layout leaves screens
+off the canvas on purpose, and the render thread finds an unplaced screen a
+backdrop through its device's other outputs. A box minted for it would move
+that backdrop under a blended face, so conversion, the face routes and the
+layer routes never add one. An unplaced screen keeps its stack in a stored
+display zone, and the frame comparison holds that case too: a translucent
+face over a lit canvas shows the same frames before and after activation.
 
 **Conversion has three more guards.** A zone also stays in the legacy spelling
 when its stored target is one the renderer clamps (a replacing target with a
 partial opacity), when the zone that places its screen is paused (the face
-would stop, §6.3), and when that zone already uses one of its layer ids. Each
+would stop, §6.3), and when that zone already uses one of its layer ids. The
+fourth row of the table above, a zone whose owner already holds screen layers
+for the screen, is reported the same way. Each
 is reported with its reason.
 
 **A stored display zone is the screen's whole stack while it exists.** Screen
@@ -1644,7 +1653,9 @@ so a document read from `GET /scene` writes back unchanged.
 **Spikes.** A face's effect slot is keyed by zone and layer. Conversion moves
 it from the stored zone's id to the derived id once, which is one renderer
 start, and a second conversion, the surface table arriving again and a move of
-the screen between zones all leave the key alone. One layer on three panels
+the screen between zones all leave the key alone. A zone the daemon stored
+for an unplaced screen already carries the derived id, so placing that screen
+starts no renderer at all. One layer on three panels
 asks for three slots, as three display zones do. The captured 0.9.0 store
 converts whole: two zones become screen layers, the bare surface is removed,
 none is left legacy, and all three panels show the same frames before and
@@ -1986,7 +1997,8 @@ are excluded from the target editor and keep the Screens tab (§7.2).
 Sections 6.3 to 6.7: lowering, the screen surface table, conversion on
 activation, the resolver, the view zones, the layer-route adapters, the face
 route and MCP mappings, and the `screen-layers` capability. Deletes the three
-display-zone writers in the scene manager and the surface-sync zone writes.
+display-zone writers in the scene manager and the surface-sync zone writes,
+leaving one writer for a screen no zone places.
 Studio is not edited in this wave. Its Screens tab keeps working because every
 connected screen still has a view zone, empty or not, and the layer routes it
 uses are adapted per operation.

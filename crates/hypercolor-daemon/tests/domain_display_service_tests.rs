@@ -235,7 +235,6 @@ fn surface(device_id: DeviceId) -> ScreenSurfaces {
             name: "Kraken".to_owned(),
             width: 480,
             height: 480,
-            output: Some(screen_output(SCREEN, LAYOUT_ID)),
         },
     )])
 }
@@ -271,26 +270,40 @@ async fn connect_screen(state: &AppState, name: &str, placed: bool) -> (DeviceId
     info.sync_display_capabilities();
     let _ = state.device_registry.add(info).await;
     state.domains.display.sync_connected_surfaces().await;
-    let screen = state
+    let layout_id = state
         .scene_manager
         .snapshot()
         .await
         .screen_surfaces()
-        .values()
-        .find(|surface| surface.device_id == device_id)
-        .and_then(|surface| surface.output.as_ref())
-        .map(|output| output.id.clone())
-        .expect("a registered display offers a screen output");
+        .iter()
+        .find(|(_, surface)| surface.device_id == device_id)
+        .map(|(layout_id, _)| layout_id.clone())
+        .expect("a registered display is a known screen");
+    let screen = format!("{layout_id}-display");
     if placed {
-        let mut mutation = state.scene_manager.begin_mutation().await;
-        mutation
-            .place_screen(SceneId::DEFAULT, device_id, (640, 480))
-            .expect("the screen should be placed");
-        commit_scene(&state.domains.scene, mutation)
-            .await
-            .expect("the screen should commit");
+        place_output(state, screen_output(&screen, &layout_id)).await;
     }
     (device_id, screen)
+}
+
+/// Give the primary zone an output, the way a client places a device.
+async fn place_output(state: &AppState, output: Output) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut scene = mutation
+        .scenes()
+        .active_scene()
+        .cloned()
+        .expect("active scene");
+    scene
+        .primary_zone_mut()
+        .expect("the default scene has a primary zone")
+        .layout
+        .zones
+        .push(output);
+    mutation.update_scene(scene).expect("place the output");
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("the placement should commit");
 }
 
 /// A stored display zone, the spelling builds before screen layers wrote.
@@ -424,31 +437,65 @@ async fn setting_a_face_writes_one_screen_layer_and_answers_with_the_view() {
 }
 
 #[tokio::test]
-async fn setting_a_face_places_a_screen_no_zone_places() {
+async fn setting_a_face_for_a_screen_no_zone_places_stores_a_display_zone() {
     let (state, _tempdir) = isolated_state();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
     let (device_id, screen) = connect_screen(&state, "Kraken", false).await;
+    let zones_before = active_scene(&state).await.zones;
+    let mut command = assign_command(&state, device_id, &effect).await;
+    command.target.blend_mode = BlendMode::Screen;
+    command.target.opacity = 0.4;
 
-    let written = set_display_face(
+    let written = set_display_face(&state.domains.effects, command)
+        .await
+        .expect("the face should be assigned");
+
+    assert_eq!(written.change, ZoneChangeKind::Created);
+    assert_eq!(written.owner, None, "no zone places the screen");
+    assert_eq!(
+        written.zone.id,
+        hypercolor_core::scene::screens::screen_zone_id(SceneId::DEFAULT, device_id),
+        "the stored zone answers to the id the screen's empty view had"
+    );
+    let scene = active_scene(&state).await;
+    let stored = scene
+        .display_zone_for(device_id)
+        .expect("the face is stored as a display zone");
+    assert_eq!(stored.effect_ids().next(), Some(effect.id));
+    let target = stored.display_target.as_ref().expect("target");
+    assert_eq!(target.blend_mode, BlendMode::Screen);
+    assert!((target.opacity - 0.4).abs() < f32::EPSILON);
+    assert_eq!(
+        scene
+            .zones
+            .iter()
+            .filter(|zone| zone.role != ZoneRole::Display)
+            .cloned()
+            .collect::<Vec<_>>(),
+        zones_before,
+        "no zone gains an output or a layer on the screen's behalf"
+    );
+    assert!(screen_layers(&state, &screen).await.is_empty());
+
+    // The second write updates the stored zone in place.
+    let again = set_display_face(
         &state.domains.effects,
         assign_command(&state, device_id, &effect).await,
     )
     .await
-    .expect("the face should be assigned");
-
-    let scene = active_scene(&state).await;
-    let primary = scene.primary_zone().expect("primary zone");
-    assert!(
-        primary
-            .layout
+    .expect("the face should be assigned again");
+    assert_eq!(again.change, ZoneChangeKind::Updated);
+    assert_eq!(again.zone.id, written.zone.id);
+    assert_eq!(
+        active_scene(&state)
+            .await
             .zones
             .iter()
-            .any(|output| output.id == screen),
-        "the screen joins the primary zone"
+            .filter(|zone| zone.role == ZoneRole::Display)
+            .count(),
+        1
     );
-    assert_eq!(written.owner, Some((primary.id, screen.clone())));
-    assert_eq!(screen_layers(&state, &screen).await.len(), 1);
 }
 
 #[tokio::test]
@@ -468,7 +515,7 @@ async fn setting_a_face_on_a_display_the_rig_does_not_know_is_refused() {
 
     assert!(matches!(
         refused,
-        hypercolor_daemon::domain::DomainError::Conflict { .. }
+        hypercolor_daemon::domain::DomainError::NotFound { .. }
     ));
     assert_eq!(state.scene_manager.revision(), revision);
 }
@@ -793,6 +840,7 @@ async fn syncing_screens_converts_a_stored_display_zone_once() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
+    place_output(&state, screen_output(SCREEN, LAYOUT_ID)).await;
     store_zone(&state, legacy_zone(device_id, effect.id)).await;
     // The screen's surface is not known yet, so nothing can convert.
     let stack = state

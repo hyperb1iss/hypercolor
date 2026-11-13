@@ -685,7 +685,7 @@ impl Rig {
         manager.create(scene.clone()).expect("create scene");
         manager.activate(&scene.id, None).expect("activate scene");
         let conversion = if convert {
-            manager.convert_legacy_display_zones(&scene.id, CANVAS)
+            manager.convert_legacy_display_zones(&scene.id)
         } else {
             ScreenConversion::default()
         };
@@ -3048,7 +3048,6 @@ fn known_screens(screens: &[(&Screen, (u32, u32))]) -> ScreenSurfaces {
                     name: screen.layout_id.clone(),
                     width: size.0,
                     height: size.1,
-                    output: Some(screen.output((0.5, 0.5), (0.2, 0.2))),
                 },
             )
         })
@@ -3114,19 +3113,32 @@ fn with_composition(mut layer: SceneLayer, blend: BlendMode, opacity: f32) -> Sc
 
 /// A scene whose one screen sits over the boundary of two backdrop columns,
 /// with a stored display zone for it holding `stack` under `target`.
+///
+/// A placed screen has its own box in the zone. An unplaced one has none:
+/// the zone holds only its device's LED ring, which is how the render
+/// thread still finds it a backdrop.
 fn stored_face_scene(
     effects: &Effects,
     screen: &Screen,
     stack: Vec<SceneLayer>,
     target: (BlendMode, f32),
+    placed: bool,
 ) -> Scene {
+    let on_device = if placed {
+        screen.output((0.5, 0.5), (0.4, 0.4))
+    } else {
+        let mut ring = strip_output("pump-ring", (0.5, 0.5), (0.4, 0.4));
+        ring.device_id.clone_from(&screen.layout_id);
+        ring.zone_name = Some("Ring".to_owned());
+        ring
+    };
     let owner = scene_zone(
         "Main",
         ZoneRole::Primary,
         vec![effects.columns()],
         vec![
             strip_output("strip:main", (0.5, 0.1), (0.8, 0.1)),
-            screen.output((0.5, 0.5), (0.4, 0.4)),
+            on_device,
         ],
     );
     let mut zones = vec![owner];
@@ -3149,13 +3161,14 @@ async fn stored_face_frame(
     screen: &Screen,
     stack: &dyn Fn(&Effects) -> Vec<SceneLayer>,
     target: (BlendMode, f32),
+    placed: bool,
     convert: bool,
 ) -> (Vec<u8>, ScreenConversion, Scene) {
     let mut rig = Rig::new(mode);
     rig.connect_screen(screen, DisplayFrameFormat::Rgb, 30)
         .await;
     rig.surfaces = known_screens(&[(screen, (PANEL, PANEL))]);
-    let scene = stored_face_scene(&rig.effects, screen, stack(&rig.effects), target);
+    let scene = stored_face_scene(&rig.effects, screen, stack(&rig.effects), target, placed);
     let scene_id = scene.id;
     let (running, conversion) = rig.run_scene_with(scene, convert).await;
     let frame = settled(&rig.writes, screen.device_id).await;
@@ -3177,12 +3190,20 @@ async fn stored_face_keeps_its_frames(
     mode: RenderAccelerationMode,
     stack: &dyn Fn(&Effects) -> Vec<SceneLayer>,
     target: (BlendMode, f32),
+    placed: bool,
     stays: Option<LegacyReason>,
 ) {
     let screen = Screen::named("pump");
-    let (backdrop, _, _) = stored_face_frame(mode, &screen, &|_| Vec::new(), target, false).await;
-    let (before, _, stored) = stored_face_frame(mode, &screen, stack, target, false).await;
-    let (after, conversion, held) = stored_face_frame(mode, &screen, stack, target, true).await;
+    let (backdrop, _, _) =
+        stored_face_frame(mode, &screen, &|_| Vec::new(), target, placed, false).await;
+    let (before, _, stored) = stored_face_frame(mode, &screen, stack, target, placed, false).await;
+    let (after, conversion, held) =
+        stored_face_frame(mode, &screen, stack, target, placed, true).await;
+
+    assert!(
+        backdrop.iter().any(|channel| *channel > 8),
+        "the screen has a lit backdrop for the face to blend over"
+    );
 
     assert!(
         stored.display_zone_for(screen.device_id).is_some(),
@@ -3200,6 +3221,24 @@ async fn stored_face_keeps_its_frames(
             vec![reason]
         );
         assert!(held.display_zone_for(screen.device_id).is_some());
+        let outputs = |scene: &Scene| {
+            scene
+                .zones
+                .iter()
+                .map(|zone| {
+                    zone.layout
+                        .zones
+                        .iter()
+                        .map(|output| output.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            outputs(&held),
+            outputs(&stored),
+            "no zone gains an output on the screen's behalf"
+        );
     } else {
         assert_eq!(conversion.converted.len(), 1);
         assert!(conversion.legacy.is_empty());
@@ -3259,6 +3298,7 @@ async fn cpu_three_layer_face_shows_the_same_frames_once_converted() {
         RenderAccelerationMode::Cpu,
         &three_layer_stack,
         (BlendMode::Alpha, 1.0),
+        true,
         None,
     )
     .await;
@@ -3271,6 +3311,7 @@ async fn gpu_three_layer_face_shows_the_same_frames_once_converted() {
         RenderAccelerationMode::Gpu,
         &three_layer_stack,
         (BlendMode::Alpha, 1.0),
+        true,
         None,
     )
     .await;
@@ -3282,6 +3323,7 @@ async fn cpu_translucent_target_over_a_stack_shows_the_same_frames_once_converte
         RenderAccelerationMode::Cpu,
         &two_layer_stack,
         (BlendMode::Alpha, 0.5),
+        true,
         None,
     )
     .await;
@@ -3294,6 +3336,7 @@ async fn gpu_translucent_target_over_a_stack_shows_the_same_frames_once_converte
         RenderAccelerationMode::Gpu,
         &two_layer_stack,
         (BlendMode::Alpha, 0.5),
+        true,
         None,
     )
     .await;
@@ -3305,6 +3348,7 @@ async fn cpu_screen_blended_target_shows_the_same_frames_once_converted() {
         RenderAccelerationMode::Cpu,
         &two_layer_stack,
         (BlendMode::Screen, 0.8),
+        true,
         None,
     )
     .await;
@@ -3317,6 +3361,7 @@ async fn gpu_screen_blended_target_shows_the_same_frames_once_converted() {
         RenderAccelerationMode::Gpu,
         &two_layer_stack,
         (BlendMode::Screen, 0.8),
+        true,
         None,
     )
     .await;
@@ -3328,6 +3373,7 @@ async fn cpu_translucent_first_layer_stays_stored_and_shows_the_same_frames() {
         RenderAccelerationMode::Cpu,
         &translucent_first_layer_stack,
         (BlendMode::Alpha, 0.7),
+        true,
         Some(LegacyReason::FirstLayerOpacity),
     )
     .await;
@@ -3340,6 +3386,7 @@ async fn gpu_translucent_first_layer_stays_stored_and_shows_the_same_frames() {
         RenderAccelerationMode::Gpu,
         &translucent_first_layer_stack,
         (BlendMode::Alpha, 0.7),
+        true,
         Some(LegacyReason::FirstLayerOpacity),
     )
     .await;
@@ -3351,6 +3398,7 @@ async fn cpu_disabled_first_layer_stays_stored_and_shows_the_same_frames() {
         RenderAccelerationMode::Cpu,
         &disabled_first_layer_stack,
         (BlendMode::Alpha, 0.7),
+        true,
         Some(LegacyReason::FirstLayerDisabled),
     )
     .await;
@@ -3363,7 +3411,38 @@ async fn gpu_disabled_first_layer_stays_stored_and_shows_the_same_frames() {
         RenderAccelerationMode::Gpu,
         &disabled_first_layer_stack,
         (BlendMode::Alpha, 0.7),
+        true,
         Some(LegacyReason::FirstLayerDisabled),
+    )
+    .await;
+}
+
+/// A screen no zone places has no output to scope a layer to, and its
+/// backdrop comes from wherever the render thread finds its device. A box
+/// of the scene manager's choosing would move that backdrop under a
+/// translucent face, so the stored zone is left alone and the panel shows
+/// the same frames.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_unplaced_screen_face_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Cpu,
+        &two_layer_stack,
+        (BlendMode::Alpha, 0.5),
+        false,
+        Some(LegacyReason::ScreenUnplaced),
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_unplaced_screen_face_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Gpu,
+        &two_layer_stack,
+        (BlendMode::Alpha, 0.5),
+        false,
+        Some(LegacyReason::ScreenUnplaced),
     )
     .await;
 }
@@ -3579,10 +3658,6 @@ async fn stored_scene_shows_the_same_frames_once_converted(mode: RenderAccelerat
         conversion.legacy,
         Vec::new(),
         "no zone of the captured store is left in the legacy spelling"
-    );
-    assert!(
-        conversion.placed.is_empty(),
-        "every screen was already placed"
     );
     assert!(
         held.zones.iter().all(|zone| zone.role != ZoneRole::Display),

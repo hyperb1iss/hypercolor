@@ -793,13 +793,8 @@ impl LayoutContext {
         runtime: &LayoutRuntime,
     ) -> hypercolor_core::scene::screens::ScreenSurfaces {
         self.convergence
-            .known_screen_surfaces(runtime.discovery(), self.render_canvas.get())
+            .known_screen_surfaces(runtime.discovery())
             .await
-    }
-
-    /// The canvas a zone created on behalf of a screen is born with.
-    pub(crate) fn render_canvas_size(&self) -> (u32, u32) {
-        self.render_canvas.get()
     }
 
     pub(crate) async fn active_layout_targets_enabled_device(

@@ -26,9 +26,7 @@ use std::sync::Arc;
 
 use arc_swap::{ArcSwap, Guard};
 use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
-use hypercolor_core::scene::screens::{
-    self, PlacedScreen, ScreenConversion, ScreenSurfaces, ScreenView,
-};
+use hypercolor_core::scene::screens::{self, ScreenConversion, ScreenSurfaces, ScreenView};
 use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, SceneManager, ScenePlanSnapshot, ZoneMetaPatch,
     ZoneMutationError, check_introduced_scope, default_primary_zone,
@@ -2095,14 +2093,8 @@ impl SceneMutation {
 
     /// Rewrite a scene's stored display zones into screen layers where
     /// the result renders the same frames, and report what was done.
-    pub fn convert_legacy_display_zones(
-        &mut self,
-        scene_id: SceneId,
-        canvas: (u32, u32),
-    ) -> ScreenConversion {
-        let report = self
-            .candidate
-            .convert_legacy_display_zones(&scene_id, canvas);
+    pub fn convert_legacy_display_zones(&mut self, scene_id: SceneId) -> ScreenConversion {
+        let report = self.candidate.convert_legacy_display_zones(&scene_id);
         if !report.changed() {
             return report;
         }
@@ -2126,7 +2118,6 @@ impl SceneMutation {
             .converted
             .iter()
             .map(|(_, owner)| *owner)
-            .chain(report.placed.iter().copied())
             .collect::<HashSet<_>>();
         for owner in owners {
             if let Some(zone) = self.zone_in(scene_id, owner) {
@@ -2136,30 +2127,61 @@ impl SceneMutation {
         report
     }
 
-    /// Make sure a connected screen is an output of some zone, adding it
-    /// to the primary zone when none places it.
-    pub fn place_screen(
+    /// The zone and output that place a screen in the active scene.
+    #[must_use]
+    pub fn screen_placement(&self, device_id: DeviceId) -> Option<(ZoneId, String)> {
+        let scene = self.candidate.active_scene()?;
+        screens::screen_placement(scene, self.candidate.screen_surfaces(), device_id)
+            .map(|(zone, output)| (zone.id, output.id.clone()))
+    }
+
+    /// Make sure the scene stores a display zone for a screen no zone
+    /// places, and return its id.
+    pub fn ensure_display_zone(
         &mut self,
         scene_id: SceneId,
         device_id: DeviceId,
-        canvas: (u32, u32),
-    ) -> Result<PlacedScreen, ZoneMutationError> {
-        let already = self.candidate.get(&scene_id).is_some_and(|scene| {
-            screens::screen_placement(scene, self.candidate.screen_surfaces(), device_id).is_some()
-        });
-        let placed = self.candidate.place_screen(&scene_id, device_id, canvas)?;
-        if !already {
+    ) -> Result<ZoneId, ZoneMutationError> {
+        let existed = self
+            .candidate
+            .get(&scene_id)
+            .is_some_and(|scene| scene.display_zone_for(device_id).is_some());
+        let zone_id = self.candidate.ensure_display_zone(&scene_id, device_id)?;
+        if !existed {
             self.persists_scene_content = true;
-            if let Some(zone) = self.zone_in(scene_id, placed.zone_id) {
-                let kind = if placed.created_primary {
-                    ZoneChangeKind::Created
-                } else {
-                    ZoneChangeKind::Updated
-                };
-                self.record_zone_change(scene_id, &zone, kind);
+            if let Some(zone) = self.zone_in(scene_id, zone_id) {
+                self.record_zone_change(scene_id, &zone, ZoneChangeKind::Created);
             }
         }
-        Ok(placed)
+        Ok(zone_id)
+    }
+
+    /// Make one face the whole stack of the stored display zone of a
+    /// screen no zone places, creating the zone when there is none.
+    pub fn write_display_zone_face(
+        &mut self,
+        scene_id: SceneId,
+        device_id: DeviceId,
+        effect: &EffectMetadata,
+        controls: HashMap<String, ControlValue>,
+        target: hypercolor_types::scene::DisplayFaceTarget,
+    ) -> Result<Zone, ZoneMutationError> {
+        let existed = self
+            .candidate
+            .get(&scene_id)
+            .is_some_and(|scene| scene.display_zone_for(device_id).is_some());
+        let zone = self
+            .candidate
+            .write_display_zone_face(&scene_id, device_id, effect, controls, target)?
+            .clone();
+        self.persists_scene_content = true;
+        let kind = if existed {
+            ZoneChangeKind::Updated
+        } else {
+            ZoneChangeKind::Created
+        };
+        self.record_zone_change(scene_id, &zone, kind);
+        Ok(zone)
     }
 
     /// Remove a scene's stored display zone for one device.
@@ -2693,7 +2715,7 @@ pub async fn activate_scene(
         SceneChangeReason::UserActivate,
     )?;
     mutation.realign_primary_layout(&ctx.layout.current());
-    mutation.convert_legacy_display_zones(command.scene_id, ctx.layout.render_canvas_size());
+    mutation.convert_legacy_display_zones(command.scene_id);
 
     let commit = ctx.scene.commit(mutation).await?;
 
@@ -2969,14 +2991,31 @@ pub async fn replace_scene(
     // A document read from the live scene lists each screen's view. A view
     // is not stored content: the screen's layers arrive with the zone that
     // places it, so the view is dropped here and never becomes a zone.
+    // A stored display zone written for an unplaced screen carries the
+    // view's id too, and it is content: only an id the scene does not hold
+    // is an echoed view.
     let scene_id = command.scene_id;
+    let stored = ctx
+        .scene
+        .snapshot()
+        .await
+        .get(&scene_id)
+        .map(|scene| {
+            scene
+                .zones
+                .iter()
+                .map(|zone| zone.id)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
     command.document.zones.retain(|zone| {
         zone.view_of.is_none()
             && !(zone.role == hypercolor_types::scene::ZoneRole::Display
                 && zone.id.is_some_and(|id| {
-                    zone.display_target.as_ref().is_some_and(|target| {
-                        screens::screen_zone_id(scene_id, target.device_id) == id
-                    })
+                    !stored.contains(&id)
+                        && zone.display_target.as_ref().is_some_and(|target| {
+                            screens::screen_zone_id(scene_id, target.device_id) == id
+                        })
                 }))
     });
 
@@ -3379,7 +3418,7 @@ pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactiva
     mutation.deactivate_current(SceneChangeReason::UserDeactivate);
     mutation.realign_primary_layout(&ctx.layout.current());
     if let Some(scene_id) = mutation.scenes().active_scene_id().copied() {
-        mutation.convert_legacy_display_zones(scene_id, ctx.layout.render_canvas_size());
+        mutation.convert_legacy_display_zones(scene_id);
     }
     let current_scene = mutation.scenes().active_scene().cloned();
 

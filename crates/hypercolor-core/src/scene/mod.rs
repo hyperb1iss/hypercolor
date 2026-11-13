@@ -570,11 +570,7 @@ impl SceneManager {
                 .map(|zone| zone.layout.clone())
                 .unwrap_or_else(|| unclaimed_primary_layout(scene, full_scope_layout))
         } else {
-            let pinned = scene
-                .primary_zone()
-                .map(screens::pinned_screens)
-                .unwrap_or_default();
-            screens::with_pinned_screens(full_scope_layout, &pinned)
+            full_scope_layout
         };
 
         let mut structural_changed = false;
@@ -1481,13 +1477,9 @@ impl SceneManager {
             return false;
         };
         let custom = scene_has_custom_led_zones(scene);
-        let pinned = scene
-            .primary_zone()
-            .map(screens::pinned_screens)
-            .unwrap_or_default();
         let mut changed = false;
         for zone in &mut scene.zones {
-            changed |= align_led_zone(zone, layout, custom, &pinned);
+            changed |= align_led_zone(zone, layout, custom);
         }
         if changed {
             bump_zones_revision(scene);
@@ -1507,10 +1499,6 @@ impl SceneManager {
             );
         };
         let custom = scene_has_custom_led_zones(scene);
-        let pinned = scene
-            .primary_zone()
-            .map(screens::pinned_screens)
-            .unwrap_or_default();
 
         let mut changed = false;
         let zones = self
@@ -1518,7 +1506,7 @@ impl SceneManager {
             .iter()
             .cloned()
             .map(|mut zone| {
-                changed |= align_led_zone(&mut zone, layout, custom, &pinned);
+                changed |= align_led_zone(&mut zone, layout, custom);
                 zone
             })
             .collect::<Vec<_>>();
@@ -1668,34 +1656,43 @@ impl SceneManager {
     pub fn convert_legacy_display_zones(
         &mut self,
         scene_id: &SceneId,
-        canvas: (u32, u32),
     ) -> screens::ScreenConversion {
         let active_scene_id = self.active_scene_id().copied();
         let Some(scene) = self.scenes.get_mut(scene_id) else {
             return screens::ScreenConversion::default();
         };
-        let report = screens::convert_legacy_display_zones(scene, &self.screen_surfaces, canvas);
+        let report = screens::convert_legacy_display_zones(scene, &self.screen_surfaces);
         if report.changed() && active_scene_id == Some(*scene_id) {
             self.refresh_resolved_zones();
         }
         report
     }
 
-    /// Add a known screen's output to a scene's primary zone, creating
-    /// the zone at `canvas` when the scene has none. A screen a zone
-    /// already places is left where it is.
+    /// Make sure a scene stores a display zone for a known screen, and
+    /// return its id.
+    ///
+    /// This is the stack of a screen that no zone places: with no output
+    /// to scope a layer to, its layers are stored as a display zone, the
+    /// spelling every build has read. The zone takes the screen's view id,
+    /// so a client that addressed the empty view keeps the same zone, and
+    /// conversion later keeps the same renderer.
     ///
     /// # Errors
     ///
     /// Refuses a missing or snapshot-locked scene, and
-    /// [`ZoneMutationError::OutputMissing`] when the device is not a known
-    /// screen or offers no output to place.
-    pub fn place_screen(
+    /// [`ZoneMutationError::OutputMissing`] for a device that is not a
+    /// known screen.
+    pub fn ensure_display_zone(
         &mut self,
         scene_id: &SceneId,
         device_id: DeviceId,
-        canvas: (u32, u32),
-    ) -> Result<screens::PlacedScreen, ZoneMutationError> {
+    ) -> Result<ZoneId, ZoneMutationError> {
+        let surface = self
+            .screen_surfaces
+            .values()
+            .find(|surface| surface.device_id == device_id)
+            .cloned()
+            .ok_or(ZoneMutationError::OutputMissing)?;
         let active_scene_id = self.active_scene_id().copied();
         let scene = self
             .scenes
@@ -1704,27 +1701,75 @@ impl SceneManager {
         if scene.blocks_runtime_mutation() {
             return Err(ZoneMutationError::SnapshotLocked);
         }
-        if let Some((zone, output)) =
-            screens::screen_placement(scene, &self.screen_surfaces, device_id)
-        {
-            return Ok(screens::PlacedScreen {
-                zone_id: zone.id,
-                output_id: output.id.clone(),
-                created_primary: false,
-            });
+        if let Some(zone) = scene.display_zone_for(device_id) {
+            return Ok(zone.id);
         }
-        let output = self
-            .screen_surfaces
-            .values()
-            .find(|surface| surface.device_id == device_id)
-            .and_then(|surface| surface.output.clone())
-            .ok_or(ZoneMutationError::OutputMissing)?;
-        let placed = screens::place_screen(scene, output, canvas);
+        let zone_id = screens::screen_zone_id(*scene_id, device_id);
+        scene.zones.push(Zone {
+            id: zone_id,
+            name: format!("{} Face", surface.name),
+            description: Some(format!("Display face for {}", surface.name)),
+            layers: Vec::new(),
+            layout: screens::screen_face_layout(
+                device_id,
+                &surface.name,
+                surface.width,
+                surface.height,
+            ),
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: Some(DisplayFaceTarget::new(device_id)),
+            role: ZoneRole::Display,
+            controls_version: 0,
+            layers_version: 0,
+        });
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
             self.refresh_resolved_zones();
         }
-        Ok(placed)
+        Ok(zone_id)
+    }
+
+    /// Make one face the whole stack of a scene's stored display zone,
+    /// creating the zone when the scene has none for the screen. Input
+    /// bindings carry over when the face is the one already there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ensure_display_zone`].
+    pub fn write_display_zone_face(
+        &mut self,
+        scene_id: &SceneId,
+        device_id: DeviceId,
+        effect: &EffectMetadata,
+        controls: HashMap<String, ControlValue>,
+        target: DisplayFaceTarget,
+    ) -> Result<&Zone, ZoneMutationError> {
+        let zone_id = self.ensure_display_zone(scene_id, device_id)?;
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        let zone = scene
+            .zones
+            .iter_mut()
+            .find(|zone| zone.id == zone_id)
+            .ok_or(ZoneMutationError::ZoneMissing)?;
+        let control_bindings = carried_control_bindings(zone, effect.id);
+        replace_effect_layer_stack(zone, effect.id, controls, control_bindings, None);
+        zone.display_target = Some(screens::normalize_face_target(target));
+        zone.enabled = true;
+        zone.controls_version = zone.controls_version.saturating_add(1);
+        zone.layers_version = zone.layers_version.saturating_add(1);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_resolved_zones();
+        }
+        self.scenes
+            .get(scene_id)
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .ok_or(ZoneMutationError::ZoneMissing)
     }
 
     /// Remove a scene's stored display zone for one device.
@@ -1921,33 +1966,15 @@ fn remap_zone_device_bindings(
 }
 
 /// Align one zone with the active layout: a primary zone in a scene without
-/// custom LED zones takes the layout whole, plus the `pinned` screens the
-/// layout does not hold; any other LED zone keeps its placements and takes
-/// the layout's canvas. Display zones are untouched.
-fn align_led_zone(
-    zone: &mut Zone,
-    layout: &SpatialLayout,
-    custom_scene: bool,
-    pinned: &[Output],
-) -> bool {
+/// custom LED zones takes the layout whole; any other LED zone keeps its
+/// placements and takes the layout's canvas. Display zones are untouched.
+fn align_led_zone(zone: &mut Zone, layout: &SpatialLayout, custom_scene: bool) -> bool {
     if zone.display_target.is_some() {
         return false;
     }
     if !custom_scene {
-        if zone.role != ZoneRole::Primary {
-            return false;
-        }
-        let held = |screen: &Output| layout.zones.iter().any(|output| output.id == screen.id);
-        if pinned.iter().all(held) {
-            if zone.layout != *layout {
-                zone.layout = layout.clone();
-                return true;
-            }
-            return false;
-        }
-        let next = screens::with_pinned_screens(layout.clone(), pinned);
-        if zone.layout != next {
-            zone.layout = next;
+        if zone.role == ZoneRole::Primary && zone.layout != *layout {
+            zone.layout = layout.clone();
             return true;
         }
         return false;

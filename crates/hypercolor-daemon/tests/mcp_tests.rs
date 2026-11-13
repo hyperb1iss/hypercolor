@@ -1224,25 +1224,21 @@ async fn stateful_display_face_tool_assigns_and_clears_a_screens_face() {
         assign_snapshot.active_scene_id,
         Some(SceneId::DEFAULT.to_string())
     );
+    // No zone places this screen, so its face is stored as a display zone
+    // and no zone gains an output or a layer for it.
+    let stored = assign_snapshot
+        .default_scene_zones
+        .iter()
+        .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Display)
+        .expect("the face is stored as a display zone");
+    assert_eq!(stored.id.to_string(), assign_result["zone"]["id"]);
+    assert_eq!(stored.effect_ids().next(), Some(face.id));
     assert!(
         assign_snapshot
             .default_scene_zones
             .iter()
-            .all(|zone| zone.role != hypercolor_types::scene::ZoneRole::Display),
-        "the face is a layer of the zone that places the screen, not a zone"
-    );
-    let owner = assign_snapshot
-        .default_scene_zones
-        .iter()
-        .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Primary)
-        .expect("the primary zone places the screen");
-    assert_eq!(
-        owner
-            .layers
-            .iter()
-            .filter(|layer| layer.scope.is_some())
-            .count(),
-        1
+            .flat_map(|zone| zone.layers.iter())
+            .all(|layer| layer.scope.is_none())
     );
     assert_eq!(assign_result["live_scope"], "scene");
     assert_eq!(assign_result["rendering"], "scene");
@@ -1298,13 +1294,12 @@ async fn stateful_display_face_tool_assigns_and_clears_a_screens_face() {
         clear_snapshot
             .default_scene_zones
             .iter()
-            .flat_map(|zone| zone.layers.iter())
-            .all(|layer| layer.scope.is_none()),
-        "the screen's layers are gone from the zone that places it"
+            .all(|zone| zone.role != hypercolor_types::scene::ZoneRole::Display),
+        "the stored display zone is removed with its face"
     );
 
-    // The display is registered but away, so its view is listed only
-    // while it has a stack: the clear retires it.
+    // The display is registered but away, so nothing stands for it once
+    // its stored zone is gone.
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
         if let HypercolorEvent::ZoneChanged {
@@ -2649,6 +2644,35 @@ async fn add_layer_takes_a_face_only_on_screens_and_refuses_a_screens_view() {
     seed_scope_rig(&state).await;
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    // The primary zone places the screen, so its face is a layer there.
+    state.domains.display.sync_connected_surfaces().await;
+    {
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let layout_id = mutation
+            .scenes()
+            .screen_surfaces()
+            .iter()
+            .find(|(_, surface)| surface.device_id == display_id)
+            .map(|(layout_id, _)| layout_id.clone())
+            .expect("a registered display is a known screen");
+        let mut scene = mutation
+            .scenes()
+            .active_scene()
+            .cloned()
+            .expect("active scene");
+        let mut screen = scope_output("out-lcd", "Pump LCD", &layout_id);
+        screen.zone_name = Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned());
+        scene
+            .primary_zone_mut()
+            .expect("primary zone")
+            .layout
+            .zones
+            .push(screen);
+        mutation.update_scene(scene).expect("place the screen");
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("the placement should commit");
+    }
     let assigned = execute_tool_with_state(
         "set_display_face",
         &json!({

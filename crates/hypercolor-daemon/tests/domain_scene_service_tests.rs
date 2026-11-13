@@ -851,7 +851,51 @@ async fn activation_converts_a_live_scenes_display_zones_and_saves_the_result() 
         None,
     ));
     let face_id = stored.layers[0].id;
+    state.domains.display.sync_connected_surfaces().await;
+    let layout_id = state
+        .scene_manager
+        .snapshot()
+        .await
+        .screen_surfaces()
+        .iter()
+        .find(|(_, surface)| surface.device_id == device_id)
+        .map(|(layout_id, _)| layout_id.clone())
+        .expect("a registered display is a known screen");
+    // A custom zone places the screen, so the scene's zones are its own and
+    // activation does not rewrite them from the active layout.
+    let mut desk = hypercolor_core::scene::default_primary_zone(preview_layout());
+    desk.id = ZoneId::new();
+    desk.name = "Desk".to_owned();
+    desk.role = ZoneRole::Custom;
+    desk.layout.zones.push(Output {
+        id: "panel-display".to_owned(),
+        name: "Panel".to_owned(),
+        device_id: layout_id,
+        zone_name: Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned()),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(0.2, 0.2),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    });
+    let desk_id = desk.id;
     let mut scene = named_scene("upgraded");
+    scene
+        .zones
+        .push(hypercolor_core::scene::default_primary_zone(
+            preview_layout(),
+        ));
+    scene.zones.push(desk);
     scene.zones.push(stored);
     let scene_id = scene.id;
     seed_scene(&state, scene).await;
@@ -880,8 +924,10 @@ async fn activation_converts_a_live_scenes_display_zones_and_saves_the_result() 
         let active = manager.active_scene().expect("scene should be active");
         assert!(active.display_zone_for(device_id).is_none());
         let owner = active
-            .primary_zone()
-            .expect("a scene with no LED zone gets a primary zone for the screen");
+            .zones
+            .iter()
+            .find(|zone| zone.id == desk_id)
+            .expect("the zone that places the screen");
         assert_eq!(owner.layers.len(), 1, "a second activation adds nothing");
         assert_eq!(owner.layers[0].id, face_id, "the face keeps its layer id");
         let scope = owner.layers[0].scope.as_ref().expect("a screen layer");

@@ -13,7 +13,6 @@ use crate::logical_devices::LogicalDevice;
 
 use super::auto_layout::{
     append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device,
-    screen_output_for_device,
 };
 use super::catalog::LayoutCatalog;
 use super::exclusions::LayoutExclusions;
@@ -95,17 +94,12 @@ impl LayoutConvergence {
 
     /// Every registered screen, keyed by each layout device id its output
     /// may carry: the device's canonical id and every logical device that
-    /// stands for it. Each entry carries the box a zone would place the
-    /// screen with, for a screen that no zone places.
+    /// stands for it.
     ///
     /// Two devices that answer to one layout id cannot both own it. The
     /// first, in device order, keeps the id, and the other is filed under
     /// a key no output carries so it stays addressable by its device.
-    pub(super) async fn known_screen_surfaces(
-        &self,
-        runtime: &DiscoveryRuntime,
-        canvas: (u32, u32),
-    ) -> ScreenSurfaces {
+    pub(super) async fn known_screen_surfaces(&self, runtime: &DiscoveryRuntime) -> ScreenSurfaces {
         let mut tracked = runtime.device_registry.list().await;
         tracked.sort_by_key(|device| device.info.id.as_uuid());
         let logical = runtime
@@ -127,7 +121,6 @@ impl LayoutConvergence {
                 name: device.info.name.clone(),
                 width: panel.width,
                 height: panel.height,
-                output: screen_output_for_device(&layout_device_id, &device.info, canvas),
             };
             for (layout_id, _) in logical
                 .iter()

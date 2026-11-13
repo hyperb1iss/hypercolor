@@ -1139,11 +1139,6 @@ impl SceneContext {
         &self.layout_runtime
     }
 
-    /// The canvas a zone created on behalf of a screen is born with.
-    pub(crate) fn render_canvas_size(&self) -> (u32, u32) {
-        self.layout.render_canvas_size()
-    }
-
     /// Every registered screen, read fresh from the device registry.
     pub(crate) async fn known_screen_surfaces(
         &self,

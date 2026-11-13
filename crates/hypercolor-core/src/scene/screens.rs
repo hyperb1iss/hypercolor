@@ -8,9 +8,11 @@
 //! the authored zone goes out without its screen layers, and one derived
 //! display zone goes out per screen that has something to show.
 //!
-//! A stored display zone is the older spelling of the same stack. It
-//! passes through lowering as it is, and [`convert_legacy_display_zones`]
-//! rewrites it into screen layers when the result renders the same frames.
+//! A stored display zone is the older spelling of the same stack, and the
+//! only one for a screen no zone places, which has no output to scope a
+//! layer to. It passes through lowering as it is, and
+//! [`convert_legacy_display_zones`] rewrites it into screen layers when the
+//! screen is placed and the result renders the same frames.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -37,10 +39,6 @@ pub struct ScreenSurface {
     pub width: u32,
     /// Panel height in pixels.
     pub height: u32,
-    /// The screen's output as the daemon's own layout construction builds
-    /// it, used to place a screen that no zone places when a face is
-    /// written for it. Absent when the device offers none.
-    pub output: Option<Output>,
 }
 
 /// Every screen the rig knows, keyed by the layout device id its output
@@ -474,10 +472,15 @@ pub enum LegacyReason {
     TargetNotNormalized,
     /// The zone that places the screen is disabled, so the face would stop.
     OwnerDisabled,
-    /// No zone places the screen and no output was offered to place it.
-    NoOutput,
+    /// No zone places the screen, so there is no output to scope its
+    /// layers to. Its backdrop comes from wherever the render thread finds
+    /// its device, which a box of the scene manager's choosing would move.
+    ScreenUnplaced,
     /// The owning zone already uses one of the stack's layer ids.
     LayerIdTaken,
+    /// The owning zone already holds screen layers for this screen. They
+    /// are covered while the display zone exists, and would join its stack.
+    OwnerHoldsScreenLayers,
 }
 
 /// What converting one scene's stored display zones did.
@@ -490,10 +493,6 @@ pub struct ScreenConversion {
     pub removed: Vec<Zone>,
     /// Display zones left as stored, and why.
     pub legacy: Vec<(ZoneId, LegacyReason)>,
-    /// Zones whose layout gained a screen's output.
-    pub placed: Vec<ZoneId>,
-    /// Whether a primary zone was created to place a screen.
-    pub created_primary: bool,
 }
 
 impl ScreenConversion {
@@ -509,19 +508,15 @@ impl ScreenConversion {
 /// A zone converts only when lowering the result rebuilds exactly the
 /// zone that was stored, so the screen shows the same frames: the zone is
 /// enabled at brightness 1, its first layer is enabled at opacity 1, its
-/// target is one the renderer honors as written, and the zone that places
-/// its screen is enabled. Then its layers move to the top of that zone in
-/// order, each scoped to the screen, and the first takes the target's
-/// blend and opacity. A layerless zone is removed. Every other zone stays
-/// as stored and is reported with its reason. Running it again changes
-/// nothing.
-///
-/// A screen no zone places is added to the primary zone first, and a
-/// scene with no primary zone gets one at `canvas` for it.
+/// target is one the renderer honors as written, a zone places its screen
+/// and is enabled, and that zone holds no screen layer for the screen yet.
+/// Then its layers move to the top of that zone in order, each scoped to
+/// the screen, and the first takes the target's blend and opacity. A
+/// layerless zone is removed. Every other zone stays as stored and is
+/// reported with its reason. Running it again changes nothing.
 pub fn convert_legacy_display_zones(
     scene: &mut Scene,
     surfaces: &ScreenSurfaces,
-    canvas: (u32, u32),
 ) -> ScreenConversion {
     let mut report = ScreenConversion::default();
     let legacy_ids = scene
@@ -546,11 +541,10 @@ pub fn convert_legacy_display_zones(
         };
         if scene.zones[index].layers.is_empty() {
             report.removed.push(scene.zones.remove(index));
-            continue;
-        }
-        match conversion_blocker(scene, index, surfaces) {
-            Some(reason) => report.legacy.push((zone_id, reason)),
-            None => convert_zone(scene, index, surfaces, canvas, &mut report),
+        } else if let Some(reason) = conversion_blocker(scene, index, surfaces) {
+            report.legacy.push((zone_id, reason));
+        } else {
+            convert_zone(scene, index, surfaces, &mut report);
         }
     }
     if report.changed() {
@@ -566,16 +560,19 @@ fn conversion_blocker(
 ) -> Option<LegacyReason> {
     let zone = &scene.zones[index];
     let target = zone.display_target.as_ref()?;
-    let Some(surface) = surface_of(surfaces, target.device_id) else {
+    if surface_of(surfaces, target.device_id).is_none() {
         return Some(LegacyReason::DeviceUnknown);
+    }
+    let Some((owner, output)) = screen_placement(scene, surfaces, target.device_id) else {
+        return Some(LegacyReason::ScreenUnplaced);
     };
+    let first = zone.layers.first()?;
     if !zone.enabled {
         return Some(LegacyReason::ZoneDisabled);
     }
     if (zone.brightness - 1.0).abs() > f32::EPSILON {
         return Some(LegacyReason::ZoneBrightness);
     }
-    let first = zone.layers.first()?;
     if !first.enabled {
         return Some(LegacyReason::FirstLayerDisabled);
     }
@@ -585,22 +582,24 @@ fn conversion_blocker(
     if normalize_face_target(target.clone()) != *target {
         return Some(LegacyReason::TargetNotNormalized);
     }
-    let owner = match screen_placement(scene, surfaces, target.device_id) {
-        Some((owner, _)) => Some(owner),
-        None if surface.output.is_some() => scene.primary_zone(),
-        None => return Some(LegacyReason::NoOutput),
-    };
-    if let Some(owner) = owner {
-        if !owner.enabled {
-            return Some(LegacyReason::OwnerDisabled);
-        }
-        if zone
-            .layers
-            .iter()
-            .any(|layer| owner.layers.iter().any(|held| held.id == layer.id))
-        {
-            return Some(LegacyReason::LayerIdTaken);
-        }
+    if !owner.enabled {
+        return Some(LegacyReason::OwnerDisabled);
+    }
+    if !(ScreenStack::Placed {
+        zone: owner,
+        output,
+    })
+    .layers()
+    .is_empty()
+    {
+        return Some(LegacyReason::OwnerHoldsScreenLayers);
+    }
+    if zone
+        .layers
+        .iter()
+        .any(|layer| owner.layers.iter().any(|held| held.id == layer.id))
+    {
+        return Some(LegacyReason::LayerIdTaken);
     }
     None
 }
@@ -609,29 +608,17 @@ fn convert_zone(
     scene: &mut Scene,
     index: usize,
     surfaces: &ScreenSurfaces,
-    canvas: (u32, u32),
     report: &mut ScreenConversion,
 ) {
-    let legacy = scene.zones.remove(index);
-    let Some(target) = legacy.display_target.clone() else {
+    let Some(target) = scene.zones[index].display_target.clone() else {
         return;
     };
-    let placement = screen_placement(scene, surfaces, target.device_id)
-        .map(|(owner, output)| (owner.id, output.id.clone()));
-    let (owner_id, output_id) = if let Some(placement) = placement {
-        placement
-    } else {
-        let Some(output) =
-            surface_of(surfaces, target.device_id).and_then(|surface| surface.output.clone())
-        else {
-            scene.zones.insert(index, legacy);
-            return;
-        };
-        let placed = place_screen(scene, output, canvas);
-        report.created_primary |= placed.created_primary;
-        report.placed.push(placed.zone_id);
-        (placed.zone_id, placed.output_id)
+    let Some((owner_id, output_id)) = screen_placement(scene, surfaces, target.device_id)
+        .map(|(owner, output)| (owner.id, output.id.clone()))
+    else {
+        return;
     };
+    let legacy = scene.zones.remove(index);
     let Some(owner) = scene.zones.iter_mut().find(|zone| zone.id == owner_id) else {
         scene.zones.insert(index, legacy);
         return;
@@ -649,79 +636,6 @@ fn convert_zone(
     }
     owner.layers_version = owner.layers_version.saturating_add(1);
     report.converted.push((legacy, owner_id));
-}
-
-/// Where [`place_screen`] put a screen.
-pub struct PlacedScreen {
-    /// The zone that now places the screen.
-    pub zone_id: ZoneId,
-    /// The screen's output id in that zone.
-    pub output_id: String,
-    /// Whether the zone had to be created.
-    pub created_primary: bool,
-}
-
-/// Add a screen's output to the scene's primary zone, creating the zone
-/// at `canvas` when the scene has no primary zone at all.
-pub fn place_screen(scene: &mut Scene, output: Output, canvas: (u32, u32)) -> PlacedScreen {
-    let mut created_primary = false;
-    if scene.primary_zone().is_none() {
-        let mut layout = super::empty_default_spatial_layout();
-        layout.canvas_width = canvas.0;
-        layout.canvas_height = canvas.1;
-        scene.zones.insert(0, super::default_primary_zone(layout));
-        created_primary = true;
-    }
-    let zone = scene
-        .primary_zone_mut()
-        .expect("the scene has a primary zone: one was found or just inserted");
-    let output_id = output.id.clone();
-    if !zone.layout.zones.iter().any(|held| held.id == output_id) {
-        let mut output = output;
-        output.display_order = i32::try_from(zone.layout.zones.len()).unwrap_or(0);
-        zone.layout.zones.push(output);
-    }
-    PlacedScreen {
-        zone_id: zone.id,
-        output_id,
-        created_primary,
-    }
-}
-
-/// The screens a zone places that carry a screen layer of their own.
-///
-/// A primary zone that follows the active layout is rewritten from that
-/// layout, which may not hold a screen the scene manager placed to show a
-/// face. These outputs stay with the zone through that rewrite, so a face
-/// never loses the screen it is scoped to.
-#[must_use]
-pub(super) fn pinned_screens(zone: &Zone) -> Vec<Output> {
-    zone.layout
-        .zones
-        .iter()
-        .filter(|output| is_display_zone(output))
-        .filter(|output| {
-            zone.layers.iter().any(|layer| {
-                is_screen_layer(zone, layer)
-                    && layer
-                        .scope
-                        .as_ref()
-                        .is_some_and(|scope| scope.contains(&output.id))
-            })
-        })
-        .cloned()
-        .collect()
-}
-
-/// A layout with each pinned screen it does not hold appended.
-#[must_use]
-pub(super) fn with_pinned_screens(mut layout: SpatialLayout, pinned: &[Output]) -> SpatialLayout {
-    for screen in pinned {
-        if !layout.zones.iter().any(|held| held.id == screen.id) {
-            layout.zones.push(screen.clone());
-        }
-    }
-    layout
 }
 
 /// Take one screen out of a shared layer's scope and give it a copy of its
