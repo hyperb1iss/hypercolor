@@ -879,6 +879,81 @@ async fn syncing_screens_converts_a_stored_display_zone_once() {
 }
 
 #[tokio::test]
+async fn two_displays_on_one_layout_id_each_get_their_own_face() {
+    let (state, _tempdir) = isolated_state();
+    let clock = face_effect("clock");
+    let weather = face_effect("weather");
+    insert_effect(&state, &clock).await;
+    insert_effect(&state, &weather).await;
+    // Two displays with one name and no fingerprint resolve to one layout
+    // id. The first owns it and is placed by the output that carries it.
+    let (first, screen) = connect_screen(&state, "Twin", true).await;
+    let (second, _) = connect_screen(&state, "Twin", false).await;
+    {
+        let manager = state.scene_manager.snapshot().await;
+        let ids = |device_id: DeviceId| {
+            manager
+                .screen_surfaces()
+                .iter()
+                .filter(|(_, surface)| surface.device_id == device_id)
+                .map(|(layout_id, _)| layout_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(first).len(), 1);
+        assert_eq!(ids(second).len(), 1);
+        assert!(
+            ids(second)[0].starts_with(&ids(first)[0]),
+            "the second display is filed beside the id the first one owns"
+        );
+    }
+
+    set_display_face(
+        &state.domains.effects,
+        assign_command(&state, second, &weather).await,
+    )
+    .await
+    .expect("the second display's face should be assigned");
+    assert!(
+        screen_layers(&state, &screen).await.is_empty(),
+        "a face for the second display draws nothing on the first one's screen"
+    );
+
+    set_display_face(
+        &state.domains.effects,
+        assign_command(&state, first, &clock).await,
+    )
+    .await
+    .expect("the first display's face should be assigned");
+
+    let manager = state.scene_manager.snapshot().await;
+    let faces = |device_id: DeviceId| {
+        manager
+            .active_screen_stack(device_id)
+            .map(|stack| {
+                stack
+                    .layers()
+                    .into_iter()
+                    .filter_map(SceneLayer::effect_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(faces(first), vec![clock.id]);
+    assert_eq!(faces(second), vec![weather.id]);
+    assert!(matches!(
+        manager.active_screen_stack(first),
+        Some(ScreenStack::Placed { .. })
+    ));
+    assert!(
+        matches!(
+            manager.active_screen_stack(second),
+            Some(ScreenStack::Legacy(_))
+        ),
+        "no output carries the second display, so its face is a stored display zone"
+    );
+}
+
+#[tokio::test]
 async fn syncing_screens_saves_the_converted_default_scene() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
