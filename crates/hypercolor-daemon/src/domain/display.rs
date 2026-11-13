@@ -549,8 +549,8 @@ pub async fn sync_screen_surfaces(
     Ok(outcome.is_some())
 }
 
-/// Drop every scene's display zone for a device, and its runtime default
-/// overlay with them.
+/// Drop every scene's display zone for a device, its runtime default
+/// overlay, and its entry in the table of known screens.
 ///
 /// Returns the removed scene zones and the removed default overlay. The
 /// default zone goes even when the scene zones do not, because a deleted
@@ -569,7 +569,14 @@ pub async fn prune_display_zones_for_device(
         .commit_retrying(|mutation| {
             let removed_zones = mutation.remove_display_zones_for_device(device_id);
             let removed_default = mutation.remove_default_display_zone(device_id);
-            if removed_zones.is_empty() && removed_default.is_none() {
+            // The device is gone, so it is no longer a screen anyone can
+            // address: its view leaves with it. Layers scoped to its
+            // output stay where they are and wait, like any layer whose
+            // output was forgotten.
+            let mut surfaces = mutation.scenes().screen_surfaces().clone();
+            surfaces.retain(|_, surface| surface.device_id != device_id);
+            let forgot_screen = mutation.set_screen_surfaces(surfaces);
+            if removed_zones.is_empty() && removed_default.is_none() && !forgot_screen {
                 return Ok(None);
             }
             Ok(Some((removed_zones, removed_default)))

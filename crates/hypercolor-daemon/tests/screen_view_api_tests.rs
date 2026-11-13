@@ -19,11 +19,12 @@ use hypercolor_daemon::domain::scene::commit_scene;
 use hypercolor_daemon::simulators::{SimulatedDisplayExt, activate_simulated_displays};
 use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
     EffectSource, EffectState,
 };
+use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{BlendMode, LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, Scene, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, SpatialLayout};
@@ -406,6 +407,36 @@ fn scoped(zone: &Zone) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+/// The ids of the display zones whose removal was published since `events`
+/// was subscribed.
+fn removed_display_zones(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<String> {
+    let mut removed = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let HypercolorEvent::ZoneChanged {
+            zone_id,
+            role: ZoneRole::Display,
+            kind: ZoneChangeKind::Removed,
+            ..
+        } = event.event
+        {
+            removed.push(zone_id.to_string());
+        }
+    }
+    removed
+}
+
+fn display_zone_ids(document: &Value) -> Vec<String> {
+    document["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .filter(|zone| zone["role"] == "display")
+        .map(|zone| zone["id"].as_str().expect("zone id").to_owned())
+        .collect()
+}
+
 fn sorted(mut ids: Vec<String>) -> Vec<String> {
     ids.sort();
     ids
@@ -709,7 +740,11 @@ async fn placing_a_screen_converts_its_stored_face_in_the_same_commit() {
         vec![(stored_layers[0].clone(), vec![screen.output.clone()])]
     );
     let layer = primary.layers.last().expect("the face layer");
-    assert_eq!(layer.blend, BlendMode::Screen, "the target moved onto the layer");
+    assert_eq!(
+        layer.blend,
+        BlendMode::Screen,
+        "the target moved onto the layer"
+    );
     assert!((layer.opacity - 0.5).abs() < f32::EPSILON);
 
     // The zone id the client held goes on addressing the screen.
@@ -719,6 +754,95 @@ async fn placing_a_screen_converts_its_stored_face_in_the_same_commit() {
     assert_eq!(view["view_of"]["member"], screen.output);
     let read = rig.get_face(&screen).await;
     assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+}
+
+// ── Screens that leave ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn deleting_a_display_removes_its_view_and_leaves_its_layers_waiting() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", true).await;
+    let other = rig.screen("Fan", true).await;
+    rig.put_face(&screen, face, "scene").await;
+    let face_layer = scoped(&rig.primary().await).remove(0).0;
+    let mut events = rig.state.event_bus.subscribe_all();
+
+    rig.ok(
+        Method::DELETE,
+        &format!("/api/v1/simulators/displays/{}", screen.device),
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        removed_display_zones(&mut events),
+        vec![screen.view.clone()],
+        "the view's removal is published under its id"
+    );
+    let document = rig.ok(Method::GET, "/api/v1/scene", None).await;
+    assert_eq!(
+        display_zone_ids(&document),
+        vec![other.view.clone()],
+        "a deleted display is no longer listed"
+    );
+    let layers = format!("/api/v1/scene/zones/{}/layers", screen.view);
+    let (status, _) = rig
+        .call(Method::POST, &layers, Some(effect_body(face)))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "nothing can be written for a screen that is gone"
+    );
+    let manager = rig.state.scene_manager.snapshot().await;
+    assert!(
+        manager
+            .active_scene()
+            .expect("a scene is active")
+            .zones
+            .iter()
+            .flat_map(|zone| zone.layers.iter())
+            .any(|layer| layer.id.to_string() == face_layer),
+        "the face layer stays in the scene, waiting for its output"
+    );
+    assert!(
+        manager.resolved_zones().iter().all(|zone| zone
+            .display_target
+            .as_ref()
+            .is_none_or(|target| target.device_id != screen.device)),
+        "and nothing renders for the deleted device"
+    );
+}
+
+#[tokio::test]
+async fn a_screen_that_goes_away_is_listed_only_while_it_has_a_stack() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let faced = rig.screen("Pump", true).await;
+    let bare = rig.screen("Fan", true).await;
+    rig.put_face(&faced, face, "scene").await;
+    for screen in [&faced, &bare] {
+        assert!(
+            rig.state
+                .device_registry
+                .set_state(&screen.device, DeviceState::Disabled)
+                .await
+        );
+    }
+    let mut events = rig.state.event_bus.subscribe_all();
+
+    // What the daemon does when a display disconnects.
+    rig.state.domains.display.sync_connected_surfaces().await;
+
+    assert_eq!(removed_display_zones(&mut events), vec![bare.view.clone()]);
+    let document = rig.ok(Method::GET, "/api/v1/scene", None).await;
+    assert_eq!(
+        display_zone_ids(&document),
+        vec![faced.view.clone()],
+        "a screen with a stack stays listed, as its stored zone did"
+    );
+    assert_eq!(rig.get_face(&faced).await["effect"]["id"], face.to_string());
 }
 
 // ── The zone's own effect ────────────────────────────────────────────────
