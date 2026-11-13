@@ -16,6 +16,12 @@ pub async fn fetch_active_layout() -> ApiResult<hypercolor_types::spatial::Spati
     client::fetch_json("/api/v1/layouts/active").await
 }
 
+/// Fetch one layout as it is stored, which is not always what is live:
+/// a stored edit takes effect when the layout is applied.
+pub async fn fetch_layout(id: &str) -> ApiResult<hypercolor_types::spatial::SpatialLayout> {
+    client::fetch_json(&format!("/api/v1/layouts/{id}")).await
+}
+
 /// Update a layout (metadata + optionally zones).
 pub async fn update_layout(id: &str, req: &UpdateLayoutRequest) -> ApiResult<LayoutSummary> {
     client::put_json(&format!("/api/v1/layouts/{id}"), req).await

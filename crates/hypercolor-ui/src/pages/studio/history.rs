@@ -1730,33 +1730,62 @@ impl StudioHistory {
                 );
             }
         }
-        if !step.forget.is_empty()
-            && let Ok(active) = api::fetch_active_layout().await
-        {
-            let kept = active
-                .zones
-                .iter()
-                .filter(|output| !step.forget.contains(&output.id))
-                .cloned()
-                .collect::<Vec<_>>();
-            if kept.len() != active.zones.len() {
-                let request = api::layouts::UpdateLayoutRequest {
-                    zones: Some(kept),
-                    ..Default::default()
-                };
-                match api::layouts::update_layout(&active.id, &request).await {
-                    Ok(_) => wrote = true,
-                    Err(_) => toasts::toast_info(
-                        "The screen is unassigned, but may come back after a scene switch.",
-                    ),
-                }
-            }
+        if !step.forget.is_empty() && self.forget_in_layout(&step.forget).await {
+            wrote = true;
         }
         if !wrote || !self.is_current(generation) {
             return None;
         }
         self.resync(generation).await;
         self.current_scene().map(|scene| scene.revision)
+    }
+
+    /// Take `outputs` out of the rig's layout, stored and live. The
+    /// layout's own route edits what is stored, and applying it is what
+    /// makes that live, so the zone that follows it is rebuilt without
+    /// them. Answers whether the layout changed.
+    async fn forget_in_layout(self, outputs: &[String]) -> bool {
+        let failed = || {
+            toasts::toast_info("The screen is unassigned, but may come back after a scene switch.");
+            false
+        };
+        let Ok(active) = api::fetch_active_layout().await else {
+            return failed();
+        };
+        let live = active
+            .zones
+            .iter()
+            .any(|output| outputs.contains(&output.id));
+        let Ok(stored) = api::layouts::fetch_layout(&active.id).await else {
+            // A layout that was never stored has nothing to edit.
+            return if live { failed() } else { false };
+        };
+        let kept = stored
+            .zones
+            .iter()
+            .filter(|output| !outputs.contains(&output.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let held = kept.len() != stored.zones.len();
+        if !held && !live {
+            return false;
+        }
+        if held {
+            let request = api::layouts::UpdateLayoutRequest {
+                zones: Some(kept),
+                ..Default::default()
+            };
+            if api::layouts::update_layout(&active.id, &request)
+                .await
+                .is_err()
+            {
+                return failed();
+            }
+        }
+        if api::layouts::apply_layout(&active.id).await.is_err() {
+            return failed();
+        }
+        true
     }
 
     /// Read the live scene after a stale reply, so the next operation does
