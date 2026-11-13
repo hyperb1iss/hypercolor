@@ -63,9 +63,6 @@ pub(crate) struct CopyRequest {
 /// Everything Studio shares about screens.
 #[derive(Clone, Copy)]
 pub(crate) struct Screens {
-    /// Whether the daemon keeps a screen's layers in the zone that places
-    /// it, so one layer can play on several screens.
-    pub layered: Memo<bool>,
     /// Every screen a zone of the scene places.
     pub placed: Memo<Vec<PlacedScreen>>,
     /// The open zone's screens the selection names, when screens are all
@@ -79,6 +76,9 @@ pub(crate) struct Screens {
     pub refresh_face: Callback<()>,
     /// The saved face's row, while a saved face is what that screen shows.
     pub kept: Memo<Option<KeptFaceRow>>,
+    /// The saved faces showing on screens the scene gives nothing of
+    /// their own, by display: what those screens' cards name.
+    pub kept_names: Signal<HashMap<String, String>>,
     /// Moves to ask the composition panel for its picker on the screens.
     pub add_requests: RwSignal<u64>,
     /// The Stage shows the one selected screen alone, at full size.
@@ -175,6 +175,43 @@ impl Screens {
             kept_face_row(report.as_ref())
         });
 
+        // A card names its screen's face, and for a screen the scene gives
+        // nothing that face is the saved one, which only the display's
+        // face route knows. The list of such screens is what is read, so
+        // a control edit elsewhere in the scene reads nothing again.
+        let faceless = Memo::new(move |_| {
+            placed.with(|placed| {
+                active_scene.with(|scene| {
+                    let Some(scene) = scene.as_ref() else {
+                        return Vec::new();
+                    };
+                    placed
+                        .iter()
+                        .filter(|screen| card_face(&scene.zones, screen).is_none())
+                        .filter_map(|screen| screen.device_id.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+        });
+        let kept_resource = api::daemon_resource(move || {
+            let _ = face_tick.get();
+            let _ = scene_generation.get();
+            let devices = faceless.get();
+            async move {
+                let mut names = HashMap::new();
+                for device_id in devices {
+                    if let Ok(Some(face)) = api::fetch_display_face(&device_id).await
+                        && let Some(row) = kept_face_row(Some(&FaceReport::from(&face)))
+                    {
+                        names.insert(device_id, row.name);
+                    }
+                }
+                Ok::<_, api::ApiError>(names)
+            }
+        });
+        let kept_names =
+            Signal::derive(move || kept_resource.get().and_then(Result::ok).unwrap_or_default());
+
         let focus = RwSignal::new(false);
         // Focus is a view of one selected screen: it ends with it.
         Effect::new(move |_| {
@@ -184,7 +221,6 @@ impl Screens {
         });
 
         Self {
-            layered,
             placed,
             selected,
             panel,
@@ -193,6 +229,7 @@ impl Screens {
                 set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
             }),
             kept,
+            kept_names,
             add_requests: RwSignal::new(0),
             focus,
             copy: RwSignal::new(None),
@@ -226,16 +263,24 @@ impl Screens {
         })
     }
 
-    /// The face one screen's card names.
+    /// The face one screen's card names: the top layer of its own, else
+    /// the face saved with it.
     pub fn card_face_name(
         self,
         studio: StudioContext,
         screen: &PlacedScreen,
         effect_name: impl Fn(&str) -> Option<String>,
     ) -> Option<String> {
-        studio.active_scene.with(|scene| {
-            card_face(&scene.as_ref()?.zones, screen).map(|layer| layer_name(layer, &effect_name))
-        })
+        studio
+            .active_scene
+            .with(|scene| {
+                card_face(&scene.as_ref()?.zones, screen)
+                    .map(|layer| layer_name(layer, &effect_name))
+            })
+            .or_else(|| {
+                let device_id = screen.device_id.as_ref()?;
+                self.kept_names.with(|names| names.get(device_id).cloned())
+            })
     }
 
     /// Open the composition panel on the screens selected, with the
@@ -970,4 +1015,48 @@ pub(super) fn CopyEverywhereHost() -> impl IntoView {
             </Modal>
         </Show>
     }
+}
+
+/// What the output properties bar adds for one selected screen: how the
+/// panel is mounted, a fact about the output like its place and size, and
+/// the way to its full-screen preview. Renders nothing outside Studio or
+/// for any other selection.
+#[component]
+pub(crate) fn OutputScreenFacts() -> impl IntoView {
+    let Some(studio) = use_context::<StudioContext>() else {
+        return ().into_any();
+    };
+    let displays = expect_context::<DisplaysContext>().displays_resource;
+    let panel = Memo::new(move |_| {
+        let device_id = studio
+            .screens
+            .selected
+            .with(|selected| match selected.as_slice() {
+                [one] => one.device_id.clone(),
+                _ => None,
+            })?;
+        displays
+            .get()
+            .and_then(Result::ok)?
+            .into_iter()
+            .find(|panel| panel.id == device_id)
+            .map(|panel| (panel.id, panel.rotation))
+    });
+    let device_id =
+        Signal::derive(move || panel.with(|panel| panel.as_ref().map(|(id, _)| id.clone())));
+    let rotation =
+        Signal::derive(move || panel.with(|panel| panel.as_ref().map(|(_, mount)| *mount)));
+    view! {
+        <Show when=move || panel.with(Option::is_some)>
+            <div class="flex shrink-0 items-center gap-2" data-screen-facts="">
+                <crate::components::mounting_select::MountingSelect
+                    device_id=device_id
+                    rotation=rotation
+                    class="h-7 border border-edge-subtle px-2 text-[11px] text-fg-secondary"
+                />
+                {move || device_id.get().map(|id| view! { <super::stage::PreviewLink device_id=id /> })}
+            </div>
+        </Show>
+    }
+    .into_any()
 }

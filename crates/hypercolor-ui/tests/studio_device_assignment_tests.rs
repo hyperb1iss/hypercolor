@@ -205,6 +205,26 @@ fn unassigned_rows_exclude_placed_and_ledless_devices() {
 }
 
 #[test]
+fn a_screen_no_zone_places_is_unassigned_like_any_device() {
+    // A screen has no LEDs to count, and is still hardware waiting for a
+    // zone. A device with neither LEDs nor a screen has nothing to place.
+    let zones = vec![zone_resource_with_outputs(vec![output(
+        "usb:kb", None, 104,
+    )])];
+    let mut screen = meta("sim:lcd", "Spare panel", 0);
+    screen.display_segments = vec!["Display".to_owned()];
+    let devices = vec![
+        meta("usb:kb", "Keyboard", 104),
+        screen,
+        meta("usb:hub", "Bare hub", 0),
+    ];
+    let rows = unassigned_device_rows(&zones, &devices);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].device_id, "sim:lcd");
+    assert_eq!(rows[0].name, "Spare panel");
+}
+
+#[test]
 fn unassigned_rows_empty_when_every_device_is_placed() {
     let zones = vec![zone_resource_with_outputs(vec![
         output("a", None, 10),

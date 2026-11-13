@@ -821,12 +821,25 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     }, rank)
                                 })
                             };
+                            // A screen's box carries the panel's live picture.
+                            let tile = {
+                                let zid = zid.clone();
+                                Memo::new(move |_| {
+                                    screen_tiles.with(|tiles| tiles.get(&zid).cloned())
+                                })
+                            };
                             let label_mode = {
                                 let zid = zid.clone();
                                 Memo::new(move |_| {
-                                    let room = label_rooms
-                                        .with(|rooms| rooms.get(&zid).copied())
-                                        .unwrap_or(LabelRoom::Clear);
+                                    // A picture leaves no room for a name on
+                                    // top of it: the box names itself beside.
+                                    let room = if tile.with(Option::is_some) {
+                                        LabelRoom::TooSmall
+                                    } else {
+                                        label_rooms
+                                            .with(|rooms| rooms.get(&zid).copied())
+                                            .unwrap_or(LabelRoom::Clear)
+                                    };
                                     let selected = is_selected.get() && !pick_mode.get();
                                     let hovered = is_hovered.get() || is_accented.get();
                                     let pinned = hovered
@@ -1176,14 +1189,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         swallow_next_click.set_value(false);
                                     }
                                 >
-                                    // A screen's box carries the panel's live picture.
-                                    {
-                                        let zid = zid.clone();
-                                        let tile = Memo::new(move |_| {
-                                            screen_tiles.with(|tiles| tiles.get(&zid).cloned())
-                                        });
-                                        move || tile.get().map(|tile| view! { <ScreenTileView tile=tile /> })
-                                    }
+                                    {move || tile.get().map(|tile| view! { <ScreenTileView tile=tile /> })}
                                     {move || zone_style.get().and_then(|zd| zd.polygon_points.map(|points| {
                                         view! {
                                             <svg
@@ -1429,10 +1435,17 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         </span>
                                     </Show>
 
-                                    // Zone identity — full-bleed radial vignette for contrast
+                                    // Zone identity — full-bleed radial vignette for
+                                    // contrast, which a picture has no use for.
                                     <div
                                         class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden p-1"
-                                        style="background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)"
+                                        style=move || {
+                                            if tile.with(Option::is_some) {
+                                                ""
+                                            } else {
+                                                "background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)"
+                                            }
+                                        }
                                     >
                                         <div
                                             class=move || format!(
@@ -1518,8 +1531,7 @@ fn ScreenTileView(tile: crate::components::layout_builder::ScreenTile) -> impl I
     };
     view! {
         <div
-            class="pointer-events-none absolute inset-[2px] overflow-hidden bg-black"
-            class=(shape, true)
+            class=format!("pointer-events-none absolute inset-[2px] overflow-hidden {shape}")
             data-screen-tile=tile.device_id.clone()
         >
             <DisplayPreviewSurface

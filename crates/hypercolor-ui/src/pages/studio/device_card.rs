@@ -171,6 +171,39 @@ pub fn StudioDeviceCard(
         Some((width, height)) => format!("{width} \u{d7} {height}"),
         None => led_label(row.led_count),
     };
+    // A screen's card carries a screen glyph and names the face it shows,
+    // once a zone places it. `None` for a device with no screen.
+    let screen_face = {
+        let layout_id = device.layout_device_id.clone();
+        let zone_id = select.clone();
+        let is_screen = resolution.is_some();
+        let is_placed = mode == CardMode::Placed;
+        let effects = use_context::<crate::app::EffectsContext>();
+        Memo::new(move |_| {
+            if !is_screen {
+                return None;
+            }
+            if !is_placed {
+                return Some(None);
+            }
+            let screen = studio.screens.placed.with(|placed| {
+                placed
+                    .iter()
+                    .find(|screen| screen.layout_id == layout_id && screen.zone_id == zone_id)
+                    .cloned()
+            });
+            Some(screen.and_then(|screen| {
+                studio.screens.card_face_name(studio, &screen, |effect_id| {
+                    effects?.effects_index.with(|index| {
+                        index
+                            .iter()
+                            .find(|entry| entry.effect.id == effect_id)
+                            .map(|entry| entry.effect.name.clone())
+                    })
+                })
+            }))
+        })
+    };
 
     // Project the current zone's placements once to resolve channel ids and
     // gather the bulk-hide id set, plus the outputs other zones hold so a
@@ -364,7 +397,6 @@ pub fn StudioDeviceCard(
     let shape_style = format!("color: rgba({primary}, 0.7)");
 
     let select_body = select.clone();
-    let is_display = resolution.is_some();
     let physical_id = device.id.clone();
     // The Placed card's operations menu (identify / move / remove) expands
     // inline below the body and is toggled by the action cluster's kebab.
@@ -537,6 +569,28 @@ pub fn StudioDeviceCard(
                         // The count and its unit stay on one line, and so does
                         // the transport: a long driver label is what gives
                         // way, by truncating.
+                        // A screen leads with the face it shows, under a
+                        // screen glyph; the face's name is what gives way.
+                        {move || screen_face.get().map(|face| {
+                            let named = face.is_some();
+                            let words = face.unwrap_or_else(|| {
+                                if placed { "No face" } else { "Screen" }.to_owned()
+                            });
+                            view! {
+                                <div class="flex min-w-0 items-center gap-1 text-[11px]" data-card-face="">
+                                    <span class="flex shrink-0 text-accent/75">
+                                        <Icon icon=LuMonitor width="11px" height="11px" />
+                                    </span>
+                                    <span
+                                        class="min-w-0 truncate"
+                                        class=("text-fg-secondary", named)
+                                        class=("text-fg-tertiary", !named)
+                                    >
+                                        {words}
+                                    </span>
+                                </div>
+                            }
+                        })}
                         <div class="flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-fg-tertiary/70">
                             <span class="shrink-0 whitespace-nowrap tabular-nums">{leds}</span>
                             {transport

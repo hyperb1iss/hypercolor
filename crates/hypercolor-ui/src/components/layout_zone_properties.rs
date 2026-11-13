@@ -454,6 +454,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 </div>
                             </div>
 
+                            // A screen's mounting sits with its other placement
+                            // facts, and its preview beside it.
+                            <crate::pages::studio::screens::OutputScreenFacts />
+
                             // Zone actions — destructive separated by divider
                             <div class="flex shrink-0 items-center gap-0.5">
                                 <OutputLayerButton output_ids=layer_ids />

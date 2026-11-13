@@ -100,8 +100,8 @@ pub fn sort_device_rows(rows: &mut [ZoneDeviceRow]) {
 }
 
 /// Rows for devices the scene places in no zone — the Unassigned group.
-/// Every registry device that has LEDs and has no member anywhere in the
-/// scene.
+/// Every registry device that has LEDs or a screen and has no member
+/// anywhere in the scene.
 #[must_use]
 pub fn unassigned_device_rows(
     zones: &[ZoneResource],
@@ -114,7 +114,7 @@ pub fn unassigned_device_rows(
         .collect();
     devices
         .iter()
-        .filter(|device| device.total_leds > 0)
+        .filter(|device| device.total_leds > 0 || !device.display_segments.is_empty())
         .filter(|device| !placed.contains(device.layout_device_id.as_str()))
         .map(|device| ZoneDeviceRow {
             device_id: device.layout_device_id.clone(),

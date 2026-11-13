@@ -296,6 +296,52 @@ pub fn LayerRow(
     let dormant_zone_id = zone_id.clone();
     let dormant_layer_id = layer_id.clone();
 
+    // The source's own controls: an effect's parameters, a clip's playback.
+    let controls_zone = zone_id.clone();
+    // Whichever of the two comes second sits under a rule.
+    let controls_class = if on_screen {
+        ""
+    } else {
+        "border-t border-edge-subtle/40 pt-3"
+    };
+    let blend_class = if on_screen {
+        "space-y-3 border-t border-edge-subtle/40 pt-3"
+    } else {
+        "contents"
+    };
+    let source_controls = move || {
+        let zone_id = controls_zone.clone();
+        view! {
+                {is_effect
+                    .then(|| {
+                        view! {
+                            <div class=controls_class>
+                                <EffectControlsSection
+                                    zone_id=zone_id.clone()
+                                    layer=layer
+                                    effect_cache=effect_cache
+                                    on_layers_mutated=on_layers_mutated
+                                    label=if is_face { "Face settings" } else { "Effect controls" }
+                                />
+                            </div>
+                        }
+                    })}
+                {is_media
+                    .then(|| {
+                        view! {
+                            <div class=controls_class>
+                                <MediaPlaybackSection
+                                    zone_id=zone_id.clone()
+                                    layer=layer
+                                    fence=fence
+                                    writes=writes
+                                />
+                            </div>
+                        }
+                    })}
+        }
+    };
+
     let chip_style = format!("background: rgba({accent_rgb}, 0.14)");
     let icon_style = format!("color: rgb({accent_rgb})");
 
@@ -511,6 +557,10 @@ pub fn LayerRow(
             </div>
 
             <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
+                // A layer on a screen leads with what it is: a face's own
+                // settings come before how it blends.
+                {on_screen.then(|| source_controls())}
+                <div class=blend_class>
                 // ── Blend ─────────────────────────────────────────────
                 <div class="min-w-0 space-y-1.5">
                     <Show when=move || meets_backdrop.get()>
@@ -624,34 +674,8 @@ pub fn LayerRow(
                     </div>
                 </Show>
 
-                // ── Source-specific controls ──────────────────────────
-                {is_effect
-                    .then(|| {
-                        view! {
-                            <div class="border-t border-edge-subtle/40 pt-3">
-                                <EffectControlsSection
-                                    zone_id=zone_id.clone()
-                                    layer=layer
-                                    effect_cache=effect_cache
-                                    on_layers_mutated=on_layers_mutated
-                                    label=if is_face { "Face settings" } else { "Effect controls" }
-                                />
-                            </div>
-                        }
-                    })}
-                {is_media
-                    .then(|| {
-                        view! {
-                            <div class="border-t border-edge-subtle/40 pt-3">
-                                <MediaPlaybackSection
-                                    zone_id=zone_id.clone()
-                                    layer=layer
-                                    fence=fence
-                                    writes=writes
-                                />
-                            </div>
-                        }
-                    })}
+                </div>
+                {(!on_screen).then(|| source_controls())}
 
                 // ── Transform & color disclosure ──────────────────────
                 <details
