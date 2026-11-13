@@ -1,22 +1,15 @@
-//! The §8 surface model — the UI presentation of one zone.
+//! The surface model: the UI presentation of one zone.
 //!
-//! A *surface* is a name, a Stage, and a layer stack. Zones and Screens
-//! are the same shape, so a multi-zone scene is more rows in the rail,
-//! never a rebuilt editor. Kept leptos-free for `#[path]` tests.
+//! A *surface* is a name, a Stage, and a layer stack. A multi-zone scene
+//! is more tabs, never a rebuilt editor. A screen is not a surface: it is
+//! an output of the zone that places it, and the display zones a daemon
+//! lists for older clients are left out. Kept leptos-free for tests.
 
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::ZoneRole;
 
 use crate::api::ZoneResource;
-
-/// Which rail section a surface belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceKind {
-    /// An LED zone — listed under **Zones**.
-    Light,
-    /// A display-face zone — listed under **Screens**.
-    Screen,
-}
+use crate::components::layer_panel::scope::is_screen_layer;
 
 /// One zone as the UI presents it. The zone id is held for
 /// addressing mutations but is never shown to the user.
@@ -24,47 +17,38 @@ pub enum SurfaceKind {
 pub struct Surface {
     pub id: String,
     pub name: String,
-    pub kind: SurfaceKind,
     pub enabled: bool,
     /// Semantic role of the backing zone. The `Primary` zone (§9.2)
     /// cannot be deleted through the zone endpoints.
     pub role: ZoneRole,
     /// Optional UI accent color for the zone swatch (§9.2).
     pub color: Option<String>,
-    /// Physical display device backing a Screen surface — the key the
-    /// Stage subscribes to for that screen's live face preview. `None`
-    /// for LED zones and for display zones with no target assigned yet.
-    pub display_device_id: Option<String>,
     /// Ids of the layers this surface currently holds. The degraded
     /// indicator filters streamed layer health against this live set, so
     /// a stale entry for an already-removed layer cannot keep the surface
     /// flagged after the layer is gone.
     pub layer_ids: Vec<String>,
-    /// Display label of the surface's top layer — the §9.5 tile caption.
-    /// `None` when the surface has no layers.
+    /// Display label of the layer the zone is known by, the tile caption.
+    /// `None` when the zone has no layer of its own.
     pub top_layer: Option<String>,
 }
 
-/// The primary LED zone: the `Primary` role, else the first LED zone.
+/// The primary zone: the `Primary` role, else the first zone.
 #[must_use]
 pub fn primary_led_zone(zones: &[Surface]) -> Option<&Surface> {
     zones
         .iter()
         .find(|zone| zone.role == ZoneRole::Primary)
-        .or_else(|| zones.iter().find(|zone| zone.kind == SurfaceKind::Light))
+        .or_else(|| zones.first())
 }
 
-/// The LED zone effect applies, presets, controls, and the preview
-/// target: the focused zone while it is still an LED zone of the scene,
-/// otherwise the primary zone.
+/// The zone effect applies, presets, controls, and the preview target:
+/// the focused zone while the scene still holds it, otherwise the primary
+/// zone.
 #[must_use]
 pub fn target_zone<'a>(zones: &'a [Surface], focused: Option<&str>) -> Option<&'a Surface> {
     focused
-        .and_then(|id| {
-            zones
-                .iter()
-                .find(|zone| zone.id == id && zone.kind == SurfaceKind::Light)
-        })
+        .and_then(|id| zones.iter().find(|zone| zone.id == id))
         .or_else(|| primary_led_zone(zones))
 }
 
@@ -89,50 +73,51 @@ pub fn led_zone_count(zones: &[ZoneResource]) -> usize {
 }
 
 /// Build the surface list from the active scene's zones, in scene
-/// order. LED-role zones become zone surfaces; display-role zones become
-/// Screens.
+/// order. A display zone is a screen's stack, or a view of it, and is no
+/// surface of its own.
 #[must_use]
 pub fn surfaces_from_zones(zones: &[ZoneResource]) -> Vec<Surface> {
     zones
         .iter()
-        .map(|zone| {
-            let kind = if zone.role == ZoneRole::Display {
-                SurfaceKind::Screen
-            } else {
-                SurfaceKind::Light
-            };
-            Surface {
-                id: zone.id.to_string(),
-                name: zone_display_name(&zone.name, zone.role),
-                kind,
-                enabled: zone.enabled,
-                role: zone.role,
-                color: zone.color.clone(),
-                display_device_id: zone
-                    .display_target
-                    .as_ref()
-                    .map(|target| target.device_id.to_string()),
-                layer_ids: zone
-                    .layers
-                    .iter()
-                    .map(|layer| layer.id.to_string())
-                    .collect(),
-                top_layer: top_layer_label(zone),
-            }
+        .filter(|zone| zone.role != ZoneRole::Display)
+        .map(|zone| Surface {
+            id: zone.id.to_string(),
+            name: zone_display_name(&zone.name, zone.role),
+            enabled: zone.enabled,
+            role: zone.role,
+            color: zone.color.clone(),
+            layer_ids: zone
+                .layers
+                .iter()
+                .map(|layer| layer.id.to_string())
+                .collect(),
+            top_layer: top_layer_label(zone),
         })
         .collect()
 }
 
-/// The layer a zone is known by: the top of the layers that cover the
-/// whole zone. A layer limited to some outputs plays on part of the zone,
-/// so it stands for the zone only when nothing covers all of it.
+/// The layers of `zone` that are its own: every layer but a screen's,
+/// which plays on a panel and is no part of what the zone is showing.
 #[must_use]
-pub fn featured_layer(layers: &[SceneLayer]) -> Option<&SceneLayer> {
-    featured_position(layers).and_then(|index| layers.get(index))
+pub fn zone_own_layers(zone: &ZoneResource) -> Vec<&SceneLayer> {
+    zone.layers
+        .iter()
+        .filter(|layer| !is_screen_layer(zone, layer))
+        .collect()
 }
 
-/// The place of the layer [`featured_layer`] picks among `layers`, given
-/// bottom to top: the topmost that covers the whole zone, else the top.
+/// The layer `zone` is known by: [`featured_position`] among its own
+/// layers.
+#[must_use]
+pub fn zone_featured_layer(zone: &ZoneResource) -> Option<&SceneLayer> {
+    let own = zone_own_layers(zone);
+    featured_position(own.iter().copied()).and_then(|index| own.get(index).copied())
+}
+
+/// The place among `layers`, given bottom to top, of the layer a zone is
+/// known by: the top of the layers that cover the whole zone. A layer
+/// limited to some outputs plays on part of the zone, so it stands for
+/// the zone only when nothing covers all of it.
 #[must_use]
 pub fn featured_position<'a>(layers: impl IntoIterator<Item = &'a SceneLayer>) -> Option<usize> {
     let mut whole_zone = None;
@@ -147,10 +132,10 @@ pub fn featured_position<'a>(layers: impl IntoIterator<Item = &'a SceneLayer>) -
 }
 
 /// Display label of the layer a zone is known by (see
-/// [`featured_layer`]). Uses the layer's user-set name when it has one,
+/// [`zone_featured_layer`]). Uses the layer's user-set name when it has one,
 /// otherwise a plain-words label for its source kind.
 fn top_layer_label(zone: &ZoneResource) -> Option<String> {
-    let top = featured_layer(&zone.layers)?;
+    let top = zone_featured_layer(zone)?;
     Some(
         top.name
             .clone()
@@ -201,50 +186,11 @@ pub fn zone_display_name(name: &str, role: ZoneRole) -> String {
     }
 }
 
-/// What the Stage's now-playing chip names for a surface.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowPlaying {
-    pub label: String,
-    /// The label names the display's stored default face rather than a
-    /// layer in the scene.
-    pub is_default_face: bool,
-}
-
-/// Resolve the now-playing label. A surface's top scene layer wins; a
-/// Screen with no scene layers that paints its stored default names that
-/// face instead, so a visibly running face never reads as "No layers".
+/// What the Stage's now-playing chip names for a zone: the layer it is
+/// known by, or that it has none.
 #[must_use]
-pub fn now_playing(surface: Option<&Surface>, default_face: Option<&str>) -> NowPlaying {
-    if let Some(label) = surface.and_then(|surface| surface.top_layer.clone()) {
-        return NowPlaying {
-            label,
-            is_default_face: false,
-        };
-    }
-    let default_face = surface
-        .filter(|surface| surface.kind == SurfaceKind::Screen)
-        .and(default_face)
-        .map(str::trim)
-        .filter(|name| !name.is_empty());
-    match default_face {
-        Some(name) => NowPlaying {
-            label: name.to_owned(),
-            is_default_face: true,
-        },
-        None => NowPlaying {
-            label: "No layers".to_owned(),
-            is_default_face: false,
-        },
-    }
-}
-
-/// The display device behind the selected surface, when that surface is
-/// a Screen with a bound target.
-#[must_use]
-pub fn selected_screen_device_id(zones: &[ZoneResource], selected_id: &str) -> Option<String> {
-    zones
-        .iter()
-        .find(|zone| zone.id.to_string() == selected_id && zone.role == ZoneRole::Display)
-        .and_then(|zone| zone.display_target.as_ref())
-        .map(|target| target.device_id.to_string())
+pub fn now_playing(surface: Option<&Surface>) -> String {
+    surface
+        .and_then(|surface| surface.top_layer.clone())
+        .unwrap_or_else(|| "No layers".to_owned())
 }

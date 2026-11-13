@@ -20,6 +20,7 @@ use super::{
     assignment_failed, carried_announcement, edit_members, flip, members_replay_request,
     refuses_step, written,
 };
+use crate::components::layer_panel::scope::is_screen_output;
 use crate::components::layout_builder::keyed::{self, Answer};
 use crate::components::layout_builder::writer;
 use crate::{api, toasts};
@@ -124,6 +125,16 @@ impl DeletedZone {
     }
 }
 
+/// What putting a deleted zone's layers back comes to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerRestore {
+    /// The layers to create, bottom to top.
+    pub requests: Vec<CreateLayerRequest>,
+    /// Recorded layers that cannot come back: none of their outputs
+    /// returned to the zone.
+    pub lost: usize,
+}
+
 /// The requests that rebuild a deleted zone's layers, bottom to top, each
 /// with its source, controls, blend, opacity, transform, and adjustments.
 ///
@@ -131,25 +142,72 @@ impl DeletedZone {
 /// scoped layer comes back limited to those of its outputs that are among
 /// them, and is left out when none are: a create may only name outputs
 /// the zone holds, and a layer must never come back wider than it was.
+///
+/// `returned` holds the layers the rebuilt zone has already, and `viewed`
+/// the screen outputs whose layers that zone is where the scene keeps
+/// (a display zone of the scene is a view of each). Deleting a zone takes
+/// its lighting with it, but a screen's face is kept for the screen, and
+/// what becomes of it when the screen is placed again is the daemon's to
+/// say. It comes back as the screen's layer, and then the screen already
+/// has a layer of its own in the rebuilt zone. Or it cannot (a stack
+/// whose bottom layer is switched off composes differently in a zone),
+/// and it stays in a zone of the screen's own, which no view of the
+/// rebuilt zone stands for. Either way the screen has its whole stack,
+/// and no recorded face is created for it a second time: a copy made
+/// over a stack kept apart would have no row to remove it by, and would
+/// stop that stack from ever coming back. Only a screen the zone holds
+/// the layers of, with none there yet, gets its recorded faces created.
 #[must_use]
 pub fn restore_layer_requests(
     record: &DeletedZone,
     restored: &HashSet<&str>,
-) -> Vec<CreateLayerRequest> {
-    record
+    returned: &[SceneLayer],
+    viewed: &HashSet<&str>,
+) -> LayerRestore {
+    let screens: HashSet<&str> = record
+        .outputs
+        .iter()
+        .filter(|output| is_screen_output(output))
+        .map(|output| output.id.as_str())
+        .collect();
+    let is_face = |scope: &LayerScope| {
+        !scope.outputs.is_empty() && scope.outputs.iter().all(|id| screens.contains(id.as_str()))
+    };
+    let has_stack: HashSet<&str> = returned
+        .iter()
+        .filter_map(|layer| layer.scope.as_ref())
+        .filter(|scope| is_face(scope))
+        .flat_map(|scope| scope.outputs.iter().map(String::as_str))
+        .chain(
+            screens
+                .iter()
+                .copied()
+                .filter(|id| restored.contains(id) && !viewed.contains(id)),
+        )
+        .collect();
+    let mut lost = 0;
+    let requests = record
         .layers
         .iter()
         .filter_map(|layer| {
             let scope = match &layer.scope {
                 None => None,
                 Some(scope) => {
-                    let outputs: Vec<String> = scope
+                    let face = is_face(scope);
+                    let back: Vec<&String> = scope
                         .outputs
                         .iter()
                         .filter(|id| restored.contains(id.as_str()))
-                        .cloned()
+                        .collect();
+                    let outputs: Vec<String> = back
+                        .iter()
+                        .filter(|id| !(face && has_stack.contains(id.as_str())))
+                        .map(|id| (*id).clone())
                         .collect();
                     if outputs.is_empty() {
+                        if back.is_empty() {
+                            lost += 1;
+                        }
                         return None;
                     }
                     Some(LayerScope { outputs })
@@ -162,7 +220,8 @@ pub fn restore_layer_requests(
             request.scope = scope;
             Some(request)
         })
-        .collect()
+        .collect();
+    LayerRestore { requests, lost }
 }
 
 /// The fields `after` sets, as `zone` (at `index` in the scene's zone
@@ -1142,11 +1201,24 @@ impl StudioHistory {
                 .flat_map(|zone| zone.members.iter())
                 .map(|member| member.id.0.as_str())
                 .collect();
-            let requests = restore_layer_requests(record, &restored);
+            let returned = live
+                .iter()
+                .flat_map(|live| live.zones.iter())
+                .find(|zone| zone.id == zone_id)
+                .map_or(&[][..], |zone| zone.layers.as_slice());
+            let viewed: HashSet<&str> = live
+                .iter()
+                .flat_map(|live| live.zones.iter())
+                .filter_map(|zone| zone.view_of.as_ref())
+                .filter(|view| view.zone == zone_id)
+                .map(|view| view.member.0.as_str())
+                .collect();
+            let LayerRestore { requests, lost } =
+                restore_layer_requests(record, &restored, returned, &viewed);
             let mut fence = live.as_ref().map(Fence::of);
             // Whether the layers all came back; `None` when no answer said.
             // A scoped layer none of whose outputs came back is not sent.
-            let mut layers_back = Some(fence.is_some() && requests.len() == record.layers.len());
+            let mut layers_back = Some(fence.is_some() && lost == 0);
             if let Some(at) = fence.as_mut() {
                 for request in requests {
                     let key = keyed::new_key();

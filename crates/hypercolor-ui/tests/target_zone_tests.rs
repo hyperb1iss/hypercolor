@@ -10,29 +10,26 @@ use hypercolor_ui::api::ZoneResource;
 use hypercolor_ui::components::zone_tabs::{
     TabStatus, next_tab, status_description, surface_status, tab_status, tab_title,
 };
-use hypercolor_ui::zones::surface::{
-    Surface, SurfaceKind, apply_zone_id, primary_led_zone, target_zone,
-};
+use hypercolor_ui::zones::surface::{Surface, apply_zone_id, primary_led_zone, target_zone};
 
-fn surface(id: &str, kind: SurfaceKind, role: ZoneRole) -> Surface {
+fn surface(id: &str, role: ZoneRole) -> Surface {
     Surface {
         id: id.to_owned(),
         name: id.to_owned(),
-        kind,
         enabled: true,
         role,
         color: None,
-        display_device_id: None,
         layer_ids: Vec::new(),
         top_layer: None,
     }
 }
 
+/// A scene's zones as the UI lists them: a screen's view is not among
+/// them, so "screen" here names nothing.
 fn scene_zones() -> Vec<Surface> {
     vec![
-        surface("screen", SurfaceKind::Screen, ZoneRole::Display),
-        surface("main", SurfaceKind::Light, ZoneRole::Primary),
-        surface("roli", SurfaceKind::Light, ZoneRole::Custom),
+        surface("roli", ZoneRole::Custom),
+        surface("main", ZoneRole::Primary),
     ]
 }
 
@@ -46,7 +43,7 @@ fn nothing_focused_targets_the_primary_zone() {
 }
 
 #[test]
-fn a_focused_led_zone_is_the_target() {
+fn a_focused_zone_is_the_target() {
     assert_eq!(
         target_id(&scene_zones(), Some("roli")).as_deref(),
         Some("roli")
@@ -70,18 +67,17 @@ fn a_focused_screen_or_a_zone_from_another_scene_falls_back_to_primary() {
 }
 
 #[test]
-fn a_scene_without_a_primary_zone_targets_its_first_led_zone() {
+fn a_scene_without_a_primary_zone_targets_its_first_zone() {
     let zones = vec![
-        surface("screen", SurfaceKind::Screen, ZoneRole::Display),
-        surface("desk", SurfaceKind::Light, ZoneRole::Custom),
+        surface("desk", ZoneRole::Custom),
+        surface("shelf", ZoneRole::Custom),
     ];
     assert_eq!(
         primary_led_zone(&zones).map(|zone| zone.id.as_str()),
         Some("desk")
     );
     assert_eq!(target_id(&zones, None).as_deref(), Some("desk"));
-    let screens_only = vec![surface("screen", SurfaceKind::Screen, ZoneRole::Display)];
-    assert_eq!(target_id(&screens_only, None), None);
+    assert_eq!(target_id(&[], None), None);
 }
 
 #[test]
@@ -186,7 +182,7 @@ fn scene_with(zones: Vec<ZoneResource>) -> SceneDocument {
 #[test]
 fn the_live_status_reads_members_and_layer_health() {
     let zone_id = ZoneId::new();
-    let mut keyboard = surface(&zone_id.to_string(), SurfaceKind::Light, ZoneRole::Custom);
+    let mut keyboard = surface(&zone_id.to_string(), ZoneRole::Custom);
     keyboard.layer_ids = vec!["layer-1".to_owned()];
     let empty = scene_with(vec![zone_resource(zone_id, &[])]);
     let filled = scene_with(vec![zone_resource(zone_id, &["kb"])]);

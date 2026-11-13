@@ -3,7 +3,8 @@
 pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::{LayerSource, SceneLayer};
+pub use hypercolor_types::layer::zone_effect_layer;
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::SceneMutationMode;
 use hypercolor_types::spatial::Output;
@@ -40,10 +41,10 @@ pub async fn deactivate_scene() -> ApiResult<()> {
     client::post_empty("/api/v1/scene/deactivate").await
 }
 
-/// The effect a zone plays: its topmost effect layer that covers the
-/// whole zone, which is the one an apply replaces. A layer limited to some
-/// outputs sits above it and is not the zone's effect; only a zone with no
-/// whole-zone effect at all is known by its topmost effect layer.
+/// The effect a zone plays: the one its topmost whole-zone effect layer
+/// runs, which is the layer an apply replaces. A layer limited to some
+/// outputs, a screen's face among them, sits above it and is never the
+/// zone's effect.
 #[must_use]
 pub fn zone_effect(zone: &ZoneResource) -> Option<ZoneEffectRef<'_>> {
     zone_effect_layer(&zone.layers).and_then(|layer| {
@@ -64,37 +65,18 @@ pub fn zone_effect(zone: &ZoneResource) -> Option<ZoneEffectRef<'_>> {
     })
 }
 
-/// The layer [`zone_effect`] reads.
-#[must_use]
-pub fn zone_effect_layer(layers: &[SceneLayer]) -> Option<&SceneLayer> {
-    whole_zone_first(layers, |_| true)
-}
-
 /// The layer of a zone's stack that plays `effect_id` as the zone's
-/// effect, by the rule of [`zone_effect`]: the topmost whole-zone layer
-/// running it, and only when none does, the topmost layer running it at
-/// all. Everything that turns "this effect in this zone" into a layer to
-/// write to resolves here, so a copy of the effect limited to some outputs
-/// is never written in place of the layer the zone is known by.
+/// effect, by the rule every client shares ([`zone_effect_layer`]).
+/// Everything that turns "this effect in this zone" into a layer to write
+/// to resolves here, so a copy of the effect limited to some outputs is
+/// never written in place of the layer the zone is known by.
 #[must_use]
 pub fn zone_layer_playing<'a>(layers: &'a [SceneLayer], effect_id: &str) -> Option<&'a SceneLayer> {
-    whole_zone_first(layers, |current| current.to_string() == effect_id)
-}
-
-/// The topmost whole-zone effect layer whose effect `wanted` accepts, else
-/// the topmost effect layer it accepts.
-fn whole_zone_first(
-    layers: &[SceneLayer],
-    wanted: impl Fn(&EffectId) -> bool,
-) -> Option<&SceneLayer> {
-    let effects = || {
-        layers.iter().rev().filter(|layer| {
-            matches!(&layer.source, LayerSource::Effect { effect_id, .. } if wanted(effect_id))
-        })
-    };
-    effects()
-        .find(|layer| layer.scope.is_none())
-        .or_else(|| effects().next())
+    zone_effect_layer(layers).filter(|layer| {
+        layer
+            .effect_id()
+            .is_some_and(|current| current.to_string() == effect_id)
+    })
 }
 
 /// Select editor-facing outputs from canonical members and placements.
@@ -177,21 +159,31 @@ pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
     replace_stored_scene(scene_id, |document| name.clone_into(&mut document.name)).await
 }
 
-/// Read one stored scene, edit it, and write it back at the revision it
-/// was read at, so a concurrent change is refused rather than clobbered.
-async fn replace_stored_scene(
-    scene_id: &str,
-    edit: impl FnOnce(&mut SceneDocument),
-) -> ApiResult<()> {
-    let url = format!("/api/v1/scenes/{scene_id}");
-    let mut document = client::fetch_json::<SceneDocument>(&url).await?;
-    edit(&mut document);
-    let request = ReplaceSceneRequest::from(&document);
+/// Read one stored scene.
+pub async fn fetch_stored_scene(scene_id: &str) -> ApiResult<SceneDocument> {
+    client::fetch_json::<SceneDocument>(&format!("/api/v1/scenes/{scene_id}")).await
+}
+
+/// Write a stored scene back at the revision it was read at, so a
+/// concurrent change is refused rather than clobbered. `added` names the
+/// layers the edit made: a stored scene takes a new layer without an id
+/// and refuses one it does not know.
+pub async fn save_stored_scene(document: &SceneDocument, added: &[SceneLayerId]) -> ApiResult<()> {
+    let mut request = ReplaceSceneRequest::from(document);
+    for layer in request
+        .zones
+        .iter_mut()
+        .flat_map(|zone| zone.layers.iter_mut())
+    {
+        if layer.id.is_some_and(|id| added.contains(&id)) {
+            layer.id = None;
+        }
+    }
     match client::send_json_versioned::<_, SceneDocument>(
         HttpMethod::Put,
-        &url,
+        &format!("/api/v1/scenes/{}", document.id),
         Some(&request),
-        Some(&client::Fence::of(&document)),
+        Some(&client::Fence::of(document)),
     )
     .await?
     {
@@ -200,6 +192,16 @@ async fn replace_stored_scene(
             "Scene changed while it was being saved; reload revision {current}"
         ))),
     }
+}
+
+/// Read one stored scene, edit it, and write it back.
+async fn replace_stored_scene(
+    scene_id: &str,
+    edit: impl FnOnce(&mut SceneDocument),
+) -> ApiResult<()> {
+    let mut document = fetch_stored_scene(scene_id).await?;
+    edit(&mut document);
+    save_stored_scene(&document, &[]).await
 }
 
 /// Delete a scene.

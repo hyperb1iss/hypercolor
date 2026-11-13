@@ -320,13 +320,23 @@ type EffectTarget = (
     Option<String>,
 );
 
+/// The effect the scene is playing: the primary zone's, else the first
+/// other zone of lights that has one. A screen's face is never it. A
+/// screen no zone places keeps its face in a zone of its own, and what
+/// one panel shows is not what the rig is playing.
 fn effect_target(scene: &SceneDocument) -> Option<EffectTarget> {
     scene
         .zones
         .iter()
         .find(|zone| zone.role == ZoneRole::Primary)
         .and_then(effect_target_in_zone)
-        .or_else(|| scene.zones.iter().find_map(effect_target_in_zone))
+        .or_else(|| {
+            scene
+                .zones
+                .iter()
+                .filter(|zone| zone.role != ZoneRole::Display)
+                .find_map(effect_target_in_zone)
+        })
 }
 
 fn effect_target_in_zone(
@@ -419,7 +429,7 @@ mod tests {
         ApplyEffectResponse, SceneDocument, SideEffectOutcome, TransitionType,
     };
 
-    use super::{apply_effect_preset_with, apply_effect_with};
+    use super::{apply_effect_preset_with, apply_effect_with, effect_target};
     use crate::api::{ApiResult, MutationOutcome};
 
     struct SuspendedApply {
@@ -485,6 +495,63 @@ mod tests {
             transition: TransitionType::Cut,
             output: SideEffectOutcome::applied(),
         }
+    }
+
+    /// A scene of three zones, each with the effect named for it, if any.
+    fn scene_playing(
+        primary: Option<&str>,
+        custom: Option<&str>,
+        display: Option<&str>,
+    ) -> SceneDocument {
+        let zone = |id: u8, role: &str, effect: Option<&str>| {
+            serde_json::json!({
+                "id": format!("00000000-0000-0000-0000-0000000000{id:02}"),
+                "name": role,
+                "role": role,
+                "enabled": true,
+                "brightness": 1.0,
+                "members": [],
+                "layers": effect.iter().map(|effect_id| serde_json::json!({
+                    "id": format!("00000000-0000-0000-0000-0000000001{id:02}"),
+                    "source": {"type": "effect", "effect_id": effect_id, "controls": {}}
+                })).collect::<Vec<_>>()
+            })
+        };
+        serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "live",
+            "kind": "ephemeral",
+            "is_default": true,
+            "revision": 2,
+            "zones": [
+                zone(4, "display", display),
+                zone(2, "primary", primary),
+                zone(3, "custom", custom),
+            ]
+        }))
+        .expect("scene fixture should deserialize")
+    }
+
+    #[test]
+    fn a_screens_stored_face_is_never_what_the_scene_is_playing() {
+        let lighting = "00000000-0000-0000-0000-00000000000a";
+        let other = "00000000-0000-0000-0000-00000000000b";
+        let face = "00000000-0000-0000-0000-00000000000c";
+        let playing = |scene: &SceneDocument| effect_target(scene).map(|target| target.2);
+
+        // The primary zone's effect leads, and another zone of lights
+        // stands in when it has none.
+        assert_eq!(
+            playing(&scene_playing(Some(lighting), Some(other), Some(face))).as_deref(),
+            Some(lighting)
+        );
+        assert_eq!(
+            playing(&scene_playing(None, Some(other), Some(face))).as_deref(),
+            Some(other)
+        );
+        // With no lighting anywhere nothing is playing, whatever a
+        // screen is showing.
+        assert_eq!(playing(&scene_playing(None, None, Some(face))), None);
     }
 
     fn poll_twice<T>(future: impl Future<Output = T>) -> T {

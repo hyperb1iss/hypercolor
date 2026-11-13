@@ -46,6 +46,10 @@ pub struct ZoneDeviceRow {
     pub member_count: usize,
     /// Whether `device_id` resolved to a known registry device.
     pub resolved: bool,
+    /// For an Unassigned row that stands for part of a device: the
+    /// segments adding it claims. Empty for a row that is the whole
+    /// device.
+    pub segments: Vec<String>,
 }
 
 /// Group a zone's canonical members by `device_id`, one row per physical
@@ -86,6 +90,25 @@ pub fn device_rows_for_zone(zone: &ZoneResource, devices: &[DeviceMeta]) -> Vec<
     rows
 }
 
+/// The segments an assignment names.
+///
+/// `asked` is what the move itself names: one channel, or a screen on its
+/// own. When it names none the whole device is meant. To the daemon an
+/// assignment that names no segment means the device's lights and leaves
+/// a screen where it is, so a device with a screen is assigned by naming
+/// every segment in `all`, given as `(name, is a screen)`. A device
+/// without one keeps the short form.
+#[must_use]
+pub fn assignment_segments(asked: &[String], all: &[(&str, bool)]) -> Vec<String> {
+    if !asked.is_empty() {
+        return asked.to_vec();
+    }
+    if !all.iter().any(|(_, screen)| *screen) {
+        return Vec::new();
+    }
+    all.iter().map(|(name, _)| (*name).to_owned()).collect()
+}
+
 /// Order a zone's device rows for display: connected devices first, then
 /// case-insensitively by name, with offline (unresolved) rows sunk to the
 /// bottom. A stable sort so the pane reads in a predictable, repeatable
@@ -99,9 +122,11 @@ pub fn sort_device_rows(rows: &mut [ZoneDeviceRow]) {
     });
 }
 
-/// Rows for devices the scene places in no zone — the Unassigned group.
-/// Every registry device that has LEDs and has no member anywhere in the
-/// scene.
+/// Rows for what the scene places in no zone: the Unassigned group.
+/// Every registry device that has LEDs or a screen and has no member
+/// anywhere in the scene, and then every screen no zone places whose
+/// device has other outputs placed. That screen is a row of its own,
+/// since adding it must not move the lights that are already somewhere.
 #[must_use]
 pub fn unassigned_device_rows(
     zones: &[ZoneResource],
@@ -112,9 +137,9 @@ pub fn unassigned_device_rows(
         .flat_map(|zone| zone.members.iter())
         .map(|member| member.device_id.as_str())
         .collect();
-    devices
+    let whole = devices
         .iter()
-        .filter(|device| device.total_leds > 0)
+        .filter(|device| device.total_leds > 0 || !device.display_segments.is_empty())
         .filter(|device| !placed.contains(device.layout_device_id.as_str()))
         .map(|device| ZoneDeviceRow {
             device_id: device.layout_device_id.clone(),
@@ -122,8 +147,36 @@ pub fn unassigned_device_rows(
             led_count: device.total_leds,
             member_count: 0,
             resolved: true,
-        })
-        .collect()
+            segments: Vec::new(),
+        });
+    let screens = devices
+        .iter()
+        .filter(|device| placed.contains(device.layout_device_id.as_str()))
+        .filter_map(|device| {
+            let unplaced: Vec<String> = device
+                .display_segments
+                .iter()
+                .filter(|segment| {
+                    !zones
+                        .iter()
+                        .flat_map(|zone| zone.members.iter())
+                        .any(|member| {
+                            member.device_id == device.layout_device_id
+                                && member.segment.as_ref() == Some(*segment)
+                        })
+                })
+                .cloned()
+                .collect();
+            (!unplaced.is_empty()).then(|| ZoneDeviceRow {
+                device_id: device.layout_device_id.clone(),
+                name: device.name.clone(),
+                led_count: 0,
+                member_count: 0,
+                resolved: true,
+                segments: unplaced,
+            })
+        });
+    whole.chain(screens).collect()
 }
 
 /// Saved layout controllers absent from both the registry and scene tree.
@@ -182,5 +235,6 @@ fn resolve_row(device_id: &str, led_count: u32, devices: &[DeviceMeta]) -> ZoneD
         led_count,
         member_count: 1,
         resolved: meta.is_some(),
+        segments: Vec::new(),
     }
 }

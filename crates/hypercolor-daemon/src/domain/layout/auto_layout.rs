@@ -119,6 +119,100 @@ pub(super) fn append_auto_layout_zones_for_device(
     eligible_segments.len()
 }
 
+/// How much of the canvas a screen's box takes on its longer side when
+/// it is first given one.
+const SCREEN_OUTPUT_EXTENT: f32 = 0.2;
+
+/// Append one output per screen of a device: a box of the panel's own
+/// shape, centered on the device's outputs `layout` already holds, or on
+/// the canvas when it holds none. Returns how many were appended.
+///
+/// Automatic layout never calls this. A screen's box is where its backdrop
+/// is cropped from, so it joins a canvas only when someone assigns it.
+pub(super) fn append_screen_outputs_for_device(
+    layout: &mut SpatialLayout,
+    layout_device_id: &str,
+    device_info: &DeviceInfo,
+) -> usize {
+    let held: Vec<NormalizedPosition> = layout
+        .zones
+        .iter()
+        .filter(|output| output.device_id == layout_device_id)
+        .map(|output| output.position)
+        .collect();
+    let center = if held.is_empty() {
+        NormalizedPosition::new(0.5, 0.5)
+    } else {
+        let count = f32::from(u16::try_from(held.len()).unwrap_or(u16::MAX));
+        NormalizedPosition::new(
+            held.iter().map(|position| position.x).sum::<f32>() / count,
+            held.iter().map(|position| position.y).sum::<f32>() / count,
+        )
+    };
+    let lights = device_info
+        .segments
+        .iter()
+        .filter(|segment| !matches!(segment.topology, DeviceTopologyHint::Display { .. }))
+        .count();
+    let canvas = (
+        f64::from(layout.canvas_width.max(1)),
+        f64::from(layout.canvas_height.max(1)),
+    );
+    let mut appended = 0;
+    for segment in &device_info.segments {
+        let DeviceTopologyHint::Display { width, height, .. } = segment.topology else {
+            continue;
+        };
+        // The panel's shape in canvas pixels, fitted to the box a screen
+        // arrives in, then back to the canvas's own units.
+        let panel = (f64::from(width.max(1)), f64::from(height.max(1)));
+        let extent = f64::from(SCREEN_OUTPUT_EXTENT);
+        let fit = (extent * canvas.0 / panel.0).min(extent * canvas.1 / panel.1);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a fraction of the canvas, at most the arrival extent"
+        )]
+        let size = NormalizedPosition::new(
+            (panel.0 * fit / canvas.0) as f32,
+            (panel.1 * fit / canvas.1) as f32,
+        );
+        let name = if lights == 0 {
+            device_info.name.clone()
+        } else {
+            format!("{}: {}", device_info.name, segment.name)
+        };
+        layout.zones.push(Output {
+            id: unique_auto_zone_id(layout, layout_device_id, &segment.name),
+            name,
+            device_id: layout_device_id.to_owned(),
+            zone_name: Some(segment.name.clone()),
+            position: center,
+            size,
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            // A screen has no LEDs to sample: one cell stands for the panel.
+            topology: LedTopology::Matrix {
+                width: 1,
+                height: 1,
+                serpentine: false,
+                start_corner: Corner::TopLeft,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: auto_layout_shape(&segment.topology),
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        });
+        appended += 1;
+    }
+    appended
+}
+
 #[must_use]
 pub(super) fn reconcile_auto_layout_zones_for_device(
     layout: &mut SpatialLayout,
@@ -430,7 +524,7 @@ mod tests {
 
     use super::{
         adopt_primary_zone_outputs, append_auto_layout_zones_for_device,
-        reconcile_auto_layout_zones_for_device,
+        append_screen_outputs_for_device, reconcile_auto_layout_zones_for_device,
     };
     use hypercolor_types::scene::{Zone, ZoneRole};
 
@@ -525,6 +619,73 @@ mod tests {
             0
         );
         assert!(layout.zones.is_empty());
+    }
+
+    #[test]
+    fn a_screen_gets_a_box_only_when_it_is_asked_for() {
+        // Automatic layout leaves a screen off the canvas. An assignment
+        // is someone placing it, and mints a box of the panel's shape.
+        let panel = segment(
+            "Display",
+            0,
+            DeviceTopologyHint::Display {
+                width: 960,
+                height: 160,
+                circular: false,
+                format: DisplayFrameFormat::Jpeg,
+            },
+        );
+        let info = device(vec![
+            segment("Ring", 12, DeviceTopologyHint::Ring { count: 12 }),
+            panel,
+        ]);
+        let mut layout = layout();
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:pump", &info),
+            1
+        );
+        let ring = layout.zones[0].position;
+
+        assert_eq!(
+            append_screen_outputs_for_device(&mut layout, "usb:pump", &info),
+            1
+        );
+        let screen = &layout.zones[1];
+        assert_eq!(screen.zone_name.as_deref(), Some("Display"));
+        assert_eq!(screen.device_id, "usb:pump");
+        assert!(screen.name.ends_with(": Display"));
+        // It sits on the device's lights, six times as wide as tall on
+        // the canvas whatever the canvas's own shape.
+        assert_eq!(screen.position, ring);
+        let width = screen.size.x * f32::from(u16::try_from(layout.canvas_width).expect("fits"));
+        let height = screen.size.y * f32::from(u16::try_from(layout.canvas_height).expect("fits"));
+        assert!(
+            (width / height - 6.0).abs() < 0.01,
+            "aspect was {}",
+            width / height
+        );
+        assert!(screen.led_positions.is_empty());
+        assert_ne!(screen.id, layout.zones[0].id);
+
+        // A device that is a screen and nothing else takes the device's
+        // name and the middle of the canvas.
+        let lone = device(vec![segment(
+            "Display",
+            0,
+            DeviceTopologyHint::Display {
+                width: 320,
+                height: 320,
+                circular: true,
+                format: DisplayFrameFormat::Jpeg,
+            },
+        )]);
+        let mut empty = self::layout();
+        assert_eq!(
+            append_screen_outputs_for_device(&mut empty, "usb:lcd", &lone),
+            1
+        );
+        assert_eq!(empty.zones[0].name, lone.name);
+        assert_eq!(empty.zones[0].position, NormalizedPosition::new(0.5, 0.5));
     }
 
     #[test]

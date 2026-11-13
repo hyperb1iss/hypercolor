@@ -26,6 +26,11 @@ pub use hypercolor_types::api::scene::{CreateLayerRequest, ReplaceLayerRequest};
 /// some of a zone's outputs.
 pub const LAYER_SCOPE_CAPABILITY: &str = "layer-scope";
 
+/// The capability a daemon advertises once a layer limited to screens is
+/// those screens' own: drawn on each panel at the panel's size, from the
+/// stack of the zone that places them.
+pub const SCREEN_LAYERS_CAPABILITY: &str = "screen-layers";
+
 /// Whether a replace names the layer's scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeField {

@@ -11,7 +11,9 @@
 use std::collections::VecDeque;
 
 use super::placement::{self, Footprint};
+use super::screen_model::{ScreenMove, followed_layout_step};
 pub(crate) use crate::api::Fence;
+use crate::components::layer_panel::scope::is_screen_output;
 use crate::components::layout_builder::{keyed, writer};
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
@@ -20,7 +22,7 @@ use hypercolor_types::api::scene::{
 };
 use hypercolor_types::layer::{LayerScope, SceneLayerId};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior};
-use hypercolor_types::spatial::NormalizedPosition;
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout};
 use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
 
@@ -33,11 +35,13 @@ pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 
 mod announce;
 mod held;
+mod layers;
 mod zones;
 
 pub use announce::{DeviceLookup, ZoneLookup, carried_announcement, replay_announcement};
 
 pub use held::{members_landed, resolve_deletion, settles_by_key};
+pub use layers::{AddOutcome, AddedLayer, LayerAdd, recreate_request};
 pub use zones::{
     DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
 };
@@ -85,6 +89,12 @@ pub enum StudioEdit {
         name: String,
         before: Option<LayerScope>,
         after: Option<LayerScope>,
+    },
+    /// Layers added together: one face on the screens of several zones is
+    /// one layer in each. `name` is what was added, for the announcement.
+    LayersAdded {
+        name: String,
+        layers: Vec<AddedLayer>,
     },
     /// A zone Studio made, with the move that filled it as it was made:
     /// the outputs that went in, and the scoped layers the daemon carried
@@ -134,6 +144,7 @@ fn carried_layers(edit: &StudioEdit) -> &[LayerMove] {
         }
         StudioEdit::Layout { .. }
         | StudioEdit::LayerScope { .. }
+        | StudioEdit::LayersAdded { .. }
         | StudioEdit::ZonePatched { .. }
         | StudioEdit::ZoneDeleted(_)
         | StudioEdit::Unresolved { .. } => &[],
@@ -303,6 +314,11 @@ impl StudioJournal {
                         record.zone_id.clone_from(&new_key);
                     }
                 }
+                StudioEdit::LayersAdded { layers, .. } => {
+                    for added in layers.iter_mut().filter(|added| added.zone_id == old) {
+                        added.zone_id.clone_from(&new_key);
+                    }
+                }
                 StudioEdit::Unresolved { .. } => {}
             }
         }
@@ -333,6 +349,17 @@ impl StudioJournal {
                         named.push((index, None));
                     }
                 }
+                // An added layer is only there to rename while its step
+                // is applied.
+                StudioEdit::LayersAdded { layers, .. } if index < self.cursor => {
+                    for (place, added) in layers.iter().enumerate() {
+                        if added.layer.id == old
+                            && self.zone_now(index, added.zone_id.clone(), old) == zone_id
+                        {
+                            named.push((index, Some(place)));
+                        }
+                    }
+                }
                 edit => {
                     for (place, moved) in carried_layers(edit).iter().enumerate() {
                         // An applied move left its layer where it ends;
@@ -355,6 +382,11 @@ impl StudioJournal {
         for (index, place) in named {
             match (&mut self.entries[index].edit, place) {
                 (StudioEdit::LayerScope { layer_id, .. }, None) => *layer_id = new,
+                (StudioEdit::LayersAdded { layers, .. }, Some(place)) => {
+                    if let Some(added) = layers.get_mut(place) {
+                        added.layer.id = new;
+                    }
+                }
                 (
                     StudioEdit::Members { layer_moves, .. }
                     | StudioEdit::ZoneCreated { layer_moves, .. },
@@ -536,6 +568,12 @@ enum Waiting {
         name: String,
         scope: Option<LayerScope>,
     },
+    /// Layers to create as one step called `name`.
+    AddLayers {
+        name: String,
+        adds: Vec<LayerAdd>,
+        done: Callback<layers::AddOutcome>,
+    },
     /// The rest of the undo or redo `item` held, now its first write is
     /// known to have landed: `did` is the entry that undoes what that
     /// write did.
@@ -556,6 +594,7 @@ impl Waiting {
                 | Self::PatchZone { .. }
                 | Self::DeleteZone { .. }
                 | Self::LayerScope { .. }
+                | Self::AddLayers { .. }
         )
     }
 
@@ -570,6 +609,7 @@ impl Waiting {
             | Self::UndoDeletion(_)
             | Self::UnassignedBehavior(_)
             | Self::LayerScope { .. }
+            | Self::AddLayers { .. }
             | Self::Resume { .. } => {}
         }
     }
@@ -1040,6 +1080,7 @@ impl StudioHistory {
                 name,
                 scope,
             } => self.set_layer_scope_now(zone_id, layer_id, name, scope),
+            Waiting::AddLayers { name, adds, done } => self.add_layers_now(name, adds, done),
             Waiting::Resume { item, did } => self.resume_now(*item, did),
         }
     }
@@ -1622,11 +1663,134 @@ impl StudioHistory {
                 }
             }
         }
+        if let Some(revision) = self.teach_followed_layout(generation, &changes).await {
+            landed = revision;
+        }
+        // Those requests take time, and a scene switched to meanwhile has
+        // a journal of its own that this step is no part of.
+        if !self.is_current(generation) {
+            return Sent::Superseded;
+        }
         Sent::Landed {
             changes,
             layer_moves,
             revision: landed,
         }
+    }
+
+    /// Tell the rig's layout about the screens a membership write placed
+    /// in, or took out of, a zone that takes its outputs from that layout
+    /// (see [`followed_layout_step`]). Answers the revision the scene
+    /// stands at afterwards when anything was written.
+    async fn teach_followed_layout(self, generation: u64, changes: &[MemberEdit]) -> Option<u64> {
+        let scene = self.current_scene()?;
+        let moves = changes
+            .iter()
+            .filter_map(|change| {
+                let output = &change.after.as_ref().or(change.before.as_ref())?.output;
+                is_screen_output(output).then(|| ScreenMove {
+                    output_id: output.id.clone(),
+                    from: change.before.as_ref().map(|state| state.zone_id),
+                    to: change.after.as_ref().map(|state| state.zone_id),
+                })
+            })
+            .collect::<Vec<_>>();
+        let step = followed_layout_step(&scene.zones, &moves);
+        if step.is_empty() {
+            return None;
+        }
+        let mut wrote = false;
+        if let Some(zone) = step
+            .save
+            .and_then(|zone_id| scene.zones.iter().find(|zone| zone.id == zone_id))
+        {
+            let zone_id = zone.id.to_string();
+            // The layout route stores each member's placement and nothing
+            // else.
+            let layout = SpatialLayout {
+                id: zone_id.clone(),
+                name: String::new(),
+                description: None,
+                canvas_width: 1,
+                canvas_height: 1,
+                zones: api::zone_outputs(zone),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                version: 1,
+            };
+            let fence = Fence::of(&scene);
+            let key = keyed::new_key();
+            let saved = written(&fence, key.clone(), || {
+                api::zones::update_zone_layout(&zone_id, &layout, &fence, &key)
+            })
+            .await;
+            if matches!(
+                saved,
+                Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_)))
+            ) {
+                wrote = true;
+            } else {
+                toasts::toast_info(
+                    "The screen is placed, but may not stay after a scene switch. Move it once to save it.",
+                );
+            }
+        }
+        if !step.forget.is_empty() && self.forget_in_layout(&step.forget).await {
+            wrote = true;
+        }
+        if !wrote || !self.is_current(generation) {
+            return None;
+        }
+        self.resync(generation).await;
+        self.current_scene().map(|scene| scene.revision)
+    }
+
+    /// Take `outputs` out of the rig's layout, stored and live. The
+    /// layout's own route edits what is stored, and applying it is what
+    /// makes that live, so the zone that follows it is rebuilt without
+    /// them. Answers whether the layout changed.
+    async fn forget_in_layout(self, outputs: &[String]) -> bool {
+        let failed = || {
+            toasts::toast_info("The screen is unassigned, but may come back after a scene switch.");
+            false
+        };
+        let Ok(active) = api::fetch_active_layout().await else {
+            return failed();
+        };
+        let live = active
+            .zones
+            .iter()
+            .any(|output| outputs.contains(&output.id));
+        let Ok(stored) = api::layouts::fetch_layout(&active.id).await else {
+            // A layout that was never stored has nothing to edit.
+            return if live { failed() } else { false };
+        };
+        let kept = stored
+            .zones
+            .iter()
+            .filter(|output| !outputs.contains(&output.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let held = kept.len() != stored.zones.len();
+        if !held && !live {
+            return false;
+        }
+        if held {
+            let request = api::layouts::UpdateLayoutRequest {
+                zones: Some(kept),
+                ..Default::default()
+            };
+            if api::layouts::update_layout(&active.id, &request)
+                .await
+                .is_err()
+            {
+                return failed();
+            }
+        }
+        if api::layouts::apply_layout(&active.id).await.is_err() {
+            return failed();
+        }
+        true
     }
 
     /// Read the live scene after a stale reply, so the next operation does
@@ -1776,6 +1940,9 @@ impl StudioHistory {
                 before,
                 after,
             } => self.replay_layer_scope(id, redo, zone_id, layer_id, name, before, after),
+            StudioEdit::LayersAdded { name, layers } => {
+                self.replay_layers_added(id, redo, name, layers);
+            }
             StudioEdit::ZoneCreated {
                 zone_id,
                 name,
@@ -1861,7 +2028,12 @@ impl StudioHistory {
                         };
                         self.journal.update(|j| j.settle(id, settled));
                         self.announce_replay();
+                        let landed = response.changes.clone();
                         self.accept(response, through);
+                        self.teach_followed_layout(generation, &landed).await;
+                        if !self.is_current(generation) {
+                            return;
+                        }
                         toasts::toast_success(if redo {
                             "Assignment redone and saved"
                         } else {

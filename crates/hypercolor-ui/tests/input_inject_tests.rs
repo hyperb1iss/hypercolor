@@ -20,7 +20,7 @@ use hypercolor_ui::ws::{
     InteractivePreviewRequest,
 };
 use hypercolor_ui::zones::ZoneEffectState;
-use hypercolor_ui::zones::surface::{Surface, SurfaceKind};
+use hypercolor_ui::zones::surface::Surface;
 
 fn summary(input_reactive: bool, category: EffectCategory, tags: &[&str]) -> EffectSummary {
     EffectSummary {
@@ -492,11 +492,9 @@ fn zone_state(zone_id: &str, effect_id: Option<&str>) -> ZoneEffectState {
         zone: Surface {
             id: zone_id.to_owned(),
             name: zone_id.to_owned(),
-            kind: SurfaceKind::Light,
             enabled: true,
             role: ZoneRole::Custom,
             color: None,
-            display_device_id: None,
             layer_ids: Vec::new(),
             top_layer: None,
         },

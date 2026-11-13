@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::components::layer_panel::scope::{is_screen_output, selection_count_words};
 use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -52,14 +53,26 @@ pub(super) fn CompoundZoneProperties(
     let scale_factor = compound_scale_factor.get_untracked();
     let rotation_gesture = StoredValue::new(None::<(SpatialLayout, f32, Vec<Output>)>);
 
-    let depth_label = {
+    let screens = layout.with_untracked(|layout| {
+        layout.as_ref().map_or(0, |layout| {
+            layout
+                .zones
+                .iter()
+                .filter(|output| ids.contains(&output.id) && is_screen_output(output))
+                .count()
+        })
+    });
+    let title = selection_count_words(count, screens);
+    // How deep the selection reaches into a device's parts, which a
+    // selection of screens alone has none of.
+    let depth_label = (screens < count).then(|| {
         let depth = compound_depth.get_untracked();
         match depth {
             CompoundDepth::Root => "Device".to_string(),
             CompoundDepth::Device { .. } => "Slot".to_string(),
             CompoundDepth::Slot { ref slot_id, .. } => slot_id.clone(),
         }
-    };
+    });
 
     let ids_pos_x = ids.clone();
     let ids_pos_y = ids.clone();
@@ -87,10 +100,12 @@ pub(super) fn CompoundZoneProperties(
     view! {
         <div class="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
             <div class="flex min-w-0 grow basis-28 items-baseline gap-2">
-                <span class="shrink-0 text-sm font-medium tabular-nums text-fg-primary">
-                    {format!("{count} outputs")}
+                <span class="shrink-0 text-sm font-medium tabular-nums text-fg-primary" data-selection-title="">
+                    {title}
                 </span>
-                <span class="min-w-0 truncate text-xs text-fg-tertiary">{depth_label}</span>
+                {depth_label.map(|label| view! {
+                    <span class="min-w-0 truncate text-xs text-fg-tertiary">{label}</span>
+                })}
             </div>
 
                 <div

@@ -2063,6 +2063,117 @@ one tap away (`pages/studio/phone_view.rs:1-7`).
 - Hover highlights have no touch twin; the checklist and the "Showing" header
   carry the same information.
 
+### 7.7 As built in W6
+
+Where the build differs from the text above.
+
+**One path serves every daemon, so the tab is gone outright.** Where a
+screen's layers live is resolved by one rule in the UI
+(`pages/studio/screen_model.rs`, `placed_screens`): in the zone that places
+the screen when its `display` zone carries `view_of`, in that `display` zone
+itself when it does not. The second case is the legacy spelling of §6.6, and
+it is also every screen on a daemon without `screen-layers`. Studio writes
+such a stack through the stored zone's layer routes and reads the bottom
+row's blend and amount from its `display_target`, written through
+`PATCH /displays/{id}/face/composition`. So the Screens tab was not kept
+behind the capability: the legacy path the spec already requires is the
+older-daemon path. `screen-layers` gates only what needs a scoped screen
+layer: a screen in the target editor and in canvas picking, and one layer on
+several screens.
+
+**The zone's own list leaves screen layers out.** They are no part of the
+zone's canvas, and their place among its layers means nothing (§6.3). With no
+screen selected the composition panel lists the zone's canvas layers, and
+leads with "On screens": one line per face, naming its screens, which selects
+them. The zone's caption, the sidebar, and the phone's "Also playing" leave
+screen layers out for the same reason.
+
+**"Add to all screens" is offered whenever the scene places a screen beyond
+the ones selected**, not only when screens sit in more than one zone. The
+picker shows "Add to" with the selection and "All screens", and says what the
+second reaches before anything is picked ("4 screens in Main and Desk. Spare
+panel is in no zone and is skipped."), which stands in for a confirmation
+dialog. Every add made from a selection of screens goes through Studio's
+journal as one step, one screen or five.
+
+**"Copy to every scene" is a button on the row**, since the menu it would sit
+in had one item. It reads every saved scene that is not locked, counts the
+ones that place the layer's screens, and asks once. A scene that still stores
+a display zone for the screen takes the copy as that zone's one layer, with
+the copy's blend and amount as the zone's target, so it converts on its next
+activation. A scene that places the screen nowhere is not counted.
+
+**Selecting a screen does not open the panel.** The chip and the properties
+bar's "Face settings" do, so arranging boxes on a canvas the panel overlays
+is not interrupted. The hour format is two clicks from the box.
+
+**A saved face's name on a card is read from the display.** The scene does
+not hold it, so Studio reads `GET /displays/{id}/face` for the screens the
+scene gives nothing, again on structural scene events.
+
+**Layer health** is read under the view of each selected screen a layer is
+on, least healthy first, as §6.8 left it. The daemon was not changed.
+
+**The zone's effect** is `hypercolor_types::layer::zone_effect_layer`
+everywhere in the UI; the UI's own rule, which fell back to a limited layer,
+is deleted.
+
+**A screen is placed by naming its segment, and the daemon mints its box.**
+Automatic layout still leaves screens off the canvas. A member assignment
+(`POST /scene/members/edit` with `assignment`) that names a screen's segment
+is someone placing it, so it mints one output for that screen: the panel's
+shape fitted to a fifth of the canvas, centered on the device's lights where
+the zone holds them. An assignment that names no segment means the device's
+lights, as it did before this spec, so no existing client gains a screen it
+did not ask for. Studio names every segment when "+" adds a device that has a
+screen, and a device whose lights are placed while its screen is not shows the
+screen in Unassigned as a row of its own. A screen no zone places keeps
+rendering the face stored under its view id (§6.6), so its card names that
+face, and placing it brings the face along as its layer.
+
+**A screen no zone places is edited where it is.** Its card opens the
+composition panel on the stored zone that holds its stack, read and written
+through that zone's layer routes. The panel names no "Behind it" group and no
+row is how the stack meets a canvas, since none is behind it. "Place on
+canvas" adds it to the open zone, and the box is selected where it lands. The
+phone summary lists these screens under "Unassigned".
+
+**Removing a row removes it from the screens shown.** A face on three
+screens, removed with one selected, is limited to the other two as one
+undoable change of target. The layer is deleted only when every screen it is
+on is selected. Removing a face saved with the screen asks first, since it
+goes from every scene and cannot be undone.
+
+**A zone that follows the rig's layout tells that layout about its screens.**
+A scene with one zone of lights rebuilds that zone from the active layout on
+every scene switch, effect change, and restart, so a screen placed only in
+the zone was gone at the next one. After a membership write lands a screen in
+such a zone Studio saves the zone's layout (`PUT /scene/zones/{id}/layout`),
+which carries an output neither layout knows into both. After one takes a
+screen out, Studio removes the output from the stored layout and applies it,
+since the followed layout never loses an output on its own. Both run inside
+the journal's operation, for undo and redo too. Applying brings any other
+stored edit to that layout live with it.
+
+**A screen's row leads with the face's settings.** How the layer blends
+(mode, amount, and the looks) sits under them in a disclosure that starts
+closed and names what it holds: "Blend with what is behind", then the mode
+and amount. One screen and several read the same way.
+
+**A saved face shared by several selected screens gets one row.** Studio
+reads the face of every selected screen. When each shows a saved face, the
+same one with the same settings, the row stands for all of them and writes to
+each. When the faces or their settings differ, or only some screens show a
+saved face, one line says so, names the screens it means, and points at a
+single screen.
+
+**On a phone** a screen's sheet says which screens each layer is on, as a
+chip that cannot be opened: there is no canvas to choose other screens on,
+and a change to a layer shared with other screens changes those too, so the
+row has to say so. "Copy to every scene" stays off the phone. It runs through
+Studio's journal, which the phone summary does not have, and it asks for a
+confirmation that has no room in the sheet.
+
 ---
 
 ## 8. Delivery waves

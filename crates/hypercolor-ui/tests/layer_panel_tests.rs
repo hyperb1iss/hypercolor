@@ -11,18 +11,16 @@ use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{
     BlendMode, LayerAdjust, LayerScope, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
-use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use hypercolor_types::control::ControlValue;
 use hypercolor_ui::api::{ScopeField, scope_request, update_request_from_layer};
 use hypercolor_ui::components::layer_panel::row::{layer_title, source_meta};
 use hypercolor_ui::components::layer_panel::source::{
-    AddLayerScope, EffectPickerMode, LayerSourceKind, add_layer_request,
-    available_add_layer_scopes, blend_options, blend_value, default_blend_for_added_layer,
-    effect_category_label, effect_layer_source, effect_picker_matches_query, effect_picker_mode,
-    fit_options, fit_value, media_layer_source, parse_blend, parse_fit,
-    remembered_effect_layer_source, resolve_add_layer_targets,
+    EffectPickerMode, LayerSourceKind, add_layer_request, blend_options, blend_value,
+    default_blend_for_added_layer, effect_category_label, effect_layer_source,
+    effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, media_layer_source,
+    parse_blend, parse_fit, remembered_effect_layer_source,
 };
 use hypercolor_ui::preferences::EffectPreferences;
 
@@ -182,23 +180,9 @@ fn picker_exposes_only_effect_and_media_sources() {
 }
 
 #[test]
-fn effect_picker_mode_tracks_surface_and_scope() {
-    assert_eq!(
-        effect_picker_mode(AddLayerScope::ThisSurface, Some(ZoneRole::Display)),
-        EffectPickerMode::Faces
-    );
-    assert_eq!(
-        effect_picker_mode(AddLayerScope::ThisSurface, Some(ZoneRole::Primary)),
-        EffectPickerMode::Effects
-    );
-    assert_eq!(
-        effect_picker_mode(AddLayerScope::AllScreens, Some(ZoneRole::Primary)),
-        EffectPickerMode::Faces
-    );
-    assert_eq!(
-        effect_picker_mode(AddLayerScope::ThisSurface, None),
-        EffectPickerMode::Effects
-    );
+fn the_picker_offers_faces_only_when_screens_are_all_a_layer_plays_on() {
+    assert_eq!(effect_picker_mode(true), EffectPickerMode::Faces);
+    assert_eq!(effect_picker_mode(false), EffectPickerMode::Effects);
 
     assert_eq!(EffectPickerMode::Faces.tab_label(), "Face");
     assert_eq!(EffectPickerMode::Effects.tab_label(), "Effect");
@@ -513,82 +497,4 @@ fn layer_with_source(source: LayerSource, name: Option<&str>) -> SceneLayer {
         enabled: true,
         scope: None,
     }
-}
-
-// ── Add-layer target scope (§6.6) ───────────────────────────────────────
-
-fn zone_resource(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource {
-    hypercolor_ui::api::ZoneResource {
-        id: ZoneId::new(),
-        name: name.to_owned(),
-        description: None,
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: None,
-        role,
-        members: Vec::new(),
-        layout: None,
-        layers: Vec::new(),
-        view_of: None,
-    }
-}
-
-#[test]
-fn an_led_zone_adds_to_itself_alone() {
-    let zones = [
-        zone_resource("Zone A", ZoneRole::Primary),
-        zone_resource("Zone B", ZoneRole::Custom),
-        zone_resource("AIO Screen", ZoneRole::Display),
-        zone_resource("Fan Screen", ZoneRole::Display),
-    ];
-    assert!(available_add_layer_scopes(&zones, Some(ZoneRole::Primary)).is_empty());
-    assert!(available_add_layer_scopes(&zones, Some(ZoneRole::Custom)).is_empty());
-    assert!(available_add_layer_scopes(&zones, None).is_empty());
-}
-
-#[test]
-fn a_screen_can_add_to_every_screen() {
-    let zones = [
-        zone_resource("Zone A", ZoneRole::Primary),
-        zone_resource("AIO Screen", ZoneRole::Display),
-        zone_resource("Fan Screen", ZoneRole::Display),
-    ];
-    let scopes = available_add_layer_scopes(&zones, Some(ZoneRole::Display));
-    assert_eq!(
-        scopes,
-        [AddLayerScope::ThisSurface, AddLayerScope::AllScreens]
-    );
-    assert_eq!(
-        scopes.iter().map(|scope| scope.label()).collect::<Vec<_>>(),
-        ["This screen", "All screens"]
-    );
-}
-
-#[test]
-fn a_lone_screen_offers_no_choice() {
-    let zones = [
-        zone_resource("Zone A", ZoneRole::Primary),
-        zone_resource("AIO Screen", ZoneRole::Display),
-    ];
-    assert!(available_add_layer_scopes(&zones, Some(ZoneRole::Display)).is_empty());
-}
-
-#[test]
-fn scope_resolution_picks_the_right_surfaces() {
-    let zones = [
-        zone_resource("Zone A", ZoneRole::Primary),
-        zone_resource("Zone B", ZoneRole::Custom),
-        zone_resource("AIO Screen", ZoneRole::Display),
-    ];
-    let selected = zones[0].id.to_string();
-
-    assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::ThisSurface, &zones, &selected),
-        vec![selected.clone()]
-    );
-    assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::AllScreens, &zones, &selected),
-        [zones[2].id.to_string()]
-    );
 }

@@ -7,7 +7,6 @@
 //! `Escape`.
 
 use hypercolor_leptos_ext::events::target_is_text_entry;
-use hypercolor_types::scene::ZoneRole;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -19,9 +18,7 @@ use crate::components::zone_tabs::ZoneDot;
 use crate::icons::*;
 
 use super::StudioContext;
-use super::face_composition::{DefaultFaceCard, ScreenCompositionSection};
 use super::layer_target::ShowingStrip;
-use super::surface::selected_screen_device_id;
 
 pub(super) const COMPOSITION_PANEL_ID: &str = "studio-composition-panel";
 pub(super) const COMPOSITION_TRIGGER_ID: &str = "studio-composition-trigger";
@@ -79,35 +76,18 @@ pub fn CompositionPanel(
         open.set(false);
     };
 
-    // A Screen surface's backing display device — present only while the
-    // selection is a display-role zone with a bound target. Drives the
-    // face-composition section above the layer stack.
-    let screen_device_id = Memo::new(move |_| {
-        let selected = selected_zone_id.get()?;
-        let scene = active_scene.get()?;
-        selected_screen_device_id(&scene.zones, &selected)
+    // The chip that opens the panel calls a selection of screens their
+    // face settings and a zone's stack its layers; the header says the
+    // same, and names the screens in place of the zone.
+    let screen_title = Memo::new(move |_| {
+        studio
+            .screens
+            .panel
+            .with(|panel| panel.as_ref().map(|panel| panel.title.clone()))
     });
+    let is_screen = Memo::new(move |_| screen_title.with(Option::is_some));
 
-    // The chip that opens the panel calls a Screen's stack its face
-    // settings and a zone's its layers; the header says the same.
-    let is_screen = Memo::new(move |_| {
-        let selected = selected_zone_id.get();
-        active_scene.with(|scene| {
-            scene
-                .as_ref()
-                .zip(selected.as_ref())
-                .and_then(|(scene, selected)| {
-                    scene
-                        .zones
-                        .iter()
-                        .find(|zone| zone.id.to_string() == *selected)
-                })
-                .is_some_and(|zone| zone.role == ZoneRole::Display)
-        })
-    });
-
-    // The zone's identity color, for the dot beside its name. A Screen
-    // has none.
+    // The zone's identity color, for the dot beside its name.
     let zone_color = Memo::new(move |_| {
         let selected = selected_zone_id.get()?;
         active_scene.with(|scene| {
@@ -120,6 +100,7 @@ pub fn CompositionPanel(
         })
     });
     let layer_targets = studio.targets.host(studio);
+    let screen_host = studio.screens.host(studio);
 
     // Escape closes the panel while it is open, unless a text field owns
     // the key (a rename in the rail cancels with Escape too) or a target
@@ -175,12 +156,19 @@ pub fn CompositionPanel(
                     <span class="shrink-0 border border-transparent py-1.5 text-[12px] font-semibold leading-normal text-fg-primary">
                         {move || if is_screen.get() { "Face settings" } else { "Layers" }}
                     </span>
-                    {move || surface_label.get().map(|name| view! {
+                    {move || screen_title.get().or_else(|| surface_label.get()).map(|name| view! {
                         <span class="flex min-w-0 items-center gap-1.5 border-l border-edge-subtle pl-2 text-[12px] font-normal leading-normal text-fg-tertiary">
-                            <Show when=move || !is_screen.get()>
+                            <Show
+                                when=move || !is_screen.get()
+                                fallback=|| view! {
+                                    <span class="flex shrink-0">
+                                        <Icon icon=LuMonitor width="12px" height="12px" />
+                                    </span>
+                                }
+                            >
                                 <ZoneDot color=zone_color />
                             </Show>
-                            <span class="truncate">{name}</span>
+                            <span class="truncate" data-composition-subject="">{name}</span>
                         </span>
                     })}
                 </h2>
@@ -196,11 +184,6 @@ pub fn CompositionPanel(
             </div>
             <ShowingStrip />
             <div class="scrollbar-none min-h-0 flex-1 overflow-y-auto px-4 pb-6">
-                <DefaultFaceCard
-                    display_device_id=screen_device_id
-                    on_layers_mutated=on_layers_mutated
-                />
-                <ScreenCompositionSection display_device_id=screen_device_id />
                 <LayerPanel
                     active_scene=active_scene
                     selected_zone_id=selected_zone_id
@@ -209,6 +192,7 @@ pub fn CompositionPanel(
                     layers_resource=layers_resource
                     on_layers_mutated=on_layers_mutated
                     targets=layer_targets
+                    screens=screen_host
                 />
             </div>
         </aside>

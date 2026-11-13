@@ -32,10 +32,7 @@ The second row holds one tab per LED zone, in the scene's zone order. Each tab s
 
 Hover a tab with a glyph for the reason; screen readers hear it as the tab's description, so the tab's name stays the zone's name. The selected tab carries the purple underline and the workspace's surface color, so it reads as joined to the pane and Stage below. Zone colors stay on the dots and never tint the tabs themselves.
 
-After the zone tabs come, in order:
-
-- A divider and a single **Screens** tab with the number of screens, whenever the scene drives display screens.
-- The **+** button, which makes a new zone and opens its tab with the name ready to type over. It appears when the daemon supports zone creation.
+After the zone tabs comes the **+** button, which makes a new zone and opens its tab with the name ready to type over. It appears when the daemon supports zone creation. Screens have no tab of their own: each one lives in the zone that places it.
 
 The selected tab also carries a **⋯** button that opens the zone's menu: **Rename**, **Color**, **Pause zone** or **Resume zone**, **Move left**, **Move right**, and **Delete zone**. Right-clicking any tab opens the same menu, and double-clicking a tab renames it in place. Dragging a tab along the strip reorders the zones. See [Zones](@/studio/zones.md) for every zone action.
 
@@ -94,11 +91,19 @@ The Stage header carries the now-playing chip on the left and three canvas actio
 
 There is no Save or Revert. A canvas edit commits when you release the drag or the slider, or when you press Enter in a property field or leave it. A device move commits when you make it.
 
-### The Screens tab: the live face
+### Screens on the canvas
 
-The Screens tab switches the pane to a list of the scene's screens, each with a live thumbnail of its face and its resolution. Screens with identical device names take the per-device label the canvas uses, such as `TL LCD 1` and `TL LCD 2`. Selecting a screen shows its live face on the Stage, with its resolution as `width×height` below the preview.
+A screen's box sits on the canvas of the zone that places it, among the lights, and shows the screen's live picture. Its card in the device pane names the face it shows under the screen's name. Screens with identical names are told apart by a number, such as `TL LCD 1` and `TL LCD 2`.
 
-The Stage header for a screen carries the now-playing chip, a **mounting** select that corrects a panel installed sideways or upside down, a **Preview** label, and a button that opens the face in a full-screen preview tab. Returning to the Screens tab reopens the screen you last had selected.
+Select a screen's box, or click its card, and three things change:
+
+- The chip at the left of the Stage header names the screen's face and reads **Face settings**. Click it to open the screen's layers, with the face's own settings first: a clock's hour format, a gauge's sensor.
+- A **Focus** button appears beside it. Focus fills the Stage with that one screen at full size, which is the easy way to see a round or very wide panel properly. Click it again to return to the canvas.
+- The properties bar under the canvas gains a **mounting** select that corrects a panel installed sideways or upside down, a **Preview** button that opens the live face full screen in a new tab, and its own **Face settings** button.
+
+Select several screens together and the same panel opens for all of them. A face they share is one row, and a change to it reaches every one of them.
+
+A screen that no zone has placed appears in the **Unassigned** section of the device pane. It still shows its face, with nothing behind it. Click its card to open that face and change its settings without placing the screen, or use **+** on the card, or **Place on canvas** in the panel, to add it to the open zone. The screen is selected where it lands, with the same face and the same settings.
 
 ### The degraded banner
 
@@ -106,7 +111,7 @@ When the open zone or screen has a layer that failed to render or is missing its
 
 ## The now-playing chip
 
-The now-playing chip lives at the left of the Stage header for every zone and screen. It names the top layer of the stack (the effect's own name when the layer has no name of its own), or **No layers** when the stack is empty. A screen showing its display's stored default face adds a **Default** badge.
+The now-playing chip lives at the left of the Stage header for every zone and screen. It names the top layer of the stack (the effect's own name when the layer has no name of its own), or **No layers** when the stack is empty. With a screen selected the chip names that screen's face instead and reads **Face settings**, or **+ Face** when the screen shows none.
 
 Clicking the chip toggles the composition slide-over. It is the way layer editing opens, which is what keeps the Stage uncluttered.
 

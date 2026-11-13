@@ -57,7 +57,7 @@ pub struct MovePayload {
     /// zone, whose outputs the daemon mints on arrival.
     pub outputs: Vec<String>,
     /// For a device in no zone: the segments to claim. Empty claims every
-    /// light segment.
+    /// segment the device has, its screens included.
     pub segments: Vec<String>,
     /// How many outputs move, for the ghost's count badge.
     pub count: usize,
@@ -85,10 +85,9 @@ impl MovePayload {
         }
     }
 
-    /// A whole device no zone claims, with `light_segments` outputs to
-    /// mint.
+    /// A whole device no zone claims, with `outputs` outputs to mint.
     #[must_use]
-    pub fn unassigned_device(device_id: &str, device_name: &str, light_segments: usize) -> Self {
+    pub fn unassigned_device(device_id: &str, device_name: &str, outputs: usize) -> Self {
         Self {
             device_id: device_id.to_owned(),
             device_name: device_name.to_owned(),
@@ -96,7 +95,29 @@ impl MovePayload {
             origin: Origin::Unassigned,
             outputs: Vec::new(),
             segments: Vec::new(),
-            count: light_segments,
+            count: outputs,
+            source: DragSource::Pane,
+        }
+    }
+
+    /// The named segments of a device that no zone claims, while others of
+    /// its segments sit in zones: a screen whose device's lights are
+    /// placed. `label` is what the part is called.
+    #[must_use]
+    pub fn unassigned_segments(
+        device_id: &str,
+        device_name: &str,
+        label: &str,
+        segments: Vec<String>,
+    ) -> Self {
+        Self {
+            device_id: device_id.to_owned(),
+            device_name: device_name.to_owned(),
+            label: label.to_owned(),
+            origin: Origin::Unassigned,
+            outputs: Vec::new(),
+            count: segments.len(),
+            segments,
             source: DragSource::Pane,
         }
     }

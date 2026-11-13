@@ -8,7 +8,7 @@ use hypercolor_ui::preview_zone::{
     PlayerTarget, player_target, preview_frame_owner, preview_zone_for, settled_preview_zone,
     shown_zone_state,
 };
-use hypercolor_ui::zones::surface::{Surface, SurfaceKind, target_zone};
+use hypercolor_ui::zones::surface::{Surface, target_zone};
 use hypercolor_ui::zones::{ZoneEffectState, scene_read_settles};
 
 fn zone(id: &str, role: ZoneRole, effect_id: &str) -> ZoneEffectState {
@@ -16,11 +16,9 @@ fn zone(id: &str, role: ZoneRole, effect_id: &str) -> ZoneEffectState {
         zone: Surface {
             id: id.to_owned(),
             name: id.to_owned(),
-            kind: SurfaceKind::Light,
             enabled: true,
             role,
             color: None,
-            display_device_id: None,
             layer_ids: vec![format!("{id}-layer")],
             top_layer: Some(effect_id.to_owned()),
         },
@@ -59,11 +57,11 @@ fn a_zone_picker_with_nothing_focused_shows_the_default_zone() {
 }
 
 #[test]
-fn a_removed_or_screen_selection_returns_the_preview_to_the_primary_zone() {
+fn a_removed_selection_returns_the_preview_to_the_primary_zone() {
+    // A screen's view is no zone of the scene's list, so a focus left on
+    // one is a focus on nothing, like a zone that was removed.
     let primary = zone("default", ZoneRole::Primary, "digital-rain");
-    let mut screen = zone("screen", ZoneRole::Display, "screen-effect");
-    screen.zone.kind = SurfaceKind::Screen;
-    let zones = [primary.zone, screen.zone];
+    let zones = [primary.zone];
     for focused in [Some("removed"), Some("screen"), None] {
         let target = target_zone(&zones, focused).map(|zone| zone.id.as_str());
         assert_eq!(

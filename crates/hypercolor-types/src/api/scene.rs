@@ -750,6 +750,7 @@ pub struct MemberAssignmentTarget {
     pub zone_id: ZoneId,
     pub device_id: String,
     /// Empty selects every light segment, including all attachment instances.
+    /// A screen is placed only by naming its segment.
     #[serde(default)]
     pub segments: Vec<String>,
     /// Optional seeded geometry for newly minted outputs, keyed by segment.

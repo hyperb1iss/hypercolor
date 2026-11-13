@@ -1224,7 +1224,12 @@ fn resolve_members(
 
     if request.segments.is_empty() {
         let candidates: Vec<Output> = if held.is_empty() {
+            // "The whole device" means its lights. A screen is placed
+            // only by naming its segment.
             minted
+                .into_iter()
+                .filter(|output| !hypercolor_core::spatial::is_display_zone(output))
+                .collect()
         } else {
             held.into_iter().cloned().collect()
         };
@@ -1271,8 +1276,9 @@ fn resolve_members(
         .collect()
 }
 
-/// Build the outputs a connected device would contribute, so a segment
-/// the scene has never held can still be assigned.
+/// Build the outputs a connected device would contribute, its screens
+/// among them, so a segment the scene has never held can still be
+/// assigned.
 ///
 /// A device that is not connected mints nothing; the caller then
 /// reports whichever segment it could not resolve.

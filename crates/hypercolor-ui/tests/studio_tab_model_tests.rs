@@ -1,16 +1,14 @@
 //! Contract tests for the Studio zone tab strip rules.
 
-use std::collections::HashMap;
-
 use hypercolor_types::api::scene::{ZoneMember, ZoneMemberId};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId, ZoneRole};
 
 use hypercolor_ui::api::{ApiError, ZoneResource};
 use hypercolor_ui::pages::studio::tab_model::{
-    DeleteBlock, ReorderTarget, ScreenName, deletable, delete_prompt, describe_zone_failure,
-    drag_target, drop_slot, fit_tab_count, full_zone_index, next_zone_name, nudge_target,
-    screen_label_map, screen_labels, split_overflow, zone_device_count, zone_move_index,
+    DeleteBlock, ReorderTarget, deletable, delete_prompt, describe_zone_failure, drag_target,
+    drop_slot, fit_tab_count, full_zone_index, next_zone_name, nudge_target, screen_labels,
+    split_overflow, zone_device_count, zone_move_index,
 };
 
 fn zone(name: &str, role: ZoneRole, devices: &[&str]) -> ZoneResource {
@@ -234,50 +232,29 @@ fn new_zones_take_the_first_free_default_name() {
 }
 
 #[test]
-fn repeated_screen_names_take_device_labels_or_ordinals() {
-    let named = |name: &str, label: Option<&str>| ScreenName {
-        name: name.to_owned(),
-        device_label: label.map(str::to_owned),
+fn repeated_screen_names_take_ordinals() {
+    let names = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
     };
-    let labels = screen_labels(&[
-        named("Ableton Push 2", Some("Ableton Push 2 \u{b7} Display")),
-        named("TL LCD", Some("TL LCD 1")),
-        named("TL LCD", Some("TL LCD 2")),
-        named("TL LCD", Some("TL LCD 3")),
-    ]);
     assert_eq!(
-        labels,
-        vec!["Ableton Push 2", "TL LCD 1", "TL LCD 2", "TL LCD 3"]
+        screen_labels(&names(&[
+            "Ableton Push 2",
+            "TL LCD",
+            "Pump LCD",
+            "TL LCD",
+            " TL LCD "
+        ])),
+        vec![
+            "Ableton Push 2",
+            "TL LCD 1",
+            "Pump LCD",
+            "TL LCD 2",
+            "TL LCD 3"
+        ]
     );
-
-    // A missing or duplicated label falls back to ordinals for the group.
-    let labels = screen_labels(&[
-        named("Pump LCD", Some("Pump")),
-        named("Pump LCD", None),
-        named("Ring", Some("Same")),
-        named("Ring", Some("Same")),
-    ]);
-    assert_eq!(labels, vec!["Pump LCD 1", "Pump LCD 2", "Ring 1", "Ring 2"]);
-}
-
-#[test]
-fn screen_label_map_reads_display_output_names_from_led_zones() {
-    let first = DeviceId::new();
-    let second = DeviceId::new();
-    let mut main = zone("Main", ZoneRole::Primary, &["lianli:lcd-a", "lianli:lcd-b"]);
-    main.members[0].name = "TL LCD 1".to_owned();
-    main.members[1].name = "TL LCD 2".to_owned();
-    let a = screen("Lian Li LCD", first);
-    let b = screen("Lian Li LCD", second);
-    let zones = vec![main, a.clone(), b.clone()];
-    let layout_ids = HashMap::from([
-        (first.to_string(), "lianli:lcd-a".to_owned()),
-        (second.to_string(), "lianli:lcd-b".to_owned()),
-    ]);
-    let labels = screen_label_map(&zones, &layout_ids);
-    assert_eq!(labels.len(), 2);
-    assert_eq!(labels[&a.id.to_string()], "TL LCD 1");
-    assert_eq!(labels[&b.id.to_string()], "TL LCD 2");
 }
 
 #[test]

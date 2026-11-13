@@ -459,10 +459,49 @@ fn assignment_changes(
         .iter()
         .map(|output| output.zone_name.clone())
         .collect();
+    // An assignment that names no segment means the device's lights, as it
+    // always has. A screen gets a box only when its segment is named, so
+    // no caller finds a screen placed, a face converted, and a backdrop
+    // cropped that it never asked for.
+    let asked = |output: &Output| {
+        !target.segments.is_empty() || !hypercolor_core::spatial::is_display_zone(output)
+    };
+    // A screen given no place of its own lands on its device's lights
+    // where this zone holds them, not where automatic layout would have
+    // put a device nobody had moved.
+    let lights: Vec<NormalizedPosition> = scene
+        .zones
+        .iter()
+        .filter(|zone| zone.id == target.zone_id)
+        .flat_map(|zone| zone.layout.zones.iter())
+        .filter(|output| {
+            output.device_id == target.device_id
+                && !hypercolor_core::spatial::is_display_zone(output)
+        })
+        .map(|output| output.position)
+        .collect();
+    let on_lights = (!lights.is_empty()).then(|| {
+        let count = f32::from(u16::try_from(lights.len()).unwrap_or(u16::MAX));
+        NormalizedPosition::new(
+            lights.iter().map(|position| position.x).sum::<f32>() / count,
+            lights.iter().map(|position| position.y).sum::<f32>() / count,
+        )
+    });
     outputs.extend(
         minted
             .into_iter()
-            .filter(|output| selected(output) && !held_segments.contains(&output.zone_name)),
+            .filter(|output| {
+                selected(output) && asked(output) && !held_segments.contains(&output.zone_name)
+            })
+            .map(|mut output| {
+                if let Some(center) = on_lights
+                    && hypercolor_core::spatial::is_display_zone(&output)
+                    && !hinted.contains(&output.zone_name)
+                {
+                    output.position = center;
+                }
+                output
+            }),
     );
     if outputs.is_empty() {
         return Err(DomainError::not_found(

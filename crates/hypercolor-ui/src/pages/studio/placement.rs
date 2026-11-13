@@ -625,7 +625,8 @@ pub fn fit_outputs(
     true
 }
 
-/// The segments of a device that carry LEDs, the ones an assignment mints.
+/// The segments of a device that carry LEDs, the ones an assignment
+/// seeds. A screen takes the place the daemon gives it, on its device.
 fn light_segments(device: &DeviceSummary) -> Vec<SegmentSummary> {
     device
         .segments

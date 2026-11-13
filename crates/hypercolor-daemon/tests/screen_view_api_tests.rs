@@ -802,6 +802,282 @@ async fn placing_a_screen_converts_its_stored_face_in_the_same_commit() {
     assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
 }
 
+impl Rig {
+    /// Assign a device, or the named segments of it, to the primary zone
+    /// through the member edit route, the way Studio's "+" does.
+    async fn assign(&self, device_id: &str, segments: &[&str]) -> (StatusCode, Value) {
+        let document = self.ok(Method::GET, "/api/v1/scene", None).await;
+        let primary = document["zones"]
+            .as_array()
+            .expect("zones")
+            .iter()
+            .find(|zone| zone["role"] == "primary")
+            .expect("the scene has a primary zone");
+        let request = json!({
+            "scene_id": document["id"],
+            "assignment": {
+                "zone_id": primary["id"],
+                "device_id": device_id,
+                "segments": segments,
+            },
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/scene/members/edit")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(
+                http::header::IF_MATCH,
+                format!("\"{}\"", document["revision"]),
+            )
+            .body(Body::from(request.to_string()))
+            .expect("request should build");
+        let response = self
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("request should run");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("failed to read response body");
+        (
+            status,
+            serde_json::from_slice(&bytes).expect("failed to parse JSON body"),
+        )
+    }
+
+    /// The screen outputs the primary zone holds for a device.
+    async fn placed_screens(&self, screen: &Screen) -> Vec<Output> {
+        self.primary()
+            .await
+            .layout
+            .zones
+            .into_iter()
+            .filter(|output| {
+                output.device_id == screen.layout_id
+                    && output.zone_name.as_deref() == Some(DISPLAY_ZONE_NAME)
+            })
+            .collect()
+    }
+
+    /// Save the primary zone's layout as it stands, the write Studio makes
+    /// when a gesture on the canvas ends.
+    async fn save_primary_layout(&self) {
+        let document = self.ok(Method::GET, "/api/v1/scene", None).await;
+        let primary = document["zones"]
+            .as_array()
+            .expect("zones")
+            .iter()
+            .find(|zone| zone["role"] == "primary")
+            .expect("the scene has a primary zone");
+        self.ok(
+            Method::PUT,
+            &format!(
+                "/api/v1/scene/zones/{}/layout",
+                primary["id"].as_str().expect("zone id")
+            ),
+            Some(json!({ "placements": primary["layout"]["placements"] })),
+        )
+        .await;
+    }
+
+    /// Take one output out of the active layout, as Studio does for a
+    /// screen that left a zone following that layout: the stored layout
+    /// loses the output, and applying it makes that live.
+    async fn forget_in_active_layout(&self, output_id: &str) {
+        let active = self.ok(Method::GET, "/api/v1/layouts/active", None).await;
+        let id = active["id"].as_str().expect("layout id");
+        let stored = self
+            .ok(Method::GET, &format!("/api/v1/layouts/{id}"), None)
+            .await;
+        let kept = stored["zones"]
+            .as_array()
+            .expect("the layout lists its outputs")
+            .iter()
+            .filter(|output| output["id"] != output_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.ok(
+            Method::PUT,
+            &format!("/api/v1/layouts/{id}"),
+            Some(json!({ "zones": kept })),
+        )
+        .await;
+        self.ok(Method::POST, &format!("/api/v1/layouts/{id}/apply"), None)
+            .await;
+    }
+
+    async fn put_scene_face(&self, screen: &Screen, face: EffectId) -> Vec<String> {
+        let written = self
+            .ok(
+                Method::PUT,
+                &format!("/api/v1/displays/{}/face", screen.device),
+                Some(json!({ "effect_id": face.to_string(), "scope": "scene" })),
+            )
+            .await;
+        layer_ids(&written["zone"])
+    }
+}
+
+#[tokio::test]
+async fn naming_a_screens_segment_places_it_with_its_face() {
+    // An assignment that names no segment means a device's lights, and a
+    // device that is only a screen has none: that answer has not changed.
+    // Naming the screen's segment is someone placing it. It gets a box of
+    // the panel's shape, and its stored face becomes a layer of the zone
+    // in the same commit.
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let stored_layers = rig.put_scene_face(&screen, face).await;
+    assert!(rig.placed_screens(&screen).await.is_empty());
+    let revision = rig.state.scene_manager.revision();
+
+    let (status, _) = rig.assign(&screen.layout_id, &[]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(rig.placed_screens(&screen).await.is_empty());
+    assert_eq!(rig.state.scene_manager.revision(), revision);
+
+    let (status, answer) = rig.assign(&screen.layout_id, &[DISPLAY_ZONE_NAME]).await;
+
+    assert!(
+        status.is_success(),
+        "the assignment answered {status}: {answer}"
+    );
+    assert_eq!(
+        rig.state.scene_manager.revision(),
+        revision + 1,
+        "the placement and the conversion are one commit"
+    );
+    let placed = rig.placed_screens(&screen).await;
+    assert_eq!(placed.len(), 1, "the screen has one box");
+    let output = &placed[0];
+    assert!(
+        (output.size.x * 640.0 - output.size.y * 480.0).abs() < 0.5,
+        "a square panel is square on the canvas: {:?}",
+        output.size
+    );
+    let scene = rig.scene().await;
+    assert!(scene.display_zone_for(screen.device).is_none());
+    assert_eq!(
+        scoped(scene.primary_zone().expect("primary zone")),
+        vec![(stored_layers[0].clone(), vec![output.id.clone()])]
+    );
+    let read = rig.get_face(&screen).await;
+    assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+
+    // A second ask changes nothing.
+    let (status, again) = rig.assign(&screen.layout_id, &[DISPLAY_ZONE_NAME]).await;
+    assert!(
+        status.is_success(),
+        "naming the segment answered {status}: {again}"
+    );
+    assert_eq!(rig.placed_screens(&screen).await, placed);
+}
+
+#[tokio::test]
+async fn a_screen_placed_in_a_zone_that_follows_a_layout_stays_placed_across_scenes() {
+    // The shape of a rig whose stored layouts hold no screens: the scene
+    // follows such a layout, and a screen is placed in it from Studio.
+    // Leaving for another scene and coming back must find the screen
+    // where it was put, with its face still its layer.
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let bare = rig.layout("Bare", Vec::new()).await;
+    rig.apply_layout(&bare).await;
+    let mut ids = Vec::new();
+    for name in ["Desk", "Elsewhere"] {
+        let mut scene = hypercolor_core::scene::make_scene(name);
+        scene.layout_id = Some(bare.parse().expect("a layout id"));
+        scene
+            .zones
+            .push(hypercolor_core::scene::default_primary_zone(face_layout(
+                screen.device,
+            )));
+        ids.push(scene.id);
+        let mut mutation = rig.state.scene_manager.begin_mutation().await;
+        mutation
+            .create_scene(scene)
+            .expect("scene should be created");
+        commit_scene(&rig.state.domains.scene, mutation)
+            .await
+            .expect("the scene should commit");
+    }
+    let activate = async |scene_id| {
+        rig.ok(
+            Method::POST,
+            &format!("/api/v1/scenes/{scene_id}/activate"),
+            Some(json!({})),
+        )
+        .await;
+    };
+    activate(ids[0]).await;
+    let stored_layers = rig.put_scene_face(&screen, face).await;
+
+    let (status, answer) = rig.assign(&screen.layout_id, &[DISPLAY_ZONE_NAME]).await;
+    assert!(
+        status.is_success(),
+        "the assignment answered {status}: {answer}"
+    );
+    let placed = rig.placed_screens(&screen).await;
+    assert_eq!(placed.len(), 1);
+    // Studio saves the zone's layout once the screen has landed, which is
+    // what carries an output the layout has never held into it.
+    rig.save_primary_layout().await;
+
+    for _ in 0..2 {
+        activate(ids[1]).await;
+        assert_eq!(rig.scene().await.id, ids[1]);
+        activate(ids[0]).await;
+        let scene = rig.scene().await;
+        assert_eq!(scene.id, ids[0]);
+        let back = rig.placed_screens(&screen).await;
+        assert_eq!(
+            back.len(),
+            1,
+            "the screen is still placed after coming back"
+        );
+        assert_eq!(back[0].id, placed[0].id);
+        assert_eq!(back[0].position, placed[0].position);
+        assert!(scene.display_zone_for(screen.device).is_none());
+        assert_eq!(
+            scoped(scene.primary_zone().expect("primary zone")),
+            vec![(stored_layers[0].clone(), vec![placed[0].id.clone()])],
+            "its face is still its layer"
+        );
+        let read = rig.get_face(&screen).await;
+        assert_face(
+            &read,
+            face,
+            &screen_zone_id(ids[0], screen.device).to_string(),
+            "scene",
+            (true, false),
+            "scene",
+        );
+    }
+
+    // Taking the screen out of the zone lasts once the layout that
+    // learned of the box forgets it too, which is the second write Studio
+    // sends: a followed layout only ever gains outputs from the zone.
+    rig.reverse(&answer["data"]).await;
+    assert!(rig.placed_screens(&screen).await.is_empty());
+    rig.forget_in_active_layout(&placed[0].id).await;
+    assert!(rig.placed_screens(&screen).await.is_empty());
+    activate(ids[1]).await;
+    activate(ids[0]).await;
+    assert!(
+        rig.placed_screens(&screen).await.is_empty(),
+        "a screen taken out of the zone stays out after coming back"
+    );
+    let scene = rig.scene().await;
+    assert!(
+        scene.display_zone_for(screen.device).is_some(),
+        "and goes on showing its face from a zone of its own"
+    );
+}
+
 // ── A screen's output leaving and returning ──────────────────────────────
 
 /// What a scene stores, with the counters a write moves set aside.

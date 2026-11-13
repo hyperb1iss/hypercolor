@@ -205,6 +205,57 @@ fn unassigned_rows_exclude_placed_and_ledless_devices() {
 }
 
 #[test]
+fn a_screen_no_zone_places_is_unassigned_like_any_device() {
+    // A screen has no LEDs to count, and is still hardware waiting for a
+    // zone. A device with neither LEDs nor a screen has nothing to place.
+    let zones = vec![zone_resource_with_outputs(vec![output(
+        "usb:kb", None, 104,
+    )])];
+    let mut screen = meta("sim:lcd", "Spare panel", 0);
+    screen.display_segments = vec!["Display".to_owned()];
+    let devices = vec![
+        meta("usb:kb", "Keyboard", 104),
+        screen,
+        meta("usb:hub", "Bare hub", 0),
+    ];
+    let rows = unassigned_device_rows(&zones, &devices);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].device_id, "sim:lcd");
+    assert_eq!(rows[0].name, "Spare panel");
+}
+
+#[test]
+fn a_screen_whose_devices_lights_are_placed_is_unassigned_on_its_own() {
+    // A pump with a ring and a panel: the ring sits in a zone and the
+    // panel in none. The panel is a row of its own, claiming only its
+    // segment, so adding it leaves the ring where it is.
+    let zones = vec![zone_resource_with_outputs(vec![output(
+        "usb:pump",
+        Some("Ring"),
+        12,
+    )])];
+    let mut pump = meta("usb:pump", "Galahad pump", 12);
+    pump.display_segments = vec!["Display".to_owned()];
+    let rows = unassigned_device_rows(&zones, std::slice::from_ref(&pump));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].device_id, "usb:pump");
+    assert_eq!(rows[0].segments, ["Display"]);
+    assert_eq!(rows[0].led_count, 0);
+
+    // Once a zone holds the panel too, nothing is left to add.
+    let zones = vec![zone_resource_with_outputs(vec![
+        output("usb:pump", Some("Ring"), 12),
+        output("usb:pump", Some("Display"), 1),
+    ])];
+    assert!(unassigned_device_rows(&zones, std::slice::from_ref(&pump)).is_empty());
+
+    // With nothing of it placed it is one row for the whole device.
+    let rows = unassigned_device_rows(&[], &[pump]);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].segments.is_empty());
+}
+
+#[test]
 fn unassigned_rows_empty_when_every_device_is_placed() {
     let zones = vec![zone_resource_with_outputs(vec![
         output("a", None, 10),
@@ -222,4 +273,27 @@ fn saved_only_controllers_require_a_successful_registry_read() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].device_id, "prismrgb:old");
     assert!(!rows[0].resolved);
+}
+
+#[test]
+fn a_whole_device_with_a_screen_is_assigned_by_naming_every_segment() {
+    use hypercolor_ui::pages::studio::device_assignment::assignment_segments;
+
+    // Naming none means the lights alone to the daemon, which is all a
+    // device without a screen has.
+    assert!(assignment_segments(&[], &[("Fan 1", false), ("Fan 2", false)]).is_empty());
+    // A screen comes only when named, so the whole device names it all.
+    assert_eq!(
+        assignment_segments(&[], &[("Ring", false), ("Display", true)]),
+        ["Ring", "Display"]
+    );
+    assert_eq!(assignment_segments(&[], &[("Display", true)]), ["Display"]);
+    // A move that names its own part keeps to it.
+    assert_eq!(
+        assignment_segments(
+            &["Display".to_owned()],
+            &[("Ring", false), ("Display", true)]
+        ),
+        ["Display"]
+    );
 }

@@ -12,8 +12,9 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::components::layer_panel::scope::{
     Checked, NOT_IN_ZONE, NoCreateTarget, Target, TargetOutput, TargetWords, WHOLE_ZONE,
     applies_to, create_scope, draft_words, hover_outputs, is_dormant, is_new_selection,
-    layer_count_words, names_output, outputs_detail, outputs_label, pickable_count, stands_back,
-    target_groups, target_words, zone_target_outputs,
+    is_screen_scope, layer_count_words, names_output, offers_targets, outputs_detail,
+    outputs_label, pickable_count, selection_count_words, stands_back, target_groups, target_words,
+    with_screens, zone_target_outputs,
 };
 use hypercolor_ui::components::layer_panel::target_checklist::hang_popover;
 
@@ -439,4 +440,120 @@ fn a_selection_that_only_lost_outputs_is_not_a_new_selection() {
     assert!(is_new_selection(&ids(&["k70"]), &ids(&["basilisk"])));
     assert!(is_new_selection(&ids(&["k70"]), &ids(&["k70", "basilisk"])));
     assert!(is_new_selection(&ids(&[]), &ids(&["k70"])));
+}
+
+// ── Screens as targets ───────────────────────────────────────────────────
+
+/// The zone's outputs on a daemon that keeps a screen's layers in the zone
+/// that places it, with two more panels beside the first.
+fn outputs_with_screens() -> Vec<TargetOutput> {
+    let mut zone = zone();
+    zone.members
+        .push(member("lcd2", "usb:lcd2", Some("Display"), "TL LCD 2"));
+    zone.members
+        .push(member("lcd3", "usb:lcd3", Some("Display"), "TL LCD 3"));
+    with_screens(zone_target_outputs(&zone, |member| {
+        // Three panels of one model share a device name.
+        let device = if member.segment.as_deref() == Some("Display") {
+            "Uni Fan TL LCD".to_owned()
+        } else {
+            member.name.clone()
+        };
+        (member.name.clone(), device)
+    }))
+}
+
+#[test]
+fn screens_join_the_target_editor_once_the_daemon_takes_them() {
+    let outputs = outputs_with_screens();
+    let groups = target_groups(&outputs);
+    assert!(
+        groups
+            .iter()
+            .flat_map(|group| &group.outputs)
+            .any(|output| output.id == "lcd" && output.screen)
+    );
+    assert_eq!(pickable_count(&outputs), 7);
+}
+
+#[test]
+fn a_selected_screen_is_a_target_of_its_own() {
+    let outputs = outputs_with_screens();
+    assert_eq!(
+        Target::from_selection(&ids(&["lcd"]), &outputs),
+        Target::Outputs(BTreeSet::from(["lcd".to_owned()]))
+    );
+    assert_eq!(
+        create_scope(
+            &Target::Outputs(BTreeSet::from(["lcd".to_owned()])),
+            &outputs
+        ),
+        Ok(Some(scope_of(&["lcd"])))
+    );
+}
+
+#[test]
+fn a_zone_holding_one_screen_alone_still_offers_it_as_a_target() {
+    // A layer on the screen is its face; a layer on the whole zone is what
+    // shows behind the face. With one LED output the two are the same
+    // thing, with one screen they never are.
+    let mut zone = zone();
+    zone.members
+        .retain(|member| member.segment.as_deref() == Some("Display"));
+    let plain = zone_target_outputs(&zone, |member| (member.name.clone(), member.name.clone()));
+    assert!(!offers_targets(&plain));
+    let outputs = with_screens(plain);
+    assert!(offers_targets(&outputs));
+    assert_eq!(
+        Target::from_selection(&ids(&["lcd"]), &outputs),
+        Target::Outputs(BTreeSet::from(["lcd".to_owned()]))
+    );
+
+    zone.members = vec![member("k70", "usb:k70", None, "K70")];
+    let lone = with_screens(zone_target_outputs(&zone, |member| {
+        (member.name.clone(), member.name.clone())
+    }));
+    assert!(!offers_targets(&lone));
+}
+
+#[test]
+fn screens_go_by_their_own_names_and_three_of_them_by_their_count() {
+    let outputs = outputs_with_screens();
+    assert_eq!(
+        outputs_label(&refs(&["lcd2"]), &outputs).as_deref(),
+        Some("TL LCD 2")
+    );
+    assert_eq!(
+        outputs_label(&refs(&["lcd", "lcd2"]), &outputs).as_deref(),
+        Some("TL LCD 1 and TL LCD 2")
+    );
+    assert_eq!(
+        outputs_label(&refs(&["lcd", "lcd2", "lcd3"]), &outputs).as_deref(),
+        Some("3 screens")
+    );
+    // A keyboard among them makes it a count of outputs again.
+    assert_eq!(
+        outputs_label(&refs(&["k70", "lcd", "lcd2"]), &outputs).as_deref(),
+        Some("3 outputs")
+    );
+}
+
+#[test]
+fn a_scope_is_a_screens_own_only_when_screens_are_all_it_reaches() {
+    let outputs = outputs_with_screens();
+    assert!(is_screen_scope(Some(&scope_of(&["lcd"])), &outputs));
+    assert!(is_screen_scope(Some(&scope_of(&["lcd", "lcd2"])), &outputs));
+    assert!(is_screen_scope(Some(&scope_of(&["gone", "lcd"])), &outputs));
+    assert!(!is_screen_scope(Some(&scope_of(&["k70", "lcd"])), &outputs));
+    assert!(!is_screen_scope(Some(&scope_of(&["gone"])), &outputs));
+    assert!(!is_screen_scope(None, &outputs));
+}
+
+#[test]
+fn a_selection_of_screens_is_counted_as_screens() {
+    assert_eq!(selection_count_words(2, 2), "2 screens");
+    assert_eq!(selection_count_words(3, 3), "3 screens");
+    // Lights, or lights and a screen together, are outputs.
+    assert_eq!(selection_count_words(2, 0), "2 outputs");
+    assert_eq!(selection_count_words(3, 1), "3 outputs");
 }

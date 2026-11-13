@@ -1,10 +1,11 @@
 //! `/studio` — the unified surface-centric composition workspace (Spec 65).
 //!
-//! The page header's second row is the zone tab strip: one tab per LED
-//! zone, then a Screens tab. Below it, two columns: the device pane on
-//! the left and the center Stage, both about the active tab. The
-//! composition panel (effect and layer editing) slides in over the Stage
-//! on demand rather than occupying a permanent rail.
+//! The page header's second row is the zone tab strip: one tab per zone.
+//! Below it, two columns: the device pane on the left and the center
+//! Stage, both about the active tab. A screen is one of its zone's
+//! outputs: a box on the Stage and a card in the pane, and its face opens
+//! from either. The composition panel (effect and layer editing) slides
+//! in over the Stage on demand rather than occupying a permanent rail.
 
 mod composition_panel;
 pub mod device_assignment;
@@ -12,7 +13,6 @@ mod device_card;
 mod device_pane;
 mod drag;
 pub mod drag_model;
-mod face_composition;
 pub mod history;
 pub(crate) mod layer_target;
 pub(crate) mod move_menu;
@@ -22,7 +22,8 @@ pub mod pane_model;
 pub mod phone_summary;
 pub mod phone_view;
 pub mod placement;
-mod screen_list;
+pub mod screen_model;
+pub(crate) mod screens;
 mod stage;
 pub use crate::zones::surface;
 pub mod tab_model;
@@ -47,7 +48,7 @@ use crate::icons::*;
 use crate::pointer_gesture::PointerEnd;
 use crate::storage;
 
-use crate::zones::surface::{selected_screen_device_id, surfaces_from_zones};
+use crate::zones::surface::surfaces_from_zones;
 use composition_panel::CompositionPanel;
 use device_pane::DevicePane;
 use drag::{DragController, DragLayer};
@@ -109,12 +110,6 @@ pub struct StudioContext {
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
     pub composition_open: RwSignal<bool>,
-    /// The selected Screen's live face: the scene's own assignment when it
-    /// has one, otherwise the display's stored default. `None` for Lights,
-    /// for Screens with no bound display, and for screens showing nothing.
-    pub screen_face: Signal<Option<api::DisplayFaceResponse>>,
-    /// Re-fetch the selected Screen's face after a face write.
-    pub refresh_screen_face: Callback<()>,
     /// Per-(scene, zone) sets of `Output` ids the user has hidden from
     /// the zone's device card. Keys are built by
     /// [`hidden_outputs_storage_key`]. Client UI state only; never
@@ -132,10 +127,6 @@ pub struct StudioContext {
     /// Each device card lazily fills its own entry; channel rows read it
     /// to surface live binding labels without re-fetching per render.
     pub attachment_cache: RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>,
-    /// Display labels for Screens, keyed by zone id. Repeated device
-    /// names ("Lian Li Uni Fan TL Wireless LCD" three times) resolve to
-    /// the per-device label the canvas shows ("TL LCD 2").
-    pub screen_labels: Memo<HashMap<String, String>>,
     /// The daemon's render canvas extent. Zone layouts carry placements
     /// only, so anything fitting a footprint to the canvas reads this.
     pub render_canvas_size: Memo<(u32, u32)>,
@@ -174,6 +165,8 @@ pub struct StudioContext {
     /// What layers apply to: the open zone's outputs, the target the next
     /// layer takes, and the editor and canvas pick that choose one.
     pub(crate) targets: layer_target::LayerTargets,
+    /// The scene's screens, the ones selected, and what they show.
+    pub(crate) screens: screens::Screens,
 }
 
 /// A local open/closed signal whose truth lives in a shared keyed slot,
@@ -241,11 +234,11 @@ fn StudioWorkspace() -> impl IntoView {
         leptos_router::hooks::use_query_map()
             .with_untracked(|query| phone_view::wants_screens(query.get(SURFACE_PARAM).as_deref())),
     );
-    let opens_on_screen = StoredValue::new(false);
 
-    // Keep the selection on a still-present zone. A fresh selection opens
-    // the zone the rest of the app targets, else the first LED zone, so
-    // Studio always opens on a Light.
+    // Keep the selection on a zone the scene still holds. A fresh
+    // selection opens the zone the rest of the app targets, else the
+    // first zone. A screen's view is no zone to open: its screen sits in
+    // the zone that places it.
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
             if selected_surface_id.get_untracked().is_some() {
@@ -253,52 +246,34 @@ fn StudioWorkspace() -> impl IntoView {
             }
             return;
         };
-        let current = selected_surface_id.get_untracked();
-        let still_present = current
-            .as_ref()
-            .is_some_and(|id| scene.zones.iter().any(|zone| zone.id.to_string() == *id));
-        if still_present {
-            return;
-        }
-        let focused = zones_ctx.focused_zone.get_untracked();
-        let led_zones = || {
+        let zones = || {
             scene
                 .zones
                 .iter()
                 .filter(|zone| zone.role != ZoneRole::Display)
         };
-        // A link that asked for the screens lands on the first one, with
-        // its face open; the ask is spent once it has been honoured.
-        let asked_screen = wants_screens
-            .get_value()
-            .then(|| {
-                scene
-                    .zones
-                    .iter()
-                    .find(|zone| zone.role == ZoneRole::Display)
-            })
-            .flatten();
-        if asked_screen.is_some() {
-            wants_screens.set_value(false);
-            opens_on_screen.set_value(true);
+        let current = selected_surface_id.get_untracked();
+        let still_present = current
+            .as_ref()
+            .is_some_and(|id| zones().any(|zone| zone.id.to_string() == *id));
+        if still_present {
+            return;
         }
-        let next = asked_screen
-            .or_else(|| {
-                led_zones().find(|zone| focused.as_deref() == Some(zone.id.to_string().as_str()))
-            })
-            .or_else(|| led_zones().next())
-            .or_else(|| scene.zones.first())
+        let focused = zones_ctx.focused_zone.get_untracked();
+        let next = zones()
+            .find(|zone| focused.as_deref() == Some(zone.id.to_string().as_str()))
+            .or_else(|| zones().next())
             .map(|zone| zone.id.to_string());
         selected_surface_id.set(next);
     });
 
     // Picks outside Studio also select its tab. Only a new focus moves
-    // the tab, so scene refreshes preserve an open Screen.
+    // the tab.
     Effect::new(move |_| {
         let Some(focused) = zones_ctx.focused_zone.get() else {
             return;
         };
-        let is_led_zone = active_scene.with_untracked(|scene| {
+        let is_zone = active_scene.with_untracked(|scene| {
             scene.as_ref().is_some_and(|scene| {
                 scene
                     .zones
@@ -306,26 +281,25 @@ fn StudioWorkspace() -> impl IntoView {
                     .any(|zone| zone.id.to_string() == focused && zone.role != ZoneRole::Display)
             })
         });
-        if is_led_zone && selected_surface_id.get_untracked().as_ref() != Some(&focused) {
+        if is_zone && selected_surface_id.get_untracked().as_ref() != Some(&focused) {
             selected_surface_id.set(Some(focused));
         }
     });
 
-    // Studio's selected LED zone is the app's target zone, so an apply
-    // from anywhere lands in the zone being composed. A Screen is not a
-    // target and leaves the focus alone; a focus left over from another
-    // scene already resolves to the primary zone.
+    // Studio's selected zone is the app's target zone, so an apply from
+    // anywhere lands in the zone being composed. A focus left over from
+    // another scene already resolves to the primary zone.
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
             return;
         };
-        let selected_led_zone = selected_surface_id.get().filter(|id| {
+        let selected_zone = selected_surface_id.get().filter(|id| {
             scene
                 .zones
                 .iter()
                 .any(|zone| zone.id.to_string() == *id && zone.role != ZoneRole::Display)
         });
-        if let Some(zone_id) = selected_led_zone
+        if let Some(zone_id) = selected_zone
             && zones_ctx.focused_zone.get_untracked().as_deref() != Some(zone_id.as_str())
         {
             zones_ctx.focused_zone.set(Some(zone_id));
@@ -364,70 +338,12 @@ fn StudioWorkspace() -> impl IntoView {
     });
     let refresh_scene = zones_ctx.refresh;
 
-    // The selected Screen's face rides the display face endpoint, which
-    // reports the scene layer or the stored default, whichever is live.
-    // It refetches on selection, after every face write from this page,
-    // and on structural scene events (the daemon publishes zone_changed for
-    // default-face writes too), so it never needs a timer.
-    let (face_tick, set_face_tick) = signal(0_u64);
-    let face_scene_generation = Memo::new(move |_| {
-        ws.last_scene_event
-            .with(|hint| hint.as_ref().map_or(0, |hint| hint.structural_generation))
-    });
-    let selected_screen_device = Memo::new(move |_| {
-        let selected = selected_surface_id.get()?;
-        let scene = active_scene.get()?;
-        selected_screen_device_id(&scene.zones, &selected)
-    });
-    let screen_face_resource = api::daemon_resource(move || {
-        let _ = face_tick.get();
-        let _ = face_scene_generation.get();
-        let device_id = selected_screen_device.get();
-        async move {
-            match device_id {
-                Some(device_id) => api::fetch_display_face(&device_id).await,
-                None => Ok(None),
-            }
-        }
-    });
-    // The resource keeps the previous screen's face while the next fetch is
-    // in flight; only a face for the currently selected display counts, so
-    // a fresh selection never wears, or acts on, its predecessor's face.
-    let screen_face = Signal::derive(move || {
-        let selected = selected_screen_device.get()?;
-        screen_face_resource
-            .get()
-            .and_then(Result::ok)
-            .flatten()
-            .filter(|face| face.device_id == selected)
-    });
-    let refresh_screen_face = Callback::new(move |()| {
-        set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
-    });
-
     let devices_ctx = expect_context::<crate::app::DevicesContext>();
-    let screen_labels = Memo::new(move |_| {
-        let Some(scene) = active_scene.get() else {
-            return HashMap::new();
-        };
-        let layout_ids: HashMap<String, String> = devices_ctx
-            .devices_resource
-            .get()
-            .and_then(Result::ok)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|device| (device.id, device.layout_device_id))
-            .collect();
-        tab_model::screen_label_map(&scene.zones, &layout_ids)
-    });
 
     // The tab strip owns selection, so the layer panel shows the selected
-    // surface's name in its header rather than a redundant zone selector.
+    // zone's name in its header rather than a redundant zone selector.
     let surface_label = Signal::derive(move || {
         let id = selected_surface_id.get()?;
-        if let Some(label) = screen_labels.with(|labels| labels.get(&id).cloned()) {
-            return Some(label);
-        }
         let scene = active_scene.get()?;
         surfaces_from_zones(&scene.zones)
             .into_iter()
@@ -450,7 +366,7 @@ fn StudioWorkspace() -> impl IntoView {
 
     // Narrow viewports collapse the pane into a slide-over drawer (§13).
     let pane_drawer = RwSignal::new(false);
-    // Picking a zone or a Screen reveals the Stage behind the drawer.
+    // Picking a zone reveals the Stage behind the drawer.
     Effect::new(move |_| {
         let _ = selected_surface_id.get();
         if pane_drawer.get_untracked() {
@@ -459,13 +375,6 @@ fn StudioWorkspace() -> impl IntoView {
     });
 
     let composition_open = RwSignal::new(false);
-    Effect::new(move |_| {
-        selected_surface_id.track();
-        if opens_on_screen.get_value() {
-            opens_on_screen.set_value(false);
-            composition_open.set(true);
-        }
-    });
 
     // Which outputs are hidden, kept per zone and persisted across
     // sessions so a deliberately hidden output stays hidden between
@@ -575,19 +484,68 @@ fn StudioWorkspace() -> impl IntoView {
         });
     });
 
+    let screens = screens::Screens::new(active_scene, selected_surface_id, selected_output_ids);
+    let landing_devices = expect_context::<crate::app::DevicesContext>().devices_resource;
+    // A link that asked for the screens lands on the first one, with its
+    // face open; the ask is spent once it has been honoured. The tab
+    // switch clears the last zone's selection, so the screen is selected
+    // on the frame after it.
+    Effect::new(move |_| {
+        if !wants_screens.get_value() {
+            return;
+        }
+        let Some(first) = screens.placed.with(|placed| placed.first().cloned()) else {
+            // No zone places a screen, which is where automatic layout
+            // leaves every one of them. The first the scene keeps a stack
+            // for is as good a place to land: its face is edited there
+            // without placing it.
+            let Some(devices) = landing_devices.get().and_then(Result::ok) else {
+                return;
+            };
+            let landed = active_scene.with(|scene| {
+                let zones = &scene.as_ref()?.zones;
+                devices
+                    .iter()
+                    .filter(|device| {
+                        device.segments.iter().any(|segment| {
+                            matches!(
+                                segment.topology_hint,
+                                Some(api::SegmentTopologySummary::Display { .. })
+                            )
+                        })
+                    })
+                    .map(|device| screen_model::UnplacedDisplay {
+                        device_id: device.id.clone(),
+                        layout_id: device.layout_device_id.clone(),
+                        name: device.name.clone(),
+                    })
+                    .find(|display| screen_model::unplaced_screen(zones, &[], display).is_some())
+            });
+            if let Some(display) = landed {
+                wants_screens.set_value(false);
+                screens.unplaced.set(Some(display));
+                composition_open.try_set(true);
+            }
+            return;
+        };
+        wants_screens.set_value(false);
+        selected_surface_id.set(Some(first.zone_id));
+        request_animation_frame(move || {
+            selected_output_ids.try_set(HashSet::from([first.output_id]));
+            composition_open.try_set(true);
+        });
+    });
+
     let studio = StudioContext {
         history,
         selected_surface_id,
         active_scene,
         refresh_scene,
         composition_open,
-        screen_face,
-        refresh_screen_face,
         hidden_outputs,
         selected_output_ids,
         hovered_output_ids,
         attachment_cache,
-        screen_labels,
         render_canvas_size,
         rail_disclosure,
         open_output_lists,
@@ -603,9 +561,12 @@ fn StudioWorkspace() -> impl IntoView {
             active_scene,
             selected_surface_id,
             selected_output_ids,
+            screens,
         ),
+        screens,
     };
     provide_context(studio);
+    screens.follow_placements(studio);
     let root_ref = NodeRef::<leptos::html::Div>::new();
     let drag = DragController::new(studio, devices_ctx, root_ref);
     provide_context(drag);
@@ -631,19 +592,7 @@ fn StudioWorkspace() -> impl IntoView {
         selected
     });
 
-    let on_screens = Memo::new(move |_| {
-        let selected = selected_surface_id.get();
-        active_scene.with(|scene| {
-            scene.as_ref().is_some_and(|scene| {
-                scene.zones.iter().any(|zone| {
-                    zone.role == ZoneRole::Display
-                        && selected.as_deref() == Some(zone.id.to_string().as_str())
-                })
-            })
-        })
-    });
-    let panel_label =
-        move || active_tab_dom_id(selected_surface_id.get().as_deref(), on_screens.get());
+    let panel_label = move || active_tab_dom_id(selected_surface_id.get().as_deref());
 
     // Drag sources capture their pointer, so every gesture event bubbles up
     // here, and a live drag captures on this root so it survives the pane
@@ -758,6 +707,7 @@ fn StudioWorkspace() -> impl IntoView {
                     />
                     <UndoNoticeHost />
                     <layer_target::TargetEditorHost />
+                    <screens::CopyEverywhereHost />
                 </div>
 
                 <Show when=move || pane_drawer.get()>

@@ -14,6 +14,7 @@ use crate::api::{self, DeviceSummary};
 use crate::toasts;
 
 use super::StudioContext;
+use super::device_assignment::assignment_segments;
 use super::device_card::{UNASSIGNED_KEY, device_card_dom_id};
 use super::device_pane::pane_zone_toggle_dom_id;
 use super::drag::{DragController, FocusReturn};
@@ -23,7 +24,7 @@ use super::drag_model::{
 };
 use super::history::{EditDone, MovePlan, Moved, NewZone};
 use super::placement;
-use super::surface::{SurfaceKind, surfaces_from_zones};
+use super::surface::surfaces_from_zones;
 
 /// Run `action` on `payload`. `focus` names where focus goes once the move
 /// lands; a drag passes `None`. A move asked for while another write runs
@@ -109,7 +110,6 @@ pub(crate) fn zone_name_in(scene: Option<&api::SceneDocument>, zone_id: &str) ->
 pub(crate) fn led_zones(scene: &api::SceneDocument) -> Vec<(String, String, Option<String>)> {
     surfaces_from_zones(&scene.zones)
         .into_iter()
-        .filter(|surface| surface.kind == SurfaceKind::Light)
         .map(|surface| (surface.id, surface.name, surface.color))
         .collect()
 }
@@ -216,8 +216,8 @@ fn plan_move(
 
     let canvas = studio.render_canvas_size.get_untracked();
     if payload.origin == Origin::Unassigned {
-        let segments = payload.segments.clone();
         let device = registry_device(drag, &payload.device_id);
+        let segments = named_segments(&payload.segments, device.as_ref());
         // A channel brings only its own segment, so only its hint counts.
         let mut seeds = device
             .as_ref()
@@ -235,7 +235,7 @@ fn plan_move(
             })
             .unwrap_or_default();
         let claimed = if segments.is_empty() {
-            device.as_ref().map_or(0, light_segment_count)
+            device.as_ref().map_or(0, assignable_segment_count)
         } else {
             segments.len()
         };
@@ -452,7 +452,31 @@ pub(crate) fn registry_device(
     })
 }
 
-/// How many light segments a device would bring into a zone.
+/// The segments an assignment of `device` names for `asked`, the
+/// payload's own (see [`assignment_segments`]).
+fn named_segments(asked: &[String], device: Option<&DeviceSummary>) -> Vec<String> {
+    let all: Vec<(&str, bool)> = device
+        .map(|device| {
+            device
+                .segments
+                .iter()
+                .map(|segment| {
+                    (
+                        segment.name.as_str(),
+                        matches!(
+                            segment.topology_hint,
+                            Some(api::SegmentTopologySummary::Display { .. })
+                        ),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assignment_segments(asked, &all)
+}
+
+/// How many light segments a device has: what moving "the device" means
+/// for a device whose screen sits elsewhere, or nowhere.
 #[must_use]
 pub(crate) fn light_segment_count(device: &DeviceSummary) -> usize {
     device
@@ -466,6 +490,23 @@ pub(crate) fn light_segment_count(device: &DeviceSummary) -> usize {
                 )
         })
         .count()
+}
+
+/// How many outputs a device no zone holds would bring into one: its
+/// light segments and its screens.
+#[must_use]
+pub(crate) fn assignable_segment_count(device: &DeviceSummary) -> usize {
+    light_segment_count(device)
+        + device
+            .segments
+            .iter()
+            .filter(|segment| {
+                matches!(
+                    segment.topology_hint,
+                    Some(api::SegmentTopologySummary::Display { .. })
+                )
+            })
+            .count()
 }
 
 /// The payload for a device's outputs in `zone_id`, read from the live

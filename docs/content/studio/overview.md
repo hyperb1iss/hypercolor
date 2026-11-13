@@ -45,7 +45,7 @@ The **layer stack** is the zone's set of inputs. You stack an effect, drop a gif
 
 The **layout** is the zone's own spatial canvas, where each of the zone's outputs is placed, sized, and rotated. For an LED zone the Stage *is* the layout editor: the live effect renders right under the device boxes, so you see exactly how the composition maps onto your hardware. A device that joins a zone lands where it physically sits in your rig, and **Fit** scales the zone's devices to fill the canvas. Layouts use normalized `[0.0, 1.0]` coordinates, so they stay resolution-independent. See [layouts](@/studio/layouts.md) for the canvas editor.
 
-LCDs and other device displays are **Screens**, not zones. They share one Screens tab, where the Stage shows the selected screen's live face instead of a spatial layout, because a single screen has nothing to place.
+LCDs and other device displays are **screens**. A screen is an output like any other: it has a box on a zone's canvas and a card in the device pane, and the box shows the screen's live picture. What a screen shows is its **face**, a layer that plays on that screen alone, in front of whatever the zone's canvas puts behind the box. Select the box and the Stage header names the face; **Face settings** opens it. A screen that no zone has placed yet sits in **Unassigned**, still showing its face, and its card opens the same settings.
 
 ## The workspace
 
@@ -53,7 +53,7 @@ The workspace is a header, two columns, and an on-demand panel.
 
 ```text
 ┌ Studio ──────────────────────────────────────── Scene  Studio Session ▾ ┐
-│ ● Main   ● Keyboard   ● Desk strips  ┊  ▢ Screens 2   +                 │
+│ ● Main   ● Keyboard   ● Desk strips   +                                 │
 ├─────────────────────────┬───────────────────────────────────────────────┤
 │ ⌕ Search devices      / │ ◉ Bubble Garden ›                ↶  ↷  ⤢ Fit  │
 │                         │                                               │
@@ -80,7 +80,7 @@ The center column is the **Stage**. For an LED zone it is the live canvas with t
 
 Every edit commits when you make it. Moving a device, releasing a drag on the canvas, and changing a layer all write to the active scene right away, and one undo history covers device moves, canvas edits, and zone changes. There is nothing to save before you switch tabs or leave the page.
 
-The tab you have open is also the app-wide target zone. Apply an effect from the Effects page, a favorite, or the command palette after working in Studio, and it lands in the zone you were composing. The Screens tab is not a target, so opening it leaves the target on the last LED zone you had open.
+The tab you have open is also the app-wide target zone. Apply an effect from the Effects page, a favorite, or the command palette after working in Studio, and it lands in the zone you were composing. Faces are the exception: a face plays on a screen, so choosing one on the Effects page takes you to Studio with a screen open, ready to take it.
 
 ## Where to go next
 

@@ -202,7 +202,7 @@ fn a_deleted_zone_keeps_its_layers_and_restores_them_bottom_to_top() {
     assert_eq!(record.zone_id, scene.zones[0].id.to_string());
     assert_eq!(record.layers, vec![wash.clone(), glow.clone()]);
 
-    let requests = restore_layer_requests(&record, &HashSet::new());
+    let requests = restore_layer_requests(&record, &HashSet::new(), &[], &HashSet::new()).requests;
     assert_eq!(requests.len(), 2);
     for (request, layer) in requests.iter().zip([&wash, &glow]) {
         assert_eq!(request.name, layer.name);
@@ -235,7 +235,7 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
     let record = DeletedZone::of(&scene.zones[0], 0, 7);
 
     let all_back = HashSet::from(["out-keys", "out-logo", "out-strip"]);
-    let requests = restore_layer_requests(&record, &all_back);
+    let requests = restore_layer_requests(&record, &all_back, &[], &HashSet::new()).requests;
     assert_eq!(
         requests
             .iter()
@@ -251,7 +251,12 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
 
     // The logo and the strip were claimed by another zone before the undo.
     let some_back = HashSet::from(["out-keys"]);
-    let requests = restore_layer_requests(&record, &some_back);
+    let restore = restore_layer_requests(&record, &some_back, &[], &HashSet::new());
+    assert_eq!(
+        restore.lost, 1,
+        "the strip's layer has nowhere to come back to"
+    );
+    let requests = restore.requests;
     assert_eq!(
         requests
             .iter()
@@ -267,6 +272,119 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
             ),
         ],
         "a scope narrows to what came back, and a layer with nothing left is not rebuilt"
+    );
+}
+
+#[test]
+fn a_face_that_came_back_with_its_screen_is_not_created_again() {
+    let scoped = |name: &str, outputs: &[&str]| {
+        let mut layer = layer(name, [1.0, 0.0, 0.5, 1.0], BlendMode::Alpha, 1.0);
+        layer.scope = Some(LayerScope {
+            outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+        });
+        layer
+    };
+    let placed = |id: &str| {
+        serde_json::json!({"member":id,"position":{"x":0.5,"y":0.5},"size":{"x":0.1,"y":0.1},
+            "topology":{"type":"matrix","width":1,"height":1,"serpentine":false,"start_corner":"top_left"}})
+    };
+    let mut scene: SceneDocument = serde_json::from_value(serde_json::json!({
+        "id":"33333333-3333-4333-8333-333333333333", "name":"Desk", "kind":"named", "is_default":false,"revision":8,
+        "zones":[{"id":"11111111-1111-4111-8111-111111111111","name":"Case","role":"custom","enabled":true,"brightness":1,
+            "members":[
+                {"id":"keys","device_id":"usb:keys","segment":"Main","name":"Keys"},
+                {"id":"lcd-1","device_id":"usb:lcd-1","segment":"Display","name":"LCD 1"},
+                {"id":"lcd-2","device_id":"usb:lcd-2","segment":"Display","name":"LCD 2"}],
+            "layout":{"placements":[placed("keys"), placed("lcd-1"), placed("lcd-2")]},"layers":[] }]
+    }))
+    .expect("valid scene fixture");
+    scene.zones[0].layers = vec![
+        layer("Wash", [0.2, 0.4, 0.6, 1.0], BlendMode::Alpha, 1.0),
+        scoped("Clock", &["lcd-1", "lcd-2"]),
+        scoped("Badge", &["lcd-1"]),
+        scoped("Glow", &["keys", "lcd-1"]),
+    ];
+    let mut record = DeletedZone::of(&scene.zones[0], 0, 7);
+    record.outputs = hypercolor_ui::api::zone_outputs(&scene.zones[0]);
+    let all_back = HashSet::from(["keys", "lcd-1", "lcd-2"]);
+    let both_viewed = HashSet::from(["lcd-1", "lcd-2"]);
+    let restore_with = |returned: &[SceneLayer], viewed: &HashSet<&str>| {
+        let restore = restore_layer_requests(&record, &all_back, returned, viewed);
+        assert_eq!(restore.lost, 0);
+        restore
+            .requests
+            .iter()
+            .map(|request| {
+                (
+                    request.name.clone().unwrap_or_default(),
+                    request.scope.clone().map(|scope| scope.outputs),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // Unless a case says otherwise, the rebuilt zone is where the scene
+    // keeps both screens' layers.
+    let scopes = |returned: &[SceneLayer]| restore_with(returned, &both_viewed);
+    let named = |name: &str, outputs: Option<&[&str]>| {
+        (
+            name.to_owned(),
+            outputs.map(|ids| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>()),
+        )
+    };
+
+    // A zone that holds both screens' layers and has none yet gets every
+    // layer rebuilt as it was.
+    assert_eq!(
+        scopes(&[]),
+        [
+            named("Wash", None),
+            named("Clock", Some(&["lcd-1", "lcd-2"])),
+            named("Badge", Some(&["lcd-1"])),
+            named("Glow", Some(&["keys", "lcd-1"])),
+        ]
+    );
+
+    // The first screen came back with both of its layers. Neither is made
+    // again for it, the shared face is made for the other screen alone,
+    // and a layer that also lights the keys is no face and is untouched.
+    let first = [scoped("Clock", &["lcd-1"]), scoped("Badge", &["lcd-1"])];
+    assert_eq!(
+        scopes(&first),
+        [
+            named("Wash", None),
+            named("Clock", Some(&["lcd-2"])),
+            named("Glow", Some(&["keys", "lcd-1"])),
+        ]
+    );
+
+    // Both screens came back with their faces: only lighting is rebuilt.
+    let both = [
+        scoped("Clock", &["lcd-1"]),
+        scoped("Badge", &["lcd-1"]),
+        scoped("Clock", &["lcd-2"]),
+    ];
+    assert_eq!(
+        scopes(&both),
+        [named("Wash", None), named("Glow", Some(&["keys", "lcd-1"]))]
+    );
+
+    // The first screen's stack could not come back as layers: its bottom
+    // layer is switched off, so the scene keeps it in a zone of the
+    // screen's own and the rebuilt zone holds nothing for it. Its faces
+    // are still not created again. A copy over a stack kept apart could
+    // never be removed, and would keep that stack from coming back.
+    let second_only = HashSet::from(["lcd-2"]);
+    assert_eq!(
+        restore_with(&[], &second_only),
+        [
+            named("Wash", None),
+            named("Clock", Some(&["lcd-2"])),
+            named("Glow", Some(&["keys", "lcd-1"])),
+        ]
+    );
+    assert_eq!(
+        restore_with(&[scoped("Clock", &["lcd-2"])], &second_only),
+        [named("Wash", None), named("Glow", Some(&["keys", "lcd-1"]))]
     );
 }
 
@@ -1076,6 +1194,40 @@ fn scope_edit(layer: SceneLayerId) -> StudioEdit {
         before: None,
         after: Some(scoped(&["keys"])),
     }
+}
+
+#[test]
+fn a_redone_add_takes_the_steps_that_name_its_layer_to_the_new_id() {
+    use hypercolor_ui::pages::studio::history::AddedLayer;
+
+    let mut journal = StudioJournal::default();
+    let mut made = layer("Clock", [0.2, 0.4, 0.6, 1.0], BlendMode::Alpha, 1.0);
+    made.id = layer_id(RIPPLES);
+    journal.record(StudioEdit::LayersAdded {
+        name: "Clock".to_owned(),
+        layers: vec![AddedLayer {
+            zone_id: ZONE_A.to_owned(),
+            layer: made,
+            lands_on: Vec::new(),
+        }],
+    });
+    journal.record(scope_edit(layer_id(RIPPLES)));
+    assert!(journal.undo_edit().is_some());
+    journal.complete(false);
+    assert!(journal.undo_edit().is_some());
+    journal.complete(false);
+
+    // Redoing the add creates the layer again, and the daemon gives it a
+    // new id. The change of target waiting behind it named the old one.
+    let minted = SceneLayerId::new();
+    assert!(matches!(
+        journal.redo_edit(),
+        Some(StudioEdit::LayersAdded { .. })
+    ));
+    journal.remap_layer(ZONE_A, layer_id(RIPPLES), minted);
+    journal.complete(true);
+
+    assert_eq!(journal.redo_edit(), Some(&scope_edit(minted)));
 }
 
 #[test]

@@ -40,7 +40,24 @@ pub fn EffectControlsSection(
     layer: Signal<SceneLayer>,
     effect_cache: super::LayerEffectCache,
     on_layers_mutated: Callback<()>,
+    /// The layer is a screen's face, whose controls are its settings and
+    /// are called that wherever they are named.
+    #[prop(optional)]
+    face: bool,
 ) -> impl IntoView {
+    let (label, loading, failed) = if face {
+        (
+            "Face settings",
+            "Loading settings\u{2026}",
+            "Face settings failed",
+        )
+    } else {
+        (
+            "Effect controls",
+            "Loading controls\u{2026}",
+            "Effect controls failed",
+        )
+    };
     let LayerSource::Effect {
         effect_id,
         controls,
@@ -122,8 +139,8 @@ pub fn EffectControlsSection(
         initial_version: None,
         debounce_ms: LAYER_CONTROLS_DEBOUNCE_MS,
         patch,
-        on_error: Callback::new(|error: String| {
-            toasts::toast_error(&format!("Effect controls failed: {error}"));
+        on_error: Callback::new(move |error: String| {
+            toasts::toast_error(&format!("{failed}: {error}"));
         }),
         recover: Callback::new(move |()| {
             // A rejected edit can leave the server snapshot unchanged, so
@@ -145,11 +162,11 @@ pub fn EffectControlsSection(
 
     view! {
         <div class="space-y-2">
-            <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Effect controls"</span>
+            <span class=label_class(LabelSize::Micro, LabelTone::Default)>{label}</span>
             <Show
                 when=move || detail_value.get().is_some()
                 fallback=move || view! {
-                    <div class="rounded-lg border border-edge-subtle/50 bg-surface-sunken/40 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">"Loading controls…"</div>
+                    <div class="rounded-lg border border-edge-subtle/50 bg-surface-sunken/40 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">{loading}</div>
                 }
             >
                 <ControlPanel

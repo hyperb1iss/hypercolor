@@ -25,6 +25,7 @@ class MemberAssignmentTarget:
         placements (list[MemberPlacementHint] | Unset): Optional seeded geometry for newly minted outputs, keyed by
             segment.
         segments (list[str] | Unset): Empty selects every light segment, including all attachment instances.
+            A screen is placed only by naming its segment.
     """
 
     device_id: str

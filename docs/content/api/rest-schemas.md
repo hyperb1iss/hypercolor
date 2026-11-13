@@ -3173,7 +3173,7 @@ Device segments to assign using daemon-owned layout construction.
 | --- | --- | --- | --- |
 | `device_id` | string | yes |  |
 | `placements` | array of [`MemberPlacementHint`](@/api/rest-schemas.md#MemberPlacementHint) | no | Optional seeded geometry for newly minted outputs, keyed by segment. |
-| `segments` | array of string | no | Empty selects every light segment, including all attachment instances. |
+| `segments` | array of string | no | Empty selects every light segment, including all attachment instances. A screen is placed only by naming its segment. |
 | `zone_id` | string | yes |  |
 
 Unknown fields are rejected.

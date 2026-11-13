@@ -4,14 +4,12 @@
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::layer::LayerSource;
-use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use super::source::{
-    AddLayerScope, EffectPickerMode, LayerSourceKind, effect_category_label,
-    effect_picker_matches_query, effect_picker_mode, media_layer_source_for,
-    remembered_effect_layer_source,
+    EffectPickerMode, LayerSourceKind, effect_category_label, effect_picker_matches_query,
+    media_layer_source_for, remembered_effect_layer_source,
 };
 use crate::api;
 use crate::components::media_grid::MediaGrid;
@@ -41,29 +39,30 @@ impl NewLayerDraft {
 #[component]
 pub fn AddLayerPicker(
     #[prop(into)] assets: Signal<Vec<api::MediaAssetRecord>>,
-    /// Where the new layer can go; a list shorter than two hides the
-    /// selector, since there is nothing to choose between.
+    /// Faces when screens are all the new layer plays on, effects
+    /// otherwise.
     #[prop(into)]
-    scopes: Signal<Vec<AddLayerScope>>,
-    /// Role of the selected surface. Combined with the active target
-    /// scope so screens expose face effects and LED zones expose effects.
-    #[prop(into)]
-    selected_surface_role: Signal<Option<ZoneRole>>,
+    mode: Signal<EffectPickerMode>,
     /// The outputs the new layer will be limited to, in words. `None` for
     /// a layer on the whole zone.
     #[prop(into)]
     target: Signal<Option<String>>,
-    on_pick: Callback<(NewLayerDraft, AddLayerScope)>,
+    /// What adding to every screen of the scene would reach, in words,
+    /// when the scene has screens beyond `target`. Offers the choice.
+    #[prop(into)]
+    all_screens: Signal<Option<String>>,
+    /// The picked layer, and whether it goes to every screen.
+    on_pick: Callback<(NewLayerDraft, bool)>,
     on_cancel: Callback<()>,
 ) -> impl IntoView {
     let tab = RwSignal::new(LayerSourceKind::Effect);
-    let scope = RwSignal::new(AddLayerScope::ThisSurface);
-    let effect_mode =
-        Signal::derive(move || effect_picker_mode(scope.get(), selected_surface_role.get()));
-    // The source tabs stay scope-unaware: they emit a draft, and this
-    // wrapper tags it with the chosen target scope before it leaves.
+    let everywhere = RwSignal::new(false);
+    let effect_mode = mode;
+    // The source tabs know nothing of where the layer goes: they emit a
+    // draft, and this wrapper says whether it is for every screen.
     let emit = Callback::new(move |draft: NewLayerDraft| {
-        on_pick.run((draft, scope.get()));
+        let all = everywhere.get_untracked() && all_screens.with_untracked(Option::is_some);
+        on_pick.run((draft, all));
     });
     let effects = api::daemon_resource(api::fetch_effects);
 
@@ -86,6 +85,9 @@ pub fn AddLayerPicker(
                             <div class="text-sm font-semibold text-fg-primary">"Add Layer"</div>
                             <div class="text-[11px] text-fg-tertiary">
                                 {move || match target.get() {
+                                    Some(_) if everywhere.get() && all_screens.with(Option::is_some) => {
+                                        "Pick what plays on every screen".to_owned()
+                                    }
                                     Some(target) => format!("Pick what plays on {target}"),
                                     None => "Pick a content source for the new layer".to_owned(),
                                 }}
@@ -127,40 +129,46 @@ pub fn AddLayerPicker(
                     }).collect_view()}
                 </div>
 
+                // Where it goes, when there is a choice: the screens it was
+                // opened for, or every screen of the scene. The line under
+                // the choice says what "every" reaches before it is made.
                 {move || {
-                    let available = scopes.get();
-                    (available.len() > 1)
-                        .then(|| {
-                            view! {
-                                <div class="flex flex-wrap items-center gap-2 border-b border-edge-subtle/50 px-5 py-2.5">
-                                    <span class="text-[11px] font-medium text-fg-tertiary">
-                                        "Add to"
-                                    </span>
-                                    <div class="flex flex-wrap items-center gap-1">
-                                        {available
-                                            .into_iter()
-                                            .map(|option| {
-                                                let selected = move || scope.get() == option;
-                                                view! {
-                                                    <button
-                                                        type="button"
-                                                        class="rounded-md border px-2 py-1 text-[11px] font-medium transition-colors"
-                                                        class=("border-accent-muted", selected)
-                                                        class=("bg-accent/10", selected)
-                                                        class=("text-fg-primary", selected)
-                                                        class=("border-edge-subtle/60", move || !selected())
-                                                        class=("text-fg-tertiary", move || !selected())
-                                                        on:click=move |_| scope.set(option)
-                                                    >
-                                                        {option.label()}
-                                                    </button>
-                                                }
-                                            })
-                                            .collect_view()}
-                                    </div>
-                                </div>
-                            }
-                        })
+                    let reach = all_screens.get()?;
+                    let here = target.get().unwrap_or_else(|| "These screens".to_owned());
+                    let choice = move |all: bool, label: String| {
+                        let selected = move || everywhere.get() == all;
+                        view! {
+                            <button
+                                type="button"
+                                role="radio"
+                                aria-checked=move || selected().to_string()
+                                class="max-w-[16rem] truncate rounded-md border px-2 py-1 text-[11px] font-medium transition-colors"
+                                class=("border-accent-muted", selected)
+                                class=("bg-accent/10", selected)
+                                class=("text-fg-primary", selected)
+                                class=("border-edge-subtle/60", move || !selected())
+                                class=("text-fg-tertiary", move || !selected())
+                                class=("hover:text-fg-secondary", move || !selected())
+                                on:click=move |_| everywhere.set(all)
+                            >
+                                {label}
+                            </button>
+                        }
+                    };
+                    Some(view! {
+                        <div class="border-b border-edge-subtle/50 px-5 py-2.5">
+                            <div class="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Add to">
+                                <span class="text-[11px] font-medium text-fg-tertiary">"Add to"</span>
+                                {choice(false, here)}
+                                {choice(true, "All screens".to_owned())}
+                            </div>
+                            <Show when=move || everywhere.get()>
+                                <p class="mt-1.5 text-[11px] leading-relaxed text-fg-tertiary" data-all-screens-reach="">
+                                    {reach.clone()}
+                                </p>
+                            </Show>
+                        </div>
+                    })
                 }}
 
                 <div class="ambient-scroll flex-1 overflow-y-auto px-5 py-4" style:--ambient-hue=crate::ambient::hue_style()>
