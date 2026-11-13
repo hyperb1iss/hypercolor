@@ -1,8 +1,8 @@
 {
-  "device_id": "01a00e1a-c2b9-79e3-8e9b-4fc037edae83",
+  "device_id": "01a1d15e-90e2-746f-8f3a-0fe28c4d8581",
   "scene_id": "00000000-0000-0000-0000-000000000000",
   "effect": {
-    "id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
+    "id": "01a1d15e-90e2-746f-8f3a-0fe3429c07a6",
     "name": "System Monitor",
     "author": "test",
     "version": "0.1.0",
@@ -24,15 +24,15 @@
     "license": null
   },
   "zone": {
-    "id": "01a00e1a-c2be-7c82-9c39-4d35657c142d",
-    "name": "Pump LCD Face",
-    "description": "Display face for Pump LCD",
+    "id": "966f64e7-fc35-5128-bb8b-9bc93dcbc4c2",
+    "name": "Pump LCD",
+    "description": null,
     "layers": [
       {
-        "id": "01a00e1a-c2be-7c82-9c39-4d35657c142d",
+        "id": "01a1d15e-90ea-726d-a50d-b3321129e0a3",
         "source": {
           "type": "effect",
-          "effect_id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
+          "effect_id": "01a1d15e-90e2-746f-8f3a-0fe3429c07a6",
           "controls": {
             "label": {
               "kind": "text",
@@ -40,7 +40,7 @@
             }
           }
         },
-        "blend": "replace",
+        "blend": "alpha",
         "opacity": 1.0,
         "transform": {
           "anchor": {
@@ -71,7 +71,7 @@
       }
     ],
     "layout": {
-      "id": "display-face:01a00e1a-c2b9-79e3-8e9b-4fc037edae83",
+      "id": "display-face:01a1d15e-90e2-746f-8f3a-0fe28c4d8581",
       "name": "Pump LCD Display Face",
       "description": "Native-resolution face canvas for Pump LCD",
       "canvas_width": 320,
@@ -87,13 +87,14 @@
     "enabled": true,
     "color": null,
     "display_target": {
-      "device_id": "01a00e1a-c2b9-79e3-8e9b-4fc037edae83"
+      "device_id": "01a1d15e-90e2-746f-8f3a-0fe28c4d8581"
     },
     "role": "display",
-    "controls_version": 1,
-    "layers_version": 0
+    "controls_version": 0,
+    "layers_version": 2
   },
   "live_scope": "scene",
   "scene_assigned": true,
-  "default_assigned": false
+  "default_assigned": false,
+  "rendering": "scene"
 }

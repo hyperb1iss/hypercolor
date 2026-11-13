@@ -53,6 +53,7 @@ pub mod scene;
 pub mod scene_activation;
 pub mod scene_run;
 pub mod scene_tree;
+pub(crate) mod screen;
 pub mod spatial;
 pub mod zone;
 

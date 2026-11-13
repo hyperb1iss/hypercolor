@@ -81,6 +81,8 @@ pub struct ZoneRemoved {
     pub zone: Zone,
     /// The scene as this removal committed it.
     pub scene: Scene,
+    /// The views of the scene's screens as this removal committed them.
+    pub views: Vec<hypercolor_core::scene::screens::ScreenView>,
     /// The commit receipt.
     pub commit: SceneCommit,
 }
@@ -194,6 +196,7 @@ pub async fn delete_zone(
         .get(&scene_id)
         .cloned()
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
+    let views = mutation.scenes().screen_views(&scene_id);
 
     let commit = ctx.commit(mutation).await?;
     settle_zone_mutation(ctx).await;
@@ -204,6 +207,7 @@ pub async fn delete_zone(
     Ok(ZoneRemoved {
         zone,
         scene,
+        views,
         commit,
     })
 }

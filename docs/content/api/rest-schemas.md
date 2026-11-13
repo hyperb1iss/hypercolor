@@ -2498,6 +2498,14 @@ Everything a face needs to know about the surface it renders on.
 | `target_fps` | integer (int32) | yes |  |
 | `width` | integer (int32) | yes |  |
 
+<div class="schema-anchor" id="DisplayFaceRendering"></div>
+
+### DisplayFaceRendering
+
+What a display's panel is showing over its backdrop.
+
+One of `scene`, `default`, `none`.
+
 <div class="schema-anchor" id="DisplayFaceResponse"></div>
 
 ### DisplayFaceResponse
@@ -2511,6 +2519,7 @@ route.
 | `device_id` | string | yes |  |
 | `effect` | [`EffectMetadata`](@/api/rest-schemas.md#EffectMetadata) | yes |  |
 | `live_scope` | [`DisplayFaceScope`](@/api/rest-schemas.md#DisplayFaceScope) | no | Which layer the returned assignment lives on. |
+| `rendering` | [`DisplayFaceRendering`](@/api/rest-schemas.md#DisplayFaceRendering) or null | no |  |
 | `scene_assigned` | boolean | no | Whether the active scene has its own face assignment for this display. |
 | `scene_id` | string | yes |  |
 | `zone` | object | yes |  |
@@ -2532,6 +2541,7 @@ route.
 | `device_id` | string | yes |  |
 | `effect` | [`EffectMetadata`](@/api/rest-schemas.md#EffectMetadata) | yes |  |
 | `live_scope` | [`DisplayFaceScope`](@/api/rest-schemas.md#DisplayFaceScope) | no | Which layer the returned assignment lives on. |
+| `rendering` | [`DisplayFaceRendering`](@/api/rest-schemas.md#DisplayFaceRendering) or null | no |  |
 | `scene_assigned` | boolean | no | Whether the active scene has its own face assignment for this display. |
 | `scene_id` | string | yes |  |
 | `zone` | object | yes |  |
@@ -3356,6 +3366,7 @@ Used by [`PUT /api/v1/scenes/{id}`](@/api/rest.md#update_scene) request.
 | `members` | array of [`ZoneMember`](@/api/rest-schemas.md#ZoneMember) | no |
 | `name` | string | yes |
 | `role` | string | no |
+| `view_of` | [`ZoneViewOf`](@/api/rest-schemas.md#ZoneViewOf) or null | no |
 
 Unknown fields are rejected.
 
@@ -5628,6 +5639,7 @@ One authored zone inside the live document (Spec 78 §1.3).
 | `members` | array of [`ZoneMember`](@/api/rest-schemas.md#ZoneMember) | yes | Device segments assigned to this zone, addressed by membership id (Spec 78 §1.2) — never by device-scoped segment name. |
 | `name` | string | yes |  |
 | `role` | string | no |  |
+| `view_of` | [`ZoneViewOf`](@/api/rest-schemas.md#ZoneViewOf) or null | no |  |
 
 Used by [`POST /api/v1/scene/zones`](@/api/rest.md#create_live_zone) response, [`GET /api/v1/scene/zones/{zone}`](@/api/rest.md#get_live_zone) response, [`PATCH /api/v1/scene/zones/{zone}`](@/api/rest.md#patch_live_zone) response, [`POST /api/v1/scene/zones/{zone}/layers`](@/api/rest.md#create_live_zone_layer) response, [`PATCH /api/v1/scene/zones/{zone}/layers/order`](@/api/rest.md#reorder_live_zone_layers) response, [`PUT /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#replace_live_zone_layer) response, [`DELETE /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#delete_live_zone_layer) response, [`PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`](@/api/rest.md#patch_live_layer_controls) response, [`PUT /api/v1/scene/zones/{zone}/layout`](@/api/rest.md#put_live_zone_layout) response, [`POST /api/v1/scene/zones/{zone}/members`](@/api/rest.md#assign_live_zone_members) response, [`DELETE /api/v1/scene/zones/{zone}/members/{member}`](@/api/rest.md#unassign_live_zone_member) response.
 
@@ -5655,6 +5667,18 @@ One of these variants, told apart by `shape_type`:
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `vertices` | array of [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes | Polygon vertices in normalized coordinates. |
+
+<div class="schema-anchor" id="ZoneViewOf"></div>
+
+### ZoneViewOf
+
+Where a screen's view comes from: the zone that places the screen and
+the screen's membership in it.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `member` | [`ZoneMemberId`](@/api/rest-schemas.md#ZoneMemberId) | yes |
+| `zone` | string | yes |
 
 ## Envelope
 

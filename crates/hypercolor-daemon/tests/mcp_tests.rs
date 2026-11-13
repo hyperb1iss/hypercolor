@@ -1186,7 +1186,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
 }
 
 #[tokio::test]
-async fn stateful_display_face_tool_assigns_and_clears_face_zones() {
+async fn stateful_display_face_tool_assigns_and_clears_a_screens_face() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -1224,19 +1224,35 @@ async fn stateful_display_face_tool_assigns_and_clears_face_zones() {
         assign_snapshot.active_scene_id,
         Some(SceneId::DEFAULT.to_string())
     );
-    assert_eq!(assign_snapshot.default_scene_zones.len(), 2);
+    // No zone places this screen, so its face is stored as a display zone
+    // and no zone gains an output or a layer for it.
+    let stored = assign_snapshot
+        .default_scene_zones
+        .iter()
+        .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Display)
+        .expect("the face is stored as a display zone");
+    assert_eq!(stored.id.to_string(), assign_result["zone"]["id"]);
+    assert_eq!(stored.effect_ids().next(), Some(face.id));
+    assert!(
+        assign_snapshot
+            .default_scene_zones
+            .iter()
+            .flat_map(|zone| zone.layers.iter())
+            .all(|layer| layer.scope.is_none())
+    );
+    assert_eq!(assign_result["live_scope"], "scene");
+    assert_eq!(assign_result["rendering"], "scene");
 
     let mut saw_assign_event = false;
     while let Ok(timestamped) = assign_events.try_recv() {
         if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
-            role,
+            role: hypercolor_types::scene::ZoneRole::Display,
             ..
         } = timestamped.event
         {
             assert_eq!(scene_id, SceneId::DEFAULT);
-            assert_eq!(role, hypercolor_types::scene::ZoneRole::Display);
             assert_eq!(kind, ZoneChangeKind::Created);
             saw_assign_event = true;
         }
@@ -1266,28 +1282,35 @@ async fn stateful_display_face_tool_assigns_and_clears_face_zones() {
         Some(0)
     );
 
-    let clear_snapshot = persisted_runtime_snapshot(&state);
-    assert_eq!(clear_snapshot.default_scene_zones.len(), 2);
-    let display_zone = clear_snapshot
-        .default_scene_zones
-        .iter()
-        .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Display)
-        .expect("display screen surface should survive face clear");
-    assert_eq!(display_zone.effect_ids().next(), None);
-    assert!(display_zone.layers.is_empty());
+    assert!(
+        clear_result["live_scope"].is_null(),
+        "nothing is assigned to the screen now, in the scene or kept"
+    );
+    assert_eq!(clear_result["rendering"], "none");
+    assert!(clear_result["effect"].is_null());
 
+    let clear_snapshot = persisted_runtime_snapshot(&state);
+    assert!(
+        clear_snapshot
+            .default_scene_zones
+            .iter()
+            .all(|zone| zone.role != hypercolor_types::scene::ZoneRole::Display),
+        "the stored display zone is removed with its face"
+    );
+
+    // The display is registered but away, so nothing stands for it once
+    // its stored zone is gone.
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
         if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
-            role,
+            role: hypercolor_types::scene::ZoneRole::Display,
             ..
         } = timestamped.event
         {
             assert_eq!(scene_id, SceneId::DEFAULT);
-            assert_eq!(role, hypercolor_types::scene::ZoneRole::Display);
-            assert_eq!(kind, ZoneChangeKind::Updated);
+            assert_eq!(kind, ZoneChangeKind::Removed);
             saw_clear_event = true;
         }
     }
@@ -2615,12 +2638,41 @@ async fn add_layer_gathers_a_device_split_into_logical_devices() {
 }
 
 #[tokio::test]
-async fn add_layer_is_for_lighting_and_refuses_faces_and_display_zones() {
+async fn add_layer_takes_a_face_only_on_screens_and_refuses_a_screens_view() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     seed_scope_rig(&state).await;
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    // The primary zone places the screen, so its face is a layer there.
+    state.domains.display.sync_connected_surfaces().await;
+    {
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let layout_id = mutation
+            .scenes()
+            .screen_surfaces()
+            .iter()
+            .find(|(_, surface)| surface.device_id == display_id)
+            .map(|(layout_id, _)| layout_id.clone())
+            .expect("a registered display is a known screen");
+        let mut scene = mutation
+            .scenes()
+            .active_scene()
+            .cloned()
+            .expect("active scene");
+        let mut screen = scope_output("out-lcd", "Pump LCD", &layout_id);
+        screen.zone_name = Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned());
+        scene
+            .primary_zone_mut()
+            .expect("primary zone")
+            .layout
+            .zones
+            .push(screen);
+        mutation.update_scene(scene).expect("place the screen");
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("the placement should commit");
+    }
     let assigned = execute_tool_with_state(
         "set_display_face",
         &json!({
@@ -2637,12 +2689,41 @@ async fn add_layer_is_for_lighting_and_refuses_faces_and_display_zones() {
     let face_error =
         execute_tool_with_state("add_layer", &json!({ "effect": face.name }), state.as_ref())
             .await
-            .expect_err("a display face is not a lighting layer");
+            .expect_err("a face with no screen to show on is not a lighting layer");
     assert_eq!(
         face_error.details().expect("details")["parameter"],
         "effect"
     );
     assert!(format!("{face_error}").contains("display face"));
+
+    let mixed_error = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": face.name, "outputs": ["Pump LCD", "Shelf Strip"] }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("a face scoped to LEDs would be drawn into the lighting canvas");
+    assert_eq!(
+        mixed_error.details().expect("details")["parameter"],
+        "effect"
+    );
+
+    let faced = execute_tool_with_state(
+        "add_layer",
+        &json!({ "effect": face.name, "outputs": ["Pump LCD"] }),
+        state.as_ref(),
+    )
+    .await
+    .expect("a face scoped to a screen is a layer like any other");
+    let top = faced["layers"]
+        .as_array()
+        .and_then(|layers| layers.last())
+        .expect("the new layer is on top");
+    assert_eq!(
+        top["scope"]["outputs"].as_array().map(Vec::len),
+        Some(1),
+        "the face is scoped to the screen"
+    );
 
     let zone_error = execute_tool_with_state(
         "add_layer",
@@ -2650,26 +2731,29 @@ async fn add_layer_is_for_lighting_and_refuses_faces_and_display_zones() {
         state.as_ref(),
     )
     .await
-    .expect_err("a display zone takes its layers through the display tools");
+    .expect_err("a screen's view takes its layers through the display tools");
     assert_eq!(zone_error.details().expect("details")["parameter"], "zone");
 
     let manager = state.scene_manager.snapshot().await;
     let scene = manager.active_scene().expect("active scene");
+    let primary = scene.primary_zone().expect("primary zone");
     assert_eq!(
-        scene.primary_zone().expect("primary zone").layers.len(),
-        1,
-        "the lighting zone is untouched"
-    );
-    assert_eq!(
-        scene
-            .zones
-            .iter()
-            .find(|zone| zone.id.to_string() == display_zone)
-            .expect("display zone")
+        primary
             .layers
-            .len(),
+            .iter()
+            .filter(|layer| layer.scope.is_none())
+            .count(),
         1,
-        "the display zone keeps only its face"
+        "the lighting stack is untouched"
+    );
+    let view = manager
+        .screen_view(&scene.id, display_id)
+        .expect("the screen's view");
+    assert_eq!(view.zone.id.to_string(), display_zone);
+    assert_eq!(
+        view.zone.layers.len(),
+        2,
+        "the screen shows the assigned face and the one added to it"
     );
 }
 

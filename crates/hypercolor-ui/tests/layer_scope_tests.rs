@@ -46,6 +46,7 @@ fn zone() -> ZoneResource {
         ],
         layout: None,
         layers: Vec::new(),
+        view_of: None,
     }
 }
 

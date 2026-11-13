@@ -110,6 +110,7 @@ const SCENE_CAPABILITIES: &[&str] = &[
     "zone-preview-frames",
     "scene-unassigned-behavior-write",
     "layer-scope",
+    "screen-layers",
 ];
 
 // ── Handlers ─────────────────────────────────────────────────────────────

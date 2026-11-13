@@ -787,12 +787,13 @@ impl LayoutContext {
             .await
     }
 
-    pub(crate) async fn connected_display_surface_layouts(
+    /// Every registered screen, as the scene manager's surface table.
+    pub(crate) async fn known_screen_surfaces(
         &self,
         runtime: &LayoutRuntime,
-    ) -> Vec<(DeviceId, String, SpatialLayout)> {
+    ) -> hypercolor_core::scene::screens::ScreenSurfaces {
         self.convergence
-            .connected_display_surface_layouts(runtime.discovery())
+            .known_screen_surfaces(runtime.discovery())
             .await
     }
 

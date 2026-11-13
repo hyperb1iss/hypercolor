@@ -250,14 +250,15 @@ pub async fn delete_zone(
     )
     .await
     {
-        // The scene this removal committed, at the revision it committed,
-        // never a later writer's state.
+        // The scene and the views of its screens as this removal committed
+        // them, at the revision it committed, never a later writer's state.
         Ok(removed) => {
             let revision = removed.commit.revision();
             with_revision(
                 state.scene_manager.run_epoch(),
-                envelope::ok(scene_tree::scene_document(
+                envelope::ok(scene_tree::live_scene_document(
                     &removed.scene,
+                    &removed.views,
                     revision,
                     state.scene_manager.run_epoch(),
                 )),
@@ -432,11 +433,7 @@ pub async fn create_layer(
             let revision = written.commit.revision();
             with_revision(
                 state.scene_manager.run_epoch(),
-                (
-                    StatusCode::CREATED,
-                    envelope::ok(scene_tree::zone_resource(&written.zone)),
-                )
-                    .into_response(),
+                (StatusCode::CREATED, envelope::ok(written.resource())).into_response(),
                 revision,
             )
         }
@@ -595,11 +592,7 @@ fn layer_stack_response(
     match result {
         Ok(Ok(written)) => {
             let revision = written.commit.revision();
-            with_revision(
-                run_epoch,
-                envelope::ok(scene_tree::zone_resource(&written.zone)),
-                revision,
-            )
+            with_revision(run_epoch, envelope::ok(written.resource()), revision)
         }
         Ok(Err(error)) => scene_tree::layer_error(error, zone_id, None).into_response(),
         Err(error) => error.into_response(),

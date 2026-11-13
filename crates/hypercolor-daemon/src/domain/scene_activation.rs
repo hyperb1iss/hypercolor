@@ -103,10 +103,6 @@ pub async fn activate_selected_fields(
         }
     }
     let media = ctx.scene.media_admission_context().await;
-    let display = ctx
-        .layout
-        .connected_display_surface_layouts(ctx.scene.layout_runtime())
-        .await;
     let _activation = if command.context.is_some() {
         Some(ctx.layout.acquire_scene_activation_guard().await)
     } else {
@@ -118,6 +114,13 @@ pub async fn activate_selected_fields(
         None
     };
     let mut mutation = ctx.scene.begin_mutation().await;
+    // Read after the mutation begins. Its commit lands only if nothing
+    // else committed since, so the table it installs was read later than
+    // any table already installed and cannot take a newer one back.
+    let display = ctx
+        .layout
+        .known_screen_surfaces(ctx.scene.layout_runtime())
+        .await;
     command
         .expected
         .validate(mutation.scenes(), mutation.base_revision())?;
@@ -139,14 +142,22 @@ pub async fn activate_selected_fields(
         if let Some(message) = admission.rejection_message() {
             return Err(DomainError::validation(message.to_owned()));
         }
-        mutation.hydrate_existing_display_surfaces(expected.scene.id, &display)?;
+        mutation.set_screen_surfaces(display);
         mutation.activate(
             expected.scene.id,
             Some(transition),
             SceneChangeReason::UserActivate,
         )?;
-        mutation.sync_active_display_surfaces(&display);
-        mutation.realign_primary_layout(&ctx.layout.current());
+        // The selected layout is published right after this commit, so the
+        // primary zone is aligned with it here and each screen's stack is
+        // placed once, against the outputs the scene will have.
+        match &command.layout {
+            Some(layout) => mutation.realign_primary_layout(layout),
+            None => mutation.realign_primary_layout(&ctx.layout.current()),
+        }
+        // The scene read back here fences the layout step that follows, so
+        // it has to be the scene as the commit will leave it.
+        mutation.settle_screens();
         let admitted = mutation
             .scenes()
             .get(&expected.scene.id)

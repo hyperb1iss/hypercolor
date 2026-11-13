@@ -218,7 +218,7 @@ pub(crate) enum NewZone {
     NotCreated,
     /// The zone exists. The move landed, failed, or had nothing to change.
     Created {
-        zone: api::ZoneResource,
+        zone: Box<api::ZoneResource>,
         moved: Moved,
     },
 }
@@ -469,7 +469,7 @@ impl StudioHistory {
             plan: None,
             outcome: Box::new(move |outcome| {
                 created(match outcome {
-                    NewZone::Created { zone, .. } => Some(zone),
+                    NewZone::Created { zone, .. } => Some(*zone),
                     NewZone::NotCreated => None,
                 });
             }),
@@ -602,7 +602,10 @@ impl StudioHistory {
                 }
             }
             self.record_created_zone(scene.id, &zone, fill, pending);
-            outcome(NewZone::Created { zone, moved });
+            outcome(NewZone::Created {
+                zone: Box::new(zone),
+                moved,
+            });
             self.release(generation).await;
         });
     }

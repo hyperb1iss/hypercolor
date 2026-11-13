@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 
-use hypercolor_core::scene::{LayerMutationError, OutputMove, plan_layer_carry};
+use hypercolor_core::scene::{LayerMutationError, OutputMove};
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, LayerMove, MemberAssignmentTarget, MemberEdit,
     MemberState, SceneFence,
@@ -18,7 +18,7 @@ use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 use super::{
     AssignMembersRequest, DomainError, DomainErrorDetails, Output, OutputPlacement, ResourceKind,
     Scene, SceneTreeContext, ZoneRole, active_scene, check_scene_fence, ensure_live_zone_mutable,
-    member_placement, mint_missing_outputs, reconcile_member_exclusions, scene_document,
+    live_scene_document, member_placement, mint_missing_outputs, reconcile_member_exclusions,
     zone_layout_error,
 };
 
@@ -67,8 +67,9 @@ pub async fn edit_members(
         request.changes = assignment_changes(&previous, &assignment, minted)?;
         if request.changes.is_empty() {
             return Ok(EditMembersResponse {
-                document: scene_document(
+                document: live_scene_document(
                     &previous,
+                    &mutation.scenes().screen_views(&previous.id),
                     mutation.base_revision(),
                     ctx.scene.run_epoch(),
                 ),
@@ -146,25 +147,24 @@ pub async fn edit_members(
 
     // A replay names its layer moves. A forward edit plans them here, from
     // the zones as they stand, against everything the edit moves at once.
-    let layer_moves = match request.layer_moves {
-        Some(replayed) => {
-            for moved in &replayed {
-                ensure_live_zone_mutable(&mutation, moved.from.zone_id)?;
-                ensure_live_zone_mutable(&mutation, moved.to.zone_id)?;
-            }
-            // Scopes are stored sorted and unique. Normalizing here makes
-            // the moves this edit reports the moves it committed, so the
-            // receipt reverses cleanly however the request spelled them.
-            replayed
-                .into_iter()
-                .map(|moved| LayerMove {
-                    scope_before: moved.scope_before.normalized(),
-                    scope_after: moved.scope_after.normalized(),
-                    ..moved
-                })
-                .collect()
+    let layer_moves = if let Some(replayed) = request.layer_moves {
+        for moved in &replayed {
+            ensure_live_zone_mutable(&mutation, moved.from.zone_id)?;
+            ensure_live_zone_mutable(&mutation, moved.to.zone_id)?;
         }
-        None => plan_layer_carry(&previous, &output_moves(&changes)),
+        // Scopes are stored sorted and unique. Normalizing here makes
+        // the moves this edit reports the moves it committed, so the
+        // receipt reverses cleanly however the request spelled them.
+        replayed
+            .into_iter()
+            .map(|moved| LayerMove {
+                scope_before: moved.scope_before.normalized(),
+                scope_after: moved.scope_after.normalized(),
+                ..moved
+            })
+            .collect()
+    } else {
+        mutation.plan_output_moves(scene_id, &output_moves(&changes))
     };
 
     // Remove the complete touched set first, allowing a move between zones
@@ -216,6 +216,10 @@ pub async fn edit_members(
     mutation
         .apply_layer_moves(scene_id, &layer_moves)
         .map_err(layer_move_error)?;
+    // The edit answers with the scene, so the screens are settled before
+    // it is read: a screen that gained its output holds its stored face as
+    // layers, and one that lost it holds its layers as a stored zone.
+    mutation.settle_screens();
     for zone_id in changes
         .iter()
         .flat_map(|change| {
@@ -240,6 +244,7 @@ pub async fn edit_members(
             change.after = find_state(&committed, &after.output.id);
         }
     }
+    let views = mutation.scenes().screen_views(&committed.id);
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
     ctx.layout
@@ -247,7 +252,7 @@ pub async fn edit_members(
         .await;
     reconcile_member_exclusions(ctx, scene_id, &previous.zones).await;
     Ok(EditMembersResponse {
-        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
+        document: live_scene_document(&committed, &views, commit.revision(), ctx.scene.run_epoch()),
         changes,
         layer_moves,
     })

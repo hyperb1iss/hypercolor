@@ -78,6 +78,26 @@ pub struct DisplayFaceResponse {
     /// Whether a persisted default face exists for this display.
     #[serde(default)]
     pub default_assigned: bool,
+    /// What is on the panel. `live_scope` says where the returned
+    /// assignment lives, which is not always what is showing: a disabled
+    /// scene face shows nothing, and a scene's media or color layers cover
+    /// a kept face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendering: Option<DisplayFaceRendering>,
+}
+
+/// What a display's panel is showing over its backdrop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayFaceRendering {
+    /// The active scene's layers for this screen.
+    Scene,
+    /// The kept face from the preference store.
+    Default,
+    /// Neither: the screen shows its backdrop.
+    #[serde(rename = "none")]
+    Nothing,
 }
 
 /// Request body for `PUT /api/v1/displays/{id}/face`.

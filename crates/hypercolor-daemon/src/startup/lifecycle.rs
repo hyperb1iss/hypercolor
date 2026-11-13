@@ -884,8 +884,9 @@ impl DaemonState {
         }));
     }
 
-    /// Reconcile native display geometry and default-face overlays whenever a
-    /// display connects.
+    /// Reconcile the table of known screens and the default-face overlays
+    /// whenever a display connects, and the table again when one leaves, so
+    /// an empty screen that went away stops being listed.
     fn spawn_display_preference_sync_worker(&mut self) {
         let display = self.domains.display.clone();
         let mut event_rx = self.event_bus.subscribe_all();
@@ -902,9 +903,15 @@ impl DaemonState {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
-                if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) {
-                    display.sync_connected_surfaces().await;
-                    display.sync_preference_overlays().await;
+                match event.event {
+                    HypercolorEvent::DeviceConnected { .. } => {
+                        display.sync_connected_surfaces().await;
+                        display.sync_preference_overlays().await;
+                    }
+                    HypercolorEvent::DeviceDisconnected { .. } => {
+                        display.sync_connected_surfaces().await;
+                    }
+                    _ => {}
                 }
             }
         }));

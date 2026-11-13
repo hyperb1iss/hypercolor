@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..models.zone_resource_display_target_type_0 import (
         ZoneResourceDisplayTargetType0,
     )
+    from ..models.zone_view_of import ZoneViewOf
 
 
 T = TypeVar("T", bound="ZoneResource")
@@ -39,6 +40,7 @@ class ZoneResource:
         display_target (None | Unset | ZoneResourceDisplayTargetType0): Present on Display-role zones only.
         layout (None | Unset | ZoneLayoutResource):
         role (str | Unset):
+        view_of (None | Unset | ZoneViewOf):
     """
 
     brightness: float
@@ -52,6 +54,7 @@ class ZoneResource:
     display_target: None | Unset | ZoneResourceDisplayTargetType0 = UNSET
     layout: None | Unset | ZoneLayoutResource = UNSET
     role: str | Unset = UNSET
+    view_of: None | Unset | ZoneViewOf = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -59,6 +62,7 @@ class ZoneResource:
         from ..models.zone_resource_display_target_type_0 import (
             ZoneResourceDisplayTargetType0,
         )
+        from ..models.zone_view_of import ZoneViewOf
 
         brightness = self.brightness
 
@@ -108,6 +112,14 @@ class ZoneResource:
 
         role = self.role
 
+        view_of: dict[str, Any] | None | Unset
+        if isinstance(self.view_of, Unset):
+            view_of = UNSET
+        elif isinstance(self.view_of, ZoneViewOf):
+            view_of = self.view_of.to_dict()
+        else:
+            view_of = self.view_of
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -130,6 +142,8 @@ class ZoneResource:
             field_dict["layout"] = layout
         if role is not UNSET:
             field_dict["role"] = role
+        if view_of is not UNSET:
+            field_dict["view_of"] = view_of
 
         return field_dict
 
@@ -141,6 +155,7 @@ class ZoneResource:
         from ..models.zone_resource_display_target_type_0 import (
             ZoneResourceDisplayTargetType0,
         )
+        from ..models.zone_view_of import ZoneViewOf
 
         d = dict(src_dict)
         brightness = d.pop("brightness")
@@ -221,6 +236,23 @@ class ZoneResource:
 
         role = d.pop("role", UNSET)
 
+        def _parse_view_of(data: object) -> None | Unset | ZoneViewOf:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                view_of_type_0 = ZoneViewOf.from_dict(data)
+
+                return view_of_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | ZoneViewOf, data)
+
+        view_of = _parse_view_of(d.pop("view_of", UNSET))
+
         zone_resource = cls(
             brightness=brightness,
             enabled=enabled,
@@ -233,6 +265,7 @@ class ZoneResource:
             display_target=display_target,
             layout=layout,
             role=role,
+            view_of=view_of,
         )
 
         zone_resource.additional_properties = d

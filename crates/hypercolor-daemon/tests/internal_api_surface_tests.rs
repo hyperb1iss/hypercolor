@@ -867,7 +867,7 @@ fn layout_transport_uses_the_layout_domain_authority() {
         "layout_auto_exclusions",
         "resolved_layout_device_id",
         "layout_outputs_for",
-        "connected_display_surface_layouts",
+        "known_screen_surfaces",
         "sync_connectivity",
         "reconcile_zone_auto_exclusions",
         "remove_zone_auto_exclusions",

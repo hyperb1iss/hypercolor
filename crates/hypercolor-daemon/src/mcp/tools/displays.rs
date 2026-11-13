@@ -5,9 +5,10 @@ use serde_json::{Value, json};
 use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
 use crate::app_state::AppState;
 use crate::domain::display::{
-    ClearDisplayFace, DisplaySurfaceInfo, SetDefaultDisplayFace, SetDisplayFace,
-    clear_display_face, display_face_layout, display_surface_info, set_display_face,
+    DisplaySurfaceInfo, SetDefaultDisplayFace, SetDisplayFace, clear_display_face,
+    display_surface_info, set_display_face,
 };
+use crate::domain::scene_tree::screen_zone_resource;
 use crate::mcp::results::{DisplayDeviceResult, DisplayFaceResult};
 use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::control::ControlValue;
@@ -20,7 +21,7 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
     ToolDefinition {
         name: "set_display_face".into(),
         title: "Assign Display Face".into(),
-        description: "Assign or clear an HTML display-face effect on a display device. Scope 'default' (the default) persists across scenes; scope 'scene' writes the active scene's display zone, which always wins over the default while that scene is active.".into(),
+        description: "Assign or clear an HTML display-face effect on a screen. Scope 'scene' makes the face the screen's layer in the active scene, where it wins over the default while that scene is active. Scope 'default' (the default when omitted, deprecated in favor of scene layers) keeps one face per screen across scenes.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -86,15 +87,7 @@ pub(super) async fn handle_set_display_face_with_state(
     }
 
     if clear {
-        let cleared = clear_display_face(
-            &state.domains.scene,
-            ClearDisplayFace {
-                device_id,
-                device_name: info.name.clone(),
-                layout: display_face_layout(device_id, info.name.as_str(), surface),
-            },
-        )
-        .await?;
+        let cleared = clear_display_face(&state.domains.scene, device_id).await?;
         let live_scope = live_scope_payload(state, device_id).await;
         return serialize_result(DisplayFaceResult {
             device: display_device_payload(&info, surface),
@@ -103,7 +96,11 @@ pub(super) async fn handle_set_display_face_with_state(
             cleared: true,
             scene_id: Some(cleared.scene_id.to_string()),
             effect: None,
-            zone: Some(crate::domain::scene_tree::zone_resource(&cleared.zone)),
+            zone: cleared
+                .view
+                .as_ref()
+                .map(|view| screen_zone_resource(&view.zone, view.owner.as_ref())),
+            rendering: Some(rendering_payload(state, device_id).await),
         });
     }
 
@@ -120,10 +117,8 @@ pub(super) async fn handle_set_display_face_with_state(
         &state.domains.effects,
         SetDisplayFace {
             device_id,
-            device_name: info.name.clone(),
             effect: effect.clone(),
             controls,
-            layout: display_face_layout(device_id, info.name.as_str(), surface),
             target: DisplayFaceTarget {
                 blend_mode: BlendMode::Alpha,
                 device_id,
@@ -142,8 +137,22 @@ pub(super) async fn handle_set_display_face_with_state(
         effect: Some(crate::resource_summary::effect_summary_with_details(
             &effect,
         )),
-        zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),
+        zone: Some(screen_zone_resource(&written.zone, written.owner.as_ref())),
+        rendering: Some(rendering_payload(state, device_id).await),
     })
+}
+
+/// What the panel is showing over its backdrop, mirroring the REST contract.
+async fn rendering_payload(
+    state: &AppState,
+    device_id: DeviceId,
+) -> hypercolor_types::api::displays::DisplayFaceRendering {
+    state
+        .domains
+        .display
+        .face_layers(device_id)
+        .await
+        .rendering()
 }
 
 /// Which layer currently drives the display, mirroring the REST contract.
@@ -181,6 +190,7 @@ async fn handle_default_scope(
             scene_id: None,
             effect: None,
             zone: None,
+            rendering: Some(rendering_payload(state, device_id).await),
         });
     }
 
@@ -218,6 +228,7 @@ async fn handle_default_scope(
             &written.effect,
         )),
         zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),
+        rendering: Some(rendering_payload(state, device_id).await),
     })
 }
 

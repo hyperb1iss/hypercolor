@@ -122,7 +122,6 @@ impl DomainContexts {
             resources.display_frames,
             scene.clone(),
             effects.clone(),
-            layout.clone(),
             devices.clone(),
             resources.event_bus,
         );
@@ -1137,6 +1136,15 @@ impl SceneContext {
 
     pub(crate) const fn layout_runtime(&self) -> &LayoutRuntime {
         &self.layout_runtime
+    }
+
+    /// Every registered screen, read fresh from the device registry.
+    pub(crate) async fn known_screen_surfaces(
+        &self,
+    ) -> hypercolor_core::scene::screens::ScreenSurfaces {
+        self.layout
+            .known_screen_surfaces(&self.layout_runtime)
+            .await
     }
 
     /// Resolve the current media producer policy and asset vocabulary.

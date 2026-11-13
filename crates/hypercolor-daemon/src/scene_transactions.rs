@@ -654,6 +654,26 @@ impl SceneTransactionQueue {
         Ok(())
     }
 
+    /// Apply `layout` as a layout transaction does, for a test that runs a
+    /// render thread on this queue: the thread prepares the layout and
+    /// commits it together with the scene write, as it does for a client.
+    #[cfg(feature = "persistence-test-hooks")]
+    #[doc(hidden)]
+    pub async fn apply_layout_for_test(
+        &self,
+        spatial_engine: &SpatialService,
+        scene_manager: &SceneService,
+        layout: SpatialLayout,
+    ) -> bool {
+        let authority = LayoutTransactionAuthority::new(
+            spatial_engine.clone(),
+            scene_manager.clone(),
+            self.clone(),
+        );
+        let guard = authority.acquire_layout_update_guard().await;
+        authority.apply_under_guard(&guard, layout).await.is_ok()
+    }
+
     /// Future that resolves when queued work or a retained transaction changes.
     ///
     /// Pin it and call [`Notified::enable`] before checking

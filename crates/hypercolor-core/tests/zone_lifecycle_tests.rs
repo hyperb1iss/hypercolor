@@ -76,6 +76,45 @@ fn sample_zone(id: &str) -> Output {
     }
 }
 
+/// Store a display zone the way builds before screen layers wrote one: a
+/// `Display` zone holding one face layer, targeted at the device.
+fn store_display_zone(
+    manager: &mut SceneManager,
+    device_id: DeviceId,
+    device_name: &str,
+    effect: &EffectMetadata,
+    controls: HashMap<String, hypercolor_types::control::ControlValue>,
+    layout: SpatialLayout,
+) -> Option<hypercolor_types::scene::Zone> {
+    use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+    use hypercolor_types::scene::{DisplayFaceTarget, Zone};
+
+    let mut scene = manager.active_scene().cloned()?;
+    let zone = Zone {
+        id: ZoneId::new(),
+        name: format!("{device_name} Face"),
+        description: None,
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect.id,
+            controls,
+            HashMap::new(),
+            None,
+        )],
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(device_id)),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    };
+    scene.zones.push(zone.clone());
+    manager.update(scene).ok()?;
+    Some(zone)
+}
+
 #[test]
 fn create_and_delete_custom_zone_refreshes_resolved_zone_cache() {
     let mut manager = SceneManager::with_default();
@@ -592,15 +631,15 @@ fn primary_and_display_zones_cannot_be_deleted_as_custom_zones() {
         .map(|zone| zone.id)
         .expect("primary zone should exist");
     let device_id = DeviceId::new();
-    manager
-        .upsert_display_zone(
-            device_id,
-            "Face",
-            &sample_effect("Display"),
-            HashMap::new(),
-            sample_layout("display-zone"),
-        )
-        .expect("display zone should be created");
+    store_display_zone(
+        &mut manager,
+        device_id,
+        "Face",
+        &sample_effect("Display"),
+        HashMap::new(),
+        sample_layout("display-zone"),
+    )
+    .expect("display zone should be created");
     let display_id = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(device_id))
@@ -656,15 +695,15 @@ fn fallback_unassigned_behavior_rejects_display_zone() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     let device_id = DeviceId::new();
-    manager
-        .upsert_display_zone(
-            device_id,
-            "Face",
-            &sample_effect("Display"),
-            HashMap::new(),
-            sample_layout("display-zone"),
-        )
-        .expect("display zone should be created");
+    store_display_zone(
+        &mut manager,
+        device_id,
+        "Face",
+        &sample_effect("Display"),
+        HashMap::new(),
+        sample_layout("display-zone"),
+    )
+    .expect("display zone should be created");
     let display_id = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(device_id))

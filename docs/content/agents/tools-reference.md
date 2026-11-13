@@ -122,7 +122,7 @@ Stack one effect on top of a zone's layers without replacing anything. Name outp
 - **Required:** `effect` (string): effect ID, exact name, or unique name substring.
 - **Optional:** `zone` (string): zone ID, exact name, or unique name substring, defaulting to the primary zone; `outputs` (string array, at least one entry): the outputs the layer is limited to; `blend` (enum, default `alpha`): one of `replace`, `alpha`, `add`, `screen`, `multiply`, `overlay`, `soft_light`, `color_dodge`, `difference`, `tint`, `luma_reveal`; `opacity` (number, default `1.0`, range 0-1); `controls` (object): parameter overrides keyed by control ID.
 
-`add_layer` is for lighting. A display-face effect and a display zone are both refused, as they are by [`set_effect`](#set-effect) and [`adjust_controls`](#adjust-controls); a face goes on a screen through [`set_display_face`](#set-display-face).
+A display-face effect is accepted only when `outputs` names screens and nothing else: a face is a layer scoped to the screens it shows on, and one call can put the same face on several. Without `outputs`, or with an LED output among them, a face would be drawn into the lighting canvas, so the call is refused as [`set_effect`](#set-effect) refuses it. A screen's own `display` zone is refused as a `zone`; name the zone that places the screen, or use [`set_display_face`](#set-display-face).
 
 Each `outputs` entry names either one output of the zone or one device. An output resolves by its member ID or name, as the zone's `members` list them. A device resolves by the ID or name [`get_devices`](#get-devices) reports, or by the `device_id` its members carry, and stands for every output of that device the zone holds. Entries use the shared selector policy, and a query that matches several candidates is ambiguous only when they select different outputs: a one-output strip and its device are the same target. An output that belongs to another zone does not resolve; move it first or name its zone.
 
@@ -288,7 +288,7 @@ The response returns `scene_id`, `name`, `enabled`, and `mutation_mode`.
 
 ### clear_zone
 
-Clear one non-display zone's layer stack, or every non-display zone when `zone` is omitted. Whole-zone and scoped layers both go; the one exception is a layer scoped only to screens, which is a face and stays. Mutates state, destructive, and idempotent. Clearing the whole scene also quiesces output. Display zones are refused because display assignments have their own tool.
+Clear one zone's layer stack, or every zone's when `zone` is omitted. Whole-zone and scoped layers both go; the one exception is a layer scoped only to screens, which is a face and stays. Mutates state, destructive, and idempotent. Clearing the whole scene also quiesces output. A screen's `display` zone is refused because display assignments have their own tool.
 
 - **Optional:** `zone` (string): zone ID, exact name, or unique name substring.
 
@@ -428,10 +428,12 @@ payload. The `openrgb_setup` prompt guides the next steps.
 
 Assign or clear an HTML display-face effect on a display device (an LCD or similar). Mutates state, destructive, and non-idempotent.
 
-The target effect must be in the `Display` category **and** be an HTML source; anything else returns an invalid-parameter error. This is the only path to drive a display face; `set_effect` will refuse a display effect.
+The target effect must be in the `Display` category **and** be an HTML source; anything else returns an invalid-parameter error. `set_effect` will refuse a display effect; [`add_layer`](#add-layer) takes one when its `outputs` are screens.
 
 - **Required:** `device` (string): display device ID, exact name, or unique name substring.
-- **Optional:** `effect_id` (string): display-face effect ID, exact name, or unique name substring; omit when clearing. `clear` (boolean): when true, removes the assignment on the chosen scope. `scope` (enum): `default` (the default) persists the face across scenes; `scene` writes the active scene's display zone and wins while that scene is active. `controls` (object): control overrides stored on the display-face zone.
+- **Optional:** `effect_id` (string): display-face effect ID, exact name, or unique name substring; omit when clearing. `clear` (boolean): when true, removes the assignment on the chosen scope. `scope` (enum): `scene` makes the face the screen's one layer in the active scene, in the zone that places the screen; `default` (the default, deprecated in favor of screen layers and kept through 1.x) stores a kept face that shows in every scene that leaves the screen alone. `controls` (object): control overrides stored with the face.
+
+The result names the `effect`, the screen's `zone`, `live_scope` (where the assignment lives), and `rendering`: `scene`, `default`, or `none`, for what is on the panel now.
 
 ```json
 {

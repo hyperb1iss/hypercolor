@@ -35,6 +35,7 @@ fn zone(name: &str, role: ZoneRole, devices: &[&str]) -> ZoneResource {
             .collect(),
         layout: None,
         layers: Vec::new(),
+        view_of: None,
     }
 }
 

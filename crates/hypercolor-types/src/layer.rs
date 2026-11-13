@@ -147,7 +147,40 @@ impl LayerScope {
     }
 }
 
+/// The layer that is a zone's effect: the topmost layer with no scope whose
+/// source is an effect.
+///
+/// A scoped layer is an overlay on some of the zone's outputs, such as a
+/// keyboard's reactive layer or a screen's face, however high it sits in
+/// the stack. It is never what the zone is running. Every reader that asks
+/// which effect a zone has, to name it or to patch its controls, answers
+/// with this one rule.
+#[must_use]
+pub fn zone_effect_layer(layers: &[SceneLayer]) -> Option<&SceneLayer> {
+    layers
+        .iter()
+        .rev()
+        .find(|layer| layer.scope.is_none() && matches!(layer.source, LayerSource::Effect { .. }))
+}
+
+/// [`zone_effect_layer`], for a stack about to be edited.
+pub fn zone_effect_layer_mut(layers: &mut [SceneLayer]) -> Option<&mut SceneLayer> {
+    layers
+        .iter_mut()
+        .rev()
+        .find(|layer| layer.scope.is_none() && matches!(layer.source, LayerSource::Effect { .. }))
+}
+
 impl SceneLayer {
+    /// The effect this layer runs, when its source is one.
+    #[must_use]
+    pub fn effect_id(&self) -> Option<EffectId> {
+        match self.source {
+            LayerSource::Effect { effect_id, .. } => Some(effect_id),
+            _ => None,
+        }
+    }
+
     /// Create an effect-backed layer for a zone.
     #[must_use]
     pub fn from_effect(

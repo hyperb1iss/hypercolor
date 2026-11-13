@@ -15,6 +15,7 @@ pub mod automation;
 mod display_collisions;
 mod layer_scope;
 pub mod priority;
+pub mod screens;
 pub mod transition;
 
 pub use automation::AutomationEngine;
@@ -170,6 +171,16 @@ pub struct SceneManager {
     /// into the active render zones whenever the active scene has no
     /// assigned display zone for that device; never written into scenes.
     default_display_zones: Vec<Zone>,
+
+    /// Every known screen, by the layout device id its output carries.
+    /// Runtime state: it says which outputs are screens the engine can
+    /// drive and at what size, and is never written into a scene.
+    screen_surfaces: screens::ScreenSurfaces,
+
+    /// Screens whose output left a scene's zone while their device was
+    /// not known, with the layers that wait for them. Runtime state: it
+    /// lasts until the device is seen or the daemon stops.
+    waiting_screens: HashMap<SceneId, Vec<screens::WaitingScreen>>,
 }
 
 impl SceneManager {
@@ -185,6 +196,8 @@ impl SceneManager {
             resolved_zones: Arc::default(),
             resolved_zones_revision: 0,
             default_display_zones: Vec::new(),
+            screen_surfaces: screens::ScreenSurfaces::new(),
+            waiting_screens: HashMap::new(),
         }
     }
 
@@ -577,7 +590,7 @@ impl SceneManager {
                 active_preset_id,
             );
             if zone.layout != next_primary_layout {
-                zone.layout = next_primary_layout;
+                replace_zone_layout(zone, next_primary_layout);
                 structural_changed = true;
             }
             zone.enabled = true;
@@ -622,183 +635,6 @@ impl SceneManager {
             .active_scene()
             .and_then(Scene::primary_zone)
             .expect("primary zone should exist after upsert"))
-    }
-
-    pub fn upsert_display_zone(
-        &mut self,
-        device_id: DeviceId,
-        device_name: &str,
-        effect: &EffectMetadata,
-        controls: HashMap<String, ControlValue>,
-        layout: SpatialLayout,
-    ) -> Result<&Zone> {
-        let scene = self
-            .active_scene_mut()
-            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
-
-        if let Some(zone) = scene.display_zone_for_mut(device_id) {
-            let control_bindings = carried_control_bindings(zone, effect.id);
-            replace_effect_layer_stack(zone, effect.id, controls, control_bindings, None);
-            zone.layout = layout;
-            zone.display_target = Some(DisplayFaceTarget::new(device_id));
-            zone.enabled = true;
-            zone.role = ZoneRole::Display;
-            if zone.name.trim().is_empty() {
-                zone.name = format!("{device_name} Face");
-            }
-        } else {
-            let mut zone = Zone {
-                id: ZoneId::new(),
-                name: format!("{device_name} Face"),
-                description: Some(format!("Display face for {device_name}")),
-                layers: Vec::new(),
-                layout,
-                brightness: 1.0,
-                enabled: true,
-                color: None,
-                display_target: Some(DisplayFaceTarget::new(device_id)),
-                role: ZoneRole::Display,
-                controls_version: 0,
-                layers_version: 0,
-            };
-            replace_effect_layer_stack(&mut zone, effect.id, controls, HashMap::new(), None);
-            scene.zones.push(zone);
-        }
-
-        self.refresh_resolved_zones();
-        Ok(self
-            .active_scene()
-            .and_then(|scene| scene.display_zone_for(device_id))
-            .expect("display zone should exist after upsert"))
-    }
-
-    pub fn ensure_display_zone_surface(
-        &mut self,
-        device_id: DeviceId,
-        device_name: &str,
-        layout: SpatialLayout,
-    ) -> Result<&Zone> {
-        let scene = self
-            .active_scene_mut()
-            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
-
-        let mut structural_changed = false;
-        if let Some(zone) = scene.display_zone_for_mut(device_id) {
-            if zone.role != ZoneRole::Display {
-                zone.role = ZoneRole::Display;
-                structural_changed = true;
-            }
-            if zone.display_target.is_none() {
-                zone.display_target = Some(DisplayFaceTarget::new(device_id));
-                structural_changed = true;
-            }
-            // Repair pass: earlier builds seeded face-less screen zones
-            // with Replace, which drops the scene frame the moment a face
-            // arrives via the layer path. A face-less zone cannot carry a
-            // deliberate composition choice (the composition endpoint
-            // rejects targets with no face), so normalizing to the blended
-            // default is always safe here.
-            if !display_zone_has_face(zone)
-                && let Some(target) = zone.display_target.as_mut()
-                && target.blend_mode == BlendMode::Replace
-            {
-                target.blend_mode = BlendMode::default();
-                structural_changed = true;
-            }
-            if zone.layout != layout {
-                zone.layout = layout;
-                structural_changed = true;
-            }
-            if zone.name.trim().is_empty() {
-                device_name.clone_into(&mut zone.name);
-                structural_changed = true;
-            }
-        } else {
-            scene.zones.push(Zone {
-                id: ZoneId::new(),
-                name: device_name.to_owned(),
-                description: Some(format!("Screen surface for {device_name}")),
-                layers: Vec::new(),
-                layout,
-                brightness: 1.0,
-                enabled: true,
-                color: None,
-                display_target: Some(DisplayFaceTarget::new(device_id)),
-                role: ZoneRole::Display,
-                controls_version: 0,
-                layers_version: 0,
-            });
-            structural_changed = true;
-        }
-
-        if structural_changed {
-            bump_zones_revision(scene);
-            self.refresh_resolved_zones();
-        }
-
-        Ok(self
-            .active_scene()
-            .and_then(|scene| scene.display_zone_for(device_id))
-            .expect("display zone should exist after sync"))
-    }
-
-    pub fn clear_display_zone_assignment(
-        &mut self,
-        device_id: DeviceId,
-        device_name: &str,
-        layout: SpatialLayout,
-    ) -> Result<&Zone> {
-        let scene = self
-            .active_scene_mut()
-            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
-
-        let structural_changed = if let Some(zone) = scene.display_zone_for_mut(device_id) {
-            let changed = !zone.layers.is_empty()
-                || zone.layout != layout
-                || !zone.enabled
-                || zone.display_target != Some(DisplayFaceTarget::new(device_id))
-                || zone.role != ZoneRole::Display
-                || zone.name.trim().is_empty();
-            zone.layers.clear();
-            zone.layout = layout;
-            zone.enabled = true;
-            zone.display_target = Some(DisplayFaceTarget::new(device_id));
-            zone.role = ZoneRole::Display;
-            if zone.name.trim().is_empty() {
-                device_name.clone_into(&mut zone.name);
-            }
-            if changed {
-                zone.controls_version = zone.controls_version.saturating_add(1);
-                zone.layers_version = zone.layers_version.saturating_add(1);
-            }
-            changed
-        } else {
-            scene.zones.push(Zone {
-                id: ZoneId::new(),
-                name: device_name.to_owned(),
-                description: Some(format!("Screen surface for {device_name}")),
-                layers: Vec::new(),
-                layout,
-                brightness: 1.0,
-                enabled: true,
-                color: None,
-                display_target: Some(DisplayFaceTarget::new(device_id)),
-                role: ZoneRole::Display,
-                controls_version: 0,
-                layers_version: 0,
-            });
-            true
-        };
-
-        if structural_changed {
-            bump_zones_revision(scene);
-            self.refresh_resolved_zones();
-        }
-
-        Ok(self
-            .active_scene()
-            .and_then(|scene| scene.display_zone_for(device_id))
-            .expect("display zone should exist after clearing assignment"))
     }
 
     /// Create an empty `Custom` LED zone in the target scene.
@@ -874,7 +710,15 @@ impl SceneManager {
             return Err(ZoneMutationError::InvalidRole { role });
         }
 
-        scene.zones.remove(index);
+        // The zone's lighting goes with it. Its screens are unplaced, and
+        // an unplaced screen keeps its stack in a stored display zone.
+        let removed = scene.zones.remove(index);
+        let faces =
+            screens::stored_faces_of(*scene_id, &removed, &self.screen_surfaces, |device_id| {
+                scene.display_zone_for(device_id).is_some()
+                    || screens::screen_placement(scene, &self.screen_surfaces, device_id).is_some()
+            });
+        scene.zones.extend(faces);
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
             self.refresh_resolved_zones();
@@ -988,7 +832,7 @@ impl SceneManager {
         let active_scene_id = self.active_scene_id().copied();
         let scene = self
             .scenes
-            .get_mut(scene_id)
+            .get(scene_id)
             .ok_or(ZoneMutationError::SceneMissing)?;
         if scene.blocks_runtime_mutation() {
             return Err(ZoneMutationError::SnapshotLocked);
@@ -1018,7 +862,11 @@ impl SceneManager {
                 })
             })
             .collect::<Vec<_>>();
-        let layer_moves = plan_layer_carry(scene, &moves);
+        let layer_moves = self.plan_output_moves(*scene_id, &moves);
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
 
         for device_zone in outputs {
             if owner_of(scene, &device_zone.id) == Some(target_index) {
@@ -1616,11 +1464,22 @@ impl SceneManager {
     /// scope names only screens the zone currently holds, so a screen's
     /// face survives the stop gesture the way a display zone's does. A
     /// scope that also names an LED output, or an output that has left the
-    /// zone, marks the layer as lighting and it is removed.
+    /// zone, marks the layer as lighting and it is removed. The exception
+    /// is a face waiting for its device: its screen left before the device
+    /// was known, so its scope names no output, and it is kept.
     pub fn clear_zone_effect(&mut self, zone_id: ZoneId) -> Option<&Zone> {
+        let scene_id = *self.active_scene_id()?;
+        let waiting = self
+            .waiting_screens
+            .get(&scene_id)
+            .into_iter()
+            .flatten()
+            .filter(|screen| screen.held.zone_id == zone_id)
+            .flat_map(|screen| screen.layers.iter().copied())
+            .collect::<Vec<_>>();
         let scene = self.active_scene_mut()?;
         let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;
-        if layer_scope::clear_lighting_layers(zone) {
+        if layer_scope::clear_lighting_layers(zone, &waiting) {
             zone.layers_version = zone.layers_version.saturating_add(1);
         }
         // Keep the internal generation aligned with the cleared source.
@@ -1739,19 +1598,22 @@ impl SceneManager {
         Ok((current, new_version))
     }
 
+    /// Rebuild the zone list the render thread consumes: the active
+    /// scene lowered (see [`screens`]), then each kept face whose screen
+    /// the scene leaves alone.
     fn refresh_resolved_zones(&mut self) {
         let mut next_zones: Vec<Zone> = self
             .active_scene()
-            .map(|scene| scene.zones.clone())
+            .map(|scene| screens::lower_zones(scene, &self.screen_surfaces))
             .unwrap_or_default();
         for default_zone in &self.default_display_zones {
             let Some(target) = default_zone.display_target.as_ref() else {
                 continue;
             };
-            let covered = self
-                .active_scene()
-                .and_then(|scene| scene.display_zone_for(target.device_id))
-                .is_some_and(|zone| effect_layer_id(zone).is_some());
+            let covered = self.active_scene().is_some_and(|scene| {
+                let stack = screens::screen_stack(scene, &self.screen_surfaces, target.device_id);
+                stack.assigned() || stack.rendering()
+            });
             if !covered {
                 next_zones.push(default_zone.clone());
             }
@@ -1761,6 +1623,328 @@ impl SceneManager {
             self.resolved_zones_revision = self.resolved_zones_revision.saturating_add(1);
         }
         self.resolved_zones = next_zones;
+    }
+
+    // ── Screens ─────────────────────────────────────────────────────
+
+    /// Replace the table of known screens. Returns whether it changed.
+    pub fn set_screen_surfaces(&mut self, surfaces: screens::ScreenSurfaces) -> bool {
+        if self.screen_surfaces == surfaces {
+            return false;
+        }
+        self.screen_surfaces = surfaces;
+        self.refresh_resolved_zones();
+        true
+    }
+
+    /// Every known screen, by the layout device id its output carries.
+    #[must_use]
+    pub fn screen_surfaces(&self) -> &screens::ScreenSurfaces {
+        &self.screen_surfaces
+    }
+
+    /// Where a screen's stack lives in the active scene.
+    #[must_use]
+    pub fn active_screen_stack(&self, device_id: DeviceId) -> Option<screens::ScreenStack<'_>> {
+        self.active_scene()
+            .map(|scene| screens::screen_stack(scene, &self.screen_surfaces, device_id))
+    }
+
+    /// The view of one known screen in a scene.
+    #[must_use]
+    pub fn screen_view(
+        &self,
+        scene_id: &SceneId,
+        device_id: DeviceId,
+    ) -> Option<screens::ScreenView> {
+        let scene = self.scenes.get(scene_id)?;
+        screens::screen_view(scene, &self.screen_surfaces, device_id)
+    }
+
+    /// The views a scene lists. See [`screens::screen_views`].
+    #[must_use]
+    pub fn screen_views(&self, scene_id: &SceneId) -> Vec<screens::ScreenView> {
+        self.scenes.get(scene_id).map_or_else(Vec::new, |scene| {
+            screens::screen_views(scene, &self.screen_surfaces)
+        })
+    }
+
+    /// The screen a zone id is the view of, when it is one.
+    #[must_use]
+    pub fn screen_of_view(&self, scene_id: &SceneId, zone_id: ZoneId) -> Option<DeviceId> {
+        let scene = self.scenes.get(scene_id)?;
+        screens::known_screens(&self.screen_surfaces)
+            .into_iter()
+            .map(|surface| surface.device_id)
+            .filter(|device_id| scene.display_zone_for(*device_id).is_none())
+            .find(|device_id| screens::screen_zone_id(*scene_id, *device_id) == zone_id)
+    }
+
+    /// Rewrite a scene's stored display zones into screen layers where the
+    /// result is exact. See [`screens::convert_legacy_display_zones`].
+    pub fn convert_legacy_display_zones(
+        &mut self,
+        scene_id: &SceneId,
+    ) -> screens::ScreenConversion {
+        let active_scene_id = self.active_scene_id().copied();
+        let Some(scene) = self.scenes.get_mut(scene_id) else {
+            return screens::ScreenConversion::default();
+        };
+        let report = screens::convert_legacy_display_zones(scene, &self.screen_surfaces);
+        if report.changed() && active_scene_id == Some(*scene_id) {
+            self.refresh_resolved_zones();
+        }
+        report
+    }
+
+    /// Plan the scoped layers that follow a set of output moves, to apply
+    /// once the outputs have moved. Every membership edit plans here, so
+    /// each one treats a shared face the same way: a screen that moves
+    /// away from screens it shares a layer with is given its own copy
+    /// first, and the plan carries the copy with it.
+    pub fn plan_output_moves(&mut self, scene_id: SceneId, moves: &[OutputMove]) -> Vec<LayerMove> {
+        self.split_shared_screen_layers(scene_id, moves);
+        self.scenes
+            .get(&scene_id)
+            .map(|scene| plan_layer_carry(scene, moves))
+            .unwrap_or_default()
+    }
+
+    /// Give each screen a move is about to take out of a zone its own copy
+    /// of the screen layers it shares with screens that stay behind, so
+    /// the carry that follows moves the copy with it. Without this the
+    /// shared layer is narrowed and the moved screen arrives faceless.
+    /// Layers whose screens all move to one zone are left whole: they
+    /// carry as they are.
+    fn split_shared_screen_layers(&mut self, scene_id: SceneId, moves: &[OutputMove]) {
+        let Some(scene) = self.scenes.get(&scene_id) else {
+            return;
+        };
+        let mut splits: Vec<(ZoneId, SceneLayerId, String)> = Vec::new();
+        for zone in &scene.zones {
+            let destination = |output_id: &str| {
+                moves
+                    .iter()
+                    .find(|moved| moved.from == zone.id && moved.output_id == output_id)
+                    .map_or(zone.id, |moved| moved.to)
+            };
+            for layer in zone
+                .layers
+                .iter()
+                .filter(|layer| screens::is_screen_layer(zone, layer))
+            {
+                let Some(scope) = &layer.scope else { continue };
+                let live = zone
+                    .scoped_outputs(scope)
+                    .map(|output| output.id.clone())
+                    .collect::<Vec<_>>();
+                let mut destinations = live.iter().map(|id| destination(id));
+                let first = destinations.next();
+                if destinations.all(|to| Some(to) == first) {
+                    continue;
+                }
+                splits.extend(
+                    live.iter()
+                        .filter(|id| destination(id) != zone.id)
+                        .map(|id| (zone.id, layer.id, id.clone())),
+                );
+            }
+        }
+        for (zone_id, layer_id, output_id) in splits {
+            let _ = self.edit_zone_layers(scene_id, zone_id, |zone| {
+                screens::split_for_screen(zone, layer_id, &output_id)
+                    .map(|_| ())
+                    .ok_or(LayerMutationError::LayerMissing { layer_id })
+            });
+        }
+    }
+
+    /// The outputs each scene's zones hold, to settle a write against.
+    /// See [`screens::screen_placements`].
+    #[must_use]
+    pub fn screen_placements(&self) -> HashMap<SceneId, screens::ScenePlacements> {
+        self.scenes
+            .iter()
+            .map(|(scene_id, scene)| (*scene_id, screens::screen_placements(scene)))
+            .filter(|(_, held)| !held.screens.is_empty())
+            .collect()
+    }
+
+    /// Put every known screen's stack of the active scene where its
+    /// placement says it belongs, given the outputs each scene held before
+    /// the write being settled. See [`screens::settle_screens`].
+    ///
+    /// A screen whose output left while its device was unknown is kept
+    /// here and offered again on every later settle, so a face dropped by
+    /// a realign before its device was discovered is stored for it as soon
+    /// as the device is.
+    pub fn settle_screens(
+        &mut self,
+        held_before: &HashMap<SceneId, screens::ScenePlacements>,
+    ) -> screens::ScreenSettle {
+        let Some(scene_id) = self.active_scene_id().copied() else {
+            return screens::ScreenSettle::default();
+        };
+        let Some(scene) = self.scenes.get_mut(&scene_id) else {
+            return screens::ScreenSettle::default();
+        };
+        let none = screens::ScenePlacements::default();
+        let held = held_before.get(&scene_id).unwrap_or(&none);
+        let waiting = self.waiting_screens.remove(&scene_id).unwrap_or_default();
+        let report = screens::settle_screens(scene, &self.screen_surfaces, held, &waiting);
+        if !report.waiting.is_empty() {
+            self.waiting_screens
+                .insert(scene_id, report.waiting.clone());
+        }
+        if report.changed() {
+            self.refresh_resolved_zones();
+        }
+        report
+    }
+
+    /// Make sure a scene stores a display zone for a known screen, and
+    /// return its id.
+    ///
+    /// This is the stack of a screen that no zone places: with no output
+    /// to scope a layer to, its layers are stored as a display zone, the
+    /// spelling every build has read. The zone takes the screen's view id,
+    /// so a client that addressed the empty view keeps the same zone, and
+    /// conversion later keeps the same renderer.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a missing or snapshot-locked scene, and
+    /// [`ZoneMutationError::OutputMissing`] for a device that is not a
+    /// known screen.
+    pub fn ensure_display_zone(
+        &mut self,
+        scene_id: &SceneId,
+        device_id: DeviceId,
+    ) -> Result<ZoneId, ZoneMutationError> {
+        let surface = self
+            .screen_surfaces
+            .values()
+            .find(|surface| surface.device_id == device_id)
+            .cloned()
+            .ok_or(ZoneMutationError::OutputMissing)?;
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        if scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+        if let Some(zone) = scene.display_zone_for(device_id) {
+            return Ok(zone.id);
+        }
+        let zone = screens::stored_display_zone(*scene_id, &surface);
+        let zone_id = zone.id;
+        scene.zones.push(zone);
+        bump_zones_revision(scene);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_resolved_zones();
+        }
+        Ok(zone_id)
+    }
+
+    /// Make one face the whole stack of a scene's stored display zone,
+    /// creating the zone when the scene has none for the screen. Input
+    /// bindings carry over when the face is the one already there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ensure_display_zone`].
+    pub fn write_display_zone_face(
+        &mut self,
+        scene_id: &SceneId,
+        device_id: DeviceId,
+        effect: &EffectMetadata,
+        controls: HashMap<String, ControlValue>,
+        target: DisplayFaceTarget,
+    ) -> Result<&Zone, ZoneMutationError> {
+        let zone_id = self.ensure_display_zone(scene_id, device_id)?;
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        let zone = scene
+            .zones
+            .iter_mut()
+            .find(|zone| zone.id == zone_id)
+            .ok_or(ZoneMutationError::ZoneMissing)?;
+        let control_bindings = carried_control_bindings(zone, effect.id);
+        replace_effect_layer_stack(zone, effect.id, controls, control_bindings, None);
+        zone.display_target = Some(screens::normalize_face_target(target));
+        zone.enabled = true;
+        zone.controls_version = zone.controls_version.saturating_add(1);
+        zone.layers_version = zone.layers_version.saturating_add(1);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_resolved_zones();
+        }
+        self.scenes
+            .get(scene_id)
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .ok_or(ZoneMutationError::ZoneMissing)
+    }
+
+    /// Remove a scene's stored display zone for one device.
+    pub fn remove_legacy_display_zone(
+        &mut self,
+        scene_id: &SceneId,
+        device_id: DeviceId,
+    ) -> Option<Zone> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self.scenes.get_mut(scene_id)?;
+        let index = scene.zones.iter().position(|zone| {
+            zone.role == ZoneRole::Display
+                && zone
+                    .display_target
+                    .as_ref()
+                    .is_some_and(|target| target.device_id == device_id)
+        })?;
+        let removed = scene.zones.remove(index);
+        bump_zones_revision(scene);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_resolved_zones();
+        }
+        Some(removed)
+    }
+
+    /// Rewrite one zone's layer stack in place.
+    ///
+    /// This is the door for writes that are about one screen and have to
+    /// touch the zone that places it: the closure edits the stack, and the
+    /// result is checked for duplicate ids and invalid layers before it
+    /// stands. Scope ids are not re-checked; the screen adapters only
+    /// write ids the zone already holds.
+    ///
+    /// # Errors
+    ///
+    /// The closure's own refusal, or [`LayerMutationError::InvalidLayer`]
+    /// when the edited stack is not valid. Nothing changes on a refusal.
+    pub fn edit_zone_layers<T>(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        edit: impl FnOnce(&mut Zone) -> Result<T, LayerMutationError>,
+    ) -> Result<T, LayerMutationError> {
+        let mut outcome = None;
+        self.mutate_zone_layers(scene_id, zone_id, None, |zone| {
+            let mut candidate = zone.clone();
+            let value = edit(&mut candidate)?;
+            for layer in &mut candidate.layers {
+                *layer = layer.normalized();
+            }
+            candidate
+                .validate_layers()
+                .map_err(|errors| LayerMutationError::InvalidLayer { errors })?;
+            zone.layers = candidate.layers;
+            outcome = Some(value);
+            Ok(())
+        })?;
+        outcome.ok_or(LayerMutationError::ZoneMissing)
     }
 
     // ── Default display faces (spec 69 §3.6) ───────────────────────
@@ -1898,8 +2082,13 @@ fn remap_zone_device_bindings(
     migrated
 }
 
-fn display_zone_has_face(zone: &Zone) -> bool {
-    effect_layer_id(zone).is_some()
+/// Replace a zone's layout whole, carrying its layer scopes across to the
+/// outputs the new layout holds for the same device segments.
+fn replace_zone_layout(zone: &mut Zone, layout: SpatialLayout) {
+    if screens::follow_outputs(zone, &layout.zones) {
+        zone.layers_version = zone.layers_version.saturating_add(1);
+    }
+    zone.layout = layout;
 }
 
 /// Align one zone with the active layout: a primary zone in a scene without
@@ -1911,7 +2100,7 @@ fn align_led_zone(zone: &mut Zone, layout: &SpatialLayout, custom_scene: bool) -
     }
     if !custom_scene {
         if zone.role == ZoneRole::Primary && zone.layout != *layout {
-            zone.layout = layout.clone();
+            replace_zone_layout(zone, layout.clone());
             return true;
         }
         return false;
@@ -2044,13 +2233,6 @@ fn carried_control_bindings(zone: &Zone, effect_id: EffectId) -> HashMap<String,
         }) if *current == effect_id => control_bindings.clone(),
         _ => HashMap::new(),
     }
-}
-
-fn effect_layer_id(zone: &Zone) -> Option<EffectId> {
-    zone.layers.iter().find_map(|layer| match layer.source {
-        LayerSource::Effect { effect_id, .. } => Some(effect_id),
-        _ => None,
-    })
 }
 
 impl Default for SceneManager {

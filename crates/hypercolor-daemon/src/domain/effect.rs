@@ -36,7 +36,7 @@ use hypercolor_types::controls::{ControlApplyError, RejectedControlChange};
 use hypercolor_types::effect::ControlValidationError;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind};
-use hypercolor_types::layer::LayerSource;
+use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
@@ -431,7 +431,8 @@ impl EffectContext {
             .collect()
     }
 
-    /// Resolve the active scene's primary zone and its first effect.
+    /// Resolve the active scene's primary zone and its effect. A scoped
+    /// overlay or a screen's face on top of the stack is not it.
     pub async fn active_primary_effect(&self) -> Option<(Zone, EffectMetadata)> {
         let zone = self
             .scene
@@ -440,7 +441,7 @@ impl EffectContext {
             .active_scene()?
             .primary_zone()
             .cloned()?;
-        let effect_id = zone.effect_ids().next()?;
+        let effect_id = zone.effect_layer()?.effect_id()?;
         let metadata = self.metadata(effect_id).await?;
         Some((zone, metadata))
     }
@@ -953,7 +954,8 @@ pub struct EffectApplied {
 pub struct EffectErrorFallbackApplied {
     /// The failed effect removed from the active scene.
     pub effect: EffectRef,
-    /// Number of active zones cleared by the policy.
+    /// Number of active zones the policy changed: cleared, or relieved of
+    /// the scoped layers that ran the failed effect.
     pub cleared_zone_count: usize,
 }
 
@@ -1101,51 +1103,58 @@ async fn clear_active_scene_effect_zones(
     let mut mutation = ctx.scene.begin_mutation().await;
     let scene_id =
         mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
-    let zone_ids = mutation
+    let runs_failed = |layer: &SceneLayer| {
+        layer
+            .effect_id()
+            .is_some_and(|candidate| candidate.to_string() == effect_id)
+    };
+    // What failed is a layer, not always the zone. A zone whose own
+    // lighting runs the failed effect is cleared, as it always was. A zone
+    // where only scoped layers run it, a face on a screen or an overlay on
+    // one keyboard, loses those layers and keeps its lighting.
+    let (cleared, trimmed): (Vec<Zone>, Vec<Zone>) = mutation
         .scenes()
         .active_scene()
         .map(|scene| {
             scene
                 .zones
                 .iter()
-                .filter(|zone| {
-                    zone.effect_ids()
-                        .any(|candidate| candidate.to_string() == effect_id)
+                .filter(|zone| zone.layers.iter().any(runs_failed))
+                .cloned()
+                .partition(|zone| {
+                    zone.layers
+                        .iter()
+                        .any(|layer| layer.scope.is_none() && runs_failed(layer))
                 })
-                .map(|zone| zone.id)
-                .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if zone_ids.is_empty() {
+    if cleared.is_empty() && trimmed.is_empty() {
         return Ok(None);
     }
 
-    let cleared_zones = zone_ids
-        .into_iter()
-        .filter_map(|zone_id| {
-            mutation.clear_zone_effect(zone_id, Some(effect.clone()), EffectStopReason::Error)
-        })
-        .collect::<Vec<_>>();
-    if cleared_zones.is_empty() {
-        return Ok(None);
-    }
+    let mut changed_zones = 0;
     // Clearing keeps layers scoped only to live screens. One of those running
     // the failed effect is the failure itself, so it goes too.
-    for zone in &cleared_zones {
-        let failed_layers = zone.layers.iter().filter(|layer| {
-            matches!(
-                &layer.source,
-                LayerSource::Effect { effect_id: candidate, .. }
-                    if candidate.to_string() == effect_id
-            )
-        });
-        for layer in failed_layers {
+    let mut remaining = trimmed;
+    for zone in cleared {
+        if let Some(zone) =
+            mutation.clear_zone_effect(zone.id, Some(effect.clone()), EffectStopReason::Error)
+        {
+            remaining.push(zone);
+        }
+    }
+    for zone in &remaining {
+        for layer in zone.layers.iter().filter(|layer| runs_failed(layer)) {
             mutation
                 .remove_layer(scene_id, zone.id, layer.id, None)
                 .map_err(|error| {
                     crate::domain::scene_tree::layer_error(error, zone.id, Some(layer.id))
                 })?;
         }
+        changed_zones += 1;
+    }
+    if changed_zones == 0 {
+        return Ok(None);
     }
 
     ctx.scene
@@ -1156,7 +1165,7 @@ async fn clear_active_scene_effect_zones(
 
     Ok(Some(EffectErrorFallbackApplied {
         effect,
-        cleared_zone_count: cleared_zones.len(),
+        cleared_zone_count: changed_zones,
     }))
 }
 

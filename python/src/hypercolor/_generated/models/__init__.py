@@ -300,6 +300,7 @@ from .discovery_scanning_response import DiscoveryScanningResponse
 from .discovery_scanning_response_status import DiscoveryScanningResponseStatus
 from .display_class import DisplayClass
 from .display_descriptor import DisplayDescriptor
+from .display_face_rendering import DisplayFaceRendering
 from .display_face_response import DisplayFaceResponse
 from .display_face_response_optional import DisplayFaceResponseOptional
 from .display_face_response_zone import DisplayFaceResponseZone
@@ -669,6 +670,7 @@ from .zone_shape_type_2 import ZoneShapeType2
 from .zone_shape_type_2_shape_type import ZoneShapeType2ShapeType
 from .zone_shape_type_3 import ZoneShapeType3
 from .zone_shape_type_3_shape_type import ZoneShapeType3ShapeType
+from .zone_view_of import ZoneViewOf
 
 __all__ = (
     "ActionConfirmation",
@@ -923,6 +925,7 @@ __all__ = (
     "DiscoveryScanningResponseStatus",
     "DisplayClass",
     "DisplayDescriptor",
+    "DisplayFaceRendering",
     "DisplayFaceResponse",
     "DisplayFaceResponseOptional",
     "DisplayFaceResponseZone",
@@ -1278,4 +1281,5 @@ __all__ = (
     "ZoneShapeType2ShapeType",
     "ZoneShapeType3",
     "ZoneShapeType3ShapeType",
+    "ZoneViewOf",
 )

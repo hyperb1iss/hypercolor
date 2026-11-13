@@ -1,5 +1,7 @@
 //! Each screen shows the backdrop of the zone that places it, seen through
-//! that zone's placement of the screen (Spec 95 §5.10).
+//! that zone's placement of the screen (Spec 95 §5.10), and its own layers
+//! over that backdrop, whether they are stored as screen layers or as a
+//! display zone (§6.4, §6.6).
 //!
 //! These tests run the render thread and the display output thread together
 //! and read what reaches each panel.
@@ -17,6 +19,9 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
+use hypercolor_core::scene::screens::{
+    LegacyReason, ScreenConversion, ScreenSurface, ScreenSurfaces,
+};
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::{DISPLAY_ZONE_NAME, SpatialEngine};
 use hypercolor_daemon::SceneTransactionQueue;
@@ -41,7 +46,7 @@ use hypercolor_types::device::{
     DeviceTopologyHint, DisplayFrameFormat, OwnedDisplayFramePayload, SegmentInfo,
 };
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerScope, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     DisplayFaceTarget, DisplayRotation, Scene, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
@@ -240,6 +245,7 @@ fn panel_info(
     format: DisplayFrameFormat,
     max_fps: u32,
     circular: bool,
+    size: (u32, u32),
 ) -> DeviceInfo {
     DeviceInfo {
         id: device_id,
@@ -253,8 +259,8 @@ fn panel_info(
             name: "Display".to_owned(),
             led_count: 0,
             topology: DeviceTopologyHint::Display {
-                width: PANEL,
-                height: PANEL,
+                width: size.0,
+                height: size.1,
                 circular,
                 format,
             },
@@ -267,7 +273,7 @@ fn panel_info(
             supports_direct: false,
             supports_brightness: false,
             has_display: true,
-            display_resolution: Some((PANEL, PANEL)),
+            display_resolution: Some(size),
             max_fps,
             color_space: DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
@@ -432,6 +438,10 @@ struct Rig {
     power: watch::Sender<OutputPowerState>,
     /// What each panel last showed, for whoever previews it.
     display_frames: Arc<RwLock<DisplayFrameRuntime>>,
+    /// The screens the scene manager is told about before a run.
+    surfaces: ScreenSurfaces,
+    /// The kept faces installed before a run.
+    kept_faces: Vec<Zone>,
 }
 
 impl Rig {
@@ -509,6 +519,8 @@ impl Rig {
             effects,
             power,
             display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+            surfaces: ScreenSurfaces::new(),
+            kept_faces: Vec::new(),
         }
     }
 
@@ -543,15 +555,28 @@ impl Rig {
         max_fps: u32,
         circular: bool,
     ) {
-        self.connect_panel_as(screen, format, max_fps, circular, false)
+        self.connect_panel_as(screen, format, max_fps, circular, false, (PANEL, PANEL))
+            .await;
+    }
+
+    /// Connect a raw RGB panel of a given size.
+    async fn connect_sized(&self, screen: &Screen, size: (u32, u32)) {
+        self.connect_panel_as(screen, DisplayFrameFormat::Rgb, 30, false, false, size)
             .await;
     }
 
     /// Connect a simulated panel: one that display output drives only
     /// while somebody previews it, and that is nobody's physical output.
     async fn connect_simulator(&self, screen: &Screen) {
-        self.connect_panel_as(screen, DisplayFrameFormat::Rgb, 30, false, true)
-            .await;
+        self.connect_panel_as(
+            screen,
+            DisplayFrameFormat::Rgb,
+            30,
+            false,
+            true,
+            (PANEL, PANEL),
+        )
+        .await;
     }
 
     async fn connect_panel_as(
@@ -561,6 +586,7 @@ impl Rig {
         max_fps: u32,
         circular: bool,
         simulator: bool,
+        size: (u32, u32),
     ) {
         let device_id = screen.device_id;
         let layout_id = screen.layout_id.clone();
@@ -589,7 +615,7 @@ impl Rig {
             .connect_device(backend_id, device_id, &layout_id)
             .await
             .expect("panel should connect");
-        let mut info = panel_info(device_id, format, max_fps, circular);
+        let mut info = panel_info(device_id, format, max_fps, circular, size);
         info.origin = DeviceOrigin::native("corsair", backend_id, ConnectionType::Usb);
         let tracked = if simulator {
             self.state
@@ -641,9 +667,28 @@ impl Rig {
 
     /// Make `scene` the live scene and start both threads.
     async fn run_scene(&mut self, scene: Scene) -> RunningRig {
+        self.run_scene_with(scene, false).await.0
+    }
+
+    /// Make `scene` the live scene and start both threads, converting its
+    /// stored display zones first when asked, as activation does.
+    async fn run_scene_with(
+        &mut self,
+        scene: Scene,
+        convert: bool,
+    ) -> (RunningRig, ScreenConversion) {
         let mut manager = self.state.scene_manager.snapshot().await;
+        manager.set_screen_surfaces(self.surfaces.clone());
+        for kept in &self.kept_faces {
+            manager.set_default_display_zone(kept.clone());
+        }
         manager.create(scene.clone()).expect("create scene");
         manager.activate(&scene.id, None).expect("activate scene");
+        let conversion = if convert {
+            manager.convert_legacy_display_zones(&scene.id)
+        } else {
+            ScreenConversion::default()
+        };
         let scene_manager =
             SceneService::with_temporary_store(manager, Arc::clone(&self.state.event_bus))
                 .expect("temporary scene store should open");
@@ -663,11 +708,14 @@ impl Rig {
         });
         self.state.render_loop.write().await.start();
         let render = RenderThread::spawn(self.state.clone());
-        RunningRig {
-            render,
-            display,
-            render_loop: Arc::clone(&self.state.render_loop),
-        }
+        (
+            RunningRig {
+                render,
+                display,
+                render_loop: Arc::clone(&self.state.render_loop),
+            },
+            conversion,
+        )
     }
 }
 
@@ -2983,4 +3031,1129 @@ fn the_zone_holding_a_screens_box_places_it_over_a_zone_holding_its_leds() {
             NormalizedPosition::new(0.54, 0.31)
         );
     }
+}
+
+// ── Screen layers ────────────────────────────────────────────────────────
+
+/// The screens a rig knows, as the daemon reads them from its registry.
+fn known_screens(screens: &[(&Screen, (u32, u32))]) -> ScreenSurfaces {
+    screens
+        .iter()
+        .map(|(screen, size)| {
+            (
+                screen.layout_id.clone(),
+                ScreenSurface {
+                    device_id: screen.device_id,
+                    connected: true,
+                    name: screen.layout_id.clone(),
+                    width: size.0,
+                    height: size.1,
+                },
+            )
+        })
+        .collect()
+}
+
+/// What a panel shows once its picture has stopped changing.
+async fn settled(writes: &PanelWrites, device_id: DeviceId) -> Vec<u8> {
+    const STILL: Duration = Duration::from_millis(400);
+    let started = Instant::now();
+    let mut held: Option<(Vec<u8>, Instant)> = None;
+    loop {
+        if let Some(write) = writes.of(device_id).pop() {
+            match &held {
+                Some((frame, since)) if *frame == write.data => {
+                    if since.elapsed() >= STILL {
+                        return write.data;
+                    }
+                }
+                _ => held = Some((write.data, Instant::now())),
+            }
+        }
+        assert!(
+            started.elapsed() < WAIT,
+            "the panel never settled on one picture"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn pixel_at(frame: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+    let offset = usize::try_from((y * width + x) * 3).expect("panel offset fits usize");
+    [frame[offset], frame[offset + 1], frame[offset + 2]]
+}
+
+/// Two frames of one panel are the same picture, pixel for pixel.
+fn assert_same_frame(what: &str, before: &[u8], after: &[u8]) {
+    assert_eq!(before.len(), after.len(), "{what}: the panel changed size");
+    let differing = before
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(after.as_chunks::<3>().0)
+        .filter(|(before, after)| before != after)
+        .count();
+    let widest = before
+        .iter()
+        .zip(after)
+        .map(|(before, after)| before.abs_diff(*after))
+        .max()
+        .unwrap_or(0);
+    assert_eq!(
+        differing, 0,
+        "{what}: {differing} pixels differ, by up to {widest} per channel"
+    );
+}
+
+fn with_composition(mut layer: SceneLayer, blend: BlendMode, opacity: f32) -> SceneLayer {
+    layer.blend = blend;
+    layer.opacity = opacity;
+    layer
+}
+
+/// A scene whose one screen sits over the boundary of two backdrop columns,
+/// with a stored display zone for it holding `stack` under `target`.
+///
+/// A placed screen has its own box in the zone. An unplaced one has none:
+/// the zone holds only its device's LED ring, which is how the render
+/// thread still finds it a backdrop.
+fn stored_face_scene(
+    effects: &Effects,
+    screen: &Screen,
+    stack: Vec<SceneLayer>,
+    target: (BlendMode, f32),
+    placed: bool,
+) -> Scene {
+    let on_device = if placed {
+        screen.output((0.5, 0.5), (0.4, 0.4))
+    } else {
+        let mut ring = strip_output("pump-ring", (0.5, 0.5), (0.4, 0.4));
+        ring.device_id.clone_from(&screen.layout_id);
+        ring.zone_name = Some("Ring".to_owned());
+        ring
+    };
+    let owner = scene_zone(
+        "Main",
+        ZoneRole::Primary,
+        vec![effects.columns()],
+        vec![
+            strip_output("strip:main", (0.5, 0.1), (0.8, 0.1)),
+            on_device,
+        ],
+    );
+    let mut zones = vec![owner];
+    if !stack.is_empty() {
+        let mut face = blending_face_zone(screen, stack);
+        face.display_target = Some(DisplayFaceTarget {
+            device_id: screen.device_id,
+            blend_mode: target.0,
+            opacity: target.1,
+        });
+        zones.push(face);
+    }
+    test_scene("Stored Face", zones, 0)
+}
+
+/// Run a stored face on a fresh rig and return what its panel settles on,
+/// what conversion did, and the scene as the manager holds it afterwards.
+async fn stored_face_frame(
+    mode: RenderAccelerationMode,
+    screen: &Screen,
+    stack: &dyn Fn(&Effects) -> Vec<SceneLayer>,
+    target: (BlendMode, f32),
+    placed: bool,
+    convert: bool,
+) -> (Vec<u8>, ScreenConversion, Scene) {
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(screen, (PANEL, PANEL))]);
+    let scene = stored_face_scene(&rig.effects, screen, stack(&rig.effects), target, placed);
+    let scene_id = scene.id;
+    let (running, conversion) = rig.run_scene_with(scene, convert).await;
+    let frame = settled(&rig.writes, screen.device_id).await;
+    running.stop().await;
+    let held = rig
+        .state
+        .scene_manager
+        .snapshot()
+        .await
+        .get(&scene_id)
+        .cloned()
+        .expect("the scene stays registered");
+    (frame, conversion, held)
+}
+
+/// A stored display zone shows the same frames after conversion as before:
+/// converted when the result is exact, left as stored for `stays` otherwise.
+async fn stored_face_keeps_its_frames(
+    mode: RenderAccelerationMode,
+    stack: &dyn Fn(&Effects) -> Vec<SceneLayer>,
+    target: (BlendMode, f32),
+    placed: bool,
+    stays: Option<LegacyReason>,
+) {
+    let screen = Screen::named("pump");
+    let (backdrop, _, _) =
+        stored_face_frame(mode, &screen, &|_| Vec::new(), target, placed, false).await;
+    let (before, _, stored) = stored_face_frame(mode, &screen, stack, target, placed, false).await;
+    let (after, conversion, held) =
+        stored_face_frame(mode, &screen, stack, target, placed, true).await;
+
+    assert!(
+        backdrop.iter().any(|channel| *channel > 8),
+        "the screen has a lit backdrop for the face to blend over"
+    );
+
+    assert!(
+        stored.display_zone_for(screen.device_id).is_some(),
+        "the first run renders the display zone as it was stored"
+    );
+    assert_ne!(before, backdrop, "the stored face reaches the panel");
+    if let Some(reason) = stays {
+        assert!(!conversion.changed());
+        assert_eq!(
+            conversion
+                .legacy
+                .iter()
+                .map(|(_, reason)| *reason)
+                .collect::<Vec<_>>(),
+            vec![reason]
+        );
+        assert!(held.display_zone_for(screen.device_id).is_some());
+        let outputs = |scene: &Scene| {
+            scene
+                .zones
+                .iter()
+                .map(|zone| {
+                    zone.layout
+                        .zones
+                        .iter()
+                        .map(|output| output.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            outputs(&held),
+            outputs(&stored),
+            "no zone gains an output on the screen's behalf"
+        );
+    } else {
+        assert_eq!(conversion.converted.len(), 1);
+        assert!(conversion.legacy.is_empty());
+        assert!(
+            held.display_zone_for(screen.device_id).is_none(),
+            "the display zone became screen layers"
+        );
+        let owner = held
+            .primary_zone()
+            .expect("the zone that places the screen");
+        assert!(
+            owner
+                .layers
+                .iter()
+                .filter(|layer| layer.scope.is_some())
+                .count()
+                >= 1
+        );
+    }
+    assert_same_frame("before and after conversion", &before, &after);
+}
+
+fn three_layer_stack(effects: &Effects) -> Vec<SceneLayer> {
+    vec![
+        effects.solid(RED),
+        with_composition(fill_layer(BLUE), BlendMode::Alpha, 0.5),
+        with_composition(fill_layer(WHITE), BlendMode::Add, 0.25),
+    ]
+}
+
+fn two_layer_stack(effects: &Effects) -> Vec<SceneLayer> {
+    vec![
+        effects.solid(RED),
+        with_composition(fill_layer(GREEN), BlendMode::Alpha, 0.5),
+    ]
+}
+
+fn translucent_first_layer_stack(effects: &Effects) -> Vec<SceneLayer> {
+    vec![
+        with_composition(effects.solid(RED), BlendMode::Replace, 0.5),
+        with_composition(fill_layer(GREEN), BlendMode::Alpha, 0.3),
+    ]
+}
+
+fn disabled_first_layer_stack(effects: &Effects) -> Vec<SceneLayer> {
+    let mut first = effects.solid(RED);
+    first.enabled = false;
+    vec![
+        first,
+        with_composition(fill_layer(GREEN), BlendMode::Alpha, 0.6),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_three_layer_face_shows_the_same_frames_once_converted() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Cpu,
+        &three_layer_stack,
+        (BlendMode::Alpha, 1.0),
+        true,
+        None,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_three_layer_face_shows_the_same_frames_once_converted() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Gpu,
+        &three_layer_stack,
+        (BlendMode::Alpha, 1.0),
+        true,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_translucent_target_over_a_stack_shows_the_same_frames_once_converted() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Cpu,
+        &two_layer_stack,
+        (BlendMode::Alpha, 0.5),
+        true,
+        None,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_translucent_target_over_a_stack_shows_the_same_frames_once_converted() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Gpu,
+        &two_layer_stack,
+        (BlendMode::Alpha, 0.5),
+        true,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_screen_blended_target_shows_the_same_frames_once_converted() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Cpu,
+        &two_layer_stack,
+        (BlendMode::Screen, 0.8),
+        true,
+        None,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_screen_blended_target_shows_the_same_frames_once_converted() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Gpu,
+        &two_layer_stack,
+        (BlendMode::Screen, 0.8),
+        true,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_translucent_first_layer_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Cpu,
+        &translucent_first_layer_stack,
+        (BlendMode::Alpha, 0.7),
+        true,
+        Some(LegacyReason::FirstLayerOpacity),
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_translucent_first_layer_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Gpu,
+        &translucent_first_layer_stack,
+        (BlendMode::Alpha, 0.7),
+        true,
+        Some(LegacyReason::FirstLayerOpacity),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_disabled_first_layer_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Cpu,
+        &disabled_first_layer_stack,
+        (BlendMode::Alpha, 0.7),
+        true,
+        Some(LegacyReason::FirstLayerDisabled),
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_disabled_first_layer_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Gpu,
+        &disabled_first_layer_stack,
+        (BlendMode::Alpha, 0.7),
+        true,
+        Some(LegacyReason::FirstLayerDisabled),
+    )
+    .await;
+}
+
+/// A screen no zone places has no output to scope a layer to, and its
+/// backdrop comes from wherever the render thread finds its device. A box
+/// of the scene manager's choosing would move that backdrop under a
+/// translucent face, so the stored zone is left alone and the panel shows
+/// the same frames.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_unplaced_screen_face_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Cpu,
+        &two_layer_stack,
+        (BlendMode::Alpha, 0.5),
+        false,
+        Some(LegacyReason::ScreenUnplaced),
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_unplaced_screen_face_stays_stored_and_shows_the_same_frames() {
+    stored_face_keeps_its_frames(
+        RenderAccelerationMode::Gpu,
+        &two_layer_stack,
+        (BlendMode::Alpha, 0.5),
+        false,
+        Some(LegacyReason::ScreenUnplaced),
+    )
+    .await;
+}
+
+/// One layer scoped to two screens of different sizes is rendered once per
+/// panel at that panel's size: each shows all four columns across its own
+/// width.
+async fn one_layer_on_two_screens_renders_at_each_panels_size(mode: RenderAccelerationMode) {
+    const SMALL: (u32, u32) = (16, 16);
+    const WIDE: (u32, u32) = (32, 8);
+    let mut rig = Rig::new(mode);
+    let small = Screen::named("small");
+    let wide = Screen::named("wide");
+    rig.connect_sized(&small, SMALL).await;
+    rig.connect_sized(&wide, WIDE).await;
+    rig.surfaces = known_screens(&[(&small, SMALL), (&wide, WIDE)]);
+    let small_box = small.output((0.25, 0.5), (0.2, 0.2));
+    let wide_box = wide.output((0.75, 0.5), (0.2, 0.2));
+    let mut face = rig.effects.columns();
+    face.scope = Some(LayerScope {
+        outputs: vec![small_box.id.clone(), wide_box.id.clone()],
+    });
+    let zone = scene_zone(
+        "Main",
+        ZoneRole::Primary,
+        vec![rig.effects.solid(BLUE), face],
+        vec![
+            strip_output("strip:main", (0.5, 0.1), (0.8, 0.1)),
+            small_box,
+            wide_box,
+        ],
+    );
+
+    let running = rig.run(vec![zone]).await;
+    let small_frame = settled(&rig.writes, small.device_id).await;
+    let wide_frame = settled(&rig.writes, wide.device_id).await;
+    running.stop().await;
+
+    for (name, frame, size) in [("small", &small_frame, SMALL), ("wide", &wide_frame, WIDE)] {
+        assert_eq!(
+            frame.len(),
+            usize::try_from(size.0 * size.1 * 3).expect("frame size fits usize"),
+            "the {name} panel is sent frames of its own size"
+        );
+        let row = size.1 / 2;
+        for (column, expected) in COLUMNS.iter().enumerate() {
+            let column = u32::try_from(column).expect("four columns");
+            let x = size.0 * (2 * column + 1) / 8;
+            assert!(
+                near(pixel_at(frame, size.0, x, row), *expected),
+                "the {name} panel shows {:?} in column {column}, not {expected:?}",
+                pixel_at(frame, size.0, x, row)
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_one_layer_on_two_screens_renders_at_each_panels_size() {
+    one_layer_on_two_screens_renders_at_each_panels_size(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_one_layer_on_two_screens_renders_at_each_panels_size() {
+    one_layer_on_two_screens_renders_at_each_panels_size(RenderAccelerationMode::Gpu).await;
+}
+
+/// The effects a captured scene names are not installed on a test rig, so
+/// each effect layer is pointed at a still built-in picture, the same one
+/// on every run.
+fn make_renderable(scene: &mut Scene, effects: &Effects) {
+    let pictures = [
+        effects.columns(),
+        effects.solid(RED),
+        effects.solid(GREEN),
+        effects.solid(WHITE),
+    ];
+    let mut next = 0;
+    for layer in scene
+        .zones
+        .iter_mut()
+        .flat_map(|zone| zone.layers.iter_mut())
+    {
+        if matches!(layer.source, LayerSource::Effect { .. }) {
+            layer.source = pictures[next % pictures.len()].source.clone();
+            next += 1;
+        }
+    }
+}
+
+const STORED_PANELS: [(&str, (u32, u32)); 3] = [
+    ("usb:pump-lcd", (480, 480)),
+    ("usb:fan-lcd", (400, 400)),
+    ("usb:push2", (960, 160)),
+];
+
+/// The 0.9.0 scene store, as a release build wrote it, renders the same
+/// frames on every screen once its display zones are converted: one face, a
+/// three-layer stack under a screen-blended target, and a bare surface whose
+/// screen shows its kept face.
+async fn stored_scene_frames(
+    mode: RenderAccelerationMode,
+    convert: bool,
+) -> (Vec<Vec<u8>>, ScreenConversion, Scene) {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/storage_v0_9_0");
+    let data = tempfile::tempdir().expect("tempdir should be created");
+    let scenes_path = data.path().join("scenes.json");
+    std::fs::copy(fixtures.join("scenes.json"), &scenes_path).expect("copy the scene store");
+    let store = hypercolor_daemon::scene_store::load(&scenes_path).expect("the 0.9.0 store loads");
+    let mut scene = store
+        .list()
+        .find(|scene| scene.name == "Studio Session")
+        .cloned()
+        .expect("the captured scene");
+    let kept: HashMap<DeviceId, serde_json::Value> = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.join("display-preferences.json"))
+            .expect("read the kept faces"),
+    )
+    .expect("the kept faces parse");
+
+    let mut rig = Rig::new(mode);
+    make_renderable(&mut scene, &rig.effects);
+    let screens = STORED_PANELS
+        .iter()
+        .map(|(layout_id, size)| {
+            let output_id = format!("{layout_id}-display");
+            let device_id = scene
+                .zones
+                .iter()
+                .filter_map(|zone| zone.display_target.as_ref().map(|target| (zone, target)))
+                .find(|(zone, _)| (zone.layout.canvas_width, zone.layout.canvas_height) == *size)
+                .map(|(_, target)| target.device_id)
+                .expect("each panel has a stored display zone of its size");
+            assert!(
+                scene.zones.iter().any(|zone| zone
+                    .layout
+                    .zones
+                    .iter()
+                    .any(|output| output.id == output_id)),
+                "the scene places {layout_id}"
+            );
+            (
+                Screen {
+                    device_id,
+                    layout_id: (*layout_id).to_owned(),
+                },
+                *size,
+            )
+        })
+        .collect::<Vec<_>>();
+    for (screen, size) in &screens {
+        rig.connect_sized(screen, *size).await;
+    }
+    rig.surfaces = known_screens(
+        &screens
+            .iter()
+            .map(|(screen, size)| (screen, *size))
+            .collect::<Vec<_>>(),
+    );
+    for device_id in kept.keys() {
+        let (screen, size) = screens
+            .iter()
+            .find(|(screen, _)| screen.device_id == *device_id)
+            .expect("the kept face belongs to a stored screen");
+        let mut face = blending_face_zone(screen, vec![rig.effects.solid(BLUE)]);
+        face.layout.canvas_width = size.0;
+        face.layout.canvas_height = size.1;
+        face.display_target = Some(DisplayFaceTarget::new(*device_id));
+        rig.kept_faces.push(face);
+    }
+    scene.transition.duration_ms = 0;
+    let scene_id = scene.id;
+
+    let (running, conversion) = rig.run_scene_with(scene, convert).await;
+    let mut frames = Vec::new();
+    for (screen, _) in &screens {
+        frames.push(settled(&rig.writes, screen.device_id).await);
+    }
+    running.stop().await;
+    let held = rig
+        .state
+        .scene_manager
+        .snapshot()
+        .await
+        .get(&scene_id)
+        .cloned()
+        .expect("the scene stays registered");
+    (frames, conversion, held)
+}
+
+async fn stored_scene_shows_the_same_frames_once_converted(mode: RenderAccelerationMode) {
+    let (before, _, stored) = stored_scene_frames(mode, false).await;
+    let (after, conversion, held) = stored_scene_frames(mode, true).await;
+
+    assert_eq!(
+        stored
+            .zones
+            .iter()
+            .filter(|zone| zone.role == ZoneRole::Display)
+            .count(),
+        3,
+        "the store holds one display zone per screen"
+    );
+    assert_eq!(
+        conversion.converted.len(),
+        2,
+        "the face and the three-layer stack become screen layers"
+    );
+    assert_eq!(conversion.removed.len(), 1, "the bare surface is removed");
+    assert_eq!(
+        conversion.legacy,
+        Vec::new(),
+        "no zone of the captured store is left in the legacy spelling"
+    );
+    assert!(
+        held.zones.iter().all(|zone| zone.role != ZoneRole::Display),
+        "no display zone is left in the scene"
+    );
+    for (((layout_id, _), before), after) in STORED_PANELS.iter().zip(&before).zip(&after) {
+        assert!(
+            before.iter().any(|channel| *channel > 8),
+            "{layout_id} shows a picture"
+        );
+        assert_same_frame(layout_id, before, after);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_stored_scene_shows_the_same_frames_once_converted() {
+    stored_scene_shows_the_same_frames_once_converted(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_stored_scene_shows_the_same_frames_once_converted() {
+    stored_scene_shows_the_same_frames_once_converted(RenderAccelerationMode::Gpu).await;
+}
+
+// ── A screen that leaves its zone and returns ────────────────────────────
+
+/// The box a moving screen's device holds on the canvas whether or not its
+/// screen is placed: its LED ring, over the whole canvas. The render thread
+/// finds an unplaced screen its backdrop through this output, and the tests
+/// give the screen's own output the same box, so both placements show one
+/// backdrop and any difference between two frames is the face.
+const DEVICE_BOX: ((f32, f32), (f32, f32)) = ((0.5, 0.5), (1.0, 1.0));
+
+fn device_ring(screen: &Screen) -> Output {
+    let mut ring = strip_output("pump-ring", DEVICE_BOX.0, DEVICE_BOX.1);
+    ring.device_id.clone_from(&screen.layout_id);
+    ring.zone_name = Some("Ring".to_owned());
+    ring
+}
+
+/// A layout over the rig's canvas, with the device's ring and, when
+/// `placed`, its screen.
+fn moving_layout(screen: &Screen, placed: bool) -> SpatialLayout {
+    let mut outputs = vec![
+        strip_output("strip:main", (0.5, 0.1), (0.8, 0.1)),
+        device_ring(screen),
+    ];
+    if placed {
+        outputs.push(screen.output(DEVICE_BOX.0, DEVICE_BOX.1));
+    }
+    zone_layout(outputs)
+}
+
+/// A translucent two-layer face as screen layers of a zone that places the
+/// screen.
+fn placed_face_scene(effects: &Effects, screen: &Screen, name: &str) -> Scene {
+    let output_id = screen.output(DEVICE_BOX.0, DEVICE_BOX.1).id;
+    let mut layers = vec![effects.columns()];
+    for mut layer in [
+        with_composition(effects.solid(RED), BlendMode::Screen, 0.6),
+        with_composition(fill_layer(GREEN), BlendMode::Alpha, 0.5),
+    ] {
+        layer.scope = Some(LayerScope {
+            outputs: vec![output_id.clone()],
+        });
+        layers.push(layer);
+    }
+    let mut zone = scene_zone("Main", ZoneRole::Primary, layers, Vec::new());
+    zone.layout = moving_layout(screen, true);
+    test_scene(name, vec![zone], 0)
+}
+
+impl Rig {
+    /// Rewrite the live scene's primary zone from `layout`, as a layout
+    /// publication does, and commit it.
+    async fn publish_layout(&self, layout: &SpatialLayout) {
+        let mut mutation = self.state.scene_manager.begin_mutation().await;
+        mutation.sync_primary_layout(layout);
+        self.state
+            .scene_manager
+            .commit_mutation(mutation)
+            .await
+            .expect("the layout should commit");
+    }
+
+    /// Activate `scene` and align its primary zone with `layout`, as
+    /// activation does for a scene that follows a layout.
+    async fn activate_on(&self, scene: &Scene, layout: &SpatialLayout) {
+        let mut mutation = self.state.scene_manager.begin_mutation().await;
+        let _ = mutation.create_scene(scene.clone());
+        mutation
+            .activate(
+                scene.id,
+                None,
+                hypercolor_types::event::SceneChangeReason::UserActivate,
+            )
+            .expect("scene should activate");
+        mutation.realign_primary_layout(layout);
+        self.state
+            .scene_manager
+            .commit_mutation(mutation)
+            .await
+            .expect("scene activation should commit");
+    }
+
+    async fn stored(&self, scene: &Scene) -> Scene {
+        self.state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&scene.id)
+            .cloned()
+            .expect("the scene stays registered")
+    }
+}
+
+/// Every frame the panel was sent from `seen` on is `expected`.
+fn assert_frames_held(writes: &PanelWrites, device_id: DeviceId, seen: usize, expected: &[u8]) {
+    for (index, write) in writes.of(device_id).iter().enumerate().skip(seen) {
+        assert_same_frame(&format!("frame {index}"), expected, &write.data);
+    }
+}
+
+/// A face on a placed screen is screen layers; the same face once the
+/// screen's output leaves the zone is a stored display zone. The two are
+/// rendered by different paths and must put the same bytes on the panel:
+/// when the layout under a running scene loses the screen and gets it
+/// back, the panel never shows anything else.
+async fn face_survives_its_screen_leaving_the_layout_and_returning(mode: RenderAccelerationMode) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let scene = placed_face_scene(&rig.effects, &screen, "Moving");
+    let running = rig.run_scene(scene.clone()).await;
+    let placed = settled(&rig.writes, screen.device_id).await;
+
+    let mut backdrop_rig = Rig::new(mode);
+    backdrop_rig
+        .connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    backdrop_rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut bare = placed_face_scene(&backdrop_rig.effects, &screen, "Bare");
+    bare.zones[0].layers.truncate(1);
+    let backdrop_run = backdrop_rig.run_scene(bare).await;
+    let backdrop = settled(&backdrop_rig.writes, screen.device_id).await;
+    backdrop_run.stop().await;
+    assert_ne!(placed, backdrop, "the face reaches the panel");
+
+    for (placed_now, what) in [(false, "left"), (true, "returned"), (false, "left again")] {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.publish_layout(&moving_layout(&screen, placed_now))
+            .await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let held = rig.stored(&scene).await;
+        assert_eq!(
+            held.display_zone_for(screen.device_id).is_some(),
+            !placed_now,
+            "once the screen {what}, its stack follows its placement"
+        );
+        assert_eq!(
+            held.zones[0]
+                .layers
+                .iter()
+                .filter(|layer| layer.scope.is_some())
+                .count(),
+            if placed_now { 2 } else { 0 },
+            "no layer scoped to the screen is left behind in the zone"
+        );
+        assert_frames_held(&rig.writes, screen.device_id, seen, &placed);
+        let now = settled(&rig.writes, screen.device_id).await;
+        assert_same_frame(&format!("after the screen {what}"), &placed, &now);
+    }
+    running.stop().await;
+
+    // The stored spelling, run on its own from a cold start, is the same
+    // picture: the comparison above was not one frame held over.
+    let unplaced_doc = rig.stored(&scene).await;
+    let mut cold = Rig::new(mode);
+    cold.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    cold.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut cold_scene = unplaced_doc;
+    cold_scene.id = hypercolor_types::scene::SceneId::new();
+    let cold_run = cold.run_scene(cold_scene).await;
+    let from_stored = settled(&cold.writes, screen.device_id).await;
+    cold_run.stop().await;
+    assert_same_frame("the stored zone on a cold start", &placed, &from_stored);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_face_survives_its_screen_leaving_the_layout_and_returning() {
+    face_survives_its_screen_leaving_the_layout_and_returning(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_face_survives_its_screen_leaving_the_layout_and_returning() {
+    face_survives_its_screen_leaving_the_layout_and_returning(RenderAccelerationMode::Gpu).await;
+}
+
+/// The shape of a rig whose stored layouts hold no screens: screens are
+/// placed only inside a scene's primary zone. Activating a scene that
+/// follows such a layout, and coming back, realigns each primary zone to a
+/// layout without the screen. The faces stay on the panel, and activating
+/// a scene twice changes nothing.
+async fn faces_survive_activating_scenes_that_follow_a_layout_without_screens(
+    mode: RenderAccelerationMode,
+) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let layout = moving_layout(&screen, false);
+    // Home places the screen in its own primary zone and holds its face
+    // as screen layers. Play follows the layout and holds a stored face.
+    let home = placed_face_scene(&rig.effects, &screen, "Home");
+    let mut play_zone = scene_zone(
+        "Main",
+        ZoneRole::Primary,
+        vec![rig.effects.columns()],
+        Vec::new(),
+    );
+    play_zone.layout = moving_layout(&screen, true);
+    let mut play_face = blending_face_zone(
+        &screen,
+        vec![
+            rig.effects.solid(BLUE),
+            with_composition(fill_layer(WHITE), BlendMode::Alpha, 0.3),
+        ],
+    );
+    play_face.display_target = Some(DisplayFaceTarget {
+        device_id: screen.device_id,
+        blend_mode: BlendMode::Alpha,
+        opacity: 0.7,
+    });
+    let play = test_scene("Play", vec![play_zone, play_face], 0);
+
+    let running = rig.run_scene(home.clone()).await;
+    let home_frame = settled(&rig.writes, screen.device_id).await;
+
+    rig.activate_on(&play, &layout).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let play_frame = settled(&rig.writes, screen.device_id).await;
+    assert_ne!(play_frame, home_frame, "Play shows its own face");
+    let play_stored = rig.stored(&play).await;
+    assert!(
+        play_stored.display_zone_for(screen.device_id).is_some(),
+        "the layout Play follows holds no screen, so its face stays stored"
+    );
+    let seen = rig.writes.of(screen.device_id).len();
+    rig.activate_on(&play, &layout).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        rig.stored(&play).await.zones,
+        play_stored.zones,
+        "activating it again changes nothing"
+    );
+    assert_frames_held(&rig.writes, screen.device_id, seen, &play_frame);
+
+    rig.activate_on(&home, &layout).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let back = settled(&rig.writes, screen.device_id).await;
+    let home_stored = rig.stored(&home).await;
+    assert!(
+        home_stored.display_zone_for(screen.device_id).is_some(),
+        "coming back realigned Home to the layout, and its face went with its screen"
+    );
+    assert_same_frame("Home after coming back", &home_frame, &back);
+    running.stop().await;
+
+    // Play's stored face on a cold start is the picture Play showed.
+    let mut cold = Rig::new(mode);
+    cold.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    cold.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut cold_scene = play_stored;
+    cold_scene.id = hypercolor_types::scene::SceneId::new();
+    let cold_run = cold.run_scene(cold_scene).await;
+    let from_stored = settled(&cold.writes, screen.device_id).await;
+    cold_run.stop().await;
+    assert_same_frame("Play on a cold start", &play_frame, &from_stored);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_faces_survive_activating_scenes_that_follow_a_layout_without_screens() {
+    faces_survive_activating_scenes_that_follow_a_layout_without_screens(
+        RenderAccelerationMode::Cpu,
+    )
+    .await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_faces_survive_activating_scenes_that_follow_a_layout_without_screens() {
+    faces_survive_activating_scenes_that_follow_a_layout_without_screens(
+        RenderAccelerationMode::Gpu,
+    )
+    .await;
+}
+
+// ── Published layouts ────────────────────────────────────────────────────
+
+impl Rig {
+    /// Apply `layout` as a layout transaction, the path a layout apply
+    /// takes: the running render thread prepares it and commits it with
+    /// the scene write.
+    async fn publish(&self, layout: SpatialLayout) {
+        assert!(
+            self.state
+                .scene_transactions
+                .apply_layout_for_test(
+                    &self.state.spatial_engine,
+                    &self.state.scene_manager,
+                    layout
+                )
+                .await,
+            "the layout should publish"
+        );
+    }
+}
+
+/// The moving screen's layout with the device's screen and ring held
+/// under other output ids, as a second stored layout names the same
+/// hardware.
+fn renamed_layout(screen: &Screen, output_id: &str) -> SpatialLayout {
+    let mut layout = moving_layout(screen, true);
+    for output in &mut layout.zones {
+        if output.zone_name.as_deref() == Some(DISPLAY_ZONE_NAME) {
+            output_id.clone_into(&mut output.id);
+        } else if output.device_id == screen.layout_id {
+            output.id = ring_id_beside(output_id);
+        }
+    }
+    layout
+}
+
+fn ring_id_beside(screen_output_id: &str) -> String {
+    format!("{screen_output_id}-ring")
+}
+
+/// A translucent face holds the panel byte for byte through published
+/// layouts that name its screen differently, drop it, and bring it back.
+/// A layer scoped to the device's ring rides along: only the scope follow
+/// keeps a layer on an LED output through a rename, so its scope is what
+/// shows the follow ran inside the publication. It is switched off so it
+/// draws nothing: an unplaced screen's backdrop is the whole canvas, and
+/// a lit ring layer would change the picture this test holds still.
+async fn face_holds_through_published_layouts(mode: RenderAccelerationMode) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut scene = placed_face_scene(&rig.effects, &screen, "Published");
+    let authored_id = screen.output(DEVICE_BOX.0, DEVICE_BOX.1).id;
+    let authored_ring = device_ring(&screen).id;
+    let mut ring_overlay = fill_layer(GREEN);
+    ring_overlay.enabled = false;
+    ring_overlay.scope = Some(LayerScope {
+        outputs: vec![authored_ring.clone()],
+    });
+    scene.zones[0].layers.insert(1, ring_overlay);
+    let running = rig.run_scene(scene.clone()).await;
+    let placed = settled(&rig.writes, screen.device_id).await;
+
+    for (layout, held_as, ring) in [
+        (
+            renamed_layout(&screen, "lcd-other"),
+            Some("lcd-other"),
+            ring_id_beside("lcd-other"),
+        ),
+        (moving_layout(&screen, false), None, authored_ring.clone()),
+        (
+            renamed_layout(&screen, "lcd-third"),
+            Some("lcd-third"),
+            ring_id_beside("lcd-third"),
+        ),
+        (
+            moving_layout(&screen, true),
+            Some(authored_id.as_str()),
+            authored_ring.clone(),
+        ),
+    ] {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.publish(layout).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let held = rig.stored(&scene).await;
+        let scopes = held.zones[0]
+            .layers
+            .iter()
+            .filter_map(|layer| layer.scope.as_ref())
+            .map(|scope| scope.outputs.join(","))
+            .collect::<Vec<_>>();
+        if let Some(output_id) = held_as {
+            assert!(held.display_zone_for(screen.device_id).is_none());
+            assert_eq!(
+                scopes,
+                vec![ring, output_id.to_owned(), output_id.to_owned()],
+                "each layer follows its segment to the id this layout gives it"
+            );
+        } else {
+            assert!(held.display_zone_for(screen.device_id).is_some());
+            assert_eq!(scopes, vec![ring], "no face is left behind in the zone");
+        }
+        assert_frames_held(&rig.writes, screen.device_id, seen, &placed);
+        let now = settled(&rig.writes, screen.device_id).await;
+        assert_same_frame("after the layout was published", &placed, &now);
+    }
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_face_holds_through_published_layouts() {
+    face_holds_through_published_layouts(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_face_holds_through_published_layouts() {
+    face_holds_through_published_layouts(RenderAccelerationMode::Gpu).await;
+}
+
+/// A face that changes every frame keeps changing through the same
+/// layouts: its renderer is never stopped, and the panel never falls back
+/// to its bare backdrop.
+async fn animated_face_keeps_running_through_published_layouts(mode: RenderAccelerationMode) {
+    let screen = Screen::named("pump");
+    let mut rig = Rig::new(mode);
+    rig.connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let mut scene = placed_face_scene(&rig.effects, &screen, "Animated");
+    let output_id = screen.output(DEVICE_BOX.0, DEVICE_BOX.1).id;
+    let mut face = rig.effects.moving();
+    face.scope = Some(LayerScope {
+        outputs: vec![output_id],
+    });
+    scene.zones[0].layers.truncate(1);
+    scene.zones[0].layers.push(face);
+    let mut bare = scene.clone();
+    bare.id = hypercolor_types::scene::SceneId::new();
+    bare.zones[0].layers.truncate(1);
+
+    let mut backdrop_rig = Rig::new(mode);
+    backdrop_rig
+        .connect_screen(&screen, DisplayFrameFormat::Rgb, 30)
+        .await;
+    backdrop_rig.surfaces = known_screens(&[(&screen, (PANEL, PANEL))]);
+    let backdrop_run = backdrop_rig.run_scene(bare).await;
+    let backdrop = settled(&backdrop_rig.writes, screen.device_id).await;
+    backdrop_run.stop().await;
+
+    let running = rig.run_scene(scene.clone()).await;
+    let moves = |from: usize| {
+        let frames = rig.writes.of(screen.device_id);
+        let mut distinct: Vec<&Vec<u8>> = Vec::new();
+        for write in frames.iter().skip(from) {
+            assert_ne!(write.data, backdrop, "the panel fell back to its backdrop");
+            if !distinct.contains(&&write.data) {
+                distinct.push(&write.data);
+            }
+        }
+        distinct.len()
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(moves(0) >= 3, "the face animates before any layout changes");
+
+    for layout in [
+        renamed_layout(&screen, "lcd-other"),
+        moving_layout(&screen, false),
+        moving_layout(&screen, true),
+    ] {
+        let seen = rig.writes.of(screen.device_id).len();
+        rig.publish(layout).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            moves(seen) >= 3,
+            "the face keeps animating after the layout was published"
+        );
+    }
+    running.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_animated_face_keeps_running_through_published_layouts() {
+    animated_face_keeps_running_through_published_layouts(RenderAccelerationMode::Cpu).await;
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gpu_animated_face_keeps_running_through_published_layouts() {
+    animated_face_keeps_running_through_published_layouts(RenderAccelerationMode::Gpu).await;
 }

@@ -31,6 +31,7 @@ fn zone_resource(
         members: Vec::new(),
         layout: None,
         layers: Vec::new(),
+        view_of: None,
     }
 }
 

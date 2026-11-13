@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use hypercolor_types::api::scene::{LayerMove, LayerSlot};
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::{LayerScope, LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, Zone, ZoneId};
 use hypercolor_types::spatial::Output;
 
@@ -67,12 +67,13 @@ pub(super) fn replace_unscoped_layers(zone: &mut Zone, base: SceneLayer) {
 }
 
 /// Remove a zone's lighting: every layer goes except those
-/// [`is_screen_only`] proves are faces. Returns whether any layer was
-/// removed.
-pub(super) fn clear_lighting_layers(zone: &mut Zone) -> bool {
+/// [`is_screen_only`] proves are faces and those in `waiting`, which the
+/// scene manager knows are faces whose screen has not been stored yet.
+/// Returns whether any layer was removed.
+pub(super) fn clear_lighting_layers(zone: &mut Zone, waiting: &[SceneLayerId]) -> bool {
     let before = zone.layers.len();
     let Zone { layers, layout, .. } = zone;
-    layers.retain(|layer| is_screen_only(&layout.zones, layer));
+    layers.retain(|layer| is_screen_only(&layout.zones, layer) || waiting.contains(&layer.id));
     zone.layers.len() != before
 }
 
@@ -96,25 +97,29 @@ fn is_screen_only(outputs: &[Output], layer: &SceneLayer) -> bool {
         })
 }
 
-/// The effect a stop gesture ends in this zone: the first effect layer
-/// that clearing the zone removes. A face that survives the clear is not
-/// stopped, so it is never the answer.
+/// The effect a stop gesture ends in this zone: the zone's effect, by the
+/// one rule every reader shares ([`Zone::effect_layer`]).
+///
+/// It differs from that rule in one case. A zone with no whole-zone effect
+/// can still hold an overlay scoped to LED outputs, and a clear removes
+/// it, so the stop names that overlay's effect: something did stop. A
+/// face that survives the clear is not stopped, so it is never the answer.
 #[must_use]
 pub fn first_lighting_effect(zone: &Zone) -> Option<EffectId> {
-    zone.layers
-        .iter()
-        .filter(|layer| !is_screen_only(&zone.layout.zones, layer))
-        .find_map(|layer| match layer.source {
-            LayerSource::Effect { effect_id, .. } => Some(effect_id),
-            _ => None,
+    zone.effect_layer()
+        .or_else(|| {
+            zone.layers.iter().find(|layer| {
+                layer.effect_id().is_some() && !is_screen_only(&zone.layout.zones, layer)
+            })
         })
+        .and_then(SceneLayer::effect_id)
 }
 
-/// The first whole-zone effect layer: what applying an effect replaces.
+/// The zone's effect layer, whose input bindings carry over when the same
+/// effect is applied again. The same rule as [`Zone::effect_layer`], so
+/// the effect a status names is the one whose bindings an apply keeps.
 pub(super) fn base_effect_layer(zone: &Zone) -> Option<&SceneLayer> {
-    zone.layers
-        .iter()
-        .find(|layer| layer.scope.is_none() && matches!(layer.source, LayerSource::Effect { .. }))
+    zone.effect_layer()
 }
 
 /// What happens to one scoped layer when outputs leave its zone.

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
+from ..models.display_face_rendering import DisplayFaceRendering
 from ..models.display_face_scope import DisplayFaceScope
 from ..types import UNSET, Unset
 
@@ -38,6 +39,7 @@ class DisplayFaceResponse:
                 `default` persists across scenes (the display's own face); `scene`
                 writes into the active scene's display zone, which always wins while
                 that scene is active.
+            rendering (DisplayFaceRendering | None | Unset):
             scene_assigned (bool | Unset): Whether the active scene has its own face assignment for this display.
     """
 
@@ -47,6 +49,7 @@ class DisplayFaceResponse:
     zone: DisplayFaceResponseZone
     default_assigned: bool | Unset = UNSET
     live_scope: DisplayFaceScope | Unset = UNSET
+    rendering: DisplayFaceRendering | None | Unset = UNSET
     scene_assigned: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -65,6 +68,14 @@ class DisplayFaceResponse:
         if not isinstance(self.live_scope, Unset):
             live_scope = self.live_scope.value
 
+        rendering: None | str | Unset
+        if isinstance(self.rendering, Unset):
+            rendering = UNSET
+        elif isinstance(self.rendering, DisplayFaceRendering):
+            rendering = self.rendering.value
+        else:
+            rendering = self.rendering
+
         scene_assigned = self.scene_assigned
 
         field_dict: dict[str, Any] = {}
@@ -81,6 +92,8 @@ class DisplayFaceResponse:
             field_dict["default_assigned"] = default_assigned
         if live_scope is not UNSET:
             field_dict["live_scope"] = live_scope
+        if rendering is not UNSET:
+            field_dict["rendering"] = rendering
         if scene_assigned is not UNSET:
             field_dict["scene_assigned"] = scene_assigned
 
@@ -111,6 +124,23 @@ class DisplayFaceResponse:
         else:
             live_scope = DisplayFaceScope(_live_scope)
 
+        def _parse_rendering(data: object) -> DisplayFaceRendering | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                rendering_type_0 = DisplayFaceRendering(data)
+
+                return rendering_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(DisplayFaceRendering | None | Unset, data)
+
+        rendering = _parse_rendering(d.pop("rendering", UNSET))
+
         scene_assigned = d.pop("scene_assigned", UNSET)
 
         display_face_response = cls(
@@ -120,6 +150,7 @@ class DisplayFaceResponse:
             zone=zone,
             default_assigned=default_assigned,
             live_scope=live_scope,
+            rendering=rendering,
             scene_assigned=scene_assigned,
         )
 

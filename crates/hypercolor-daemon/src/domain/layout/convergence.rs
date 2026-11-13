@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::DeviceLifecycleManager;
+use hypercolor_core::scene::screens::{ScreenSurface, ScreenSurfaces};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
@@ -91,29 +92,55 @@ impl LayoutConvergence {
         Vec::new()
     }
 
-    pub(super) async fn connected_display_surface_layouts(
-        &self,
-        runtime: &DiscoveryRuntime,
-    ) -> Vec<(DeviceId, String, SpatialLayout)> {
-        runtime
-            .device_registry
-            .list()
+    /// Every registered screen, keyed by each layout device id its output
+    /// may carry: the device's canonical id and every logical device that
+    /// stands for it.
+    ///
+    /// Two devices that answer to one layout id cannot both own it. The
+    /// first, in device order, keeps the id, and the other is filed under
+    /// a key no output carries so it stays addressable by its device.
+    pub(super) async fn known_screen_surfaces(&self, runtime: &DiscoveryRuntime) -> ScreenSurfaces {
+        let mut tracked = runtime.device_registry.list().await;
+        tracked.sort_by_key(|device| device.info.id.as_uuid());
+        let logical = runtime
+            .logical_devices
+            .read()
             .await
-            .into_iter()
-            .filter(|tracked| tracked.state.is_renderable())
-            .filter_map(|tracked| {
-                let surface = crate::domain::display::display_surface_info(&tracked.info)?;
-                Some((
-                    tracked.info.id,
-                    tracked.info.name.clone(),
-                    crate::domain::display::display_face_layout(
-                        tracked.info.id,
-                        tracked.info.name.as_str(),
-                        surface,
-                    ),
-                ))
-            })
-            .collect()
+            .iter()
+            .map(|(layout_id, entry)| (layout_id.clone(), entry.physical_device_id))
+            .collect::<Vec<_>>();
+        let mut surfaces = ScreenSurfaces::new();
+        for device in &tracked {
+            let Some(panel) = crate::domain::display::display_surface_info(&device.info) else {
+                continue;
+            };
+            let layout_device_id = self.resolved_layout_device_id(runtime, &device.info).await;
+            let surface = ScreenSurface {
+                device_id: device.info.id,
+                connected: device.state.is_renderable(),
+                name: device.info.name.clone(),
+                width: panel.width,
+                height: panel.height,
+            };
+            for (layout_id, _) in logical
+                .iter()
+                .filter(|(_, physical)| *physical == device.info.id)
+            {
+                surfaces
+                    .entry(layout_id.clone())
+                    .or_insert_with(|| surface.clone());
+            }
+            let key = if surfaces
+                .get(&layout_device_id)
+                .is_some_and(|held| held.device_id != device.info.id)
+            {
+                format!("{layout_device_id}#{}", device.info.id)
+            } else {
+                layout_device_id
+            };
+            surfaces.insert(key, surface);
+        }
+        surfaces
     }
 
     pub(super) async fn active_layout_targets_enabled_device(

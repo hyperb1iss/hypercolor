@@ -9,7 +9,7 @@ use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use hypercolor_types::api::displays::DisplayFaceScope;
+use hypercolor_types::api::displays::{DisplayFaceRendering, DisplayFaceScope};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct EffectCatalogResult {
@@ -281,6 +281,10 @@ pub(crate) struct DisplayFaceResult {
     pub(crate) effect: Option<EffectSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) zone: Option<ZoneResource>,
+    /// What is on the panel over its backdrop: the scene's layers, the
+    /// kept default face, or neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rendering: Option<DisplayFaceRendering>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

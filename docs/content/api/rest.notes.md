@@ -216,6 +216,7 @@ entry gates, instead of sending a request that daemon would misread.
 | `zone-preview-frames` | publishes per-zone preview frames |
 | `scene-unassigned-behavior-write` | accepts `unassigned_behavior` on `PATCH /scene` |
 | `layer-scope` | accepts `scope` on the layer routes, limiting a layer to some of its zone's outputs |
+| `screen-layers` | renders a layer scoped only to screens at each panel's own size, as that screen's face |
 
 A build with release notifications adds `oss-release-notifications`. The list
 grows over time, so ignore entries you do not recognize.
@@ -600,14 +601,49 @@ for the authoring contract.
 A JPEG preview frame from the display. Live frame streaming runs over the
 `display_preview` WebSocket channel.
 
+A screen is an output of the zone that places it, and its face is a layer of
+that zone whose `scope` names the screen. Any layer source can be scoped to a
+screen: a face, media, a web page, a color. Layers scoped only to screens
+compose above the zone's lighting on those screens, in stack order, and the
+bottom enabled one carries the blend and opacity the whole stack meets the
+backdrop with. One layer scoped to several screens renders once per panel, at
+each panel's size, from one set of controls. Pausing a zone pauses the faces of
+the screens it places.
+
+`GET /scene` also lists every connected screen as a zone with `role: display`,
+the screen's view. Its `layers` are the screen's layers as authored with `scope`
+omitted, and `view_of` names the zone and member that place the screen. The
+layer routes accept a view's id and apply the write to that one screen: a new
+layer is scoped to it, a replaced layer stays on it whatever `scope` the request
+carries, and a layer other screens share is split first so they keep theirs. A
+`scope` on a create addressed to a view is a validation error. A client that
+reads screens from their owning zone skips zones with the `display` role.
+
+The face routes below are the same writes by device id. `scope: scene` addresses
+the screen's layers in the active scene. `scope: default`, the default, is
+deprecated in favor of screen layers and keeps working through 1.x: it
+addresses the kept face, one stored assignment per display that shows whenever
+the active scene has no face layer for the screen and no enabled layer on it.
+
+Every face answer carries `rendering`, which says what is on the panel: `scene`
+for the scene's layers, `default` for the kept face, `none` for neither.
+`live_scope` says where the returned assignment lives, which is not always what
+is showing: a screen with only a color layer in the scene answers with its kept
+face and `rendering: scene`, and a disabled face answers `rendering: none`.
+
 # PUT /api/v1/displays/{id}/face
 
-Binds an HTML effect to the device in the active scene.
+With `scope: scene`, makes this effect the screen's whole stack in the active
+scene: one enabled layer scoped to the screen, with the request's blend and
+opacity. The screen's own layers are removed and it leaves the scope of layers
+it shares. A screen no zone places has no output to scope a layer to, so its
+face is stored as a `display` zone of the scene, under the id its view had,
+and becomes a screen layer when the screen is placed.
 
 # PATCH /api/v1/displays/{id}/face/composition
 
-Composition parameters are the blend mode, z-order, and opacity of the face's
-render group.
+Sets the blend mode and opacity the screen's stack meets its backdrop with: the
+bottom enabled layer's, or the kept face's when the scene assigns none.
 
 # @section displays Simulators /api/v1/simulators
 
@@ -762,9 +798,9 @@ Returns to the default scene and answers with the new live scene document.
 
 # POST /api/v1/scene/clear
 
-Clears every non-display layer stack, or pass `{ "zone": "<zone_uuid>" }` to
-clear one non-display zone. Display zones remain owned by the display API, and
-a targeted display clear is rejected. This is the canonical stop gesture. It
+Clears every lighting layer stack, or pass `{ "zone": "<zone_uuid>" }` to
+clear one zone. A screen's view remains owned by the display API, and a
+targeted clear of one is rejected. This is the canonical stop gesture. It
 removes whole-zone and scoped layers alike, with one exception: a layer whose
 scope reaches only screens is a face, not lighting, and stays.
 

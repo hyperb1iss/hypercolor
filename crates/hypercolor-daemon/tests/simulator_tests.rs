@@ -25,6 +25,46 @@ use hypercolor_types::spatial::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// Store a display zone the way builds before screen layers wrote one, so
+/// a test can start from the legacy spelling of a screen's stack.
+fn store_legacy_display_zone(
+    mutation: &mut hypercolor_daemon::domain::scene::SceneMutation,
+    device_name: &str,
+    effect: &hypercolor_types::effect::EffectMetadata,
+    controls: std::collections::HashMap<String, hypercolor_types::control::ControlValue>,
+    layout: hypercolor_types::spatial::SpatialLayout,
+    target: hypercolor_types::scene::DisplayFaceTarget,
+) -> Result<hypercolor_types::scene::Zone, hypercolor_daemon::domain::DomainError> {
+    let mut scene = mutation
+        .scenes()
+        .active_scene()
+        .cloned()
+        .expect("a scene is always active");
+    let zone = hypercolor_types::scene::Zone {
+        id: hypercolor_types::scene::ZoneId::new(),
+        name: format!("{device_name} Face"),
+        description: None,
+        layers: vec![hypercolor_types::layer::SceneLayer::from_effect(
+            hypercolor_types::layer::SceneLayerId::new(),
+            effect.id,
+            controls,
+            std::collections::HashMap::new(),
+            None,
+        )],
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(target),
+        role: hypercolor_types::scene::ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    };
+    scene.zones.push(zone.clone());
+    mutation.update_scene(scene)?;
+    Ok(zone)
+}
+
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct LayoutPublisher(tokio::task::JoinHandle<()>);
@@ -672,16 +712,15 @@ async fn deleting_simulated_display_prunes_scene_display_zones_and_persists_clea
     let face = simulated_display_face_effect("Desk Clock");
     let named_scene_id = {
         let mut mutation = state.scene_manager.begin_mutation().await;
-        mutation
-            .upsert_display_zone(
-                device_id,
-                "Desk Preview",
-                &face,
-                HashMap::new(),
-                simulated_display_face_layout("default"),
-                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
-            )
-            .expect("default simulator face should be assigned");
+        store_legacy_display_zone(
+            &mut mutation,
+            "Desk Preview",
+            &face,
+            HashMap::new(),
+            simulated_display_face_layout("default"),
+            hypercolor_types::scene::DisplayFaceTarget::new(device_id),
+        )
+        .expect("default simulator face should be assigned");
 
         let named_scene = make_scene("Display Scene");
         let named_scene_id = named_scene.id;
@@ -695,16 +734,15 @@ async fn deleting_simulated_display_prunes_scene_display_zones_and_persists_clea
                 hypercolor_types::event::SceneChangeReason::UserActivate,
             )
             .expect("named scene should activate");
-        mutation
-            .upsert_display_zone(
-                device_id,
-                "Desk Preview",
-                &face,
-                HashMap::new(),
-                simulated_display_face_layout("named"),
-                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
-            )
-            .expect("named simulator face should be assigned");
+        store_legacy_display_zone(
+            &mut mutation,
+            "Desk Preview",
+            &face,
+            HashMap::new(),
+            simulated_display_face_layout("named"),
+            hypercolor_types::scene::DisplayFaceTarget::new(device_id),
+        )
+        .expect("named simulator face should be assigned");
         mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
         hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await

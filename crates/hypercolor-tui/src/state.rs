@@ -207,19 +207,25 @@ pub fn primary_zone(scene: &SceneDocument) -> Option<&ZoneResource> {
         .zones
         .iter()
         .find(|zone| zone.role == ZoneRole::Primary)
-        .or_else(|| scene.zones.first())
+        // A scene with no primary zone falls back to its first lighting
+        // zone, never to a screen's zone: a face there has no scope to
+        // tell it from an effect.
+        .or_else(|| {
+            scene
+                .zones
+                .iter()
+                .find(|zone| zone.role != ZoneRole::Display)
+        })
 }
 
-/// Select the topmost effect layer from a canonical zone resource.
+/// Select a zone's effect layer from a canonical zone resource: its top
+/// effect layer with no scope, never an overlay or a screen's face.
 #[must_use]
 pub fn zone_effect_layer(zone: &ZoneResource) -> Option<&SceneLayer> {
-    zone.layers
-        .iter()
-        .rev()
-        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    hypercolor_types::layer::zone_effect_layer(&zone.layers)
 }
 
-/// Select the topmost effect id from a canonical zone resource.
+/// Select a zone's effect id from a canonical zone resource.
 #[must_use]
 pub fn zone_effect_id(zone: &ZoneResource) -> Option<String> {
     let LayerSource::Effect { effect_id, .. } = &zone_effect_layer(zone)?.source else {
@@ -245,12 +251,7 @@ pub fn zone_effect_controls(zone: &ZoneResource) -> HashMap<String, ControlValue
 
 /// Update one selected effect control in a canonical zone resource.
 pub fn set_zone_effect_control(zone: &mut ZoneResource, id: &str, value: &ControlValue) {
-    let Some(layer) = zone
-        .layers
-        .iter_mut()
-        .rev()
-        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
-    else {
+    let Some(layer) = hypercolor_types::layer::zone_effect_layer_mut(&mut zone.layers) else {
         return;
     };
     let LayerSource::Effect { controls, .. } = &mut layer.source else {
