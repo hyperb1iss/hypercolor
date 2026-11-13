@@ -1666,6 +1666,11 @@ impl StudioHistory {
         if let Some(revision) = self.teach_followed_layout(generation, &changes).await {
             landed = revision;
         }
+        // Those requests take time, and a scene switched to meanwhile has
+        // a journal of its own that this step is no part of.
+        if !self.is_current(generation) {
+            return Sent::Superseded;
+        }
         Sent::Landed {
             changes,
             layer_moves,
@@ -2026,6 +2031,9 @@ impl StudioHistory {
                         let landed = response.changes.clone();
                         self.accept(response, through);
                         self.teach_followed_layout(generation, &landed).await;
+                        if !self.is_current(generation) {
+                            return;
+                        }
                         toasts::toast_success(if redo {
                             "Assignment redone and saved"
                         } else {
