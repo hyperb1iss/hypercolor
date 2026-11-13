@@ -1460,11 +1460,22 @@ impl SceneManager {
     /// scope names only screens the zone currently holds, so a screen's
     /// face survives the stop gesture the way a display zone's does. A
     /// scope that also names an LED output, or an output that has left the
-    /// zone, marks the layer as lighting and it is removed.
+    /// zone, marks the layer as lighting and it is removed. The exception
+    /// is a face waiting for its device: its screen left before the device
+    /// was known, so its scope names no output, and it is kept.
     pub fn clear_zone_effect(&mut self, zone_id: ZoneId) -> Option<&Zone> {
+        let scene_id = *self.active_scene_id()?;
+        let waiting = self
+            .waiting_screens
+            .get(&scene_id)
+            .into_iter()
+            .flatten()
+            .filter(|screen| screen.held.zone_id == zone_id)
+            .flat_map(|screen| screen.layers.iter().copied())
+            .collect::<Vec<_>>();
         let scene = self.active_scene_mut()?;
         let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;
-        if layer_scope::clear_lighting_layers(zone) {
+        if layer_scope::clear_lighting_layers(zone, &waiting) {
             zone.layers_version = zone.layers_version.saturating_add(1);
         }
         // Keep the internal generation aligned with the cleared source.

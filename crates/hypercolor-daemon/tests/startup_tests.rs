@@ -2316,7 +2316,36 @@ async fn shutdown_leaves_the_patched_state_on_disk_with_a_write_in_flight() {
 /// screen as soon as its device is known.
 #[tokio::test]
 async fn daemon_start_keeps_a_face_whose_screen_the_startup_layout_does_not_hold() {
+    Box::pin(waiting_face_is_stored_once_its_device_is_known(None)).await;
+}
+
+/// A stop gesture that lands before discovery clears lighting. The waiting
+/// face is not lighting, whichever spelling of the clear arrives.
+#[tokio::test]
+async fn daemon_start_keeps_a_waiting_face_through_a_zone_clear() {
+    Box::pin(waiting_face_is_stored_once_its_device_is_known(Some(
+        ClearBeforeDiscovery::Zone,
+    )))
+    .await;
+}
+
+#[tokio::test]
+async fn daemon_start_keeps_a_waiting_face_through_a_scene_clear() {
+    Box::pin(waiting_face_is_stored_once_its_device_is_known(Some(
+        ClearBeforeDiscovery::Scene,
+    )))
+    .await;
+}
+
+#[derive(Clone, Copy)]
+enum ClearBeforeDiscovery {
+    Zone,
+    Scene,
+}
+
+async fn waiting_face_is_stored_once_its_device_is_known(clear: Option<ClearBeforeDiscovery>) {
     use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
+    use tower::ServiceExt;
 
     let guard = TestDataDirGuard::new();
     let device_id = hypercolor_types::device::DeviceId::new();
@@ -2447,8 +2476,39 @@ async fn daemon_start_keeps_a_face_whose_screen_the_startup_layout_does_not_hold
         );
     }
 
+    let api_state = Arc::new(AppState::from_daemon_state(&state));
+    if let Some(clear) = clear {
+        let primary_id = state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene()
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
+            .map(|zone| zone.id)
+            .expect("primary zone");
+        let body = match clear {
+            ClearBeforeDiscovery::Zone => serde_json::json!({ "zone": primary_id }),
+            ClearBeforeDiscovery::Scene => serde_json::json!({}),
+        };
+        let response = hypercolor_daemon::api::build_router(Arc::clone(&api_state), None)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/v1/scene/clear")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("the clear should answer");
+        assert!(
+            response.status().is_success(),
+            "the clear answered {}",
+            response.status()
+        );
+    }
+
     // Discovery finds the display.
-    let api_state = AppState::from_daemon_state(&state);
     let _ = state.device_registry.add(info).await;
     api_state.domains.display.sync_connected_surfaces().await;
 

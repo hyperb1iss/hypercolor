@@ -67,12 +67,13 @@ pub(super) fn replace_unscoped_layers(zone: &mut Zone, base: SceneLayer) {
 }
 
 /// Remove a zone's lighting: every layer goes except those
-/// [`is_screen_only`] proves are faces. Returns whether any layer was
-/// removed.
-pub(super) fn clear_lighting_layers(zone: &mut Zone) -> bool {
+/// [`is_screen_only`] proves are faces and those in `waiting`, which the
+/// scene manager knows are faces whose screen has not been stored yet.
+/// Returns whether any layer was removed.
+pub(super) fn clear_lighting_layers(zone: &mut Zone, waiting: &[SceneLayerId]) -> bool {
     let before = zone.layers.len();
     let Zone { layers, layout, .. } = zone;
-    layers.retain(|layer| is_screen_only(&layout.zones, layer));
+    layers.retain(|layer| is_screen_only(&layout.zones, layer) || waiting.contains(&layer.id));
     zone.layers.len() != before
 }
 
