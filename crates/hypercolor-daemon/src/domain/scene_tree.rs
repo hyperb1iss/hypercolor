@@ -1224,14 +1224,12 @@ fn resolve_members(
 
     if request.segments.is_empty() {
         let candidates: Vec<Output> = if held.is_empty() {
-            // "The whole device" has always meant its lights. A minted
-            // screen stands for the device only when it is all there is.
-            let lights: Vec<Output> = minted
-                .iter()
+            // "The whole device" means its lights. A screen is placed
+            // only by naming its segment.
+            minted
+                .into_iter()
                 .filter(|output| !hypercolor_core::spatial::is_display_zone(output))
-                .cloned()
-                .collect();
-            if lights.is_empty() { minted } else { lights }
+                .collect()
         } else {
             held.into_iter().cloned().collect()
         };

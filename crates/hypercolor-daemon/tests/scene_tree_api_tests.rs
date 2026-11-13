@@ -2719,27 +2719,16 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert_eq!(assigned.status(), StatusCode::OK);
     let assigned: EditMembersResponse =
         serde_json::from_value(body_json(assigned).await["data"].clone()).expect("receipt");
-    // Assigning the device is placing it, so its screen comes with its
-    // lights: a box of its own, never part of the lights' output.
-    let minted = assigned
-        .changes
-        .iter()
-        .map(|change| &change.after.as_ref().expect("minted output").output)
-        .collect::<Vec<_>>();
     assert_eq!(
-        minted.len(),
-        2,
-        "one output for the lights, one for the screen"
+        assigned.changes.len(),
+        1,
+        "display segments never enter LED membership"
     );
-    let screen = minted
-        .iter()
-        .find(|output| output.zone_name.as_deref() == Some("Display"))
-        .expect("the screen is placed");
-    assert!(screen.led_positions.len() <= 1);
-    let output = minted
-        .iter()
-        .find(|output| output.zone_name.as_deref() == Some("Lights"))
-        .expect("the lights are placed");
+    let output = &assigned.changes[0]
+        .after
+        .as_ref()
+        .expect("minted output")
+        .output;
     assert_eq!(Some(output.topology.clone()), hint.topology);
     assert_eq!(Some(output.size), hint.size);
     assert_eq!(output.shape, hint.shape);
@@ -2758,16 +2747,6 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert!(unchanged.changes.is_empty());
     assert_eq!(unchanged.document.revision, assigned.document.revision);
 
-    let lights = assigned
-        .changes
-        .iter()
-        .map(|change| &change.after)
-        .find(|after| {
-            after
-                .as_ref()
-                .is_some_and(|state| state.output.zone_name.as_deref() == Some("Lights"))
-        })
-        .expect("the lights' change");
     let removed = send(
         &app,
         if_match(
@@ -2778,7 +2757,7 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
                     scene_id,
                     assignment: None,
                     changes: vec![hypercolor_types::api::scene::MemberEdit {
-                        before: lights.clone(),
+                        before: assigned.changes[0].after.clone(),
                         after: None,
                     }],
                     layer_moves: None,
@@ -2812,9 +2791,6 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert_eq!(seeded.status(), StatusCode::OK);
     let seeded: EditMembersResponse =
         serde_json::from_value(body_json(seeded).await["data"].clone()).expect("receipt");
-    // The screen stayed where the first assignment put it, so only the
-    // lights come back.
-    assert_eq!(seeded.changes.len(), 1);
     let output = &seeded.changes[0]
         .after
         .as_ref()
@@ -2824,6 +2800,121 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert_eq!(output.shape, hint.shape);
     assert_eq!(output.position, NormalizedPosition::new(0.7, 0.6));
     assert_eq!(output.size, NormalizedPosition::new(0.15, 0.1));
+}
+
+#[tokio::test]
+async fn naming_a_devices_screen_places_it_on_the_lights_this_zone_holds() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, MemberAssignmentTarget, MemberPlacementHint,
+    };
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+        DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    };
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let segment = |name: &str, led_count: u32, topology: DeviceTopologyHint| SegmentInfo {
+        name: name.into(),
+        led_count,
+        topology,
+        color_format: DeviceColorFormat::Rgb,
+        layout_hint: None,
+    };
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Pump".into(),
+        vendor: "TestVendor".into(),
+        family: DeviceFamily::named("test"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
+        segments: vec![
+            segment("Ring", 12, DeviceTopologyHint::Strip),
+            segment(
+                "Display",
+                1,
+                DeviceTopologyHint::Display {
+                    width: 480,
+                    height: 480,
+                    circular: true,
+                    format: hypercolor_types::device::DisplayFrameFormat::default(),
+                },
+            ),
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 12,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: true,
+            display_resolution: Some((480, 480)),
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let device_id =
+        hypercolor_core::device::DeviceLifecycleManager::canonical_layout_device_id(&info, None);
+    let _ = state.device_registry.add(info).await;
+    let assign = async |segments: &[&str], placements: Vec<MemberPlacementHint>| {
+        let document = read_document(&app).await;
+        let request = EditMembersRequest {
+            scene_id: serde_json::from_value(document["data"]["id"].clone()).expect("scene id"),
+            changes: Vec::new(),
+            assignment: Some(MemberAssignmentTarget {
+                zone_id: serde_json::from_value(primary_zone(&document)["id"].clone())
+                    .expect("zone id"),
+                device_id: device_id.clone(),
+                segments: segments.iter().map(|name| (*name).to_owned()).collect(),
+                placements,
+            }),
+            layer_moves: None,
+        };
+        let response = send(
+            &app,
+            if_match(
+                json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+                document["data"]["revision"].as_u64().expect("revision"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let receipt: EditMembersResponse =
+            serde_json::from_value(body_json(response).await["data"].clone()).expect("receipt");
+        receipt
+            .changes
+            .into_iter()
+            .map(|change| change.after.expect("an arrival").output)
+            .collect::<Vec<_>>()
+    };
+
+    // The lights arrive where the person put them, away from where
+    // automatic layout would have set the device down.
+    let ring = NormalizedPosition::new(0.8, 0.25);
+    let lights = assign(
+        &[],
+        vec![MemberPlacementHint {
+            segment: Some("Ring".into()),
+            position: ring,
+            size: NormalizedPosition::new(0.1, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+        }],
+    )
+    .await;
+    assert_eq!(lights.len(), 1, "no segment named means the lights alone");
+    assert_eq!(lights[0].zone_name.as_deref(), Some("Ring"));
+
+    // Naming the screen places it, and it lands on those lights.
+    let screen = assign(&["Display"], Vec::new()).await;
+    assert_eq!(screen.len(), 1);
+    assert_eq!(screen[0].zone_name.as_deref(), Some("Display"));
+    assert_eq!(screen[0].position, ring);
+
+    // Asked for again, lights and screen together, nothing is minted twice.
+    assert!(assign(&["Ring", "Display"], Vec::new()).await.is_empty());
 }
 
 #[cfg(feature = "persistence-test-hooks")]

@@ -921,11 +921,12 @@ impl Rig {
 }
 
 #[tokio::test]
-async fn assigning_a_device_that_is_only_a_screen_places_it_with_its_face() {
-    // A screen has no light segment, and the assignment used to answer
-    // that there was no such device. Assigning it is someone placing it:
-    // it gets a box of the panel's shape, and its stored face becomes a
-    // layer of the zone in the same commit.
+async fn naming_a_screens_segment_places_it_with_its_face() {
+    // An assignment that names no segment means a device's lights, and a
+    // device that is only a screen has none: that answer has not changed.
+    // Naming the screen's segment is someone placing it. It gets a box of
+    // the panel's shape, and its stored face becomes a layer of the zone
+    // in the same commit.
     let rig = rig();
     let face = rig.face("clock").await;
     let screen = rig.screen("Pump", false).await;
@@ -933,7 +934,12 @@ async fn assigning_a_device_that_is_only_a_screen_places_it_with_its_face() {
     assert!(rig.placed_screens(&screen).await.is_empty());
     let revision = rig.state.scene_manager.revision();
 
-    let (status, answer) = rig.assign(&screen.layout_id, &[]).await;
+    let (status, _) = rig.assign(&screen.layout_id, &[]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(rig.placed_screens(&screen).await.is_empty());
+    assert_eq!(rig.state.scene_manager.revision(), revision);
+
+    let (status, answer) = rig.assign(&screen.layout_id, &[DISPLAY_ZONE_NAME]).await;
 
     assert!(
         status.is_success(),
@@ -961,8 +967,7 @@ async fn assigning_a_device_that_is_only_a_screen_places_it_with_its_face() {
     let read = rig.get_face(&screen).await;
     assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
 
-    // Naming the screen's segment places the same box, and a second ask
-    // changes nothing.
+    // A second ask changes nothing.
     let (status, again) = rig.assign(&screen.layout_id, &[DISPLAY_ZONE_NAME]).await;
     assert!(
         status.is_success(),
@@ -1011,7 +1016,7 @@ async fn a_screen_placed_in_a_zone_that_follows_a_layout_stays_placed_across_sce
     activate(ids[0]).await;
     let stored_layers = rig.put_scene_face(&screen, face).await;
 
-    let (status, answer) = rig.assign(&screen.layout_id, &[]).await;
+    let (status, answer) = rig.assign(&screen.layout_id, &[DISPLAY_ZONE_NAME]).await;
     assert!(
         status.is_success(),
         "the assignment answered {status}: {answer}"
