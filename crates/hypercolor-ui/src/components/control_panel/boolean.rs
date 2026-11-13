@@ -6,6 +6,10 @@ use serde_json::json;
 
 use hypercolor_types::control::ControlValue;
 
+/// The track of a switch that is off, mixed from the theme's own text
+/// color so it shows on a light surface as well as a dark one.
+const OFF_TRACK: &str = "background: color-mix(in srgb, var(--color-fg-tertiary) 26%, transparent)";
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_toggle(
     name: String,
@@ -41,7 +45,7 @@ pub(super) fn render_toggle(
             <button
                 class="relative w-10 h-5 rounded-full toggle-track shrink-0 cursor-pointer"
                 class=("toggle-track-on", move || checked.get())
-                style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
+                style=move || if checked.get() { on_style.clone() } else { OFF_TRACK.to_string() }
                 on:click=move |_| {
                     let new_val = !checked.get();
                     set_checked.set(new_val);
