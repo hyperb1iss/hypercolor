@@ -243,7 +243,7 @@ pub fn LayerPanel(
     let effect_cache = LayerEffectCache::new(HashMap::new());
     // Disclosure preference belongs to a visible stack slot, independently of
     // the fresh layer authority minted by a whole-layer replacement.
-    let disclosures = StoredValue::new(HashMap::<(String, String, usize), bool>::new());
+    let disclosures = StoredValue::new(HashMap::<(String, String, usize, u8), bool>::new());
     // Content selection is owned here, not driven by the host page — the
     // asset list backs both media-name resolution and the picker's Media tab.
     let assets_resource = api::daemon_resource(|| async { api::list_assets().await });
@@ -813,13 +813,21 @@ pub fn LayerPanel(
                             stack.with(|layers| layers.iter().find(|layer| layer.id.to_string() == lookup_id).cloned()).unwrap_or_else(|| initial.clone())
                         });
                         let stack_index = Signal::derive(move || stack.with(|layers| layers.iter().position(|layer| layer.id.to_string() == layer_id).unwrap_or_default()));
-                        let disclosure_key = (scene_id.clone(), zone_id.clone(), stack_index.get_untracked());
-                        let expanded = disclosures.with_value(|states| states.get(&disclosure_key).copied().unwrap_or(false));
-                        let on_disclosure = Callback::new(move |open| {
-                            let mut key = disclosure_key.clone();
-                            key.2 = stack_index.get_untracked();
-                            disclosures.update_value(|states| { states.insert(key, open); });
-                        });
+                        // A row's two disclosures, each remembered by its slot:
+                        // transform and color, and a screen row's blend.
+                        let slot = (scene_id.clone(), zone_id.clone());
+                        let disclosure = move |which: u8| {
+                            let key = (slot.0.clone(), slot.1.clone(), stack_index.get_untracked(), which);
+                            let open = disclosures.with_value(|states| states.get(&key).copied().unwrap_or(false));
+                            let report = Callback::new(move |open| {
+                                let mut key = key.clone();
+                                key.2 = stack_index.get_untracked();
+                                disclosures.update_value(|states| { states.insert(key, open); });
+                            });
+                            (open, report)
+                        };
+                        let (expanded, on_disclosure) = disclosure(0);
+                        let (blend_open, on_blend_disclosure) = disclosure(1);
                         // This row among the screens' rows, while screens
                         // are what is shown.
                         let view_row = Memo::new(move |_| {
@@ -909,6 +917,8 @@ pub fn LayerPanel(
                                 backdrop=backdrop
                                 on_screen=on_screen
                                 on_copy=on_copy
+                                blend_open=blend_open
+                                on_blend_disclosure=Some(on_blend_disclosure)
                             />
                         }
                         .into_any()

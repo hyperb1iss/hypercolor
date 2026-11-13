@@ -33,7 +33,6 @@ use super::source::{blend_options, blend_value, fit_options, fit_value, parse_bl
 use super::{
     LayerTargetHost, LayerWrites, TargetSubject, delete_layer, reorder_layer, update_layer,
 };
-use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::face_blend::{
     FACE_BLEND_PRESETS, face_blend_option, face_blend_select_options, face_blend_value,
@@ -144,6 +143,11 @@ pub fn LayerRow(
     /// Offer to copy the layer onto its screens in every scene.
     #[prop(optional_no_strip)]
     on_copy: Option<Callback<String>>,
+    /// Whether a screen row's blend disclosure starts open, and where it
+    /// reports being opened or closed.
+    #[prop(optional)]
+    blend_open: bool,
+    #[prop(optional_no_strip)] on_blend_disclosure: Option<Callback<bool>>,
 ) -> impl IntoView {
     let initial = layer.get_untracked();
     let stack = writes.stack;
@@ -298,16 +302,11 @@ pub fn LayerRow(
 
     // The source's own controls: an effect's parameters, a clip's playback.
     let controls_zone = zone_id.clone();
-    // Whichever of the two comes second sits under a rule.
+    // An LED layer's own controls sit under a rule, beneath its blend.
     let controls_class = if on_screen {
         ""
     } else {
         "border-t border-edge-subtle/40 pt-3"
-    };
-    let blend_class = if on_screen {
-        "space-y-3 border-t border-edge-subtle/40 pt-3"
-    } else {
-        "contents"
     };
     let source_controls = move || {
         let zone_id = controls_zone.clone();
@@ -339,6 +338,120 @@ pub fn LayerRow(
                             </div>
                         }
                     })}
+        }
+    };
+
+    // How the layer blends: its mode, its amount, and for the bottom of a
+    // screen's stack the one-tap looks.
+    let blend_controls = move || {
+        view! {
+                // ── Blend ─────────────────────────────────────────────
+                <div class="min-w-0 space-y-1.5">
+                    <SilkSelect
+                        aria_label=Signal::derive(move || {
+                            if meets_backdrop.get() {
+                                "Blend with what is behind".to_owned()
+                            } else {
+                                "Blend mode".to_owned()
+                            }
+                        })
+                        value=Signal::derive(move || {
+                            let mode = blend_mode.get();
+                            if meets_backdrop.get() {
+                                face_blend_value(mode).to_owned()
+                            } else {
+                                blend_value(mode).to_owned()
+                            }
+                        })
+                        options=Signal::derive(move || {
+                            if meets_backdrop.get() {
+                                face_blend_select_options()
+                            } else {
+                                blend_options()
+                            }
+                        })
+                        on_change=Callback::new(move |value: String| {
+                            let mode = if meets_backdrop.get_untracked() {
+                                parse_face_blend(&value)
+                            } else {
+                                parse_blend(&value)
+                            };
+                            set_composition.run((mode, amount.get_untracked()));
+                        })
+                        placeholder="Blend"
+                        class="w-full border border-edge-subtle bg-surface-overlay/45 px-2.5 py-1.5 text-xs text-fg-primary"
+                        label_class="font-medium"
+                    />
+                    <Show when=move || meets_backdrop.get()>
+                        <p class="px-1 text-[10px] leading-relaxed text-fg-tertiary">
+                            {move || face_blend_option(blend_mode.get()).blurb}
+                        </p>
+                    </Show>
+                </div>
+
+                // ── Opacity — same slider chrome as the Effects controls ──
+                <Show when=move || !meets_backdrop.get() || blend_mode.get().blends_with_base()>
+                    <div
+                        class="flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-surface-hover/20"
+                        style="--glow-rgb: 225, 53, 255"
+                    >
+                        <span class="min-w-[64px] shrink-0 truncate text-xs font-medium text-fg-secondary">
+                            {move || if meets_backdrop.get() { "Amount" } else { "Opacity" }}
+                        </span>
+                        <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            class="slider-silk min-w-0 flex-1 cursor-pointer"
+                            aria-label=move || if meets_backdrop.get() { "Blend amount" } else { "Opacity" }
+                            prop:value=move || format!("{:.2}", amount.get())
+                            on:change=move |event| {
+                                if let Some(value) = Change::from_event(event).value::<f32>() {
+                                    set_composition.run((blend_mode.get_untracked(), value));
+                                }
+                            }
+                        />
+                        <span
+                            class="w-[40px] shrink-0 rounded px-1.5 py-0.5 text-right font-mono text-[10px] tabular-nums"
+                            style="color: rgba(225, 53, 255, 0.85); background: rgba(225, 53, 255, 0.1)"
+                        >
+                            {move || format!("{:.0}%", amount.get() * 100.0)}
+                        </span>
+                    </div>
+                </Show>
+
+                // One-tap looks for how a face sits on what is behind it.
+                <Show when=move || meets_backdrop.get()>
+                    <div class="flex flex-wrap gap-1.5" role="group" aria-label="Looks">
+                        {FACE_BLEND_PRESETS
+                            .iter()
+                            .copied()
+                            .map(|preset| {
+                                let is_active = move || {
+                                    blend_mode.get() == preset.mode
+                                        && (amount.get() - preset.opacity).abs() <= 0.01
+                                };
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="rounded-md border px-2 py-1 text-[10px] font-medium transition-colors btn-press"
+                                        class=("border-accent-muted", is_active)
+                                        class=("bg-accent/10", is_active)
+                                        class=("text-fg-primary", is_active)
+                                        class=("border-edge-subtle/70", move || !is_active())
+                                        class=("text-fg-tertiary", move || !is_active())
+                                        class=("hover:text-fg-secondary", move || !is_active())
+                                        aria-pressed=move || is_active().to_string()
+                                        on:click=move |_| set_composition.run((preset.mode, preset.opacity))
+                                    >
+                                        {preset.label}
+                                    </button>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
+                </Show>
         }
     };
 
@@ -560,121 +673,57 @@ pub fn LayerRow(
                 // A layer on a screen leads with what it is: a face's own
                 // settings come before how it blends.
                 {on_screen.then(&source_controls)}
-                <div class=blend_class>
-                // ── Blend ─────────────────────────────────────────────
-                <div class="min-w-0 space-y-1.5">
-                    <Show when=move || meets_backdrop.get()>
-                        <span class=label_class(LabelSize::Micro, LabelTone::Default)>
-                            "Blend with what is behind"
-                        </span>
-                    </Show>
-                    <SilkSelect
-                        aria_label=Signal::derive(move || {
-                            if meets_backdrop.get() {
-                                "Blend with what is behind".to_owned()
-                            } else {
-                                "Blend mode".to_owned()
-                            }
-                        })
-                        value=Signal::derive(move || {
-                            let mode = blend_mode.get();
-                            if meets_backdrop.get() {
-                                face_blend_value(mode).to_owned()
-                            } else {
-                                blend_value(mode).to_owned()
-                            }
-                        })
-                        options=Signal::derive(move || {
-                            if meets_backdrop.get() {
-                                face_blend_select_options()
-                            } else {
-                                blend_options()
-                            }
-                        })
-                        on_change=Callback::new(move |value: String| {
-                            let mode = if meets_backdrop.get_untracked() {
-                                parse_face_blend(&value)
-                            } else {
-                                parse_blend(&value)
-                            };
-                            set_composition.run((mode, amount.get_untracked()));
-                        })
-                        placeholder="Blend"
-                        class="w-full border border-edge-subtle bg-surface-overlay/45 px-2.5 py-1.5 text-xs text-fg-primary"
-                        label_class="font-medium"
-                    />
-                    <Show when=move || meets_backdrop.get()>
-                        <p class="px-1 text-[10px] leading-relaxed text-fg-tertiary">
-                            {move || face_blend_option(blend_mode.get()).blurb}
-                        </p>
-                    </Show>
-                </div>
-
-                // ── Opacity — same slider chrome as the Effects controls ──
-                <Show when=move || !meets_backdrop.get() || blend_mode.get().blends_with_base()>
-                    <div
-                        class="flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-surface-hover/20"
-                        style="--glow-rgb: 225, 53, 255"
-                    >
-                        <span class="min-w-[64px] shrink-0 truncate text-xs font-medium text-fg-secondary">
-                            {move || if meets_backdrop.get() { "Amount" } else { "Opacity" }}
-                        </span>
-                        <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            class="slider-silk min-w-0 flex-1 cursor-pointer"
-                            aria-label=move || if meets_backdrop.get() { "Blend amount" } else { "Opacity" }
-                            prop:value=move || format!("{:.2}", amount.get())
-                            on:change=move |event| {
-                                if let Some(value) = Change::from_event(event).value::<f32>() {
-                                    set_composition.run((blend_mode.get_untracked(), value));
+                {if on_screen {
+                    // A face's settings are what the panel is for. How the
+                    // stack blends waits under them, closed until asked for.
+                    view! {
+                        <details
+                            class="rounded-lg border border-edge-subtle/55 bg-surface-overlay/25"
+                            open=blend_open
+                            data-blend-disclosure=""
+                            on:toggle=move |event| {
+                                let element: web_sys::Element = event_target(&event);
+                                if element.is_connected()
+                                    && let Some(report) = on_blend_disclosure
+                                {
+                                    report.run(element.has_attribute("open"));
                                 }
                             }
-                        />
-                        <span
-                            class="w-[40px] shrink-0 rounded px-1.5 py-0.5 text-right font-mono text-[10px] tabular-nums"
-                            style="color: rgba(225, 53, 255, 0.85); background: rgba(225, 53, 255, 0.1)"
                         >
-                            {move || format!("{:.0}%", amount.get() * 100.0)}
-                        </span>
-                    </div>
-                </Show>
-
-                // One-tap looks for how a face sits on what is behind it.
-                <Show when=move || meets_backdrop.get()>
-                    <div class="flex flex-wrap gap-1.5" role="group" aria-label="Looks">
-                        {FACE_BLEND_PRESETS
-                            .iter()
-                            .copied()
-                            .map(|preset| {
-                                let is_active = move || {
-                                    blend_mode.get() == preset.mode
-                                        && (amount.get() - preset.opacity).abs() <= 0.01
-                                };
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="rounded-md border px-2 py-1 text-[10px] font-medium transition-colors btn-press"
-                                        class=("border-accent-muted", is_active)
-                                        class=("bg-accent/10", is_active)
-                                        class=("text-fg-primary", is_active)
-                                        class=("border-edge-subtle/70", move || !is_active())
-                                        class=("text-fg-tertiary", move || !is_active())
-                                        class=("hover:text-fg-secondary", move || !is_active())
-                                        aria-pressed=move || is_active().to_string()
-                                        on:click=move |_| set_composition.run((preset.mode, preset.opacity))
-                                    >
-                                        {preset.label}
-                                    </button>
-                                }
-                            })
-                            .collect_view()}
-                    </div>
-                </Show>
-
-                </div>
+                            <summary class="flex cursor-pointer items-center gap-1.5 px-3 py-2 text-[11px] font-semibold text-fg-secondary">
+                                <Icon icon=LuChevronRight width="12px" height="12px" />
+                                <span class="shrink-0">
+                                    {move || if meets_backdrop.get() { "Blend with what is behind" } else { "Blend" }}
+                                </span>
+                                <span class="ml-auto min-w-0 truncate pl-2 font-normal text-fg-tertiary">
+                                    {move || {
+                                        let mode = blend_mode.get();
+                                        let name = if meets_backdrop.get() {
+                                            face_blend_option(mode).label.to_owned()
+                                        } else {
+                                            blend_options()
+                                                .into_iter()
+                                                .find(|(value, _)| value == blend_value(mode))
+                                                .map(|(_, label)| label)
+                                                .unwrap_or_default()
+                                        };
+                                        if mode.blends_with_base() || !meets_backdrop.get() {
+                                            format!("{name} \u{b7} {:.0}%", amount.get() * 100.0)
+                                        } else {
+                                            name
+                                        }
+                                    }}
+                                </span>
+                            </summary>
+                            <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
+                                {blend_controls()}
+                            </div>
+                        </details>
+                    }
+                    .into_any()
+                } else {
+                    blend_controls().into_any()
+                }}
                 {(!on_screen).then(source_controls)}
 
                 // ── Transform & color disclosure ──────────────────────

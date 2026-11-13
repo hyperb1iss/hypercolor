@@ -175,6 +175,15 @@ test("Studio opens a screen's face from its box and changes how it meets what is
   const written = page.waitForRequest((request) =>
     request.method() === "PUT" && request.url().includes(`/api/v1/scene/zones/${zoneId}/layers/`));
   await panelSettled(page);
+  // The face's own settings lead the row; how it blends waits under them,
+  // closed until asked for.
+  const row = panel.locator("[data-layer-row]").first();
+  await expect(row.getByText("Face settings", { exact: true })).toBeVisible();
+  const disclosure = row.locator("[data-blend-disclosure]");
+  await expect(disclosure).toHaveJSProperty("open", false);
+  await expect(disclosure.locator("summary")).toContainText("Blend with what is behind");
+  await disclosure.locator("summary").click();
+  await expect(disclosure).toHaveJSProperty("open", true);
   const blend = panel.getByRole("combobox", { name: "Blend with what is behind", exact: true });
   await blend.scrollIntoViewIfNeeded();
   await settle(page);
@@ -187,6 +196,8 @@ test("Studio opens a screen's face from its box and changes how it meets what is
       .find((layer) => layer.name === "Clock")?.blend;
   }).toBe("screen");
   await expect.poll(limitedLayers).toEqual([["Clock", [LCD_1]]]);
+  // The replace minted a new layer, and its row keeps the disclosure open.
+  await expect(panel.locator("[data-blend-disclosure]").first()).toHaveJSProperty("open", true);
 
   // A layer behind it leads back to the zone's own list, which names the
   // face on one line that leads to the screen again.
