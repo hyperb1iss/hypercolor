@@ -1197,6 +1197,40 @@ fn scope_edit(layer: SceneLayerId) -> StudioEdit {
 }
 
 #[test]
+fn a_redone_add_takes_the_steps_that_name_its_layer_to_the_new_id() {
+    use hypercolor_ui::pages::studio::history::AddedLayer;
+
+    let mut journal = StudioJournal::default();
+    let mut made = layer("Clock", [0.2, 0.4, 0.6, 1.0], BlendMode::Alpha, 1.0);
+    made.id = layer_id(RIPPLES);
+    journal.record(StudioEdit::LayersAdded {
+        name: "Clock".to_owned(),
+        layers: vec![AddedLayer {
+            zone_id: ZONE_A.to_owned(),
+            layer: made,
+            lands_on: Vec::new(),
+        }],
+    });
+    journal.record(scope_edit(layer_id(RIPPLES)));
+    assert!(journal.undo_edit().is_some());
+    journal.complete(false);
+    assert!(journal.undo_edit().is_some());
+    journal.complete(false);
+
+    // Redoing the add creates the layer again, and the daemon gives it a
+    // new id. The change of target waiting behind it named the old one.
+    let minted = SceneLayerId::new();
+    assert!(matches!(
+        journal.redo_edit(),
+        Some(StudioEdit::LayersAdded { .. })
+    ));
+    journal.remap_layer(ZONE_A, layer_id(RIPPLES), minted);
+    journal.complete(true);
+
+    assert_eq!(journal.redo_edit(), Some(&scope_edit(minted)));
+}
+
+#[test]
 fn a_change_of_target_is_one_step_that_undoes_and_redoes() {
     let mut journal = StudioJournal::default();
     let place = journal.record(scope_edit(layer_id(RIPPLES)));

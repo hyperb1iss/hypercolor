@@ -250,6 +250,17 @@ impl StudioHistory {
                             Some(layer) => Some(layer),
                             None => stack.items.last().cloned(),
                         };
+                        // A redo makes the layer again under a new id, and
+                        // every later step that names it has to follow, or
+                        // its own redo finds no such layer.
+                        if redo
+                            && let Some(made) = &layer
+                            && made.id != added.layer.id
+                        {
+                            self.journal.try_update(|journal| {
+                                journal.remap_layer(&zone_id, added.layer.id, made.id);
+                            });
+                        }
                         if let Some(layer) = layer {
                             replayed.push(AddedLayer {
                                 zone_id: zone_id.clone(),
