@@ -1914,7 +1914,9 @@ for the authoring contract.
 With `scope: scene`, makes this effect the screen's whole stack in the active
 scene: one enabled layer scoped to the screen, with the request's blend and
 opacity. The screen's own layers are removed and it leaves the scope of layers
-it shares. A screen no zone places is added to the primary zone first.
+it shares. A screen no zone places has no output to scope a layer to, so its
+face is stored as a `display` zone of the scene, under the id its view had,
+and becomes a screen layer when the screen is placed.
 
 **Path parameters**: `id` (string).
 
