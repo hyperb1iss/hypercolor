@@ -14,6 +14,7 @@ use crate::api::{self, DeviceSummary};
 use crate::toasts;
 
 use super::StudioContext;
+use super::device_assignment::assignment_segments;
 use super::device_card::{UNASSIGNED_KEY, device_card_dom_id};
 use super::device_pane::pane_zone_toggle_dom_id;
 use super::drag::{DragController, FocusReturn};
@@ -215,8 +216,8 @@ fn plan_move(
 
     let canvas = studio.render_canvas_size.get_untracked();
     if payload.origin == Origin::Unassigned {
-        let segments = payload.segments.clone();
         let device = registry_device(drag, &payload.device_id);
+        let segments = named_segments(&payload.segments, device.as_ref());
         // A channel brings only its own segment, so only its hint counts.
         let mut seeds = device
             .as_ref()
@@ -449,6 +450,29 @@ pub(crate) fn registry_device(
                     .cloned()
             })
     })
+}
+
+/// The segments an assignment of `device` names for `asked`, the
+/// payload's own (see [`assignment_segments`]).
+fn named_segments(asked: &[String], device: Option<&DeviceSummary>) -> Vec<String> {
+    let all: Vec<(&str, bool)> = device
+        .map(|device| {
+            device
+                .segments
+                .iter()
+                .map(|segment| {
+                    (
+                        segment.name.as_str(),
+                        matches!(
+                            segment.topology_hint,
+                            Some(api::SegmentTopologySummary::Display { .. })
+                        ),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assignment_segments(asked, &all)
 }
 
 /// How many light segments a device has: what moving "the device" means

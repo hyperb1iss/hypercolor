@@ -274,3 +274,26 @@ fn saved_only_controllers_require_a_successful_registry_read() {
     assert_eq!(rows[0].device_id, "prismrgb:old");
     assert!(!rows[0].resolved);
 }
+
+#[test]
+fn a_whole_device_with_a_screen_is_assigned_by_naming_every_segment() {
+    use hypercolor_ui::pages::studio::device_assignment::assignment_segments;
+
+    // Naming none means the lights alone to the daemon, which is all a
+    // device without a screen has.
+    assert!(assignment_segments(&[], &[("Fan 1", false), ("Fan 2", false)]).is_empty());
+    // A screen comes only when named, so the whole device names it all.
+    assert_eq!(
+        assignment_segments(&[], &[("Ring", false), ("Display", true)]),
+        ["Ring", "Display"]
+    );
+    assert_eq!(assignment_segments(&[], &[("Display", true)]), ["Display"]);
+    // A move that names its own part keeps to it.
+    assert_eq!(
+        assignment_segments(
+            &["Display".to_owned()],
+            &[("Ring", false), ("Display", true)]
+        ),
+        ["Display"]
+    );
+}

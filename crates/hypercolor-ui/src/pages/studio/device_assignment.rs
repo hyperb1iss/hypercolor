@@ -90,6 +90,25 @@ pub fn device_rows_for_zone(zone: &ZoneResource, devices: &[DeviceMeta]) -> Vec<
     rows
 }
 
+/// The segments an assignment names.
+///
+/// `asked` is what the move itself names: one channel, or a screen on its
+/// own. When it names none the whole device is meant. To the daemon an
+/// assignment that names no segment means the device's lights and leaves
+/// a screen where it is, so a device with a screen is assigned by naming
+/// every segment in `all`, given as `(name, is a screen)`. A device
+/// without one keeps the short form.
+#[must_use]
+pub fn assignment_segments(asked: &[String], all: &[(&str, bool)]) -> Vec<String> {
+    if !asked.is_empty() {
+        return asked.to_vec();
+    }
+    if !all.iter().any(|(_, screen)| *screen) {
+        return Vec::new();
+    }
+    all.iter().map(|(name, _)| (*name).to_owned()).collect()
+}
+
 /// Order a zone's device rows for display: connected devices first, then
 /// case-insensitively by name, with offline (unresolved) rows sunk to the
 /// bottom. A stable sort so the pane reads in a predictable, repeatable
