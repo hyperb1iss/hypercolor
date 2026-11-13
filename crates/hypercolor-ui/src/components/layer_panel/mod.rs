@@ -55,7 +55,7 @@ use crate::zones::surface::zone_display_name;
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
 use scope::{
-    NoCreateTarget, Target, TargetOutput, WHOLE_ZONE, create_scope, draft_words, pickable_count,
+    NoCreateTarget, Target, TargetOutput, WHOLE_ZONE, create_scope, draft_words, offers_targets,
 };
 use source::{
     AddLayerScope, add_layer_request, available_add_layer_scopes, resolve_add_layer_targets,
@@ -282,7 +282,7 @@ pub fn LayerPanel(
         add_target.with(|target| {
             target
                 .as_ref()
-                .filter(|(target, outputs)| pickable_count(outputs) > 1 || !target.is_whole_zone())
+                .filter(|(target, outputs)| offers_targets(outputs) || !target.is_whole_zone())
                 .map(|(target, outputs)| draft_words(target, outputs))
         })
     });

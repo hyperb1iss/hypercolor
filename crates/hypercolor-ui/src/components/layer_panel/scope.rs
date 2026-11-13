@@ -31,9 +31,13 @@ pub struct TargetOutput {
     /// The layout device id the output belongs to.
     pub device_id: String,
     pub device_name: String,
-    /// A screen. Screens take faces through their own surface, so a target
-    /// cannot pick one, though a stored scope that names one still reads.
+    /// A screen: a layer limited to screens alone draws at each panel's
+    /// own size, above everything the zone's canvas puts behind it.
     pub screen: bool,
+    /// Whether a target can pick the output. A screen can only once the
+    /// daemon treats a layer on one as that screen's own (see
+    /// [`with_screens`]); a stored scope that names one reads either way.
+    pub pickable: bool,
 }
 
 /// Whether a zone member is a screen.
@@ -43,7 +47,8 @@ pub fn is_screen_member(member: &ZoneMember) -> bool {
 }
 
 /// Every output of `zone`, in the zone's order. `names` gives a member's
-/// own shown name and its device's.
+/// own shown name and its device's. Screens come out not pickable; pass
+/// the result through [`with_screens`] for a daemon that takes them.
 #[must_use]
 pub fn zone_target_outputs(
     zone: &ZoneResource,
@@ -53,15 +58,26 @@ pub fn zone_target_outputs(
         .iter()
         .map(|member| {
             let (name, device_name) = names(member);
+            let screen = is_screen_member(member);
             TargetOutput {
                 id: member.id.to_string(),
                 name,
                 device_id: member.device_id.clone(),
                 device_name,
-                screen: is_screen_member(member),
+                screen,
+                pickable: !screen,
             }
         })
         .collect()
+}
+
+/// `outputs` with every screen among them open to targets.
+#[must_use]
+pub fn with_screens(mut outputs: Vec<TargetOutput>) -> Vec<TargetOutput> {
+    for output in &mut outputs {
+        output.pickable = true;
+    }
+    outputs
 }
 
 /// The outputs of one device, as the target editor lists them.
@@ -84,11 +100,10 @@ impl TargetGroup {
 }
 
 /// The outputs a target can pick, grouped by device in the zone's order.
-/// Screens are left out.
 #[must_use]
 pub fn target_groups(outputs: &[TargetOutput]) -> Vec<TargetGroup> {
     let mut groups: Vec<TargetGroup> = Vec::new();
-    for output in outputs.iter().filter(|output| !output.screen) {
+    for output in outputs.iter().filter(|output| output.pickable) {
         match groups
             .iter_mut()
             .find(|group| group.device_id == output.device_id)
@@ -104,11 +119,22 @@ pub fn target_groups(outputs: &[TargetOutput]) -> Vec<TargetGroup> {
     groups
 }
 
-/// How many outputs a target can pick from. A zone with fewer than two
-/// has nothing to choose between, so it shows no target at all.
+/// How many outputs a target can pick from.
 #[must_use]
 pub fn pickable_count(outputs: &[TargetOutput]) -> usize {
-    outputs.iter().filter(|output| !output.screen).count()
+    outputs.iter().filter(|output| output.pickable).count()
+}
+
+/// Whether a zone has targets to choose between, so it shows them at all.
+/// One LED output alone is the whole zone under another name. A screen is
+/// never that: a layer on it is its face, and a layer on the whole zone is
+/// what shows behind the face.
+#[must_use]
+pub fn offers_targets(outputs: &[TargetOutput]) -> bool {
+    pickable_count(outputs) > 1
+        || outputs
+            .iter()
+            .any(|output| output.pickable && output.screen)
 }
 
 /// How much of a device a target holds.
@@ -140,17 +166,17 @@ impl Target {
 
     /// The target a canvas selection stands for: its pickable outputs, or
     /// the whole zone when it holds none, or when the zone has nothing to
-    /// choose between (see [`pickable_count`]). A selection is a hint, so
+    /// choose between (see [`offers_targets`]). A selection is a hint, so
     /// one that names nothing any more is no target; a target somebody
     /// chose is another matter (see [`create_scope`]).
     #[must_use]
     pub fn from_selection(selection: &HashSet<String>, outputs: &[TargetOutput]) -> Self {
-        if pickable_count(outputs) < 2 {
+        if !offers_targets(outputs) {
             return Self::WholeZone;
         }
         let picked: BTreeSet<String> = outputs
             .iter()
-            .filter(|output| !output.screen && selection.contains(&output.id))
+            .filter(|output| output.pickable && selection.contains(&output.id))
             .map(|output| output.id.clone())
             .collect();
         if picked.is_empty() {
@@ -281,8 +307,8 @@ impl NoCreateTarget {
 }
 
 /// The scope a new layer is made with for `target`, in a zone that holds
-/// `outputs` now: none for the whole zone, otherwise the LED outputs the
-/// target names that the zone still holds.
+/// `outputs` now: none for the whole zone, otherwise the outputs the
+/// target names that the zone still holds and a target can pick.
 ///
 /// A target that named outputs and has none of them left is an error, and
 /// never the whole zone: the layer would land on outputs nobody chose. One
@@ -306,7 +332,7 @@ pub fn create_scope(
         .filter(|id| {
             outputs
                 .iter()
-                .any(|output| !output.screen && output.id == **id)
+                .any(|output| output.pickable && output.id == **id)
         })
         .cloned()
         .collect();
@@ -393,9 +419,11 @@ pub fn draft_words(target: &Target, outputs: &[TargetOutput]) -> String {
 }
 
 /// The names behind a set of output ids: one device or channel by its
-/// name, two joined by "and", more by their count. A device whose outputs
-/// are all among them goes by the device's name. `None` when none of the
-/// ids is an output of the zone.
+/// name, two joined by "and", more by their count ("3 screens" when
+/// screens are all they are). A device whose outputs are all among them
+/// goes by the device's name, and a screen always by its own: three
+/// panels of one model share a device name and differ in theirs. `None`
+/// when none of the ids is an output of the zone.
 #[must_use]
 pub fn outputs_label(ids: &HashSet<&str>, outputs: &[TargetOutput]) -> Option<String> {
     let live: Vec<&TargetOutput> = outputs
@@ -415,7 +443,7 @@ pub fn outputs_label(ids: &HashSet<&str>, outputs: &[TargetOutput]) -> Option<St
         let of_device = |candidate: &&TargetOutput| candidate.device_id == output.device_id;
         let held = live.iter().copied().filter(of_device).count();
         let whole = outputs.iter().filter(of_device).count();
-        if held == whole {
+        if held == whole && !output.screen {
             names.push(&output.device_name);
         } else {
             names.extend(
@@ -429,6 +457,7 @@ pub fn outputs_label(ids: &HashSet<&str>, outputs: &[TargetOutput]) -> Option<St
     Some(match names.as_slice() {
         [one] => (*one).to_owned(),
         [first, second] => format!("{first} and {second}"),
+        _ if live.iter().all(|output| output.screen) => format!("{} screens", live.len()),
         _ => format!("{} outputs", live.len()),
     })
 }
@@ -449,6 +478,22 @@ pub fn outputs_detail(ids: &HashSet<&str>, outputs: &[TargetOutput]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Whether `scope` makes a layer a screen's own: it names at least one
+/// output the zone holds, and every one it holds is a screen. Such a layer
+/// draws on each panel at the panel's size, above the zone's canvas. Any
+/// other layer is part of the canvas, a screen's backdrop included.
+#[must_use]
+pub fn is_screen_scope(scope: Option<&LayerScope>, outputs: &[TargetOutput]) -> bool {
+    let Some(scope) = scope else {
+        return false;
+    };
+    let mut live = outputs
+        .iter()
+        .filter(|output| scope.outputs.contains(&output.id))
+        .peekable();
+    live.peek().is_some() && live.all(|output| output.screen)
 }
 
 /// Whether `layer` names outputs and none of them is a member of its

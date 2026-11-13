@@ -22,7 +22,7 @@ use leptos_icons::Icon;
 
 use super::controls::{EffectControlsSection, MediaPlaybackSection};
 use super::scope::{
-    TargetWords, hover_outputs, names_output, outputs_detail, pickable_count, stands_back,
+    TargetWords, hover_outputs, names_output, offers_targets, outputs_detail, stands_back,
     target_words,
 };
 use super::source::{blend_options, blend_value, fit_options, fit_value, parse_blend, parse_fit};
@@ -124,7 +124,7 @@ pub fn LayerRow(
         let host = targets.get()?;
         let scope = layer.with(|layer| layer.scope.clone());
         host.outputs.with(|outputs| {
-            if scope.is_none() && pickable_count(outputs) < 2 {
+            if scope.is_none() && !offers_targets(outputs) {
                 return None;
             }
             let ids: HashSet<&str> = scope
