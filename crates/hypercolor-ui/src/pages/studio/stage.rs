@@ -624,6 +624,9 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
                 class=("text-fg-tertiary", move || !offers_face.get())
                 class=("font-medium", move || offers_face.get())
                 class=("text-fg-secondary", move || offers_face.get())
+                // A phone has room for the name or for what a tap opens,
+                // not both beside the toolbar; the name says more.
+                class=("max-sm:hidden", move || !offers_face.get())
             >
                 {action}
             </span>
