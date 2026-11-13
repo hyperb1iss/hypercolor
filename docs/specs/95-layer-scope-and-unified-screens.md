@@ -1614,7 +1614,13 @@ entry says whether its device can take frames now, and a screen that is away
 keeps its view while it has a stack and lowers as before. A screen with no
 entry is one the rig does not know. A scene face write reads the registry
 itself, because it may be the first thing written for a display the table has
-not seen.
+not seen. Deleting a display drops its entry in the commit that prunes it, so
+its view goes with a published removal while its layers wait like any layer
+whose output was forgotten, and a disconnect re-reads the registry so an empty
+screen that left stops being listed. Every writer of the table reads the
+registry after its mutation begins. A commit lands only if nothing committed
+since it began, so tables are installed in the order they were read and an
+activation that waited on its guards cannot put an older one back.
 
 **Nothing places a screen but its owner.** Automatic layout leaves screens
 off the canvas on purpose, and the render thread finds an unplaced screen a
@@ -1635,6 +1641,20 @@ is reported with its reason.
 **A stored display zone is the screen's whole stack while it exists.** Screen
 layers scoped to the same screen are not lowered beside it, so a screen never
 has two bindings.
+
+**A zone's effect is not a face.** Screen layers and scoped overlays sit in
+the owning zone's stack, above its lighting. "The effect this zone is running"
+is therefore one rule in `hypercolor-types`, `zone_effect_layer`: the top
+layer with no scope that has an effect source. The daemon's active effect, the
+CLI's `effects patch` and `effects reset`, and the TUI read it there. The
+error fallback follows the same line: a failed layer that carries a scope is
+removed alone, and only a failed whole-zone layer clears its zone.
+
+**A view's events come from the commit.** A view changes whenever its owning
+zone is written, whoever the write was addressed to. Each commit compares the
+live scene's views, and whether each stack draws, before and after, and
+publishes `ZoneChanged` under the id of every view that differs and that the
+mutation did not already announce.
 
 **Layer health is published under the view's id.** That is the zone id an
 unchanged client holds for a screen's layers. W6 reads screens from their
