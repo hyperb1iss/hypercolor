@@ -1186,6 +1186,67 @@ fn a_display_zone_is_stored_only_for_a_known_screen_in_a_live_scene() {
     );
 }
 
+// ── A zone's effect ──────────────────────────────────────────────────────
+
+#[test]
+fn every_reader_names_the_same_effect_for_a_zone_with_two_whole_zone_effects() {
+    let rig = rig();
+    let lower = effect_layer();
+    let mut upper = effect_layer();
+    let upper_effect = EffectMetadata {
+        id: upper.effect_id().expect("an effect layer"),
+        ..sample_effect("upper")
+    };
+    if let LayerSource::Effect {
+        control_bindings, ..
+    } = &mut upper.source
+    {
+        control_bindings.insert(
+            "speed".to_owned(),
+            hypercolor_types::effect::ControlBinding {
+                sensor: "cpu".to_owned(),
+                sensor_min: 0.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 1.0,
+                deadband: 0.0,
+                smoothing: 0.0,
+            },
+        );
+    }
+    let zone = primary(
+        vec![strip("keys"), screen(PUMP_SCREEN, PUMP)],
+        vec![
+            lower,
+            upper.clone(),
+            scoped(effect_layer(), &["keys"]),
+            scoped(effect_layer(), &[PUMP_SCREEN]),
+        ],
+    );
+    let zone_id = zone.id;
+
+    // What a status names, and what a stop gesture reports as stopped.
+    assert_eq!(zone.effect_layer().map(|layer| layer.id), Some(upper.id));
+    assert_eq!(
+        hypercolor_core::scene::first_lighting_effect(&zone),
+        upper.effect_id()
+    );
+
+    // And the effect whose input bindings an apply of the same effect keeps.
+    let mut manager = active(&rig, scene(vec![zone]));
+    let applied = manager
+        .apply_effect_to_zone(zone_id, &upper_effect, HashMap::new(), None)
+        .expect("the effect should apply")
+        .clone();
+    let LayerSource::Effect {
+        control_bindings, ..
+    } = &applied.effect_layer().expect("the zone's effect").source
+    else {
+        panic!("the zone's effect is an effect layer");
+    };
+    assert!(control_bindings.contains_key("speed"));
+}
+
 // ── Settling ─────────────────────────────────────────────────────────────
 
 /// Take a screen's output out of a scene and settle it, as any write that

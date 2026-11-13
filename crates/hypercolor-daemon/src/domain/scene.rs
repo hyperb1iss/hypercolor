@@ -1362,8 +1362,9 @@ impl SceneMutation {
             .map(|zone| zone.id)
     }
 
-    /// The whole-zone effect loaded in one of the active scene's zones:
-    /// the one an effect apply replaces. A scoped layer's effect is not it.
+    /// The effect of one of the active scene's zones, by the rule every
+    /// reader shares: the one an effect apply replaces and a status names.
+    /// A scoped layer's effect is not it.
     #[must_use]
     pub fn zone_effect(&self, zone_id: ZoneId) -> Option<hypercolor_types::effect::EffectId> {
         self.candidate
@@ -1371,14 +1372,7 @@ impl SceneMutation {
             .zones
             .iter()
             .find(|zone| zone.id == zone_id)
-            .and_then(|zone| {
-                zone.layers
-                    .iter()
-                    .find_map(|layer| match (&layer.scope, &layer.source) {
-                        (None, LayerSource::Effect { effect_id, .. }) => Some(*effect_id),
-                        _ => None,
-                    })
-            })
+            .and_then(|zone| zone.effect_layer()?.effect_id())
     }
 
     /// Load an effect into the active scene's primary zone, creating the
