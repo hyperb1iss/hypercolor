@@ -437,7 +437,8 @@ test("a screen no zone places opens from its card, and keeps its settings when p
     // A setting of the face is changed right there, written to the zone
     // the scene keeps the face in, with the screen still unplaced.
     await panelSettled(page);
-    await side.locator("[data-layer-row] input[type=range]").first().press("ArrowRight");
+    // The first slider may already sit at its top, so it is turned down.
+    await side.locator("[data-layer-row] input[type=range]").first().press("ArrowLeft");
     await expect.poll(storedControls).not.toBe(before);
     const changed = await storedControls();
     expect(changed).not.toBeNull();
