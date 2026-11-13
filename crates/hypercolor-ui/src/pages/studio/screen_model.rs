@@ -25,7 +25,7 @@ use crate::components::layer_panel::scope::is_screen_member;
 pub use crate::components::layer_panel::scope::{is_screen_layer, reorder_within};
 use crate::zones::surface::zone_display_name;
 
-use super::tab_model::{ScreenName, screen_labels};
+use super::tab_model::screen_labels;
 
 /// The chip a face saved with its screen, outside any scene, wears.
 pub const KEPT_CHIP: &str = "Saved with this screen";
@@ -118,12 +118,9 @@ pub fn placed_screens(
                 .map(move |member| (zone, member))
         })
         .collect();
-    let names: Vec<ScreenName> = members
+    let names: Vec<String> = members
         .iter()
-        .map(|(_, member)| ScreenName {
-            name: member.name.clone(),
-            device_label: None,
-        })
+        .map(|(_, member)| member.name.clone())
         .collect();
     members
         .into_iter()

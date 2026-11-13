@@ -253,46 +253,21 @@ pub fn next_zone_name(existing: &[&str]) -> String {
         .unwrap_or_else(|| "New zone".to_owned())
 }
 
-/// One screen as a list names it, before disambiguation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScreenName {
-    /// The name the screen carries.
-    pub name: String,
-    /// The per-device label the canvas shows for this display's output
-    /// ("TL LCD 2"), when the rig places one.
-    pub device_label: Option<String>,
-}
-
-/// Labels for a scene's screens, in order. A unique name stands. Repeated
-/// names take their device label when every repeat has a distinct one,
-/// and otherwise an ordinal ("Lian Li LCD 2") counted within the repeats.
+/// Labels for a scene's screens, in order, from the names they carry. A
+/// unique name stands. Repeated names take an ordinal ("Lian Li LCD 2")
+/// counted within the repeats.
 #[must_use]
-pub fn screen_labels(screens: &[ScreenName]) -> Vec<String> {
-    let base = |screen: &ScreenName| screen.name.trim().to_owned();
-    screens
+pub fn screen_labels(names: &[String]) -> Vec<String> {
+    let base = |name: &String| name.trim().to_owned();
+    names
         .iter()
         .enumerate()
-        .map(|(index, screen)| {
-            let name = base(screen);
-            let repeats: Vec<&ScreenName> =
-                screens.iter().filter(|other| base(other) == name).collect();
-            if repeats.len() < 2 {
+        .map(|(index, name)| {
+            let name = base(name);
+            if names.iter().filter(|other| base(other) == name).count() < 2 {
                 return name;
             }
-            let labels: Vec<&str> = repeats
-                .iter()
-                .filter_map(|other| other.device_label.as_deref().map(str::trim))
-                .filter(|label| !label.is_empty())
-                .collect();
-            let distinct = labels.len() == repeats.len()
-                && labels
-                    .iter()
-                    .enumerate()
-                    .all(|(i, label)| !labels[..i].contains(label));
-            if distinct && let Some(label) = screen.device_label.as_deref() {
-                return label.trim().to_owned();
-            }
-            let ordinal = screens[..=index]
+            let ordinal = names[..=index]
                 .iter()
                 .filter(|other| base(other) == name)
                 .count();

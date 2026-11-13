@@ -5,8 +5,9 @@
 //! active zone's devices come first under a sticky header, with an
 //! Offline subsection at the bottom; then one collapsed row per other LED
 //! zone; then the Unassigned section with the scene's policy for
-//! hardware no zone claims. While the Screens tab is active the pane
-//! lists the scene's Screens instead.
+//! hardware no zone claims. A screen is a device like any other here: its
+//! card sits in the zone that places it, or in Unassigned, and names the
+//! face it shows.
 
 use std::collections::{HashMap, HashSet};
 
