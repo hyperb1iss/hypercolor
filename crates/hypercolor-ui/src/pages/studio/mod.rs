@@ -485,6 +485,7 @@ fn StudioWorkspace() -> impl IntoView {
     });
 
     let screens = screens::Screens::new(active_scene, selected_surface_id, selected_output_ids);
+    let landing_devices = expect_context::<crate::app::DevicesContext>().devices_resource;
     // A link that asked for the screens lands on the first one, with its
     // face open; the ask is spent once it has been honoured. The tab
     // switch clears the last zone's selection, so the screen is selected
@@ -494,6 +495,37 @@ fn StudioWorkspace() -> impl IntoView {
             return;
         }
         let Some(first) = screens.placed.with(|placed| placed.first().cloned()) else {
+            // No zone places a screen, which is where automatic layout
+            // leaves every one of them. The first the scene keeps a stack
+            // for is as good a place to land: its face is edited there
+            // without placing it.
+            let Some(devices) = landing_devices.get().and_then(Result::ok) else {
+                return;
+            };
+            let landed = active_scene.with(|scene| {
+                let zones = &scene.as_ref()?.zones;
+                devices
+                    .iter()
+                    .filter(|device| {
+                        device.segments.iter().any(|segment| {
+                            matches!(
+                                segment.topology_hint,
+                                Some(api::SegmentTopologySummary::Display { .. })
+                            )
+                        })
+                    })
+                    .map(|device| screen_model::UnplacedDisplay {
+                        device_id: device.id.clone(),
+                        layout_id: device.layout_device_id.clone(),
+                        name: device.name.clone(),
+                    })
+                    .find(|display| screen_model::unplaced_screen(zones, &[], display).is_some())
+            });
+            if let Some(display) = landed {
+                wants_screens.set_value(false);
+                screens.unplaced.set(Some(display));
+                composition_open.try_set(true);
+            }
             return;
         };
         wants_screens.set_value(false);
