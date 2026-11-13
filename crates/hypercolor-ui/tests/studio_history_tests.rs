@@ -202,7 +202,7 @@ fn a_deleted_zone_keeps_its_layers_and_restores_them_bottom_to_top() {
     assert_eq!(record.zone_id, scene.zones[0].id.to_string());
     assert_eq!(record.layers, vec![wash.clone(), glow.clone()]);
 
-    let requests = restore_layer_requests(&record, &HashSet::new());
+    let requests = restore_layer_requests(&record, &HashSet::new(), &[]).requests;
     assert_eq!(requests.len(), 2);
     for (request, layer) in requests.iter().zip([&wash, &glow]) {
         assert_eq!(request.name, layer.name);
@@ -235,7 +235,7 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
     let record = DeletedZone::of(&scene.zones[0], 0, 7);
 
     let all_back = HashSet::from(["out-keys", "out-logo", "out-strip"]);
-    let requests = restore_layer_requests(&record, &all_back);
+    let requests = restore_layer_requests(&record, &all_back, &[]).requests;
     assert_eq!(
         requests
             .iter()
@@ -251,7 +251,12 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
 
     // The logo and the strip were claimed by another zone before the undo.
     let some_back = HashSet::from(["out-keys"]);
-    let requests = restore_layer_requests(&record, &some_back);
+    let restore = restore_layer_requests(&record, &some_back, &[]);
+    assert_eq!(
+        restore.lost, 1,
+        "the strip's layer has nowhere to come back to"
+    );
+    let requests = restore.requests;
     assert_eq!(
         requests
             .iter()
@@ -267,6 +272,96 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
             ),
         ],
         "a scope narrows to what came back, and a layer with nothing left is not rebuilt"
+    );
+}
+
+#[test]
+fn a_face_that_came_back_with_its_screen_is_not_created_again() {
+    let scoped = |name: &str, outputs: &[&str]| {
+        let mut layer = layer(name, [1.0, 0.0, 0.5, 1.0], BlendMode::Alpha, 1.0);
+        layer.scope = Some(LayerScope {
+            outputs: outputs.iter().map(|id| (*id).to_owned()).collect(),
+        });
+        layer
+    };
+    let placed = |id: &str| {
+        serde_json::json!({"member":id,"position":{"x":0.5,"y":0.5},"size":{"x":0.1,"y":0.1},
+            "topology":{"type":"matrix","width":1,"height":1,"serpentine":false,"start_corner":"top_left"}})
+    };
+    let mut scene: SceneDocument = serde_json::from_value(serde_json::json!({
+        "id":"33333333-3333-4333-8333-333333333333", "name":"Desk", "kind":"named", "is_default":false,"revision":8,
+        "zones":[{"id":"11111111-1111-4111-8111-111111111111","name":"Case","role":"custom","enabled":true,"brightness":1,
+            "members":[
+                {"id":"keys","device_id":"usb:keys","segment":"Main","name":"Keys"},
+                {"id":"lcd-1","device_id":"usb:lcd-1","segment":"Display","name":"LCD 1"},
+                {"id":"lcd-2","device_id":"usb:lcd-2","segment":"Display","name":"LCD 2"}],
+            "layout":{"placements":[placed("keys"), placed("lcd-1"), placed("lcd-2")]},"layers":[] }]
+    }))
+    .expect("valid scene fixture");
+    scene.zones[0].layers = vec![
+        layer("Wash", [0.2, 0.4, 0.6, 1.0], BlendMode::Alpha, 1.0),
+        scoped("Clock", &["lcd-1", "lcd-2"]),
+        scoped("Badge", &["lcd-1"]),
+        scoped("Glow", &["keys", "lcd-1"]),
+    ];
+    let mut record = DeletedZone::of(&scene.zones[0], 0, 7);
+    record.outputs = hypercolor_ui::api::zone_outputs(&scene.zones[0]);
+    let all_back = HashSet::from(["keys", "lcd-1", "lcd-2"]);
+    let scopes = |returned: &[SceneLayer]| {
+        let restore = restore_layer_requests(&record, &all_back, returned);
+        assert_eq!(restore.lost, 0);
+        restore
+            .requests
+            .iter()
+            .map(|request| {
+                (
+                    request.name.clone().unwrap_or_default(),
+                    request.scope.clone().map(|scope| scope.outputs),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let named = |name: &str, outputs: Option<&[&str]>| {
+        (
+            name.to_owned(),
+            outputs.map(|ids| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>()),
+        )
+    };
+
+    // A daemon that deleted the faces with the zone returns nothing, and
+    // every layer is rebuilt as it was.
+    assert_eq!(
+        scopes(&[]),
+        [
+            named("Wash", None),
+            named("Clock", Some(&["lcd-1", "lcd-2"])),
+            named("Badge", Some(&["lcd-1"])),
+            named("Glow", Some(&["keys", "lcd-1"])),
+        ]
+    );
+
+    // The first screen came back with both of its layers. Neither is made
+    // again for it, the shared face is made for the other screen alone,
+    // and a layer that also lights the keys is no face and is untouched.
+    let first = [scoped("Clock", &["lcd-1"]), scoped("Badge", &["lcd-1"])];
+    assert_eq!(
+        scopes(&first),
+        [
+            named("Wash", None),
+            named("Clock", Some(&["lcd-2"])),
+            named("Glow", Some(&["keys", "lcd-1"])),
+        ]
+    );
+
+    // Both screens came back with their faces: only lighting is rebuilt.
+    let both = [
+        scoped("Clock", &["lcd-1"]),
+        scoped("Badge", &["lcd-1"]),
+        scoped("Clock", &["lcd-2"]),
+    ];
+    assert_eq!(
+        scopes(&both),
+        [named("Wash", None), named("Glow", Some(&["keys", "lcd-1"]))]
     );
 }
 
