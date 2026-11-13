@@ -721,6 +721,52 @@ pub fn LayerPanel(
                 </div>
             </Show>
 
+            // The zone's own list leads with its screens' faces, one line
+            // each, which lead to the screen: they play above everything
+            // listed under them.
+            <Show when=move || !on_screens.get() && !screen_faces.with(Vec::is_empty)>
+                <div class="space-y-1.5">
+                    <span class=label_class(LabelSize::Small, LabelTone::Default)>"On screens"</span>
+                    {move || {
+                        let stack = layers.get();
+                        screen_faces
+                            .get()
+                            .into_iter()
+                            .filter_map(|face| {
+                                let layer = stack.iter().find(|layer| layer.id == face.layer_id)?;
+                                let title = title_of(layer);
+                                let label = format!("{title} on {}", face.screens);
+                                let outputs = face.outputs.clone();
+                                let select = screens.with_value(|host| host.as_ref().map(|host| host.select));
+                                Some(view! {
+                                    <button
+                                        type="button"
+                                        class="group flex w-full items-center gap-2.5 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 px-3 py-2 text-left transition-colors hover:border-accent-muted"
+                                        title="Open this screen's layers"
+                                        aria-label=label
+                                        data-screen-face=""
+                                        on:click=move |_| {
+                                            if let Some(select) = select {
+                                                select.run(outputs.clone());
+                                            }
+                                        }
+                                    >
+                                        <span class="flex shrink-0 text-accent/75">
+                                            <Icon icon=LuMonitor width="13px" height="13px" />
+                                        </span>
+                                        <span class="min-w-0 flex-1 truncate text-xs font-medium text-fg-primary">{title}</span>
+                                        <span class="min-w-0 max-w-[45%] shrink truncate text-[10px] text-fg-tertiary">{face.screens}</span>
+                                        <span class="flex shrink-0 text-fg-tertiary transition-colors group-hover:text-fg-secondary">
+                                            <Icon icon=LuChevronRight width="12px" height="12px" />
+                                        </span>
+                                    </button>
+                                })
+                            })
+                            .collect_view()
+                    }}
+                </div>
+            </Show>
+
             <Show when=move || layers_resource.get().is_none()>
                 <LayerLoadingSkeleton />
             </Show>
@@ -943,51 +989,6 @@ pub fn LayerPanel(
                             })
                             .collect_view()
                             .into_any()
-                    }}
-                </div>
-            </Show>
-
-            // The zone's own list: its screens' faces, one line each, which
-            // lead to the screen.
-            <Show when=move || !on_screens.get() && !screen_faces.with(Vec::is_empty)>
-                <div class="space-y-1.5 pt-2">
-                    <span class=label_class(LabelSize::Small, LabelTone::Default)>"On screens"</span>
-                    {move || {
-                        let stack = layers.get();
-                        screen_faces
-                            .get()
-                            .into_iter()
-                            .filter_map(|face| {
-                                let layer = stack.iter().find(|layer| layer.id == face.layer_id)?;
-                                let title = title_of(layer);
-                                let label = format!("{title} on {}", face.screens);
-                                let outputs = face.outputs.clone();
-                                let select = screens.with_value(|host| host.as_ref().map(|host| host.select));
-                                Some(view! {
-                                    <button
-                                        type="button"
-                                        class="group flex w-full items-center gap-2.5 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 px-3 py-2 text-left transition-colors hover:border-accent-muted"
-                                        title="Open this screen's layers"
-                                        aria-label=label
-                                        data-screen-face=""
-                                        on:click=move |_| {
-                                            if let Some(select) = select {
-                                                select.run(outputs.clone());
-                                            }
-                                        }
-                                    >
-                                        <span class="flex shrink-0 text-accent/75">
-                                            <Icon icon=LuMonitor width="13px" height="13px" />
-                                        </span>
-                                        <span class="min-w-0 flex-1 truncate text-xs font-medium text-fg-primary">{title}</span>
-                                        <span class="min-w-0 max-w-[45%] shrink truncate text-[10px] text-fg-tertiary">{face.screens}</span>
-                                        <span class="flex shrink-0 text-fg-tertiary transition-colors group-hover:text-fg-secondary">
-                                            <Icon icon=LuChevronRight width="12px" height="12px" />
-                                        </span>
-                                    </button>
-                                })
-                            })
-                            .collect_view()
                     }}
                 </div>
             </Show>

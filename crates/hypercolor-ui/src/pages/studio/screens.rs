@@ -87,32 +87,146 @@ pub(crate) struct Screens {
     pub copy: RwSignal<Option<CopyRequest>>,
 }
 
+/// Every screen a zone of `active_scene` places, with where each keeps
+/// its layers on the daemon the page talks to.
+pub(crate) fn use_placed_screens(
+    active_scene: Signal<Option<api::SceneDocument>>,
+) -> Memo<Vec<PlacedScreen>> {
+    let caps = expect_context::<CapabilitiesContext>();
+    let devices = expect_context::<DevicesContext>().devices_resource;
+    let layered = Memo::new(move |_| caps.has(api::SCREEN_LAYERS_CAPABILITY));
+    let physical_ids = Memo::new(move |_| {
+        devices
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|device| (device.layout_device_id, device.id))
+            .collect::<HashMap<String, String>>()
+    });
+    Memo::new(move |_| {
+        active_scene.with(|scene| {
+            scene.as_ref().map_or_else(Vec::new, |scene| {
+                physical_ids.with(|ids| placed_screens(&scene.zones, ids, layered.get()))
+            })
+        })
+    })
+}
+
+/// The saved faces showing on the screens the scene gives nothing of
+/// their own, by display. A card names its screen's face, and for such a
+/// screen that face is the saved one, which only the display's face route
+/// knows. The list of those screens is what is read, so a control edit
+/// elsewhere in the scene reads nothing again; `tick` moves to read after
+/// a write to a saved face.
+pub(crate) fn use_kept_names(
+    active_scene: Signal<Option<api::SceneDocument>>,
+    placed: Memo<Vec<PlacedScreen>>,
+    tick: ReadSignal<u64>,
+) -> Signal<HashMap<String, String>> {
+    let ws = expect_context::<WsContext>();
+    let scene_generation = Memo::new(move |_| {
+        ws.last_scene_event
+            .with(|hint| hint.as_ref().map_or(0, |hint| hint.structural_generation))
+    });
+    let faceless = Memo::new(move |_| {
+        placed.with(|placed| {
+            active_scene.with(|scene| {
+                let Some(scene) = scene.as_ref() else {
+                    return Vec::new();
+                };
+                placed
+                    .iter()
+                    .filter(|screen| card_face(&scene.zones, screen).is_none())
+                    .filter_map(|screen| screen.device_id.clone())
+                    .collect::<Vec<_>>()
+            })
+        })
+    });
+    let resource = api::daemon_resource(move || {
+        let _ = tick.get();
+        let _ = scene_generation.get();
+        let devices = faceless.get();
+        async move {
+            let mut names = HashMap::new();
+            for device_id in devices {
+                if let Ok(Some(face)) = api::fetch_display_face(&device_id).await
+                    && let Some(row) = kept_face_row(Some(&FaceReport::from(&face)))
+                {
+                    names.insert(device_id, row.name);
+                }
+            }
+            Ok::<_, api::ApiError>(names)
+        }
+    });
+    Signal::derive(move || resource.get().and_then(Result::ok).unwrap_or_default())
+}
+
+/// One display's face as its display reports it, read again on `tick` and
+/// on structural scene events, and the saved face's row when that is what
+/// the display shows.
+pub(crate) fn use_display_face(
+    device_id: Signal<Option<String>>,
+    tick: ReadSignal<u64>,
+) -> (
+    Signal<Option<api::DisplayFaceResponse>>,
+    Memo<Option<KeptFaceRow>>,
+) {
+    let ws = expect_context::<WsContext>();
+    let scene_generation = Memo::new(move |_| {
+        ws.last_scene_event
+            .with(|hint| hint.as_ref().map_or(0, |hint| hint.structural_generation))
+    });
+    let resource = api::daemon_resource(move || {
+        let _ = tick.get();
+        let _ = scene_generation.get();
+        let device_id = device_id.get();
+        async move {
+            match device_id {
+                Some(device_id) => api::fetch_display_face(&device_id).await,
+                None => Ok(None),
+            }
+        }
+    });
+    // The resource keeps the last screen's face while the next read is in
+    // flight; only a face for the screen asked about now counts.
+    let face = Signal::derive(move || {
+        let device_id = device_id.get()?;
+        resource
+            .get()
+            .and_then(Result::ok)
+            .flatten()
+            .filter(|face| face.device_id == device_id)
+    });
+    let kept = Memo::new(move |_| {
+        let report = face.with(|face| face.as_ref().map(FaceReport::from));
+        kept_face_row(report.as_ref())
+    });
+    (face, kept)
+}
+
+/// What a saved face's row needs of whoever shows it.
+#[derive(Clone, Copy)]
+pub(crate) struct KeptFace {
+    /// The display the face is saved with.
+    pub device_id: Signal<Option<String>>,
+    /// What that display reports.
+    pub face: Signal<Option<api::DisplayFaceResponse>>,
+    /// The row, while the saved face is what the display shows.
+    pub row: Signal<Option<KeptFaceRow>>,
+    /// Read the face again after a write to it.
+    pub refresh_face: Callback<()>,
+    /// Read the scene again after the face became a layer of it.
+    pub refresh_scene: Callback<()>,
+}
+
 impl Screens {
     pub fn new(
         active_scene: Signal<Option<api::SceneDocument>>,
         selected_surface_id: RwSignal<Option<String>>,
         selected_output_ids: RwSignal<HashSet<String>>,
     ) -> Self {
-        let caps = expect_context::<CapabilitiesContext>();
-        let devices = expect_context::<DevicesContext>().devices_resource;
-        let ws = expect_context::<WsContext>();
-        let layered = Memo::new(move |_| caps.has(api::SCREEN_LAYERS_CAPABILITY));
-        let physical_ids = Memo::new(move |_| {
-            devices
-                .get()
-                .and_then(Result::ok)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|device| (device.layout_device_id, device.id))
-                .collect::<HashMap<String, String>>()
-        });
-        let placed = Memo::new(move |_| {
-            active_scene.with(|scene| {
-                scene.as_ref().map_or_else(Vec::new, |scene| {
-                    physical_ids.with(|ids| placed_screens(&scene.zones, ids, layered.get()))
-                })
-            })
-        });
+        let placed = use_placed_screens(active_scene);
         let selected = Memo::new(move |_| {
             let Some(zone_id) = selected_surface_id.get() else {
                 return Vec::new();
@@ -145,72 +259,8 @@ impl Screens {
             })
         });
         let (face_tick, set_face_tick) = signal(0_u64);
-        let scene_generation = Memo::new(move |_| {
-            ws.last_scene_event
-                .with(|hint| hint.as_ref().map_or(0, |hint| hint.structural_generation))
-        });
-        let face_resource = api::daemon_resource(move || {
-            let _ = face_tick.get();
-            let _ = scene_generation.get();
-            let device_id = face_device.get();
-            async move {
-                match device_id {
-                    Some(device_id) => api::fetch_display_face(&device_id).await,
-                    None => Ok(None),
-                }
-            }
-        });
-        // The resource keeps the last screen's face while the next read is
-        // in flight; only a face for the screen selected now counts.
-        let face = Signal::derive(move || {
-            let device_id = face_device.get()?;
-            face_resource
-                .get()
-                .and_then(Result::ok)
-                .flatten()
-                .filter(|face| face.device_id == device_id)
-        });
-        let kept = Memo::new(move |_| {
-            let report = face.with(|face| face.as_ref().map(FaceReport::from));
-            kept_face_row(report.as_ref())
-        });
-
-        // A card names its screen's face, and for a screen the scene gives
-        // nothing that face is the saved one, which only the display's
-        // face route knows. The list of such screens is what is read, so
-        // a control edit elsewhere in the scene reads nothing again.
-        let faceless = Memo::new(move |_| {
-            placed.with(|placed| {
-                active_scene.with(|scene| {
-                    let Some(scene) = scene.as_ref() else {
-                        return Vec::new();
-                    };
-                    placed
-                        .iter()
-                        .filter(|screen| card_face(&scene.zones, screen).is_none())
-                        .filter_map(|screen| screen.device_id.clone())
-                        .collect::<Vec<_>>()
-                })
-            })
-        });
-        let kept_resource = api::daemon_resource(move || {
-            let _ = face_tick.get();
-            let _ = scene_generation.get();
-            let devices = faceless.get();
-            async move {
-                let mut names = HashMap::new();
-                for device_id in devices {
-                    if let Ok(Some(face)) = api::fetch_display_face(&device_id).await
-                        && let Some(row) = kept_face_row(Some(&FaceReport::from(&face)))
-                    {
-                        names.insert(device_id, row.name);
-                    }
-                }
-                Ok::<_, api::ApiError>(names)
-            }
-        });
-        let kept_names =
-            Signal::derive(move || kept_resource.get().and_then(Result::ok).unwrap_or_default());
+        let (face, kept) = use_display_face(face_device.into(), face_tick);
+        let kept_names = use_kept_names(active_scene, placed, face_tick);
 
         let focus = RwSignal::new(false);
         // Focus is a view of one selected screen: it ends with it.
@@ -416,7 +466,21 @@ impl Screens {
                     name,
                 }));
             }),
-            lead: ViewFn::from(move || view! { <KeptFaceCard /> }),
+            lead: {
+                let kept = KeptFace {
+                    device_id: Signal::derive(move || {
+                        self.selected.with(|selected| match selected.as_slice() {
+                            [one] => one.device_id.clone(),
+                            _ => None,
+                        })
+                    }),
+                    face: self.face,
+                    row: self.kept.into(),
+                    refresh_face: self.refresh_face,
+                    refresh_scene: studio.refresh_scene,
+                };
+                ViewFn::from(move || view! { <KeptFaceCard kept=kept /> })
+            },
             faces: Signal::derive(move || faces.get().unwrap_or_default()),
             select: Callback::new(move |outputs: Vec<String>| {
                 studio
@@ -442,7 +506,7 @@ fn layer_name(layer: &SceneLayer, effect_name: &impl Fn(&str) -> Option<String>)
 
 /// The panel's model of `selected`, as the layer panel takes it: each row
 /// with how it is addressed, held, and reported on.
-fn screen_view(
+pub(crate) fn screen_view(
     zones: &[api::ZoneResource],
     panel: &ScreenPanel,
     selected: &[PlacedScreen],
@@ -545,23 +609,15 @@ fn face_controls(face: &api::DisplayFaceResponse) -> ControlValueMap {
 /// scene" makes the scene its own copy as a layer; "Remove" drops the
 /// saved face everywhere.
 #[component]
-fn KeptFaceCard() -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let screens = studio.screens;
-    let device_id = Memo::new(move |_| {
-        screens.selected.with(|selected| match selected.as_slice() {
-            [one] => one.device_id.clone(),
-            _ => None,
-        })
-    });
+fn KeptFaceCard(kept: KeptFace) -> impl IntoView {
+    let device_id = kept.device_id;
     let (busy, set_busy) = signal(false);
 
     // Both actions resolve after an await, possibly once the row has been
     // swapped out by a selection change, so every write after it goes
     // through the fallible forms and a disposed row stays silent.
     let promote = move |_| {
-        let (Some(device_id), Some(face)) =
-            (device_id.get_untracked(), screens.face.get_untracked())
+        let (Some(device_id), Some(face)) = (device_id.get_untracked(), kept.face.get_untracked())
         else {
             return;
         };
@@ -576,8 +632,8 @@ fn KeptFaceCard() -> impl IntoView {
                 }
             }
             set_busy.try_set(false);
-            screens.refresh_face.try_run(());
-            studio.refresh_scene.try_run(());
+            kept.refresh_face.try_run(());
+            kept.refresh_scene.try_run(());
         });
     };
     let remove = move |_| {
@@ -593,13 +649,13 @@ fn KeptFaceCard() -> impl IntoView {
                 }
             }
             set_busy.try_set(false);
-            screens.refresh_face.try_run(());
-            studio.refresh_scene.try_run(());
+            kept.refresh_face.try_run(());
+            kept.refresh_scene.try_run(());
         });
     };
 
     view! {
-        <Show when=move || screens.kept.with(Option::is_some)>
+        <Show when=move || kept.row.with(Option::is_some)>
             <article
                 class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-sunken/50"
                 data-kept-face=""
@@ -612,7 +668,7 @@ fn KeptFaceCard() -> impl IntoView {
                         <Icon icon=LuMonitor width="15px" height="15px" style="color: rgb(225, 53, 255)" />
                     </span>
                     <span class="min-w-0 truncate text-sm font-semibold text-fg-primary">
-                        {move || screens.kept.with(|kept| kept.as_ref().map(|kept| kept.name.clone()))}
+                        {move || kept.row.with(|row| row.as_ref().map(|row| row.name.clone()))}
                     </span>
                     <div class="col-start-2 flex min-w-0 items-center gap-1.5">
                         <span class="shrink-0 text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary/65">
@@ -633,13 +689,13 @@ fn KeptFaceCard() -> impl IntoView {
                 // face again, and the editor must outlive its own echoes.
                 {move || {
                     let device_id = device_id.get()?;
-                    let effect_id = screens.kept.with(|kept| kept.as_ref().map(|kept| kept.effect_id.clone()))?;
+                    let effect_id = kept.row.with(|row| row.as_ref().map(|row| row.effect_id.clone()))?;
                     Some(view! {
                         <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
                             <p class="text-[11px] leading-relaxed text-fg-tertiary" data-kept-notice="">
                                 {KEPT_NOTICE}
                             </p>
-                            <KeptFaceControls device_id=device_id effect_id=effect_id />
+                            <KeptFaceControls kept=kept device_id=device_id effect_id=effect_id />
                         </div>
                     })
                 }}
@@ -673,9 +729,7 @@ fn KeptFaceCard() -> impl IntoView {
 /// A saved face's own settings (a clock's hour format, a gauge's sensor).
 /// Edits patch the face saved with the screen.
 #[component]
-fn KeptFaceControls(device_id: String, effect_id: String) -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let screens = studio.screens;
+fn KeptFaceControls(kept: KeptFace, device_id: String, effect_id: String) -> impl IntoView {
     let detail = api::daemon_resource({
         let effect_id = effect_id.clone();
         move || {
@@ -691,8 +745,7 @@ fn KeptFaceControls(device_id: String, effect_id: String) -> impl IntoView {
             .unwrap_or_default()
     });
     let stored = move || {
-        screens
-            .face
+        kept.face
             .get()
             .filter(|face| face.live_scope == DisplayFaceScope::Default)
             .map(|face| face_controls(&face))
@@ -727,7 +780,7 @@ fn KeptFaceControls(device_id: String, effect_id: String) -> impl IntoView {
             if let Some(controls) = stored() {
                 set_values.set(controls);
             }
-            screens.refresh_face.run(());
+            kept.refresh_face.run(());
         }),
         on_committed: None,
         flush_guard: None,
@@ -1075,4 +1128,181 @@ pub(crate) fn OutputScreenFacts() -> impl IntoView {
         </Show>
     }
     .into_any()
+}
+
+/// Create the layers that put `draft` on `screens`, one zone after the
+/// other, and say how it came out. For a page with no journal to record
+/// the add in.
+fn add_to_screens(
+    scene: api::SceneDocument,
+    screens: &[PlacedScreen],
+    draft: NewLayerDraft,
+    done: Callback<()>,
+) {
+    let targets: Vec<&PlacedScreen> = screens.iter().collect();
+    let plans = plan_screen_adds(&scene.zones, &targets);
+    if plans.is_empty() {
+        toasts::toast_error("There is no screen here that can take a layer yet");
+        return;
+    }
+    let name = draft.name.clone().unwrap_or_else(|| "Layer".to_owned());
+    spawn_local(async move {
+        let mut fence = api::Fence::of(&scene);
+        let mut landed = Vec::new();
+        let mut failed = Vec::new();
+        for plan in plans {
+            if !failed.is_empty() {
+                failed.extend(plan.screens);
+                continue;
+            }
+            let mut request =
+                add_layer_request(draft.name.clone(), draft.source.clone(), plan.beneath);
+            request.scope = plan.scope;
+            match api::create_layer(&plan.zone_id, &request, Some(&fence)).await {
+                Ok(api::LayerStackOutcome::Applied(stack)) => {
+                    fence = fence.at(stack.revision);
+                    landed.extend(plan.screens);
+                }
+                Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => failed.extend(plan.screens),
+            }
+        }
+        let words = add_outcome_words(&name, &landed, &failed);
+        if failed.is_empty() {
+            toasts::toast_success(&words);
+        } else {
+            toasts::toast_error(&words);
+        }
+        let _ = done.try_run(());
+    });
+}
+
+/// One screen's layers in a bottom sheet, for a phone: its own layers
+/// with a face's settings open in place, and how the panel is mounted.
+#[component]
+pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl IntoView {
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
+    let displays = expect_context::<DisplaysContext>().displays_resource;
+    let active_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
+    let placed = use_placed_screens(active_scene);
+    let output_id = screen.output_id.clone();
+    let zone_id = screen.zone_id.clone();
+    // The screen as the scene has it now: a write may change where its
+    // layers live.
+    let current = Memo::new(move |_| {
+        placed.with(|placed| {
+            placed
+                .iter()
+                .find(|placed| placed.zone_id == zone_id && placed.output_id == output_id)
+                .cloned()
+        })
+    });
+    let view = Memo::new(move |_| {
+        let screen = current.get()?;
+        active_scene.with(|scene| {
+            let zones = &scene.as_ref()?.zones;
+            let panel = screen_panel(zones, &[&screen])?;
+            let mut view = screen_view(zones, &panel, std::slice::from_ref(&screen));
+            // A phone has no journal for a copy to go through, and no
+            // canvas to choose other screens on.
+            for row in &mut view.rows {
+                row.copies = false;
+                row.targets = false;
+            }
+            Some(view)
+        })
+    });
+    let device_id =
+        Signal::derive(move || current.with(|screen| screen.as_ref()?.device_id.clone()));
+    let (face_tick, set_face_tick) = signal(0_u64);
+    let (face, kept_row) = use_display_face(device_id, face_tick);
+    let refresh = zones_ctx.refresh;
+    let kept = KeptFace {
+        device_id,
+        face,
+        row: kept_row.into(),
+        refresh_face: Callback::new(move |()| {
+            set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+        }),
+        refresh_scene: refresh,
+    };
+    let host = ScreenHost {
+        view: view.into(),
+        add: Callback::new(move |(draft, _everywhere): (NewLayerDraft, bool)| {
+            let (Some(scene), Some(screen)) =
+                (active_scene.get_untracked(), current.get_untracked())
+            else {
+                return;
+            };
+            add_to_screens(scene, &[screen], draft, refresh);
+        }),
+        all_screens: Signal::stored(None),
+        leave: on_close,
+        copy: Callback::new(|_| {}),
+        lead: ViewFn::from(move || view! { <KeptFaceCard kept=kept /> }),
+        faces: Signal::stored(Vec::new()),
+        select: Callback::new(|_| {}),
+        add_requests: Signal::stored(0),
+        replaced: Callback::new(|_| {}),
+    };
+
+    let (owner, set_owner) = signal(Some(screen.zone_id.clone()));
+    let layers = LocalResource::new(move || {
+        let zone_id = owner.get();
+        let stack = active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .zip(zone_id.as_deref())
+                .and_then(|(scene, zone_id)| {
+                    scene
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == zone_id)
+                        .map(|zone| api::LayerStackResponse {
+                            items: zone.layers.clone(),
+                            revision: scene.revision,
+                        })
+                })
+                .unwrap_or(api::LayerStackResponse {
+                    items: Vec::new(),
+                    revision: 0,
+                })
+        });
+        async move { Ok(stack) }
+    });
+    let rotation = Signal::derive(move || {
+        let device_id = device_id.get()?;
+        displays
+            .get()
+            .and_then(Result::ok)?
+            .into_iter()
+            .find(|panel| panel.id == device_id)
+            .map(|panel| panel.rotation)
+    });
+    let name = screen.name.clone();
+    let title = name.clone();
+    let host = StoredValue::new(host);
+
+    view! {
+        <crate::components::bottom_sheet::BottomSheet on_close=on_close title=title>
+            <div class="px-4 pb-4" data-screen-sheet="">
+                <div class="flex items-center justify-between gap-3 pb-1">
+                    <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Mounting"</span>
+                    <crate::components::mounting_select::MountingSelect
+                        device_id=device_id
+                        rotation=rotation
+                        class="min-h-11 border border-edge-subtle px-3 text-xs text-fg-secondary"
+                    />
+                </div>
+                <crate::components::layer_panel::LayerPanel
+                    active_scene=active_scene
+                    selected_zone_id=owner
+                    set_selected_zone_id=set_owner
+                    surface_label=name.clone()
+                    layers_resource=layers
+                    on_layers_mutated=refresh
+                    screens=host.get_value()
+                />
+            </div>
+        </crate::components::bottom_sheet::BottomSheet>
+    }
 }

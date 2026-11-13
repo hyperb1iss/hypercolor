@@ -458,6 +458,41 @@ pub fn card_face<'a>(zones: &'a [ZoneResource], screen: &PlacedScreen) -> Option
     }
 }
 
+/// A screen as a zone's card lists it on a phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenLine {
+    pub screen: PlacedScreen,
+    /// The face it shows: the top layer of its own, else the face saved
+    /// with it. `None` when it shows neither.
+    pub face: Option<String>,
+}
+
+/// The screens the zone `zone_id` places, each with the face it shows.
+/// `layer_name` words a layer, and `kept` names the saved face showing on
+/// a display the scene gives nothing.
+#[must_use]
+pub fn zone_screen_lines(
+    zones: &[ZoneResource],
+    screens: &[PlacedScreen],
+    zone_id: &str,
+    layer_name: impl Fn(&SceneLayer) -> String,
+    kept: &HashMap<String, String>,
+) -> Vec<ScreenLine> {
+    screens
+        .iter()
+        .filter(|screen| screen.zone_id == zone_id)
+        .map(|screen| ScreenLine {
+            face: card_face(zones, screen).map(&layer_name).or_else(|| {
+                screen
+                    .device_id
+                    .as_ref()
+                    .and_then(|device_id| kept.get(device_id).cloned())
+            }),
+            screen: screen.clone(),
+        })
+        .collect()
+}
+
 /// One layer to create so a face lands on some screens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenAdd {

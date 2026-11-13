@@ -3,8 +3,9 @@
 //! Below `md` (a phone, or a desktop window narrower than 768px) Studio
 //! opens on what the scene is doing: one card per LED zone with its
 //! devices, what it plays, a pause toggle, and a button that opens an
-//! effect picker for that zone alone. Screens are listed read-only. The
-//! spatial editor is one tap away (see [`super::phone_view`]); the summary
+//! effect picker for that zone alone. A zone's screens are listed with it,
+//! each with its face's name; tapping one opens its layers and mounting in
+//! a bottom sheet. The spatial editor is one tap away (see [`super::phone_view`]); the summary
 //! is the landing view because switching effects is the common job on a
 //! phone and it needs no canvas.
 //!
@@ -26,10 +27,14 @@ use leptos_icons::Icon;
 
 use super::layer_target::target_outputs_for;
 use super::phone_view::StudioPhoneView;
+use super::screen_model::{PlacedScreen, ScreenLine, zone_screen_lines};
+use super::screens::{ScreenSheet, use_kept_names, use_placed_screens};
 use crate::api;
 use crate::app::EffectsContext;
 use crate::components::bottom_sheet::BottomSheet;
-use crate::components::layer_panel::scope::{Target, TargetOutput, TargetWords, target_words};
+use crate::components::layer_panel::scope::{
+    Target, TargetOutput, TargetWords, is_screen_layer, target_words,
+};
 use crate::components::layer_panel::target_checklist::TargetChecklist;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::scene_picker::ScenePicker;
@@ -138,7 +143,8 @@ pub struct LimitedLayer {
 }
 
 /// The layers of `zone` that are limited to some of its outputs, top of
-/// the stack first. `effect_name` resolves an effect id to its name.
+/// the stack first. A screen's own layers are listed with their screen
+/// and are left out. `effect_name` resolves an effect id to its name.
 #[must_use]
 pub fn limited_layers(
     zone: &ZoneResource,
@@ -148,7 +154,7 @@ pub fn limited_layers(
     zone.layers
         .iter()
         .rev()
-        .filter(|layer| layer.scope.is_some())
+        .filter(|layer| layer.scope.is_some() && !is_screen_layer(zone, layer))
         .map(|layer| {
             let effect = match &layer.source {
                 LayerSource::Effect { effect_id, .. } => effect_name(&effect_id.to_string()),
@@ -178,6 +184,45 @@ pub fn StudioPhoneSummary() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
     let (picker_zone, set_picker_zone) = signal(None::<Surface>);
     let (edited_layer, set_edited_layer) = signal(None::<EditedLayer>);
+    let (open_screen, set_open_screen) = signal(None::<PlacedScreen>);
+    let active_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
+    let placed = use_placed_screens(active_scene);
+    let (face_tick, _) = signal(0_u64);
+    let kept_names = use_kept_names(active_scene, placed, face_tick);
+    // Every zone's screens, each with the face it shows.
+    let screen_lines = Memo::new(move |_| {
+        let placed = placed.get();
+        let kept = kept_names.get();
+        active_scene.with(|scene| {
+            let Some(scene) = scene.as_ref() else {
+                return HashMap::new();
+            };
+            let name = |layer: &hypercolor_types::layer::SceneLayer| {
+                let effect = match &layer.source {
+                    LayerSource::Effect { effect_id, .. } => {
+                        let effect_id = effect_id.to_string();
+                        fx.effects_index.with(|effects| {
+                            effects
+                                .iter()
+                                .find(|entry| entry.effect.id == effect_id)
+                                .map(|entry| entry.effect.name.clone())
+                        })
+                    }
+                    _ => None,
+                };
+                layer_label(layer, effect.as_deref())
+            };
+            scene
+                .zones
+                .iter()
+                .map(|zone| {
+                    let zone_id = zone.id.to_string();
+                    let lines = zone_screen_lines(&scene.zones, &placed, &zone_id, name, &kept);
+                    (zone_id, lines)
+                })
+                .collect::<HashMap<_, _>>()
+        })
+    });
 
     let counts = Memo::new(move |_| {
         zones_ctx.active_scene.with(|scene| {
@@ -277,12 +322,20 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                                             member_summary(counts.get(&zone_id).copied().unwrap_or_default())
                                         })
                                     });
+                                    let lines_zone = state.zone.id.clone();
+                                    let screens = Signal::derive(move || {
+                                        screen_lines.with(|lines| {
+                                            lines.get(&lines_zone).cloned().unwrap_or_default()
+                                        })
+                                    });
                                     view! {
                                         <ZoneCard
                                             state=state
                                             summary=summary
+                                            screens=screens
                                             on_pick=Callback::new(move |zone| set_picker_zone.set(Some(zone)))
                                             on_target=Callback::new(move |layer| set_edited_layer.set(Some(layer)))
+                                            on_screen=Callback::new(move |screen| set_open_screen.set(Some(screen)))
                                         />
                                     }
                                 }
@@ -299,6 +352,9 @@ pub fn StudioPhoneSummary() -> impl IntoView {
             {move || edited_layer.get().map(|layer| view! {
                 <LayerTargetSheet layer=layer on_close=Callback::new(move |()| set_edited_layer.set(None)) />
             })}
+            {move || open_screen.get().map(|screen| view! {
+                <ScreenSheet screen=screen on_close=Callback::new(move |()| set_open_screen.set(None)) />
+            })}
         </div>
     }
 }
@@ -308,8 +364,12 @@ pub fn StudioPhoneSummary() -> impl IntoView {
 fn ZoneCard(
     state: ZoneEffectState,
     #[prop(into)] summary: Signal<String>,
+    /// The zone's screens, each with the face it shows.
+    #[prop(into)]
+    screens: Signal<Vec<ScreenLine>>,
     on_pick: Callback<Surface>,
     on_target: Callback<EditedLayer>,
+    on_screen: Callback<PlacedScreen>,
 ) -> impl IntoView {
     let zones_ctx = expect_context::<ZonesContext>();
     let fx = expect_context::<EffectsContext>();
@@ -416,6 +476,53 @@ fn ZoneCard(
                     <Icon icon=LuChevronRight width="14px" height="14px" />
                 </span>
             </button>
+            <Show when=move || !screens.with(Vec::is_empty)>
+                <div class="mt-3" data-zone-screens="">
+                    <div class=label_class(LabelSize::Micro, LabelTone::Default)>"Screens"</div>
+                    <ul class="mt-1 divide-y divide-edge-subtle/40">
+                        <For
+                            each=move || screens.get()
+                            key=|line| (line.screen.output_id.clone(), line.screen.name.clone(), line.face.clone())
+                            children=move |line| {
+                                let label = match &line.face {
+                                    Some(face) => format!("{}, showing {face}", line.screen.name),
+                                    None => format!("{}, no face", line.screen.name),
+                                };
+                                let named = line.face.is_some();
+                                let screen = line.screen.clone();
+                                view! {
+                                    <li>
+                                        <button
+                                            type="button"
+                                            class="flex min-h-11 w-full items-center gap-3 py-1 text-left btn-press"
+                                            aria-haspopup="dialog"
+                                            aria-label=label
+                                            on:click=move |_| on_screen.run(screen.clone())
+                                        >
+                                            <span class="flex shrink-0 text-accent/75">
+                                                <Icon icon=LuMonitor width="14px" height="14px" />
+                                            </span>
+                                            <span class="min-w-0 flex-1 truncate text-sm text-fg-primary">
+                                                {line.screen.name.clone()}
+                                            </span>
+                                            <span
+                                                class="min-w-0 max-w-[50%] shrink truncate text-xs"
+                                                class=("text-fg-secondary", named)
+                                                class=("text-fg-tertiary", !named)
+                                            >
+                                                {line.face.clone().unwrap_or_else(|| "No face".to_owned())}
+                                            </span>
+                                            <span class="flex shrink-0 text-fg-tertiary">
+                                                <Icon icon=LuChevronRight width="14px" height="14px" />
+                                            </span>
+                                        </button>
+                                    </li>
+                                }
+                            }
+                        />
+                    </ul>
+                </div>
+            </Show>
             <Show when=move || !limited.with(Vec::is_empty)>
                 <div class="mt-3" data-zone-limited-layers="">
                     <div class=label_class(LabelSize::Micro, LabelTone::Default)>"Also playing"</div>

@@ -2,11 +2,9 @@
 //!
 //! Which tabs fit and which fold into the overflow menu, where a reordered
 //! zone lands in the scene's full zone order, how the keyboard moves
-//! between tabs, which zones may be deleted, and how identical Screen
+//! between tabs, which zones may be deleted, and how identical screen
 //! names are told apart. Kept free of `leptos` so the contract is
 //! exercised from `tests/studio_tab_model_tests.rs`.
-
-use std::collections::HashMap;
 
 use hypercolor_types::scene::ZoneRole;
 
@@ -255,17 +253,17 @@ pub fn next_zone_name(existing: &[&str]) -> String {
         .unwrap_or_else(|| "New zone".to_owned())
 }
 
-/// One Screen as the strip's pane lists it, before disambiguation.
+/// One screen as a list names it, before disambiguation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenName {
-    /// The display zone's stored name.
+    /// The name the screen carries.
     pub name: String,
     /// The per-device label the canvas shows for this display's output
     /// ("TL LCD 2"), when the rig places one.
     pub device_label: Option<String>,
 }
 
-/// Labels for a scene's Screens, in order. A unique name stands. Repeated
+/// Labels for a scene's screens, in order. A unique name stands. Repeated
 /// names take their device label when every repeat has a distinct one,
 /// and otherwise an ordinal ("Lian Li LCD 2") counted within the repeats.
 #[must_use]
@@ -300,47 +298,6 @@ pub fn screen_labels(screens: &[ScreenName]) -> Vec<String> {
                 .count();
             format!("{name} {ordinal}")
         })
-        .collect()
-}
-
-/// [`screen_labels`] for a scene's display zones, keyed by zone id. A
-/// Screen's device label is the name its display output carries in an
-/// LED zone of the scene, found through `layout_ids` (physical display
-/// id to the layout device id outputs use).
-#[must_use]
-pub fn screen_label_map(
-    zones: &[ZoneResource],
-    layout_ids: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let screens: Vec<&ZoneResource> = zones
-        .iter()
-        .filter(|zone| zone.role == ZoneRole::Display)
-        .collect();
-    let names: Vec<ScreenName> = screens
-        .iter()
-        .map(|zone| {
-            let device_label = zone
-                .display_target
-                .as_ref()
-                .and_then(|target| layout_ids.get(&target.device_id.to_string()))
-                .and_then(|layout_id| {
-                    zones
-                        .iter()
-                        .filter(|zone| zone.role != ZoneRole::Display)
-                        .flat_map(|zone| zone.members.iter())
-                        .find(|member| member.device_id == *layout_id)
-                        .map(|member| member.name.clone())
-                });
-            ScreenName {
-                name: zone.name.clone(),
-                device_label,
-            }
-        })
-        .collect();
-    screens
-        .iter()
-        .map(|zone| zone.id.to_string())
-        .zip(screen_labels(&names))
         .collect()
 }
 

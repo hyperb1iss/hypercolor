@@ -16,6 +16,7 @@ use hypercolor_ui::pages::studio::screen_model::{
     add_outcome_words, card_face, copy_layer_to_scene, copy_prompt, is_screen_layer, kept_face_row,
     placed_screens, plan_add_to_all_screens, plan_screen_adds, reorder_within, screen_chip,
     screen_panel, screens_label, selected_screens, takes_copies, unplaced_screens,
+    zone_screen_lines,
 };
 
 fn member(id: &str, device: &str, segment: Option<&str>, name: &str) -> ZoneMember {
@@ -466,6 +467,37 @@ fn a_card_names_the_top_layer_of_its_own_screen() {
     );
     // A screen with nothing of its own names no face, whatever is behind.
     assert!(card_face(&rig.zones, &screens[2]).is_none());
+}
+
+#[test]
+fn a_zones_card_lists_its_screens_with_the_face_each_shows() {
+    let mut rig = Rig::new();
+    rig.main().layers = vec![layer("Bubbles", None), layer("Neon Clock", Some(&["lcd1"]))];
+    let screens = rig.screens();
+    let main = rig.zones[0].id.to_string();
+    // The second panel shows a face saved with it.
+    let kept = HashMap::from([(rig.devices[1].to_string(), "Sensor Grid".to_owned())]);
+    let name = |layer: &SceneLayer| layer.name.clone().unwrap_or_default();
+
+    let lines = zone_screen_lines(&rig.zones, &screens, &main, name, &kept);
+    let shown: Vec<(&str, Option<&str>)> = lines
+        .iter()
+        .map(|line| (line.screen.name.as_str(), line.face.as_deref()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("TL LCD 1", Some("Neon Clock")),
+            ("TL LCD 2", Some("Sensor Grid")),
+        ]
+    );
+
+    // Another zone's screen is that zone's to list, and shows nothing.
+    let desk = rig.zones[1].id.to_string();
+    let lines = zone_screen_lines(&rig.zones, &screens, &desk, name, &kept);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].screen.name, "Pump");
+    assert_eq!(lines[0].face, None);
 }
 
 fn report(scope: DisplayFaceScope, rendering: Option<DisplayFaceRendering>) -> FaceReport {
