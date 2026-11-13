@@ -2035,3 +2035,91 @@ fn scene_write_lock_sites(source: &str) -> usize {
     collapsed.matches("scene_manager.write()").count()
         + collapsed.matches("scene_manager .write()").count()
 }
+
+/// The start path restores the default scene and realigns it in one
+/// mutation. The restored scene is what that write is settled against, so
+/// a face whose output the realign takes away waits for its device and is
+/// not left as a dormant layer nothing remembers.
+#[tokio::test]
+async fn a_restored_scene_is_what_the_restoring_write_is_settled_against() {
+    use hypercolor_core::scene::screens::{ScreenSurface, ScreenSurfaces};
+    use hypercolor_types::layer::LayerScope;
+
+    let (state, _dir) = isolated_state();
+    let device_id = DeviceId::new();
+    let mut face = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::from(Uuid::now_v7()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    face.scope = Some(LayerScope {
+        outputs: vec!["pump-lcd".to_owned()],
+    });
+    let mut held = preview_layout();
+    held.zones.push(Output {
+        id: "pump-lcd".to_owned(),
+        name: "Pump LCD".to_owned(),
+        device_id: "usb:pump".to_owned(),
+        zone_name: Some(hypercolor_core::spatial::DISPLAY_ZONE_NAME.to_owned()),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(0.2, 0.2),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    });
+    let mut primary = hypercolor_core::scene::default_primary_zone(held);
+    primary.layers.push(face.clone());
+
+    // Restore and realign as the start path does, before any device is
+    // known.
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut default_scene = mutation
+        .scenes()
+        .get(&SceneId::DEFAULT)
+        .cloned()
+        .expect("default scene");
+    default_scene.zones = vec![primary];
+    mutation
+        .restore_scene(default_scene)
+        .expect("the scene should restore");
+    mutation.realign_primary_layout(&preview_layout());
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("the restore should commit");
+
+    // Discovery finds the display.
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation.set_screen_surfaces(ScreenSurfaces::from([(
+        "usb:pump".to_owned(),
+        ScreenSurface {
+            device_id,
+            connected: true,
+            name: "Pump".to_owned(),
+            width: 480,
+            height: 480,
+        },
+    )]));
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("the surfaces should commit");
+
+    let scenes = state.scene_manager.snapshot().await;
+    let scene = scenes.active_scene().expect("active scene");
+    let stored = scene
+        .display_zone_for(device_id)
+        .expect("the face is stored for its screen once the device is known");
+    assert_eq!(stored.layers.len(), 1);
+    assert_eq!(stored.layers[0].id, face.id);
+}

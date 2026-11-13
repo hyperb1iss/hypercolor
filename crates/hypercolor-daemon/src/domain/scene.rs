@@ -1581,10 +1581,22 @@ impl SceneMutation {
     }
 
     /// Restore a persisted scene without scheduling a redundant store write.
+    ///
+    /// The restored scene is what the daemon held before this write, so it
+    /// is what the write is settled against: a realign later in the same
+    /// mutation that takes a screen's output away finds the screen here.
     pub fn restore_scene(&mut self, scene: Scene) -> Result<(), DomainError> {
+        let scene_id = scene.id;
+        let held = screens::screen_placements(&scene);
         self.candidate.update(scene).map_err(|error| {
             DomainError::Internal(anyhow::anyhow!("Failed to restore scene: {error}"))
-        })
+        })?;
+        if held.screens.is_empty() {
+            self.screens_before.remove(&scene_id);
+        } else {
+            self.screens_before.insert(scene_id, held);
+        }
+        Ok(())
     }
 
     // ── Scene library ────────────────────────────────────────────────
