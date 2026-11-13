@@ -37,7 +37,7 @@ use crate::ws::messages::zone_has_degraded_layer;
 
 use super::composition_panel::{COMPOSITION_PANEL_ID, COMPOSITION_TRIGGER_ID};
 use super::layer_target::PickBanner;
-use super::screen_model::screen_chip;
+use super::screen_model::{ScreenChip, screen_chip};
 use super::surface::{Surface, layer_label, now_playing, surfaces_from_zones, zone_featured_layer};
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -564,11 +564,14 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
     let chip = Memo::new(move |_| {
         on_screens.get().then(|| {
             let face = screens.face_name(studio, effect_name);
-            screen_chip(face.as_deref(), None)
+            let count = screens.selected.with(Vec::len);
+            screens
+                .kept
+                .with(|kept| screen_chip(face.as_deref(), kept, count))
         })
     });
     let offers_face =
-        Memo::new(move |_| chip.with(|chip| chip.as_ref().is_some_and(|chip| chip.face.is_none())));
+        Memo::new(move |_| chip.with(|chip| chip.as_ref().is_some_and(ScreenChip::offers_face)));
     let label = move || match chip.get() {
         Some(chip) => chip.face,
         None => Some(playing.get()),
@@ -582,13 +585,10 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
             aria-expanded=move || studio.composition_open.get().to_string()
             class="group flex min-w-0 items-center gap-2 rounded-lg border border-edge-subtle/60 bg-surface-overlay/40 px-3 py-1.5 transition-colors hover:border-accent-muted hover:bg-surface-overlay/70"
             title=move || {
-                if offers_face.get() {
-                    "Give this screen a face"
-                } else if on_screens.get() {
-                    "Change this screen's face and its settings"
-                } else {
-                    "Edit this zone's layers and their settings"
-                }
+                chip.with(|chip| {
+                    chip.as_ref()
+                        .map_or("Edit this zone's layers and their settings", ScreenChip::title)
+                })
             }
             data-studio-chip=move || if on_screens.get() { "screen" } else { "zone" }
             on:click=move |_| {

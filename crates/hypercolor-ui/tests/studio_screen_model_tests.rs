@@ -605,19 +605,51 @@ fn layers_reorder_within_a_screens_stack_without_moving_the_rest() {
 
 #[test]
 fn the_chip_names_the_face_or_offers_one() {
-    let named = screen_chip(Some("Neon Clock"), None);
+    let none = KeptSelection::None;
+    let named = screen_chip(Some("Neon Clock"), &none, 1);
     assert_eq!(named.face.as_deref(), Some("Neon Clock"));
     assert_eq!(named.action(), "Face settings");
+    assert_eq!(named.title(), "Change this screen's face and its settings");
 
     // A saved face that is showing is the face to name.
-    let kept = screen_chip(None, Some("Pulse Temp"));
+    let shared = KeptSelection::Shared(KeptFaceRow {
+        name: "Pulse Temp".to_owned(),
+        effect_id: "pulse".to_owned(),
+    });
+    let kept = screen_chip(None, &shared, 2);
     assert_eq!(kept.face.as_deref(), Some("Pulse Temp"));
     assert_eq!(kept.action(), "Face settings");
+    assert_eq!(
+        kept.title(),
+        "Change these screens' faces and their settings"
+    );
 
-    let empty = screen_chip(None, None);
+    let empty = screen_chip(None, &none, 1);
     assert_eq!(empty.face, None);
+    assert!(empty.offers_face());
     assert_eq!(empty.action(), "Face");
-    assert_eq!(screen_chip(Some("  "), None).face, None);
+    assert_eq!(empty.title(), "Give this screen a face");
+    assert_eq!(
+        screen_chip(None, &none, 3).title(),
+        "Give these screens a face"
+    );
+    assert_eq!(screen_chip(Some("  "), &none, 1).face, None);
+}
+
+#[test]
+fn the_chip_opens_the_layers_of_screens_that_already_show_faces() {
+    // Two saved faces that differ, or one screen with a saved face and
+    // one with none: no single name, but not screens without a face. A
+    // click opens their layers, never the picker.
+    for kept in [
+        KeptSelection::Differ,
+        KeptSelection::Some { kept: 1, of: 2 },
+    ] {
+        let chip = screen_chip(None, &kept, 2);
+        assert!(!chip.offers_face(), "{kept:?}");
+        assert_eq!(chip.face.as_deref(), Some("Faces"));
+        assert_eq!(chip.action(), "Face settings");
+    }
 }
 
 #[test]

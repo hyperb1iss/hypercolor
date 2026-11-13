@@ -535,33 +535,64 @@ pub fn kept_face_row(face: Option<&FaceReport>) -> Option<KeptFaceRow> {
 /// What the Stage header's chip says for a selection of screens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenChip {
-    /// The face's name; `None` when the screens show no face, and the
-    /// chip offers one instead.
+    /// What the chip names: the face the screens show, or "Faces" when
+    /// they show faces no one name stands for. `None` when they show
+    /// none, and the chip offers one instead.
     pub face: Option<String>,
+    /// More than one screen is selected.
+    several: bool,
 }
 
 impl ScreenChip {
+    /// Whether the screens show no face at all, so a click asks for one.
+    /// Screens that already show faces, even ones no single row can
+    /// stand for, open their layers instead: a picker there would put a
+    /// new face over faces nobody had looked at.
+    #[must_use]
+    pub fn offers_face(&self) -> bool {
+        self.face.is_none()
+    }
+
     /// The words beside the name: what a click opens.
     #[must_use]
     pub fn action(&self) -> &'static str {
-        if self.face.is_some() {
-            "Face settings"
-        } else {
+        if self.offers_face() {
             "Face"
+        } else {
+            "Face settings"
+        }
+    }
+
+    /// The chip's tooltip.
+    #[must_use]
+    pub fn title(&self) -> &'static str {
+        match (self.offers_face(), self.several) {
+            (true, false) => "Give this screen a face",
+            (true, true) => "Give these screens a face",
+            (false, false) => "Change this screen's face and its settings",
+            (false, true) => "Change these screens' faces and their settings",
         }
     }
 }
 
-/// The chip for screens whose top layer is called `top`, or whose saved
-/// face is `kept`.
+/// The chip for `count` screens whose top layer is called `top`, and
+/// whose saved faces come to `kept`.
 #[must_use]
-pub fn screen_chip(top: Option<&str>, kept: Option<&str>) -> ScreenChip {
+pub fn screen_chip(top: Option<&str>, kept: &KeptSelection, count: usize) -> ScreenChip {
     let named = |name: &&str| !name.trim().is_empty();
+    let face = top
+        .filter(named)
+        .or_else(|| kept.row().map(|row| row.name.as_str()).filter(named))
+        .map(|name| name.trim().to_owned())
+        .or_else(|| {
+            // Saved faces that differ, or that only some of the screens
+            // show, are still faces on those screens.
+            matches!(kept, KeptSelection::Differ | KeptSelection::Some { .. })
+                .then(|| "Faces".to_owned())
+        });
     ScreenChip {
-        face: top
-            .filter(named)
-            .or_else(|| kept.filter(named))
-            .map(|name| name.trim().to_owned()),
+        face,
+        several: count > 1,
     }
 }
 
