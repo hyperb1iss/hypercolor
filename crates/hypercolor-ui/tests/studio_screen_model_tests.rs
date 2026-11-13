@@ -880,6 +880,29 @@ fn screens_showing_the_same_saved_face_share_its_row() {
 }
 
 #[test]
+fn removing_a_saved_face_asks_first_and_names_what_it_reaches() {
+    use hypercolor_ui::pages::studio::screen_model::remove_saved_prompt;
+
+    let (ask, means) = remove_saved_prompt("Neon Clock", &["TL LCD 2".to_owned()]);
+    assert_eq!(ask, "Remove Neon Clock from TL LCD 2?");
+    assert_eq!(
+        means,
+        "It is saved with the screen, not in this scene, so it goes from every scene that shows it there. This cannot be undone."
+    );
+    let (ask, means) = remove_saved_prompt(
+        "Neon Clock",
+        &["TL LCD 2".to_owned(), "TL LCD 3".to_owned()],
+    );
+    assert_eq!(ask, "Remove Neon Clock from TL LCD 2 and TL LCD 3?");
+    assert!(means.starts_with("It is saved with those screens, not in this scene"));
+    let three = ["A".to_owned(), "B".to_owned(), "C".to_owned()];
+    assert_eq!(
+        remove_saved_prompt("Gauge", &three).0,
+        "Remove Gauge from 3 screens?"
+    );
+}
+
+#[test]
 fn one_face_saved_under_different_settings_is_not_one_row() {
     // The row would show the first screen's hour format and write it to
     // the second the moment anything was touched.

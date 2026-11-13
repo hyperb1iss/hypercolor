@@ -51,7 +51,7 @@ use super::screen_model::{
     screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screen,
     unplaced_screens,
 };
-use super::screen_model::{FaceRemoval, face_removal};
+use super::screen_model::{FaceRemoval, face_removal, remove_saved_prompt};
 
 /// Flush debounce for face-setting edits, the layer inspector's cadence.
 const FACE_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
@@ -83,6 +83,8 @@ pub(crate) struct Screens {
     pub face: Signal<Option<api::DisplayFaceResponse>>,
     /// The displays of the selected screens, in selection order.
     pub face_devices: Signal<Vec<String>>,
+    /// What those screens are called, one for one.
+    pub face_names: Signal<Vec<String>>,
     /// Read their faces again after a write to a saved face.
     pub refresh_face: Callback<()>,
     /// What the selected screens' saved faces come to: one row while
@@ -237,6 +239,8 @@ pub(crate) fn use_display_faces(
 pub(crate) struct KeptFace {
     /// The displays the face is saved with: the row writes to each.
     pub devices: Signal<Vec<String>>,
+    /// What those screens are called, one for one.
+    pub names: Signal<Vec<String>>,
     /// What the first of them reports, whose settings the row shows.
     pub face: Signal<Option<api::DisplayFaceResponse>>,
     /// What those displays' saved faces come to: the row, a line in its
@@ -345,6 +349,7 @@ impl Screens {
             panel,
             face,
             face_devices: face_devices.into(),
+            face_names: face_names.into(),
             refresh_face: Callback::new(move |()| {
                 set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
             }),
@@ -656,6 +661,7 @@ impl Screens {
             lead: {
                 let kept = KeptFace {
                     devices: self.face_devices,
+                    names: self.face_names,
                     face: self.face,
                     kept: self.kept.into(),
                     refresh_face: self.refresh_face,
@@ -958,7 +964,11 @@ fn KeptFaceCard(kept: KeptFace) -> impl IntoView {
             kept.refresh_scene.try_run(());
         });
     };
+    // Removing a saved face reaches every scene and has no undo, so it is
+    // asked about once, by name, before anything is written.
+    let confirming = RwSignal::new(false);
     let remove = move |_| {
+        confirming.set(false);
         let devices = devices.get_untracked();
         if devices.is_empty() {
             return;
@@ -1059,13 +1069,53 @@ fn KeptFaceCard(kept: KeptFace) -> impl IntoView {
                         class="inline-flex items-center gap-1.5 rounded-md border border-edge-subtle px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary transition-colors btn-press hover:border-status-error/40 hover:text-status-error disabled:cursor-wait disabled:opacity-60"
                         title="Remove the saved face from its screen, in every scene"
                         disabled=move || busy.get()
-                        on:click=remove
+                        aria-haspopup="dialog"
+                        on:click=move |_| confirming.set(true)
                     >
                         <Icon icon=LuTrash2 width="12px" height="12px" />
                         "Remove"
                     </button>
                 </div>
             </article>
+            <Show when=move || confirming.get()>
+                <Modal
+                    on_close=Callback::new(move |()| confirming.set(false))
+                    label="Remove saved face"
+                    container_class="fixed inset-0 z-[60] flex items-center justify-center px-4 animate-enter-fade"
+                    backdrop_class="absolute inset-0 bg-black/70"
+                >
+                    <div
+                        class="relative w-full max-w-sm rounded-xl border border-edge-subtle bg-surface-overlay p-5"
+                        on:click=|event| event.stop_propagation()
+                        data-remove-saved=""
+                    >
+                        {move || {
+                            let face = row.with(|row| row.as_ref().map(|row| row.name.clone())).unwrap_or_default();
+                            let (ask, means) = kept.names.with(|names| remove_saved_prompt(&face, names));
+                            view! {
+                                <h2 class="text-sm font-semibold text-fg-primary">{ask}</h2>
+                                <p class="mt-1.5 text-xs leading-relaxed text-fg-tertiary">{means}</p>
+                            }
+                        }}
+                        <div class="mt-5 flex justify-end gap-2">
+                            <button
+                                type="button"
+                                class="rounded-md border border-edge-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary transition-colors btn-press hover:bg-surface-hover/40 hover:text-fg-primary"
+                                on:click=move |_| confirming.set(false)
+                            >
+                                "Keep it"
+                            </button>
+                            <button
+                                type="button"
+                                class="rounded-md border border-status-error/40 bg-status-error/10 px-3 py-1.5 text-xs font-semibold text-status-error transition-colors btn-press hover:bg-status-error/15"
+                                on:click=remove
+                            >
+                                "Remove everywhere"
+                            </button>
+                        </div>
+                    </div>
+                </Modal>
+            </Show>
         </Show>
     }
 }
@@ -1590,6 +1640,7 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
     let refresh = zones_ctx.refresh;
     let kept = KeptFace {
         devices,
+        names,
         face,
         kept: kept_row.into(),
         refresh_face: Callback::new(move |()| {

@@ -646,6 +646,32 @@ pub fn unplaced_face<'a>(zones: &'a [ZoneResource], device_id: &str) -> Option<&
     stored_zone(zones, device_id)?.layers.last()
 }
 
+/// What is asked before a saved face is removed, as `(question, what it
+/// means)`. The face is saved with its screens and not in a scene, so
+/// removing it reaches every scene that leaves those screens to it, and
+/// nothing in Studio brings it back.
+#[must_use]
+pub fn remove_saved_prompt(face: &str, screens: &[String]) -> (String, String) {
+    let on = match screens {
+        [] => "this screen".to_owned(),
+        [one] => one.clone(),
+        [first, second] => format!("{first} and {second}"),
+        more => format!("{} screens", more.len()),
+    };
+    let several = screens.len() > 1;
+    (
+        format!("Remove {face} from {on}?"),
+        format!(
+            "It is saved with {}, not in this scene, so it goes from every scene that shows it there. This cannot be undone.",
+            if several {
+                "those screens"
+            } else {
+                "the screen"
+            }
+        ),
+    )
+}
+
 /// What the saved faces of a selection of screens come to.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum KeptSelection {
