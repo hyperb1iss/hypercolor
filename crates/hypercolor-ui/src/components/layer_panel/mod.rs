@@ -106,6 +106,9 @@ pub struct LayerTargetHost {
     pub added: Callback<Target>,
     /// A replace minted a new id: `(zone id, old, new)`.
     pub replaced: Callback<(String, SceneLayerId, SceneLayerId)>,
+    /// The host has nowhere to choose outputs: rows say what a layer
+    /// applies to and offer no way to change it.
+    pub fixed: bool,
 }
 
 /// How a row's writes report back.

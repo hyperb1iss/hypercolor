@@ -310,6 +310,7 @@ impl LayerTargets {
             replaced: Callback::new(move |(zone_id, old, new): (String, _, _)| {
                 studio.history.layer_replaced(&zone_id, old, new);
             }),
+            fixed: false,
         };
         Signal::derive(move || self.enabled.get().then_some(host))
     }

@@ -21,10 +21,11 @@ use leptos_icons::Icon;
 use crate::api::{self, DisplayFaceScope};
 use crate::app::{CapabilitiesContext, DevicesContext, DisplaysContext, WsContext};
 use crate::components::control_panel::ControlPanel;
+use crate::components::layer_panel::scope::Target;
 use crate::components::layer_panel::source::add_layer_request;
 use crate::components::layer_panel::{
-    Backdrop, DisplayComposition, NewLayerDraft, ScreenFaceLine, ScreenHost, ScreenView,
-    ScreenViewRow,
+    Backdrop, DisplayComposition, LayerTargetHost, NewLayerDraft, ScreenFaceLine, ScreenHost,
+    ScreenView, ScreenViewRow,
 };
 use crate::components::modal::Modal;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -1277,11 +1278,11 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
             let zones = &scene.as_ref()?.zones;
             let panel = screen_panel(zones, &[&screen])?;
             let mut view = screen_view(zones, &panel, std::slice::from_ref(&screen));
-            // A phone has no journal for a copy to go through, and no
-            // canvas to choose other screens on.
+            // A phone has no journal for a copy to go through. Its rows
+            // still say which screens a layer is on, since a change to one
+            // shared with other screens changes those too.
             for row in &mut view.rows {
                 row.copies = false;
-                row.targets = false;
             }
             Some(view)
         })
@@ -1320,6 +1321,39 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
         select: Callback::new(|_| {}),
         add_requests: Signal::stored(0),
         replaced: Callback::new(|_| {}),
+    };
+
+    // There is no canvas here to choose other screens on, so what a layer
+    // applies to is said and not offered for change.
+    let target_outputs = Memo::new(move |_| {
+        let Some(screen) = current.get() else {
+            return Vec::new();
+        };
+        active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .and_then(|scene| {
+                    scene
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == screen.zone_id)
+                })
+                .map_or_else(Vec::new, |zone| {
+                    placed.with(|placed| super::layer_target::target_outputs_for(zone, &[], placed))
+                })
+        })
+    });
+    let targets = LayerTargetHost {
+        outputs: target_outputs.into(),
+        emphasis: Signal::stored(HashSet::new()),
+        pointer: Signal::stored(None),
+        hover: Callback::new(|_| {}),
+        add_target: Signal::stored(Target::WholeZone),
+        edit: Callback::new(|_| {}),
+        add_requests: Signal::stored(0),
+        added: Callback::new(|_| {}),
+        replaced: Callback::new(|_| {}),
+        fixed: true,
     };
 
     let (owner, set_owner) = signal(Some(screen.zone_id.clone()));
@@ -1377,6 +1411,7 @@ pub(super) fn ScreenSheet(screen: PlacedScreen, on_close: Callback<()>) -> impl 
                     surface_label=name.clone()
                     layers_resource=layers
                     on_layers_mutated=refresh
+                    targets=Signal::stored(Some(targets))
                     screens=host.get_value()
                 />
             </div>

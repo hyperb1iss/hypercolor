@@ -223,6 +223,9 @@ pub fn LayerRow(
             let _ = host.hover.try_run(HashSet::new());
         }
     });
+    // A host with nowhere to choose outputs gets the same words as plain
+    // text: a chip that opens nothing is worse than none.
+    let fixed_target = targets.with_untracked(|host| host.as_ref().is_some_and(|host| host.fixed));
     let edit_target = move |ev: web_sys::MouseEvent| {
         ev.stop_propagation();
         if let (Some(host), Some(element)) = (targets.get_untracked(), listener_element(&ev)) {
@@ -506,6 +509,37 @@ pub fn LayerRow(
                         </span>
                         {move || {
                             let RowTarget { words, detail } = target.get()?;
+                            if fixed_target {
+                                return match words {
+                                    TargetWords::WholeZone => None,
+                                    TargetWords::Outputs { label, .. } => Some(view! {
+                                        <span
+                                            class="inline-flex min-w-0 max-w-[13rem] items-center gap-1 rounded-full border border-edge-subtle bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-fg-secondary"
+                                            title=format!("Applies to {detail}")
+                                            data-layer-target="fixed"
+                                        >
+                                            <span class="flex shrink-0 text-accent">
+                                                <Icon icon=LuScan width="10px" height="10px" />
+                                            </span>
+                                            <span class="min-w-0 truncate">{label}</span>
+                                        </span>
+                                    }
+                                    .into_any()),
+                                    TargetWords::Dormant => Some(view! {
+                                        <span
+                                            class="inline-flex min-w-0 items-center gap-1 rounded-full border border-status-warning/30 bg-status-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-status-warning"
+                                            title="Its outputs have left this zone, so it draws nothing."
+                                            data-layer-target="dormant"
+                                        >
+                                            <span class="flex shrink-0">
+                                                <Icon icon=LuTriangleAlert width="10px" height="10px" />
+                                            </span>
+                                            <span class="min-w-0 truncate">{words.label().to_owned()}</span>
+                                        </span>
+                                    }
+                                    .into_any()),
+                                };
+                            }
                             Some(match words {
                                 TargetWords::WholeZone => view! {
                                     <button
