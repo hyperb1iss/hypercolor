@@ -12,7 +12,8 @@ use crate::discovery::DiscoveryRuntime;
 use crate::logical_devices::LogicalDevice;
 
 use super::auto_layout::{
-    append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device,
+    append_auto_layout_zones_for_device, append_screen_outputs_for_device,
+    reconcile_auto_layout_zones_for_device,
 };
 use super::catalog::LayoutCatalog;
 use super::exclusions::LayoutExclusions;
@@ -87,6 +88,9 @@ impl LayoutConvergence {
             };
             let _ =
                 append_auto_layout_zones_for_device(&mut scratch, &layout_device_id, &device.info);
+            // An assignment is someone placing the device, so its screens
+            // come too. Automatic layout leaves them off the canvas.
+            let _ = append_screen_outputs_for_device(&mut scratch, &layout_device_id, &device.info);
             return scratch.zones;
         }
         Vec::new()

@@ -476,7 +476,7 @@ fn assignment_changes(
             .any(|output| output.zone_name.as_ref() == Some(segment))
     }) {
         return Err(DomainError::validation(
-            "assignment contains an unknown light segment",
+            "assignment contains an unknown segment",
         ));
     }
     let mut index = scene

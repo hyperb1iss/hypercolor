@@ -749,7 +749,8 @@ pub struct MemberAssignmentTarget {
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub zone_id: ZoneId,
     pub device_id: String,
-    /// Empty selects every light segment, including all attachment instances.
+    /// Empty selects every segment the device has: its light segments,
+    /// including all attachment instances, and its screens.
     #[serde(default)]
     pub segments: Vec<String>,
     /// Optional seeded geometry for newly minted outputs, keyed by segment.
