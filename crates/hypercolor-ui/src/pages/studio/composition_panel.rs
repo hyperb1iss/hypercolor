@@ -15,10 +15,12 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::components::layer_panel::LayerPanel;
+use crate::components::zone_tabs::ZoneDot;
 use crate::icons::*;
 
 use super::StudioContext;
 use super::face_composition::{DefaultFaceCard, ScreenCompositionSection};
+use super::layer_target::ShowingStrip;
 use super::surface::selected_screen_device_id;
 
 pub(super) const COMPOSITION_PANEL_ID: &str = "studio-composition-panel";
@@ -104,11 +106,33 @@ pub fn CompositionPanel(
         })
     });
 
+    // The zone's identity color, for the dot beside its name. A Screen
+    // has none.
+    let zone_color = Memo::new(move |_| {
+        let selected = selected_zone_id.get()?;
+        active_scene.with(|scene| {
+            scene
+                .as_ref()?
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == selected)
+                .and_then(|zone| zone.color.clone())
+        })
+    });
+    let layer_targets = studio.targets.host(studio);
+
     // Escape closes the panel while it is open, unless a text field owns
-    // the key (a rename in the rail cancels with Escape too). The handle
-    // is removed with the page so the listener never outlives its signals.
+    // the key (a rename in the rail cancels with Escape too) or a target
+    // is being chosen, in its editor or on the canvas, which ends first.
+    // The handle is removed with the page so the listener never outlives
+    // its signals.
     let keydown = window_event_listener(ev::keydown, move |event| {
-        if open.get_untracked() && event.key() == "Escape" && !target_is_text_entry(event.target())
+        if open.get_untracked()
+            && event.key() == "Escape"
+            && !event.default_prevented()
+            && !target_is_text_entry(event.target())
+            && studio.targets.editor.with_untracked(Option::is_none)
+            && studio.targets.pick.with_untracked(Option::is_none)
         {
             close();
         }
@@ -137,16 +161,28 @@ pub fn CompositionPanel(
             inert=move || (!open.get()).then_some("")
         >
             // The header names the panel in the words of the chip that
-            // opened it, and takes the Stage header's padding and line box
-            // so the two rules meet when the panel docks beside it.
+            // opened it, then the zone or screen whose stack it holds, and
+            // takes the Stage header's padding and line box so the two
+            // rules meet when the panel docks beside it.
             <div class="flex shrink-0 items-center justify-between gap-3 border-b border-edge-subtle/60 py-3 pl-4 pr-3">
-                <h2 class="flex min-w-0">
+                <h2 class="flex min-w-0 items-center gap-2">
+                    <span class="flex shrink-0 text-accent/75">
+                        <Icon icon=LuLayers width="13px" height="13px" />
+                    </span>
                     // The chip's own box, borders and all. The line height
                     // sits on the span because the global heading rule is
                     // unlayered and outranks a utility on the `h2` itself.
-                    <span class="truncate border border-transparent py-1.5 text-[12px] font-medium leading-normal text-fg-secondary">
+                    <span class="shrink-0 border border-transparent py-1.5 text-[12px] font-semibold leading-normal text-fg-primary">
                         {move || if is_screen.get() { "Face settings" } else { "Layers" }}
                     </span>
+                    {move || surface_label.get().map(|name| view! {
+                        <span class="flex min-w-0 items-center gap-1.5 border-l border-edge-subtle pl-2 text-[12px] font-normal leading-normal text-fg-tertiary">
+                            <Show when=move || !is_screen.get()>
+                                <ZoneDot color=zone_color />
+                            </Show>
+                            <span class="truncate">{name}</span>
+                        </span>
+                    })}
                 </h2>
                 <button
                     node_ref=close_ref
@@ -158,6 +194,7 @@ pub fn CompositionPanel(
                     <Icon icon=LuX width="14px" height="14px" />
                 </button>
             </div>
+            <ShowingStrip />
             <div class="scrollbar-none min-h-0 flex-1 overflow-y-auto px-4 pb-6">
                 <DefaultFaceCard
                     display_device_id=screen_device_id
@@ -171,6 +208,7 @@ pub fn CompositionPanel(
                     surface_label=surface_label
                     layers_resource=layers_resource
                     on_layers_mutated=on_layers_mutated
+                    targets=layer_targets
                 />
             </div>
         </aside>

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { expect } from "@playwright/test";
 import { daemonError, daemonHeaders, getStack, parseFence, refuseFence, staleFence, writeFence } from "./helpers.mjs";
 
@@ -5,6 +7,18 @@ export const FIRST = "11111111-1111-4111-8111-111111111111";
 export const SECOND = "22222222-2222-4222-8222-222222222222";
 export const STAND = "fixture:stand";
 export const ANCHOR = "fixture:anchor";
+export const BASE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+export const RIPPLES = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+export const HAZE = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const layer = (id, name, scope) => ({
+  id, name, source: { type: "color_fill", rgba: [0.2, 0.4, 0.6, 1] },
+  blend: "alpha", opacity: 1,
+  transform: { anchor: { x: 0.5, y: 0.5 }, scale: [1, 1], rotation: 0, fit: "cover" },
+  adjust: { brightness: 1, saturation: 1, hue_shift: 0, tint: [1, 1, 1, 1], tint_strength: 0, contrast: 0 },
+  enabled: true,
+  ...(scope ? { scope: { outputs: scope } } : {}),
+});
+const sameScope = (a, b) => JSON.stringify([...(a?.outputs ?? [])].sort()) === JSON.stringify([...(b?.outputs ?? [])].sort());
 const output = (id, device, name) => ({
   id, device_id: device, name, zone_name: null,
   position: { x: 0.35, y: 0.4 }, size: { x: 0.18, y: 0.1 },
@@ -25,7 +39,11 @@ const device = (id, name) => ({
   presentation: { label: "Fixture" }, status: "connected", brightness: 100, total_leds: 12, segments: [],
 });
 
-export async function openHistory(page, { placedStand = false, offline = false, beforeMemberReply } = {}) {
+// `standLayer` stacks the first zone as Base, Ripples limited to the stand,
+// and Haze over both, and the stand-in then moves layers as a daemon does:
+// by the `layer_moves` a write names, or, when it names none, by carrying a
+// layer whose outputs all left to the top of the stack they went to.
+export async function openHistory(page, { placedStand = false, offline = false, standLayer = false, beforeMemberReply } = {}) {
   const anchor = output("anchor-output", ANCHOR, "Anchor light");
   const stand = output("stand-output", STAND, "Laptop stand");
   const outputs = new Map([[anchor.id, anchor], ...(placedStand ? [[stand.id, stand]] : [])]);
@@ -40,8 +58,62 @@ export async function openHistory(page, { placedStand = false, offline = false, 
     zones: [zone(FIRST, "Desk lights", "primary", [anchor, ...(placedStand ? [stand] : [])]),
       zone(SECOND, "Accent lights", "custom", [])],
   };
+  if (standLayer) {
+    scene.zones[0].layers = [layer(BASE, "Base"), layer(RIPPLES, "Ripples", [stand.id]), layer(HAZE, "Haze")];
+  }
+  const zoneOf = (id) => scene.zones.find((zone) => zone.id === id);
+  // The layer moves a membership write commits, or the refusal a daemon
+  // answers moves that do not fit the stacks as they stand.
+  const planLayerMoves = (body, changes) => {
+    if (body.layer_moves) {
+      for (const move of body.layer_moves) {
+        const [from, to] = [zoneOf(move.from.zone_id), zoneOf(move.to.zone_id)];
+        const found = from?.layers[move.from.index];
+        if (!to || !found || found.id !== move.layer_id || !sameScope(found.scope, move.scope_before)) {
+          return { refusal: daemonError(scene, 409, "conflict",
+            `layer ${move.layer_id} is no longer where the membership receipt left it`) };
+        }
+        const arriving = body.layer_moves.filter((other) => other.to.zone_id === to.id).length;
+        const leaving = body.layer_moves.filter((other) => other.from.zone_id === to.id).length;
+        const length = to.layers.length - leaving + arriving;
+        if (move.to.index >= length) {
+          return { refusal: daemonError(scene, 422, "validation_error",
+            `layer move index ${move.to.index} is out of range for a stack of ${length}, or names a slot twice`) };
+        }
+      }
+      return { moves: structuredClone(body.layer_moves) };
+    }
+    const moves = [];
+    const landed = new Map();
+    for (const change of changes) {
+      if (!change.before || !change.after || change.before.zone_id === change.after.zone_id) continue;
+      const [from, to] = [zoneOf(change.before.zone_id), zoneOf(change.after.zone_id)];
+      from.layers.forEach((stored, index) => {
+        if (!stored.scope || !stored.scope.outputs.every((id) => id === change.before.output.id)) return;
+        const carried = landed.get(to.id) ?? 0;
+        landed.set(to.id, carried + 1);
+        moves.push({
+          layer_id: stored.id, from: { zone_id: from.id, index }, to: { zone_id: to.id, index: to.layers.length + carried },
+          scope_before: structuredClone(stored.scope), scope_after: structuredClone(stored.scope),
+        });
+      });
+    }
+    return { moves };
+  };
+  const applyLayerMoves = (moves) => {
+    const lifted = moves.map((move) => {
+      const from = zoneOf(move.from.zone_id);
+      const [stored] = from.layers.splice(from.layers.findIndex((candidate) => candidate.id === move.layer_id), 1);
+      return { move, stored };
+    });
+    for (const { move, stored } of lifted.sort((a, b) => a.move.to.index - b.move.to.index)) {
+      stored.scope = structuredClone(move.scope_after);
+      zoneOf(move.to.zone_id).layers.splice(move.to.index, 0, stored);
+    }
+  };
   let socket;
   let rejectNext = false;
+  let refuseNext = null;
   const writes = [];
   const rejected = [];
   const unexpected = [];
@@ -90,6 +162,12 @@ export async function openHistory(page, { placedStand = false, offline = false, 
         rejected.push(write);
         return route.fulfill(refusal);
       }
+      if (refuseNext) {
+        const answer = daemonError(scene, ...refuseNext);
+        refuseNext = null;
+        rejected.push(write);
+        return route.fulfill(answer);
+      }
       let changes = structuredClone(body.changes);
       if (body.assignment) {
         expect(changes).toEqual([]);
@@ -114,6 +192,11 @@ export async function openHistory(page, { placedStand = false, offline = false, 
         expect(source.members[change.before.index]?.id).toBe(change.before.output.id);
         change.before.output = structuredClone(outputs.get(change.before.output.id));
       }
+      const layers = planLayerMoves(body, changes);
+      if (layers.refusal) {
+        rejected.push(write);
+        return route.fulfill(layers.refusal);
+      }
       for (const change of changes) {
         if (!change.before) continue;
         const source = scene.zones.find((zone) => zone.id === change.before.zone_id);
@@ -129,8 +212,30 @@ export async function openHistory(page, { placedStand = false, offline = false, 
         target.members.splice(change.after.index, 0, member(next));
         target.layout.placements.splice(change.after.index, 0, placement(next));
       }
+      applyLayerMoves(layers.moves);
       scene.revision += 1;
-      await route.fulfill({ json: envelope({ document: scene, changes }), headers: daemonHeaders(scene, { fence: true }) });
+      await route.fulfill({
+        json: envelope({ document: scene, changes, layer_moves: layers.moves }),
+        headers: daemonHeaders(scene, { fence: true }),
+      });
+      notify();
+      return;
+    }
+    if (path === "/api/v1/scene/zones" && request.method() === "POST") {
+      expect(refuseFence(scene, ifMatch), `zone create fenced at ${ifMatch}`).toBeNull();
+      const made = zone(randomUUID(), body.name, "custom", []);
+      scene.zones.push(made);
+      scene.revision += 1;
+      await route.fulfill({ status: 201, json: envelope(made), headers: daemonHeaders(scene, { fence: true }) });
+      notify();
+      return;
+    }
+    const zoneMatch = path.match(/^\/api\/v1\/scene\/zones\/([^/]+)$/);
+    if (zoneMatch && request.method() === "DELETE") {
+      expect(refuseFence(scene, ifMatch), `zone delete fenced at ${ifMatch}`).toBeNull();
+      scene.zones = scene.zones.filter((stored) => stored.id !== zoneMatch[1]);
+      scene.revision += 1;
+      await route.fulfill({ json: envelope(scene), headers: daemonHeaders(scene, { fence: true }) });
       notify();
       return;
     }
@@ -155,6 +260,10 @@ export async function openHistory(page, { placedStand = false, offline = false, 
   return {
     scene, writes, rejected, unexpected,
     rejectNext: () => { rejectNext = true; },
+    // The next membership write is refused as the daemon refuses a request
+    // it read and will not apply: `refuseNext(422, "validation_error", "...")`.
+    refuseNext: (...refusal) => { refuseNext = refusal; },
+    stack: (zoneId) => zoneOf(zoneId)?.layers.map((stored) => stored.id),
     remotePlacement: (id, fields) => {
       Object.assign(outputs.get(id), fields);
       for (const zone of scene.zones) {

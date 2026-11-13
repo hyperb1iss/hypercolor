@@ -18,12 +18,12 @@
 //! it does only once that request is done, a read of the scene says what
 //! it can.
 
-use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, PatchZoneRequest};
+use hypercolor_types::api::scene::{EditMembersRequest, LayerMove, MemberEdit, PatchZoneRequest};
 use hypercolor_types::scene::SceneId;
 use leptos::prelude::*;
 
 use super::super::placement::Footprint;
-use super::zones::{DeletedZone, live_scene, zone_patch_before};
+use super::zones::{DeletedZone, Fill, live_scene, zone_patch_before};
 use super::{EntryId, Fence, Settled, StudioEdit, StudioHistory, flip, retire_placed};
 use crate::api;
 use crate::components::layout_builder::keyed::{self, Answer};
@@ -88,7 +88,7 @@ pub(super) enum Resume {
         neighbor: Option<String>,
         name: String,
         color: Option<String>,
-        filled: Vec<MemberEdit>,
+        fill: Fill,
     },
     /// Redoing a zone's creation: the zone was made again, under a new id,
     /// and its devices follow.
@@ -96,7 +96,7 @@ pub(super) enum Resume {
         zone_id: String,
         name: String,
         color: Option<String>,
-        filled: Vec<MemberEdit>,
+        fill: Fill,
     },
 }
 
@@ -112,25 +112,15 @@ impl Resume {
                 zone_id,
                 name,
                 color,
-                filled,
+                fill,
                 ..
-            } => Settled::Applied(StudioEdit::ZoneCreated {
-                zone_id: zone_id.clone(),
-                name: name.clone(),
-                color: color.clone(),
-                filled: filled.clone(),
-            }),
+            } => Settled::Applied(fill.clone().created(zone_id, name, color.as_ref())),
             Self::Recreate {
                 zone_id,
                 name,
                 color,
-                filled,
-            } => Settled::Unapplied(StudioEdit::ZoneCreated {
-                zone_id: zone_id.clone(),
-                name: name.clone(),
-                color: color.clone(),
-                filled: filled.clone(),
-            }),
+                fill,
+            } => Settled::Unapplied(fill.clone().created(zone_id, name, color.as_ref())),
         }
     }
 }
@@ -179,9 +169,13 @@ pub(super) struct Unresolved {
 /// keeps the entry it undid.
 fn undone(entry: &StudioEdit, did: StudioEdit) -> StudioEdit {
     match did {
-        StudioEdit::Members(changes) => {
-            StudioEdit::Members(changes.into_iter().map(flip).collect())
-        }
+        StudioEdit::Members {
+            changes,
+            layer_moves,
+        } => StudioEdit::Members {
+            changes: changes.into_iter().map(flip).collect(),
+            layer_moves: layer_moves.iter().map(LayerMove::reversed).collect(),
+        },
         _ => entry.clone(),
     }
 }
@@ -245,6 +239,7 @@ fn create_says(told: Told<api::ZoneResource>) -> CreateSays {
                 name: zone.name,
                 color: zone.color,
                 filled: Vec::new(),
+                layer_moves: Vec::new(),
             })
         }
         Told::Answer(_) => CreateSays::Refused,
@@ -265,7 +260,7 @@ pub fn resolve_deletion(
     if deleted {
         return Some(StudioEdit::ZoneDeleted(Box::new(record.clone())));
     }
-    (!release.is_empty()).then(|| StudioEdit::Members(release.to_vec()))
+    (!release.is_empty()).then(|| StudioEdit::members(release.to_vec()))
 }
 
 /// Whether `scene` holds what a membership edit's `changes` make. A change
@@ -555,9 +550,13 @@ impl StudioHistory {
                     // retire; edits made since are newer and stand.
                     Told::Answer(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                         let changes = response.changes;
+                        let layer_moves = response.layer_moves;
                         retire_placed(item.scene_id, &changes, *through);
                         self.adopt(response.document);
-                        Some((!changes.is_empty()).then_some(StudioEdit::Members(changes)))
+                        Some((!changes.is_empty()).then_some(StudioEdit::Members {
+                            changes,
+                            layer_moves,
+                        }))
                     }
                     Told::Answer(_) => {
                         did_not_land(&item.name);
@@ -571,7 +570,14 @@ impl StudioHistory {
                     Told::Read(scene) => {
                         if members_landed(&scene, &request.changes) {
                             retire_placed(item.scene_id, &request.changes, *through);
-                            return Some(Some(StudioEdit::Members(request.changes.clone())));
+                            // Which layers went with the outputs is the daemon's
+                            // to say and it did not: a replay that named its
+                            // moves made exactly those, and any other is undone
+                            // by the rule that carried them.
+                            return Some(Some(StudioEdit::Members {
+                                changes: request.changes.clone(),
+                                layer_moves: request.layer_moves.clone().unwrap_or_default(),
+                            }));
                         }
                         if request.changes.is_empty() {
                             toasts::toast_info(
@@ -662,15 +668,19 @@ impl StudioHistory {
                     color,
                 },
                 did,
-            ) => Settled::Applied(StudioEdit::ZoneCreated {
-                zone_id: zone_id.clone(),
-                name: name.clone(),
-                color: color.clone(),
-                filled: match did {
-                    Some(StudioEdit::Members(changes)) => changes,
-                    _ => Vec::new(),
-                },
-            }),
+            ) => {
+                let fill = match did {
+                    Some(StudioEdit::Members {
+                        changes,
+                        layer_moves,
+                    }) => Fill {
+                        changes,
+                        layer_moves,
+                    },
+                    _ => Fill::default(),
+                };
+                Settled::Applied(fill.created(zone_id, name, color.as_ref()))
+            }
             (Then::Resume(_), Some(did)) => {
                 self.when_free(super::Waiting::Resume {
                     item: Box::new(item.clone()),
@@ -726,6 +736,7 @@ mod tests {
                 name: made.name,
                 color: made.color,
                 filled: Vec::new(),
+                layer_moves: Vec::new(),
             })
         );
         assert_eq!(

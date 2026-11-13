@@ -109,6 +109,15 @@ pub(crate) struct LayoutEditorContext {
     /// The zone box under the pointer on the canvas itself. The canvas
     /// writes it; hosts (the Studio rail) read it to mirror the hover.
     pub pointer_zone_id: RwSignal<Option<String>>,
+    /// Outputs a layer names, which the host is pointing at: they take the
+    /// accent outline and the rest of the canvas recedes.
+    pub layer_focus: RwSignal<HashSet<String>>,
+    /// The outputs picked so far while the host asks for a pick; `None`
+    /// the rest of the time. While it is `Some`, a click on a box toggles
+    /// it here instead of selecting or dragging it.
+    pub picking: RwSignal<Option<HashSet<String>>>,
+    /// Outputs a pick cannot take.
+    pub pick_blocked: RwSignal<HashSet<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -153,6 +162,9 @@ pub(super) struct LayoutEditorSession {
     pub(super) can_redo: Signal<bool>,
     pub(super) is_dirty: Signal<bool>,
     pub(super) pointer_zone_id: RwSignal<Option<String>>,
+    pub(super) layer_focus: RwSignal<HashSet<String>>,
+    pub(super) picking: RwSignal<Option<HashSet<String>>>,
+    pub(super) pick_blocked: RwSignal<HashSet<String>>,
 }
 
 impl LayoutEditorSession {
@@ -201,6 +213,9 @@ impl LayoutEditorSession {
             can_redo: studio_history.can_redo,
             is_dirty: Signal::derive(move || dirty.get()),
             pointer_zone_id,
+            layer_focus: RwSignal::new(HashSet::new()),
+            picking: RwSignal::new(None),
+            pick_blocked: RwSignal::new(HashSet::new()),
         }
     }
 
@@ -223,6 +238,9 @@ impl LayoutEditorSession {
             can_undo: self.can_undo,
             can_redo: self.can_redo,
             pointer_zone_id: self.pointer_zone_id,
+            layer_focus: self.layer_focus,
+            picking: self.picking,
+            pick_blocked: self.pick_blocked,
         });
     }
 }

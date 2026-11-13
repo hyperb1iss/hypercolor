@@ -1,14 +1,19 @@
-use hypercolor_types::api::scene::{MemberEdit, MemberState, PatchZoneRequest, SceneDocument};
+use hypercolor_types::api::scene::{
+    LayerMove, LayerSlot, MemberEdit, MemberState, PatchZoneRequest, SceneDocument,
+};
 use hypercolor_types::layer::{
     BlendMode, LayerAdjust, LayerScope, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
+use hypercolor_ui::api::ApiError;
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, Settled, StudioEdit, StudioJournal, held_document, held_scene, light_neighbor,
-    members_landed, prepare_members_replay, rename_is_noop, replay_announcement, resolve_deletion,
-    restore_layer_requests, settles_by_key, zone_patch_before,
+    DeletedZone, Settled, StudioEdit, StudioJournal, carried_announcement, dropped_step_notice,
+    held_document, held_scene, light_neighbor, members_landed, members_replay_request,
+    prepare_members_replay, refuses_step, rename_is_noop, replaced_layer_id, replay_announcement,
+    replay_layer_moves, replayable_scope, resolve_deletion, restore_layer_requests, settles_by_key,
+    zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -39,7 +44,7 @@ fn journal_interleaves_membership_and_geometry_and_discards_only_redo_branch() {
         before: Box::new(snapshot()),
         after: Box::new(snapshot()),
     };
-    let members = StudioEdit::Members(Vec::new());
+    let members = StudioEdit::members(Vec::new());
     journal.record(layout.clone());
     journal.record(members.clone());
     assert_eq!(journal.undo_edit(), Some(&members));
@@ -540,7 +545,7 @@ fn hub_channel(_: &str) -> Option<(String, usize)> {
 
 #[test]
 fn undoing_a_move_says_where_the_device_went_back_to() {
-    let edit = StudioEdit::Members(vec![stand_move(Some(ZONE_A), Some(ZONE_B))]);
+    let edit = StudioEdit::members(vec![stand_move(Some(ZONE_A), Some(ZONE_B))]);
     assert_eq!(
         replay_announcement(&edit, false, &zone_names, &whole_stand).as_deref(),
         Some("Undid: moved Laptop stand back to Case")
@@ -553,12 +558,12 @@ fn undoing_a_move_says_where_the_device_went_back_to() {
 
 #[test]
 fn a_channel_is_announced_by_its_own_name_and_unassigned_by_name() {
-    let edit = StudioEdit::Members(vec![stand_move(None, Some(ZONE_A))]);
+    let edit = StudioEdit::members(vec![stand_move(None, Some(ZONE_A))]);
     assert_eq!(
         replay_announcement(&edit, false, &zone_names, &hub_channel).as_deref(),
         Some("Undid: moved Stand (Nollie 32) back to Unassigned")
     );
-    let placed = StudioEdit::Members(vec![stand_move(Some(ZONE_A), Some(ZONE_A))]);
+    let placed = StudioEdit::members(vec![stand_move(Some(ZONE_A), Some(ZONE_A))]);
     assert_eq!(
         replay_announcement(&placed, true, &zone_names, &whole_stand).as_deref(),
         Some("Redid: placed Laptop stand on Case")
@@ -572,6 +577,7 @@ fn zone_steps_are_announced_by_what_they_did() {
         name: "Keyboard".to_owned(),
         color: None,
         filled: vec![stand_move(Some(ZONE_A), Some(ZONE_B))],
+        layer_moves: Vec::new(),
     };
     assert_eq!(
         replay_announcement(&made, false, &zone_names, &whole_stand).as_deref(),
@@ -586,6 +592,7 @@ fn zone_steps_are_announced_by_what_they_did() {
         name: "New zone".to_owned(),
         color: None,
         filled: Vec::new(),
+        layer_moves: Vec::new(),
     };
     assert_eq!(
         replay_announcement(&empty, false, &zone_names, &whole_stand).as_deref(),
@@ -630,7 +637,7 @@ fn zone_steps_are_announced_by_what_they_did() {
 
 #[test]
 fn an_empty_membership_step_has_nothing_to_say() {
-    let edit = StudioEdit::Members(Vec::new());
+    let edit = StudioEdit::members(Vec::new());
     assert_eq!(
         replay_announcement(&edit, true, &zone_names, &whole_stand),
         None
@@ -689,7 +696,7 @@ fn an_unknown_delete_resolves_by_what_the_scene_shows_after_it() {
     // It did not: only the release happened.
     assert_eq!(
         resolve_deletion(false, &record, &release),
-        Some(StudioEdit::Members(release.clone()))
+        Some(StudioEdit::members(release.clone()))
     );
     // It did not, and nothing was released (a zone of layers alone):
     // nothing changed.
@@ -816,4 +823,723 @@ fn a_failed_scene_read_leaves_studio_on_the_scene_it_last_read() {
         assert_eq!(held.get().map(|scene| scene.revision), Some(9));
     });
     owner.cleanup();
+}
+
+// ── Layers that follow their outputs, and changes of target ─────────────
+
+const RIPPLES: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const GLOW: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+fn layer_id(id: &str) -> SceneLayerId {
+    SceneLayerId(id.parse().expect("layer id"))
+}
+
+fn zone_id(id: &str) -> ZoneId {
+    id.parse::<uuid::Uuid>().map(ZoneId).expect("zone id")
+}
+
+fn scoped(ids: &[&str]) -> LayerScope {
+    LayerScope {
+        outputs: ids.iter().map(|id| (*id).to_owned()).collect(),
+    }
+}
+
+fn stack_layer(id: &str, scope: Option<&[&str]>) -> serde_json::Value {
+    let mut layer = serde_json::json!({
+        "id": id, "name": "Layer",
+        "source": { "type": "color_fill", "rgba": [0.1, 0.2, 0.3, 1.0] },
+        "blend": "screen", "opacity": 1.0, "enabled": true,
+    });
+    if let Some(ids) = scope {
+        layer["scope"] = serde_json::json!({ "outputs": ids });
+    }
+    layer
+}
+
+/// The scene after the keyboard moved from Case to Keyboard and took its
+/// Ripples layer along: Case holds the stand and its base layer, Keyboard
+/// holds the keys under a base layer and Ripples. `keyboard_layers` are
+/// Keyboard's layers above its base.
+fn carried_scene(keyboard_layers: &[serde_json::Value]) -> SceneDocument {
+    let base = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let member = |id: &str| serde_json::json!({ "id": id, "device_id": format!("usb:{id}"), "segment": "Main", "name": id });
+    let placement = |id: &str| {
+        serde_json::json!({ "member": id, "position": { "x": 0.5, "y": 0.5 },
+        "size": { "x": 0.1, "y": 0.1 }, "topology": { "type": "strip", "count": 15, "direction": "left_to_right" } })
+    };
+    let mut layers = vec![stack_layer("dddddddd-dddd-4ddd-8ddd-dddddddddddd", None)];
+    layers.extend(keyboard_layers.iter().cloned());
+    serde_json::from_value(serde_json::json!({
+        "id": "33333333-3333-4333-8333-333333333333", "name": "Desk", "kind": "named",
+        "is_default": false, "revision": 9,
+        "zones": [
+            { "id": ZONE_A, "name": "Case", "role": "primary", "enabled": true, "brightness": 1,
+              "members": [member("stand")], "layout": { "placements": [placement("stand")] },
+              "layers": [stack_layer(base, None)] },
+            { "id": ZONE_B, "name": "Keyboard", "role": "custom", "enabled": true, "brightness": 1,
+              "members": [member("keys")], "layout": { "placements": [placement("keys")] },
+              "layers": layers },
+        ],
+    }))
+    .expect("valid scene fixture")
+}
+
+/// The keyboard's move between two zones, as a receipt holds it.
+fn keys_move(from: &str, to: &str) -> MemberEdit {
+    let scene = carried_scene(&[]);
+    let output = hypercolor_ui::api::zone_outputs(&scene.zones[1]).remove(0);
+    let state = |zone: &str| MemberState {
+        zone_id: zone_id(zone),
+        output: output.clone(),
+        index: 0,
+    };
+    MemberEdit {
+        before: Some(state(from)),
+        after: Some(state(to)),
+    }
+}
+
+/// Ripples went from the top of Case's stack to the top of Keyboard's.
+fn ripples_carried() -> LayerMove {
+    LayerMove {
+        layer_id: layer_id(RIPPLES),
+        from: LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        to: LayerSlot {
+            zone_id: zone_id(ZONE_B),
+            index: 1,
+        },
+        scope_before: scoped(&["keys"]),
+        scope_after: scoped(&["keys"]),
+    }
+}
+
+#[test]
+fn undoing_a_move_sends_its_carried_layer_back_to_its_place() {
+    let scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+    let recorded = vec![ripples_carried()];
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+
+    let moves = replay_layer_moves(&scene, &back, &recorded, false)
+        .expect("the scene still matches the receipt");
+
+    assert_eq!(moves, vec![ripples_carried().reversed()]);
+    assert_eq!(moves[0].from.zone_id, zone_id(ZONE_B));
+    assert_eq!(
+        moves[0].to,
+        LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        "the layer returns to the stack position it left"
+    );
+}
+
+#[test]
+fn redoing_a_move_carries_the_same_layer_again() {
+    // Undone: Ripples is back on top of Case, beside the keys.
+    let mut scene = carried_scene(&[]);
+    let ripples: SceneLayer =
+        serde_json::from_value(stack_layer(RIPPLES, Some(&["keys"]))).expect("a layer");
+    scene.zones[0].layers.push(ripples);
+    let keys = scene.zones[1].members.remove(0);
+    scene.zones[0].members.push(keys);
+    let recorded = vec![ripples_carried()];
+    let forward = vec![keys_move(ZONE_A, ZONE_B)];
+
+    assert_eq!(
+        replay_layer_moves(&scene, &forward, &recorded, true),
+        Some(recorded)
+    );
+}
+
+#[test]
+fn a_move_that_carried_nothing_leaves_the_carrying_to_the_daemon() {
+    let scene = carried_scene(&[]);
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+    assert_eq!(replay_layer_moves(&scene, &back, &[], false), None);
+}
+
+#[test]
+fn a_carried_layer_replaced_since_is_left_to_the_daemons_rule() {
+    // A blend change minted a new id for the layer the receipt names.
+    let scene = carried_scene(&[stack_layer(GLOW, Some(&["keys"]))]);
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+    assert_eq!(
+        replay_layer_moves(&scene, &back, &[ripples_carried()], false),
+        None,
+        "a move that names a layer no longer there would be refused"
+    );
+
+    // The same layer with its target changed since is not where the
+    // receipt says either.
+    let scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys", "stand"]))]);
+    assert_eq!(
+        replay_layer_moves(&scene, &back, &[ripples_carried()], false),
+        None
+    );
+}
+
+#[test]
+fn a_layer_added_to_the_moved_output_since_is_not_stranded() {
+    // Ripples is where the receipt left it, and a second layer was put on
+    // the keys after the move. Naming only Ripples would leave that one
+    // behind with no output, so the daemon's rule takes both.
+    let scene = carried_scene(&[
+        stack_layer(RIPPLES, Some(&["keys"])),
+        stack_layer(GLOW, Some(&["keys"])),
+    ]);
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+    assert_eq!(
+        replay_layer_moves(&scene, &back, &[ripples_carried()], false),
+        None
+    );
+}
+
+#[test]
+fn undoing_a_move_widens_the_layer_it_narrowed() {
+    // Glow lit the stand and the keys; the keys left and it narrowed to
+    // the stand, staying in Case at the same place.
+    let mut scene = carried_scene(&[]);
+    let glow: SceneLayer =
+        serde_json::from_value(stack_layer(GLOW, Some(&["stand"]))).expect("a layer");
+    scene.zones[0].layers.push(glow);
+    let narrowed = LayerMove {
+        layer_id: layer_id(GLOW),
+        from: LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        to: LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        scope_before: scoped(&["keys", "stand"]),
+        scope_after: scoped(&["stand"]),
+    };
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+
+    let moves = replay_layer_moves(&scene, &back, &[narrowed], false)
+        .expect("the narrowed layer is where the receipt left it");
+
+    assert_eq!(moves[0].scope_before, scoped(&["stand"]));
+    assert_eq!(moves[0].scope_after, scoped(&["keys", "stand"]));
+}
+
+#[test]
+fn a_move_that_carried_layers_says_how_many() {
+    let changes = vec![keys_move(ZONE_A, ZONE_B)];
+    let keyboard = |_: &str| Some(("K70".to_owned(), 1));
+
+    assert_eq!(
+        carried_announcement(&changes, &[ripples_carried()], &zone_names, &keyboard).as_deref(),
+        Some("Moved K70 to Keyboard with 1 layer")
+    );
+    let mut second = ripples_carried();
+    second.layer_id = layer_id(GLOW);
+    assert_eq!(
+        carried_announcement(
+            &changes,
+            &[ripples_carried(), second],
+            &zone_names,
+            &keyboard
+        )
+        .as_deref(),
+        Some("Moved K70 to Keyboard with 2 layers")
+    );
+}
+
+#[test]
+fn a_move_that_only_narrowed_a_layer_reads_as_any_other() {
+    let changes = vec![keys_move(ZONE_A, ZONE_B)];
+    let mut narrowed = ripples_carried();
+    narrowed.to = narrowed.from;
+    let keyboard = |_: &str| Some(("K70".to_owned(), 1));
+
+    assert_eq!(
+        carried_announcement(&changes, &[narrowed], &zone_names, &keyboard),
+        None
+    );
+    assert_eq!(
+        carried_announcement(&changes, &[], &zone_names, &keyboard),
+        None
+    );
+}
+
+fn scope_edit(layer: SceneLayerId) -> StudioEdit {
+    StudioEdit::LayerScope {
+        zone_id: ZONE_A.to_owned(),
+        layer_id: layer,
+        name: "Ripples".to_owned(),
+        before: None,
+        after: Some(scoped(&["keys"])),
+    }
+}
+
+#[test]
+fn a_change_of_target_is_one_step_that_undoes_and_redoes() {
+    let mut journal = StudioJournal::default();
+    let place = journal.record(scope_edit(layer_id(RIPPLES)));
+
+    let (id, edit) = journal.replayed(false).expect("one step to undo");
+    assert_eq!(id, place);
+    assert_eq!(edit, &scope_edit(layer_id(RIPPLES)));
+
+    // The undo replaced the layer, which minted a new id: the place keeps
+    // the step under it, on the redo side.
+    journal.settle(place, Settled::Unapplied(scope_edit(layer_id(GLOW))));
+    assert!(journal.undo_edit().is_none(), "one step, taken back whole");
+    assert_eq!(journal.redo_edit(), Some(&scope_edit(layer_id(GLOW))));
+
+    journal.settle(place, Settled::Applied(scope_edit(layer_id(RIPPLES))));
+    assert_eq!(journal.undo_edit(), Some(&scope_edit(layer_id(RIPPLES))));
+    assert!(journal.redo_edit().is_none());
+}
+
+#[test]
+fn every_step_that_names_a_layer_follows_it_through_a_replace() {
+    let mut journal = StudioJournal::default();
+    journal.record(StudioEdit::Members {
+        changes: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![ripples_carried()],
+    });
+    journal.record(scope_edit(layer_id(RIPPLES)));
+    let minted = SceneLayerId::new();
+
+    // The layer sits in Keyboard after its move; a blend change there
+    // minted it a new id.
+    journal.remap_layer(ZONE_B, layer_id(RIPPLES), minted);
+
+    assert_eq!(
+        journal.undo_edit(),
+        Some(&scope_edit(layer_id(RIPPLES))),
+        "a layer of the same id in another zone is another layer"
+    );
+    journal.complete(false);
+    match journal.undo_edit() {
+        Some(StudioEdit::Members { layer_moves, .. }) => {
+            assert_eq!(layer_moves[0].layer_id, minted);
+        }
+        other => panic!("expected the move, found {other:?}"),
+    }
+
+    journal.remap_layer(ZONE_A, layer_id(RIPPLES), minted);
+    assert_eq!(journal.redo_edit(), Some(&scope_edit(minted)));
+}
+
+#[test]
+fn a_replace_keeps_its_place_in_the_stack_under_a_new_id() {
+    let layers = |ids: &[&str]| -> Vec<SceneLayer> {
+        ids.iter()
+            .map(|id| serde_json::from_value(stack_layer(id, None)).expect("a layer"))
+            .collect()
+    };
+    let before = layers(&[RIPPLES, GLOW]);
+    let minted = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+    assert_eq!(
+        replaced_layer_id(&before, &layers(&[RIPPLES, minted]), layer_id(GLOW)),
+        Some(layer_id(minted))
+    );
+    // Stacks that do not line up say nothing about which layer is which.
+    assert_eq!(
+        replaced_layer_id(&before, &layers(&[minted]), layer_id(GLOW)),
+        None
+    );
+    assert_eq!(
+        replaced_layer_id(&before, &layers(&[RIPPLES, minted]), SceneLayerId::new()),
+        None
+    );
+}
+
+#[test]
+fn an_undone_target_comes_back_narrower_never_wider() {
+    let members: HashSet<&str> = ["keys", "stand"].into_iter().collect();
+
+    // The whole zone is always there to go back to.
+    assert_eq!(
+        replayable_scope(None, Some(&scoped(&["keys"])), &members),
+        Some(None)
+    );
+    assert_eq!(
+        replayable_scope(Some(&scoped(&["stand", "keys"])), None, &members),
+        Some(Some(scoped(&["keys", "stand"])))
+    );
+    // An output that left since is dropped, unless the layer still holds
+    // it, which a replace is allowed to carry over.
+    assert_eq!(
+        replayable_scope(Some(&scoped(&["keys", "mouse"])), None, &members),
+        Some(Some(scoped(&["keys"])))
+    );
+    assert_eq!(
+        replayable_scope(
+            Some(&scoped(&["keys", "mouse"])),
+            Some(&scoped(&["mouse"])),
+            &members
+        ),
+        Some(Some(scoped(&["keys", "mouse"])))
+    );
+    // Nothing left of it: the step cannot replay, and must not become the
+    // whole zone.
+    assert_eq!(
+        replayable_scope(Some(&scoped(&["mouse"])), None, &members),
+        None
+    );
+}
+
+#[test]
+fn undoing_a_change_of_target_names_the_layer() {
+    let edit = scope_edit(layer_id(RIPPLES));
+    assert_eq!(
+        replay_announcement(&edit, false, &zone_names, &whole_stand).as_deref(),
+        Some("Undid: changed where Ripples applies")
+    );
+    assert_eq!(
+        replay_announcement(&edit, true, &zone_names, &whole_stand).as_deref(),
+        Some("Redid: changed where Ripples applies")
+    );
+}
+
+#[test]
+fn a_recreated_zone_takes_its_carried_layers_records_along() {
+    let mut journal = StudioJournal::default();
+    journal.record(StudioEdit::Members {
+        changes: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![ripples_carried()],
+    });
+    journal.record(scope_edit(layer_id(RIPPLES)));
+    let remade = ZoneId::new();
+
+    journal.remap_zone(ZONE_B, remade);
+
+    journal.complete(false);
+    match journal.undo_edit() {
+        Some(StudioEdit::Members { layer_moves, .. }) => {
+            assert_eq!(layer_moves[0].to.zone_id, remade);
+            assert_eq!(layer_moves[0].from.zone_id, zone_id(ZONE_A));
+        }
+        other => panic!("expected the move, found {other:?}"),
+    }
+    journal.remap_zone(ZONE_A, remade);
+    match journal.redo_edit() {
+        Some(StudioEdit::LayerScope { zone_id, .. }) => assert_eq!(zone_id, &remade.to_string()),
+        other => panic!("expected the change of target, found {other:?}"),
+    }
+}
+
+// ── A zone made for a device, and the layers that came along ────────────
+
+/// The keyboard went into a zone made for it and took Ripples along.
+fn keyboard_zone_created() -> StudioEdit {
+    StudioEdit::ZoneCreated {
+        zone_id: ZONE_B.to_owned(),
+        name: "Keyboard".to_owned(),
+        color: None,
+        filled: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![ripples_carried()],
+    }
+}
+
+#[test]
+fn undoing_a_zones_creation_reverses_the_receipt_of_its_fill() {
+    let StudioEdit::ZoneCreated {
+        filled,
+        layer_moves,
+        ..
+    } = keyboard_zone_created()
+    else {
+        unreachable!("the fixture is a creation");
+    };
+    let scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+
+    let request = members_replay_request(&scene, filled.clone(), &layer_moves, false)
+        .expect("the keys are still in the zone made for them");
+
+    assert_eq!(request.scene_id, scene.id);
+    assert_eq!(request.assignment, None);
+    let back = &request.changes[0];
+    assert_eq!(
+        back.before.as_ref().map(|state| state.zone_id),
+        Some(zone_id(ZONE_B))
+    );
+    assert_eq!(
+        back.after.as_ref().map(|state| state.zone_id),
+        Some(zone_id(ZONE_A))
+    );
+    // The layer goes back to the stack position it left, which the
+    // daemon's own rule would not do: it lands a carried layer on top.
+    assert_eq!(
+        request.layer_moves,
+        Some(vec![ripples_carried().reversed()])
+    );
+
+    // The same rule as any move: a layer replaced since is left to the
+    // daemon rather than named in a request it would refuse.
+    let scene = carried_scene(&[stack_layer(GLOW, Some(&["keys"]))]);
+    let request = members_replay_request(&scene, filled, &layer_moves, false)
+        .expect("the keys are still in the zone made for them");
+    assert_eq!(request.layer_moves, None);
+}
+
+#[test]
+fn redoing_a_zones_creation_carries_the_same_layers_into_the_remade_zone() {
+    let mut journal = StudioJournal::default();
+    journal.record(keyboard_zone_created());
+    journal.complete(false);
+    let remade = ZoneId::new();
+
+    // The redo made the zone again under a new id.
+    journal.remap_zone(ZONE_B, remade);
+
+    match journal.redo_edit() {
+        Some(StudioEdit::ZoneCreated {
+            zone_id: made,
+            filled,
+            layer_moves,
+            ..
+        }) => {
+            assert_eq!(made, &remade.to_string());
+            assert_eq!(
+                filled[0].after.as_ref().map(|state| state.zone_id),
+                Some(remade)
+            );
+            assert_eq!(layer_moves[0].to.zone_id, remade);
+            assert_eq!(layer_moves[0].from.zone_id, zone_id(ZONE_A));
+        }
+        other => panic!("expected the creation, found {other:?}"),
+    }
+}
+
+// ── A layer's id through replaces made in another zone ──────────────────
+
+fn scope_step(zone: &str, layer: SceneLayerId) -> StudioEdit {
+    StudioEdit::LayerScope {
+        zone_id: zone.to_owned(),
+        layer_id: layer,
+        name: "Ripples".to_owned(),
+        before: None,
+        after: Some(scoped(&["keys"])),
+    }
+}
+
+fn carried_by(layer: SceneLayerId) -> StudioEdit {
+    StudioEdit::Members {
+        changes: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![LayerMove {
+            layer_id: layer,
+            ..ripples_carried()
+        }],
+    }
+}
+
+fn scope_step_layer(edit: Option<&StudioEdit>) -> (String, SceneLayerId) {
+    match edit {
+        Some(StudioEdit::LayerScope {
+            zone_id, layer_id, ..
+        }) => (zone_id.clone(), *layer_id),
+        other => panic!("expected a change of target, found {other:?}"),
+    }
+}
+
+fn carried_layer(edit: Option<&StudioEdit>) -> SceneLayerId {
+    match edit {
+        Some(StudioEdit::Members { layer_moves, .. }) => layer_moves[0].layer_id,
+        other => panic!("expected the move, found {other:?}"),
+    }
+}
+
+#[test]
+fn a_change_of_target_follows_its_layer_into_the_zone_it_was_carried_to() {
+    let [first, second, third, fourth] = [(); 4].map(|()| SceneLayerId::new());
+    let mut journal = StudioJournal::default();
+
+    // Ripples is limited to the keys in Case, then the keys move to
+    // Keyboard and take it along.
+    let retargeted_in_case = journal.record(scope_step(ZONE_A, first));
+    let moved = journal.record(carried_by(first));
+
+    // Its target changes again, in Keyboard: the replace mints a new id
+    // there, and the step recorded in Case names the same layer.
+    journal.remap_layer(ZONE_B, first, second);
+    let retargeted_in_keyboard = journal.record(scope_step(ZONE_B, second));
+    assert_eq!(carried_layer(journal.edit(moved)), second);
+    assert_eq!(
+        scope_step_layer(journal.edit(retargeted_in_case)),
+        (ZONE_A.to_owned(), second),
+        "the step keeps the zone it was made in and follows the layer's id"
+    );
+
+    // Undo the second change of target: another replace in Keyboard.
+    journal.remap_layer(ZONE_B, second, third);
+    journal.settle(
+        retargeted_in_keyboard,
+        Settled::Unapplied(scope_step(ZONE_B, third)),
+    );
+    assert_eq!(scope_step_layer(journal.edit(retargeted_in_case)).1, third);
+
+    // Undo the move: the layer is back in Case under the same id.
+    journal.settle(moved, Settled::Unapplied(carried_by(third)));
+    assert_eq!(
+        scope_step_layer(journal.undo_edit()),
+        (ZONE_A.to_owned(), third),
+        "the first change of target can still find its layer to undo"
+    );
+
+    // Undo the first change of target: a replace in Case. The steps on
+    // the redo side name the layer where they will find it once redone.
+    journal.remap_layer(ZONE_A, third, fourth);
+    journal.settle(
+        retargeted_in_case,
+        Settled::Unapplied(scope_step(ZONE_A, fourth)),
+    );
+    assert_eq!(carried_layer(journal.edit(moved)), fourth);
+    assert_eq!(
+        scope_step_layer(journal.edit(retargeted_in_keyboard)),
+        (ZONE_B.to_owned(), fourth)
+    );
+}
+
+#[test]
+fn a_replace_leaves_a_layer_of_the_same_id_in_another_zone_alone() {
+    // Layer ids are unique within a zone, not across a scene: Case and
+    // Keyboard each hold a layer with this id, and neither ever moved.
+    let shared = layer_id(RIPPLES);
+    let minted = SceneLayerId::new();
+    let mut journal = StudioJournal::default();
+    let in_case = journal.record(scope_step(ZONE_A, shared));
+    let in_keyboard = journal.record(scope_step(ZONE_B, shared));
+
+    journal.remap_layer(ZONE_B, shared, minted);
+
+    assert_eq!(scope_step_layer(journal.edit(in_case)).1, shared);
+    assert_eq!(scope_step_layer(journal.edit(in_keyboard)).1, minted);
+}
+
+#[test]
+fn a_layer_carried_into_a_zone_made_for_it_keeps_its_earlier_steps() {
+    let [first, second] = [(); 2].map(|()| SceneLayerId::new());
+    let mut journal = StudioJournal::default();
+    let retargeted = journal.record(scope_step(ZONE_A, first));
+    let made = journal.record(StudioEdit::ZoneCreated {
+        zone_id: ZONE_B.to_owned(),
+        name: "Keyboard".to_owned(),
+        color: None,
+        filled: vec![keys_move(ZONE_A, ZONE_B)],
+        layer_moves: vec![LayerMove {
+            layer_id: first,
+            ..ripples_carried()
+        }],
+    });
+
+    journal.remap_layer(ZONE_B, first, second);
+
+    assert_eq!(scope_step_layer(journal.edit(retargeted)).1, second);
+    match journal.edit(made) {
+        Some(StudioEdit::ZoneCreated { layer_moves, .. }) => {
+            assert_eq!(layer_moves[0].layer_id, second);
+        }
+        other => panic!("expected the creation, found {other:?}"),
+    }
+}
+
+// ── A replay the scene can no longer take ───────────────────────────────
+
+#[test]
+fn a_destination_slot_that_is_gone_leaves_the_carrying_to_the_daemon() {
+    // The keys went from Case to Keyboard and took Ripples along, from the
+    // slot above Case's base layer. Case's base layer was deleted since,
+    // so the stack Ripples goes back to is empty and has no slot 1.
+    let mut scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+    scene.zones[0].layers.clear();
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+
+    assert_eq!(
+        replay_layer_moves(&scene, &back, &[ripples_carried()], false),
+        None,
+        "a move into a slot the stack no longer has would be refused"
+    );
+
+    // With the base layer still there the slot exists, and the receipt is
+    // replayed as it is.
+    let scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+    assert!(replay_layer_moves(&scene, &back, &[ripples_carried()], false).is_some());
+}
+
+#[test]
+fn a_destination_that_holds_the_layers_id_already_is_left_to_the_daemon() {
+    // Ids are unique within a zone only, and Case has since gained a layer
+    // with the id Ripples carries.
+    let mut scene = carried_scene(&[stack_layer(RIPPLES, Some(&["keys"]))]);
+    let twin: SceneLayer = serde_json::from_value(stack_layer(RIPPLES, None)).expect("a layer");
+    scene.zones[0].layers.push(twin);
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+
+    assert_eq!(
+        replay_layer_moves(&scene, &back, &[ripples_carried()], false),
+        None
+    );
+}
+
+#[test]
+fn a_scope_the_destination_cannot_hold_is_left_to_the_daemon() {
+    // Glow lit the stand and the keys and narrowed to the stand when the
+    // keys left. Its undo widens it to the keys again, which only fits
+    // while the same undo brings the keys back to Case.
+    let mut scene = carried_scene(&[]);
+    let glow: SceneLayer =
+        serde_json::from_value(stack_layer(GLOW, Some(&["stand"]))).expect("a layer");
+    scene.zones[0].layers.push(glow);
+    let narrowed = LayerMove {
+        layer_id: layer_id(GLOW),
+        from: LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        to: LayerSlot {
+            zone_id: zone_id(ZONE_A),
+            index: 1,
+        },
+        scope_before: scoped(&["keys", "stand"]),
+        scope_after: scoped(&["stand"]),
+    };
+
+    let back = vec![keys_move(ZONE_B, ZONE_A)];
+    assert!(replay_layer_moves(&scene, &back, std::slice::from_ref(&narrowed), false).is_some());
+
+    // The same receipt beside changes that bring no keys back would name
+    // an output Case does not hold.
+    assert_eq!(replay_layer_moves(&scene, &[], &[narrowed], false), None);
+}
+
+#[test]
+fn a_refusal_of_the_request_itself_drops_the_step_and_anything_else_keeps_it() {
+    let refused = |status: u16| ApiError::Http {
+        status,
+        code: None,
+        message: Some("no".to_owned()),
+        details: None,
+    };
+    // The daemon read the step and will not apply it to the scene as it
+    // stands. Asking again gets the same answer, so the step goes.
+    for status in [400, 404, 409, 422] {
+        assert!(refuses_step(&refused(status)), "HTTP {status}");
+    }
+    // A stale fence, a daemon in trouble, a lapsed session, or no daemon
+    // at all says nothing about the step: it stays for another try.
+    for status in [401, 403, 408, 412, 429, 500, 503] {
+        assert!(!refuses_step(&refused(status)), "HTTP {status}");
+    }
+    assert!(!refuses_step(&ApiError::Network("offline".to_owned())));
+    assert!(!refuses_step(&ApiError::Parse("garbled".to_owned())));
+
+    assert_eq!(
+        dropped_step_notice(false, "layer move index 1 is out of range (HTTP 422)"),
+        "This change can no longer be undone, so it was removed from history: layer move index 1 is out of range (HTTP 422)"
+    );
+    assert_eq!(
+        dropped_step_notice(true, "the zone is gone"),
+        "This change can no longer be redone, so it was removed from history: the zone is gone"
+    );
 }

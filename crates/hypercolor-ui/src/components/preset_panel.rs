@@ -104,6 +104,7 @@ pub fn PresetToolbar(
     let (mode, set_mode) = signal(ToolbarMode::Idle);
     let fetch_generation = StoredValue::new(0_u64);
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
+    let capabilities = use_context::<crate::app::CapabilitiesContext>();
     let active_preset_modified = Signal::derive(move || {
         let Some(selected_id) = selected_id.get() else {
             return false;
@@ -205,8 +206,10 @@ pub fn PresetToolbar(
             // "No preset" selected — reset controls to defaults
             set_selected_id.set(None);
             let on_applied = on_preset_applied;
+            let scope =
+                capabilities.map_or(api::ScopeField::Omitted, |caps| caps.layer_scope_field());
             leptos::task::spawn_local(async move {
-                match api::reset_effect_controls(&observed_target, &fence).await {
+                match api::reset_effect_controls(&observed_target, &fence, scope).await {
                     Ok(target) => on_applied.run((observed_target, target)),
                     Err(error) => {
                         set_selected_id.set(previous_selection);

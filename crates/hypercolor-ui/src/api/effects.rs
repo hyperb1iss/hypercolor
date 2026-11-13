@@ -238,10 +238,12 @@ pub async fn stop_effect() -> ApiResult<()> {
     client::post_json_discard("/api/v1/scene/clear", &ClearSceneRequest::default()).await
 }
 
-/// Reset one observed effect layer to its defaults.
+/// Reset one observed effect layer to its defaults. `scope` says whether
+/// the daemon is one the replace may name the layer's scope to.
 pub async fn reset_effect_controls(
     target: &EffectLayerTarget,
     fence: &client::Fence,
+    scope: super::ScopeField,
 ) -> ApiResult<EffectLayerTarget> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     if client::Fence::of(&scene) != *fence {
@@ -295,15 +297,7 @@ pub async fn reset_effect_controls(
                 control_bindings: control_bindings.clone(),
                 preset_id: None,
             },
-            name: layer.name.clone(),
-            blend: Some(layer.blend),
-            opacity: Some(layer.opacity),
-            transform: Some(layer.transform),
-            adjust: Some(layer.adjust),
-            bindings: Some(layer.bindings.clone()),
-            enabled: Some(layer.enabled),
-            // Left unsaid, so the daemon keeps the layer's scope.
-            scope: None,
+            ..super::update_request_from_layer(layer, scope)
         }),
         Some(fence),
     )
@@ -338,7 +332,7 @@ fn effect_target(scene: &SceneDocument) -> Option<EffectTarget> {
 fn effect_target_in_zone(
     zone: &hypercolor_types::api::scene::ZoneResource,
 ) -> Option<EffectTarget> {
-    zone.layers.iter().rev().find_map(|layer| {
+    super::zone_effect_layer(&zone.layers).and_then(|layer| {
         let LayerSource::Effect {
             effect_id: current_effect_id,
             controls,
@@ -366,21 +360,14 @@ fn effect_target_from_apply(
     effect_target_from_zone(effect_id, &response.zone)
 }
 
-fn effect_target_from_zone(effect_id: &str, zone: &ZoneResource) -> ApiResult<EffectLayerTarget> {
-    let layer = zone
-        .layers
-        .iter()
-        .rev()
-        .find(|layer| {
-            matches!(
-                &layer.source,
-                LayerSource::Effect { effect_id: current, .. }
-                    if current.to_string() == effect_id
-            )
-        })
-        .ok_or_else(|| {
-            ApiError::Parse("Effect apply response did not contain the created layer".to_owned())
-        })?;
+/// The layer of `zone` a write answered with it left playing `effect_id`.
+pub fn effect_target_from_zone(
+    effect_id: &str,
+    zone: &ZoneResource,
+) -> ApiResult<EffectLayerTarget> {
+    let layer = super::zone_layer_playing(&zone.layers, effect_id).ok_or_else(|| {
+        ApiError::Parse("Effect apply response did not contain the created layer".to_owned())
+    })?;
     Ok(EffectLayerTarget {
         effect_id: effect_id.to_owned(),
         zone_id: zone.id.to_string(),

@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::ControlDefinition;
-use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
@@ -88,21 +87,14 @@ pub fn ZoneScopedControls(
         let effect_id = state.effect_id?;
         zones_ctx.active_scene.with(|scene| {
             let scene = scene.as_ref()?;
-            let zone = scene
-                .zones
-                .iter()
-                .find(|zone| zone.id.to_string() == state.zone.id)?;
-            let layer_id = zone
-                .layers
-                .iter()
-                .rev()
-                .find_map(|layer| match &layer.source {
-                    LayerSource::Effect {
-                        effect_id: current, ..
-                    } if current.to_string() == effect_id => Some(layer.id.to_string()),
-                    _ => None,
-                })?;
-            Some((scene.id.to_string(), state.zone.id, layer_id, effect_id))
+            let (target, _) =
+                crate::zones::effect_target_in_scene(scene, &effect_id, Some(&state.zone.id))?;
+            Some((
+                scene.id.to_string(),
+                state.zone.id,
+                target.layer_id,
+                effect_id,
+            ))
         })
     });
 

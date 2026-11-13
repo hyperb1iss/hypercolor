@@ -9,12 +9,13 @@ use std::collections::HashMap;
 use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{
-    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerScope, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use hypercolor_types::control::ControlValue;
+use hypercolor_ui::api::{ScopeField, scope_request, update_request_from_layer};
 use hypercolor_ui::components::layer_panel::row::{layer_title, source_meta};
 use hypercolor_ui::components::layer_panel::source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, add_layer_request,
@@ -78,7 +79,7 @@ fn layer_replacement_uses_the_canonical_creation_shape() {
         scope: None,
     };
 
-    let request = hypercolor_ui::api::update_request_from_layer(&layer);
+    let request = update_request_from_layer(&layer, ScopeField::Stated);
     let wire = serde_json::to_value(request).expect("replacement request should serialize");
 
     assert_eq!(wire["name"], "Wash");
@@ -86,6 +87,88 @@ fn layer_replacement_uses_the_canonical_creation_shape() {
     assert!(wire.get("id").is_none());
     assert_eq!(wire["bindings"], serde_json::json!([]));
     assert_eq!(wire["enabled"], false);
+}
+
+fn scoped_layer(scope: Option<&[&str]>) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: Some("Ripples".to_owned()),
+        source: LayerSource::ColorFill {
+            rgba: [0.2, 0.4, 0.6, 1.0],
+        },
+        blend: BlendMode::Screen,
+        opacity: 0.75,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+        scope: scope.map(scope_of),
+    }
+}
+
+fn scope_of(ids: &[&str]) -> LayerScope {
+    LayerScope {
+        outputs: ids.iter().map(|id| (*id).to_owned()).collect(),
+    }
+}
+
+#[test]
+fn a_replace_restates_the_scope_to_a_daemon_that_limits_layers() {
+    let stated = ScopeField::for_daemon(true);
+    let scoped = scoped_layer(Some(&["k70"]));
+    let wire = serde_json::to_value(update_request_from_layer(&scoped, stated))
+        .expect("replacement request should serialize");
+    assert_eq!(wire["scope"], serde_json::json!({ "outputs": ["k70"] }));
+
+    // A whole-zone layer says so, rather than leaving the key out for the
+    // daemon to read as "keep whatever scope you hold".
+    let whole = scoped_layer(None);
+    let wire = serde_json::to_value(update_request_from_layer(&whole, stated))
+        .expect("replacement request should serialize");
+    assert!(wire.as_object().expect("an object").contains_key("scope"));
+    assert_eq!(wire["scope"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_replace_names_no_scope_to_a_daemon_that_cannot_limit_layers() {
+    // That daemon denies a field it does not know, so even `scope: null`
+    // would have the whole replace refused.
+    let omitted = ScopeField::for_daemon(false);
+    assert_eq!(omitted, ScopeField::Omitted);
+    for layer in [scoped_layer(None), scoped_layer(Some(&["k70"]))] {
+        let request = update_request_from_layer(&layer, omitted);
+        assert_eq!(request.scope, None);
+        let wire = serde_json::to_value(request).expect("replacement request should serialize");
+        assert!(!wire.as_object().expect("an object").contains_key("scope"));
+        assert_eq!(wire["opacity"], 0.75);
+    }
+}
+
+#[test]
+fn a_blend_or_opacity_change_carries_the_scope_it_found() {
+    let mut scoped = scoped_layer(Some(&["atx", "gpu"]));
+    scoped.blend = BlendMode::Add;
+    scoped.opacity = 0.4;
+
+    let request = update_request_from_layer(&scoped, ScopeField::Stated);
+
+    assert_eq!(request.blend, Some(BlendMode::Add));
+    assert_eq!(request.opacity, Some(0.4));
+    assert_eq!(request.scope, Some(Some(scope_of(&["atx", "gpu"]))));
+}
+
+#[test]
+fn a_target_change_sets_or_clears_the_scope_and_keeps_the_rest() {
+    let scoped = scoped_layer(Some(&["k70"]));
+
+    let widened = scope_request(&scoped, None);
+    assert_eq!(widened.scope, Some(None));
+    assert_eq!(widened.opacity, Some(0.75));
+    assert_eq!(widened.name.as_deref(), Some("Ripples"));
+
+    let moved = scope_request(&scoped, Some(scope_of(&["basilisk"])));
+    assert_eq!(moved.scope, Some(Some(scope_of(&["basilisk"]))));
+    assert_eq!(moved.source, scoped.source);
 }
 
 #[test]

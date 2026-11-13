@@ -14,6 +14,7 @@ mod drag;
 pub mod drag_model;
 mod face_composition;
 pub mod history;
+pub(crate) mod layer_target;
 pub(crate) mod move_menu;
 mod moves;
 mod offline_device_card;
@@ -170,6 +171,9 @@ pub struct StudioContext {
     pub rig_layout: Signal<Option<hypercolor_types::spatial::SpatialLayout>>,
     /// Re-fetch [`Self::rig_layout`] after a write that changes it.
     pub refresh_rig_layout: Callback<()>,
+    /// What layers apply to: the open zone's outputs, the target the next
+    /// layer takes, and the editor and canvas pick that choose one.
+    pub(crate) targets: layer_target::LayerTargets,
 }
 
 /// A local open/closed signal whose truth lives in a shared keyed slot,
@@ -595,6 +599,11 @@ fn StudioWorkspace() -> impl IntoView {
         pointer_output_id,
         rig_layout,
         refresh_rig_layout,
+        targets: layer_target::LayerTargets::new(
+            active_scene,
+            selected_surface_id,
+            selected_output_ids,
+        ),
     };
     provide_context(studio);
     let root_ref = NodeRef::<leptos::html::Div>::new();
@@ -748,6 +757,7 @@ fn StudioWorkspace() -> impl IntoView {
                         on_layers_mutated=on_layers_mutated
                     />
                     <UndoNoticeHost />
+                    <layer_target::TargetEditorHost />
                 </div>
 
                 <Show when=move || pane_drawer.get()>

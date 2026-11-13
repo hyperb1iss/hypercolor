@@ -32,6 +32,7 @@ fn state(layer_count: usize, effect_id: Option<&str>, labels: &[&str]) -> ZoneEf
         preset_id: None,
         revision: 1,
         layer_labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+        featured_layer: None,
     }
 }
 
@@ -101,4 +102,62 @@ fn a_layer_label_prefers_its_name_then_its_effect_then_its_kind() {
         rgba: [1.0, 0.0, 0.5, 1.0],
     };
     assert_eq!(layer_label(&fill, None), "Color");
+}
+
+#[test]
+fn a_zone_with_limited_layers_is_captioned_by_its_whole_zone_layer() {
+    use hypercolor_types::layer::LayerScope;
+    use hypercolor_ui::zones::zone_layer_labels;
+
+    let limited = |name: &str, output: &str| {
+        let mut layer = effect_layer(Some(name));
+        layer.scope = Some(LayerScope {
+            outputs: vec![output.to_owned()],
+        });
+        layer
+    };
+    let mut paused = limited("Sparks", "strip");
+    paused.enabled = false;
+    let zone: hypercolor_ui::api::ZoneResource = serde_json::from_value(serde_json::json!({
+        "id": "11111111-1111-4111-8111-111111111111", "name": "Main", "role": "primary",
+        "enabled": true, "brightness": 1, "members": [], "layout": { "placements": [] },
+        "layers": [],
+    }))
+    .expect("valid zone fixture");
+    let zone = hypercolor_ui::api::ZoneResource {
+        layers: vec![
+            effect_layer(Some("Rainbow")),
+            limited("Gradient", "keys"),
+            paused,
+            limited("Glow", "mouse"),
+            limited("Ripples", "fans"),
+        ],
+        ..zone
+    };
+
+    let (labels, featured) = zone_layer_labels(&zone, |_| None);
+    // A paused layer shows nothing, so it is neither named nor counted.
+    assert_eq!(labels, ["Rainbow", "Gradient", "Glow", "Ripples"]);
+    assert_eq!(featured, Some(0));
+
+    let mut captioned = state(
+        5,
+        Some("rainbow"),
+        &["Rainbow", "Gradient", "Glow", "Ripples"],
+    );
+    captioned.featured_layer = featured;
+    assert_eq!(
+        captioned.stack_label().as_deref(),
+        Some("Rainbow +3"),
+        "the zone's effect, not the layer on one device above it"
+    );
+
+    // With nothing covering the whole zone, the top layer stands for it.
+    let zone = hypercolor_ui::api::ZoneResource {
+        layers: vec![limited("Gradient", "keys"), limited("Glow", "mouse")],
+        ..zone
+    };
+    let (labels, featured) = zone_layer_labels(&zone, |_| None);
+    assert_eq!(labels, ["Gradient", "Glow"]);
+    assert_eq!(featured, Some(1));
 }

@@ -35,6 +35,7 @@ use super::device_assignment::ZoneDeviceRow;
 use super::device_pane::reveal_pane_zone;
 use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
+use super::layer_target::{add_layer_to_outputs, offers_layer};
 use super::move_menu::{MoveMenuAnchor, is_menu_key};
 use super::moves::{light_segment_count, perform, zone_name_in};
 use super::pane_model::{elsewhere_label, fold_label, output_list_folds, selects_part_of};
@@ -550,14 +551,17 @@ pub fn StudioDeviceCard(
                                 {device_name}
                             </span>
                         </div>
-                        <div class="flex items-center gap-1.5 font-mono text-[10px] text-fg-tertiary/70">
-                            <span class="tabular-nums">{leds}</span>
+                        // The count and its unit stay on one line, and so does
+                        // the transport: a long driver label is what gives
+                        // way, by truncating.
+                        <div class="flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-fg-tertiary/70">
+                            <span class="shrink-0 whitespace-nowrap tabular-nums">{leds}</span>
                             {transport
                                 .map(|t| {
                                     view! {
                                         <>
-                                            <span class="text-fg-tertiary/30">"\u{b7}"</span>
-                                            <span>{t}</span>
+                                            <span class="shrink-0 text-fg-tertiary/30">"\u{b7}"</span>
+                                            <span class="shrink-0 whitespace-nowrap">{t}</span>
                                         </>
                                     }
                                 })}
@@ -565,8 +569,8 @@ pub fn StudioDeviceCard(
                                 .map(|label| {
                                     view! {
                                         <>
-                                            <span class="text-fg-tertiary/30">"\u{b7}"</span>
-                                            <span class="truncate uppercase tracking-wide">
+                                            <span class="shrink-0 text-fg-tertiary/30">"\u{b7}"</span>
+                                            <span class="min-w-0 truncate uppercase tracking-wide">
                                                 {label}
                                             </span>
                                         </>
@@ -912,6 +916,35 @@ fn card_ops_menu(
                 <Icon icon=LuZap width="12px" height="12px" />
                 <span>"Identify"</span>
             </button>
+            // A layer for this device alone: its outputs in this zone become
+            // the new layer's target.
+            <Show when=move || {
+                scopes.with_value(|scopes| {
+                    scopes.first().is_some_and(|(_, whole)| match &whole.origin {
+                        Origin::Zone(zone_id) => offers_layer(studio, zone_id, &whole.outputs),
+                        Origin::Unassigned => false,
+                    })
+                })
+            }>
+                <button
+                    type="button"
+                    class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
+                    on:click=move |ev: web_sys::MouseEvent| {
+                        ev.stop_propagation();
+                        ops_open.set(false);
+                        scopes.with_value(|scopes| {
+                            if let Some((_, whole)) = scopes.first()
+                                && let Origin::Zone(zone_id) = &whole.origin
+                            {
+                                add_layer_to_outputs(studio, zone_id, &whole.outputs);
+                            }
+                        });
+                    }
+                >
+                    <Icon icon=LuLayers width="12px" height="12px" />
+                    <span>"Add layer to this device"</span>
+                </button>
+            </Show>
             <button
                 type="button"
                 class=format!("{row} text-fg-secondary hover:bg-surface-hover/40 disabled:opacity-40")
@@ -1115,24 +1148,30 @@ fn component_row_view(
                     return;
                 };
                 ev.prevent_default();
-                drag.menu.set(Some(MoveMenuAnchor::at(
-                    f64::from(ev.client_x()),
-                    f64::from(ev.client_y()),
-                    scopes.get_value(),
-                    index,
-                    focus.get_value(),
-                )));
+                drag.menu.set(Some(
+                    MoveMenuAnchor::at(
+                        f64::from(ev.client_x()),
+                        f64::from(ev.client_y()),
+                        scopes.get_value(),
+                        index,
+                        focus.get_value(),
+                    )
+                    .with_layer(),
+                ));
             }
             on:keydown=move |ev: web_sys::KeyboardEvent| {
                 if is_menu_key(&ev) {
                     ev.prevent_default();
                     if let (Some(index), Some(element)) = (scope, listener_element(&ev)) {
-                        drag.menu.set(Some(MoveMenuAnchor::below(
-                            &element,
-                            scopes.get_value(),
-                            index,
-                            focus.get_value(),
-                        )));
+                        drag.menu.set(Some(
+                            MoveMenuAnchor::below(
+                                &element,
+                                scopes.get_value(),
+                                index,
+                                focus.get_value(),
+                            )
+                            .with_layer(),
+                        ));
                     }
                     return;
                 }

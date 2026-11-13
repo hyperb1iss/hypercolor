@@ -257,3 +257,142 @@ fn selected_screen_device_id_resolves_only_bound_display_zones() {
     );
     assert_eq!(selected_screen_device_id(&zones, "missing"), None);
 }
+
+// ── The layer a zone is known by ─────────────────────────────────────────
+
+fn effect_layer(name: &str, scope: Option<&[&str]>) -> hypercolor_types::layer::SceneLayer {
+    let mut layer = hypercolor_types::layer::SceneLayer::from_effect(
+        hypercolor_types::layer::SceneLayerId::new(),
+        hypercolor_types::effect::EffectId::new(uuid::Uuid::new_v4()),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+        None,
+    );
+    layer.name = Some(name.to_owned());
+    layer.scope = scope.map(|ids| hypercolor_types::layer::LayerScope {
+        outputs: ids.iter().map(|id| (*id).to_owned()).collect(),
+    });
+    layer
+}
+
+#[test]
+fn a_zone_is_known_by_its_whole_zone_layer_not_one_on_a_single_device() {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    zone.layers = vec![
+        effect_layer("Bubbles", None),
+        effect_layer("Ripples", Some(&["keys"])),
+    ];
+
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer.as_deref(), Some("Bubbles"));
+
+    let bubbles = zone.layers[0].clone();
+    let known = hypercolor_ui::api::zone_effect(&zone).expect("the zone plays an effect");
+    match &bubbles.source {
+        hypercolor_types::layer::LayerSource::Effect { effect_id, .. } => {
+            assert_eq!(known.effect_id, *effect_id);
+        }
+        other => panic!("expected an effect layer, found {other:?}"),
+    }
+}
+
+#[test]
+fn stacked_whole_zone_layers_are_still_known_by_the_top_one() {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    zone.layers = vec![effect_layer("Bubbles", None), effect_layer("Haze", None)];
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer.as_deref(), Some("Haze"));
+}
+
+#[test]
+fn a_zone_with_only_limited_layers_is_known_by_the_top_of_them() {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    zone.layers = vec![
+        effect_layer("Ripples", Some(&["keys"])),
+        effect_layer("Glow", Some(&["mouse"])),
+    ];
+    let surfaces = surfaces_from_zones(std::slice::from_ref(&zone));
+    assert_eq!(surfaces[0].top_layer.as_deref(), Some("Glow"));
+    assert!(hypercolor_ui::api::zone_effect(&zone).is_some());
+}
+
+/// A zone whose base effect also plays, as a second layer, on the keys
+/// alone: the same effect twice, the limited copy on top.
+fn zone_playing_one_effect_twice() -> (ZoneResource, SceneLayer, SceneLayer) {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    let base = effect_layer("Aurora", None);
+    let mut copy = effect_layer("Aurora on the keys", Some(&["keys"]));
+    copy.source = base.source.clone();
+    zone.layers = vec![base.clone(), copy.clone()];
+    (zone, base, copy)
+}
+
+fn effect_id_of(layer: &SceneLayer) -> String {
+    match &layer.source {
+        hypercolor_types::layer::LayerSource::Effect { effect_id, .. } => effect_id.to_string(),
+        other => panic!("expected an effect layer, found {other:?}"),
+    }
+}
+
+fn scene_of(zone: ZoneResource) -> hypercolor_ui::api::SceneDocument {
+    let mut scene: hypercolor_ui::api::SceneDocument = serde_json::from_value(serde_json::json!({
+        "id": "33333333-3333-4333-8333-333333333333", "name": "Desk", "kind": "named",
+        "is_default": false, "revision": 4, "zones": [],
+    }))
+    .expect("valid scene fixture");
+    scene.zones = vec![zone];
+    scene
+}
+
+#[test]
+fn a_write_to_the_zones_effect_addresses_its_whole_zone_layer() {
+    // A preset reset, a control patch, or a preset apply to "the zone's
+    // effect" must land on the layer the zone is known by, not on a copy
+    // of the same effect limited to one device above it.
+    let (zone, base, copy) = zone_playing_one_effect_twice();
+    let effect_id = effect_id_of(&base);
+    let zone_id = zone.id.to_string();
+    let scene = scene_of(zone);
+
+    let (target, fence) =
+        hypercolor_ui::zones::effect_target_in_scene(&scene, &effect_id, Some(&zone_id))
+            .expect("the zone plays the effect");
+    assert_eq!(target.layer_id, base.id.to_string());
+    assert_ne!(target.layer_id, copy.id.to_string());
+    assert_eq!(fence.revision, 4);
+
+    // The primary zone resolves the same way when no zone is named.
+    let (target, _) = hypercolor_ui::zones::effect_target_in_scene(&scene, &effect_id, None)
+        .expect("the primary zone plays the effect");
+    assert_eq!(target.layer_id, base.id.to_string());
+}
+
+#[test]
+fn the_layer_a_write_answers_with_is_the_whole_zone_one() {
+    // An apply or a reset replaces the zone's whole-zone layer, so the
+    // layer its answer names is that one, minted again under the copy.
+    let (zone, base, _) = zone_playing_one_effect_twice();
+    let target = hypercolor_ui::api::effect_target_from_zone(&effect_id_of(&base), &zone)
+        .expect("the answer holds the layer");
+    assert_eq!(target.layer_id, base.id.to_string());
+}
+
+#[test]
+fn an_effect_only_limited_layers_play_resolves_to_the_top_of_them() {
+    let mut zone = zone_resource("Main", ZoneRole::Primary, None);
+    let keys = effect_layer("Ripples", Some(&["keys"]));
+    let mut mouse = effect_layer("Ripples", Some(&["mouse"]));
+    mouse.source = keys.source.clone();
+    zone.layers = vec![effect_layer("Base", None), keys.clone(), mouse.clone()];
+    let zone_id = zone.id.to_string();
+    let scene = scene_of(zone);
+
+    let (target, _) =
+        hypercolor_ui::zones::effect_target_in_scene(&scene, &effect_id_of(&keys), Some(&zone_id))
+            .expect("the zone plays the effect");
+    assert_eq!(target.layer_id, mouse.id.to_string());
+
+    // An effect no layer plays resolves to nothing.
+    let other = hypercolor_types::effect::EffectId::new(uuid::Uuid::new_v4()).to_string();
+    assert!(hypercolor_ui::zones::effect_target_in_scene(&scene, &other, Some(&zone_id)).is_none());
+}

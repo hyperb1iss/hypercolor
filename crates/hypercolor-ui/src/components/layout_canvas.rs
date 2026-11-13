@@ -27,7 +27,9 @@ use crate::api;
 use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::compound_selection::{self, CompoundDepth};
+use crate::icons::LuCheck;
 use crate::render_canvas;
+use leptos_icons::Icon;
 use leptos_use_element_size::{UseElementSizeReturn, use_element_size};
 
 use crate::layout_geometry::{self, ResizeHandle};
@@ -128,11 +130,16 @@ pub fn LayoutCanvas() -> impl IntoView {
     let keep_aspect_ratio = editor.keep_aspect_ratio;
     let hidden_zones = editor.hidden_zones;
     let hovered_zone_ids = editor.hovered_zone_ids;
+    let layer_focus = editor.layer_focus;
+    let picking = editor.picking;
+    let pick_blocked = editor.pick_blocked;
+    let pick_mode = Memo::new(move |_| picking.with(Option::is_some));
     // When anything is focused (selected or hovered), the rest of the canvas
     // recedes so a dense layout reads clearly around the focus.
     let has_focus = Memo::new(move |_| {
         selected_zone_ids.with(|ids| !ids.is_empty())
             || hovered_zone_ids.with(|ids| !ids.is_empty())
+            || layer_focus.with(|ids| !ids.is_empty())
     });
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_compound_depth = editor.set_compound_depth;
@@ -771,6 +778,24 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 Memo::new(move |_| hidden_zones.with(|ids| ids.contains(&zid)))
                             };
 
+                            // A layer points at this box: a row or a checklist
+                            // entry under the pointer, or a pick that holds it.
+                            let is_accented = {
+                                let zid = zid.clone();
+                                Memo::new(move |_| {
+                                    picking.with(|picked| match picked {
+                                        Some(picked) => picked.contains(&zid),
+                                        None => layer_focus.with(|ids| ids.contains(&zid)),
+                                    })
+                                })
+                            };
+                            let is_blocked = {
+                                let zid = zid.clone();
+                                Memo::new(move |_| {
+                                    pick_mode.get() && pick_blocked.with(|ids| ids.contains(&zid))
+                                })
+                            };
+
                             let is_interacting = {
                                 let zid = zid.clone();
                                 Memo::new(move |_| interacting_zone_id.with(|active| {
@@ -801,8 +826,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     let room = label_rooms
                                         .with(|rooms| rooms.get(&zid).copied())
                                         .unwrap_or(LabelRoom::Clear);
-                                    let selected = is_selected.get();
-                                    let hovered = is_hovered.get();
+                                    let selected = is_selected.get() && !pick_mode.get();
+                                    let hovered = is_hovered.get() || is_accented.get();
                                     let pinned = hovered
                                         || (selected && (is_primary.get() || selection_size.get() == 1));
                                     labels::label_mode(room, selected || hovered, pinned)
@@ -815,8 +840,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                             view! {
                                 <div
                                     data-zone-id=zid.clone()
+                                    data-picked=move || is_accented.get().to_string()
                                     class=move || if is_interacting.get() {
                                         "absolute rounded-md cursor-move group touch-none"
+                                    } else if pick_mode.get() {
+                                        "absolute rounded-md cursor-pointer group touch-none transition-[border-color,box-shadow,background,opacity,filter] duration-300"
                                     } else {
                                         "absolute rounded-md cursor-move group touch-none transition-[border-color,box-shadow,background,opacity,filter] duration-300"
                                     }
@@ -837,17 +865,26 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 .map(zone_position_style)
                                         }).unwrap_or(zd.position_style);
                                         let hidden = is_hidden.get();
-                                        let selected = is_selected.get();
+                                        let picking_now = pick_mode.get();
+                                        let accented = is_accented.get();
+                                        // A pick has the canvas to itself: the selection
+                                        // stays, but does not draw over what is being picked.
+                                        let selected = is_selected.get() && !picking_now && !accented;
                                         // Selection reads stronger than the rail hover highlight.
-                                        let hovered = is_hovered.get() && !selected;
-                                        let border = if selected {
+                                        let hovered = is_hovered.get() && !selected && !accented;
+                                        let border = if accented {
+                                            "border: 2px solid var(--color-accent)".to_owned()
+                                        } else if selected {
                                             format!("border: 2px solid rgba({}, 0.85)", zd.primary_rgb)
                                         } else if hovered {
                                             format!("border: 2px solid rgba({}, 0.62)", zd.primary_rgb)
                                         } else {
                                             format!("border: 1.5px solid rgba({}, 0.35)", zd.primary_rgb)
                                         };
-                                        let bg = if selected {
+                                        let bg = if accented {
+                                            "background: color-mix(in oklch, var(--color-accent) 14%, transparent)"
+                                                .to_owned()
+                                        } else if selected {
                                             format!(
                                                 "background: linear-gradient(135deg, rgba({}, 0.14), rgba({}, 0.08))",
                                                 zd.primary_rgb, zd.secondary_rgb
@@ -863,7 +900,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 zd.primary_rgb, zd.secondary_rgb
                                             )
                                         };
-                                        let shadow = if selected {
+                                        let shadow = if accented {
+                                            "box-shadow: 0 0 22px color-mix(in oklch, var(--color-accent) 45%, transparent), \
+                                             0 0 6px color-mix(in oklch, var(--color-accent) 60%, transparent)"
+                                                .to_owned()
+                                        } else if selected {
                                             format!(
                                                 "box-shadow: 0 0 28px rgba({}, 0.4), 0 0 8px rgba({}, 0.6), inset 0 1px 0 rgba(255,255,255,0.05)",
                                                 zd.primary_rgb, zd.secondary_rgb
@@ -886,9 +927,18 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let z = stacking_z.get();
                                         // A box not in focus while something else is recedes,
                                         // so a dense canvas reads around the selection/hover.
-                                        let dimmed_by_focus = has_focus.get() && !selected && !hovered;
+                                        let dimmed_by_focus =
+                                            has_focus.get() && !selected && !hovered && !accented;
                                         let visibility = if hidden {
                                             "opacity: 0.08; pointer-events: none; filter: grayscale(1)".to_string()
+                                        } else if is_blocked.get() {
+                                            // Not for picking: out of the way, and it
+                                            // lets a click through to nothing.
+                                            "opacity: 0.16; pointer-events: none".to_string()
+                                        } else if picking_now {
+                                            // Every other box is a candidate, so it
+                                            // stays readable.
+                                            if accented { "opacity: 1" } else { "opacity: 0.62" }.to_string()
                                         } else if dimmed_by_focus {
                                             "opacity: 0.26".to_string()
                                         } else {
@@ -934,6 +984,35 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let target = mouse_norm
                                             .and_then(|point| press_target(point, ev.alt_key(), &depth))
                                             .unwrap_or_else(|| zid_select.clone());
+
+                                        // A pick toggles what a click here would select,
+                                        // a whole device or the one output its depth
+                                        // reaches, and neither selects nor drags.
+                                        if picking.with_untracked(Option::is_some) {
+                                            let ids = layout.with_untracked(|l| {
+                                                l.as_ref().map(|l| compound_selection::resolve_click(l, &target, &depth))
+                                            }).unwrap_or_default();
+                                            let blocked = pick_blocked.get_untracked();
+                                            let ids: Vec<String> = ids
+                                                .into_iter()
+                                                .filter(|id| !blocked.contains(id))
+                                                .collect();
+                                            if !ids.is_empty() {
+                                                picking.update(|picked| {
+                                                    let Some(picked) = picked else {
+                                                        return;
+                                                    };
+                                                    if ids.iter().all(|id| picked.contains(id)) {
+                                                        for id in &ids {
+                                                            picked.remove(id);
+                                                        }
+                                                    } else {
+                                                        picked.extend(ids);
+                                                    }
+                                                });
+                                            }
+                                            return;
+                                        }
                                         primary_zone_id.set(Some(target.clone()));
 
                                         // Compound-aware selection
@@ -1167,7 +1246,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let zid_for_resize = zid.clone();
                                         let zid_resize_nw = zid_resize_nw.clone();
                                         let _ = (&zid_resize_ne, &zid_resize_sw, &zid_resize_se);
-                                        move || is_selected.get().then(|| {
+                                        move || (is_selected.get() && !pick_mode.get()).then(|| {
                                         let zid_resize_nw = zid_resize_nw.clone();
                                         let zid_for_rotation = zid_for_resize.clone();
 
@@ -1330,6 +1409,16 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             />
                                         }
                                     })}
+
+                                    // A picked box says so with more than its color.
+                                    <Show when=move || pick_mode.get() && is_accented.get()>
+                                        <span
+                                            class="pointer-events-none absolute -right-2 -top-2 z-10 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-white"
+                                            aria-hidden="true"
+                                        >
+                                            <Icon icon=LuCheck width="10px" height="10px" />
+                                        </span>
+                                    </Show>
 
                                     // Zone identity — full-bleed radial vignette for contrast
                                     <div

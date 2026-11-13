@@ -157,6 +157,17 @@ impl CapabilitiesContext {
         self.capabilities.with(|set| set.contains(capability))
     }
 
+    /// Whether a layer replace sent now names the layer's scope: only a
+    /// daemon that limits layers knows the field. Read without tracking,
+    /// for the handler that builds the request.
+    #[must_use]
+    pub fn layer_scope_field(&self) -> api::ScopeField {
+        api::ScopeField::for_daemon(
+            self.capabilities
+                .with_untracked(|set| set.contains(api::LAYER_SCOPE_CAPABILITY)),
+        )
+    }
+
     /// Whether every zone-lifecycle capability is live. `+ New zone` and
     /// the zone rows need all three: a user who can create a zone but
     /// cannot render it or move outputs into it has an unusable zone.
@@ -774,26 +785,13 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                     let indexed = effect_id
                         .as_ref()
                         .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
-                    let layer_labels = zone
-                        .layers
-                        .iter()
-                        .filter(|layer| layer.enabled)
-                        .map(|layer| {
-                            let effect_name = match &layer.source {
-                                hypercolor_types::layer::LayerSource::Effect {
-                                    effect_id, ..
-                                } => {
-                                    let effect_id = effect_id.to_string();
-                                    effects
-                                        .iter()
-                                        .find(|entry| entry.effect.id == effect_id)
-                                        .map(|entry| entry.effect.name.as_str())
-                                }
-                                _ => None,
-                            };
-                            crate::zones::surface::layer_label(layer, effect_name)
-                        })
-                        .collect();
+                    let (layer_labels, featured_layer) =
+                        crate::zones::zone_layer_labels(zone, |effect_id| {
+                            effects
+                                .iter()
+                                .find(|entry| entry.effect.id == effect_id)
+                                .map(|entry| entry.effect.name.clone())
+                        });
                     crate::zones::ZoneEffectState {
                         effect_name: indexed.map(|entry| entry.effect.name.clone()),
                         effect_category: indexed
@@ -806,6 +804,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                             .map(|preset_id| preset_id.to_string()),
                         revision: scene.revision,
                         layer_labels,
+                        featured_layer,
                         effect_id,
                         zone: surface,
                     }

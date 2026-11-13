@@ -123,11 +123,34 @@ pub fn surfaces_from_zones(zones: &[ZoneResource]) -> Vec<Surface> {
         .collect()
 }
 
-/// Display label of a zone's top layer, the last entry of the
-/// bottom-to-top authored stack. Uses the layer's user-set name when it
-/// has one, otherwise a plain-words label for its source kind.
+/// The layer a zone is known by: the top of the layers that cover the
+/// whole zone. A layer limited to some outputs plays on part of the zone,
+/// so it stands for the zone only when nothing covers all of it.
+#[must_use]
+pub fn featured_layer(layers: &[SceneLayer]) -> Option<&SceneLayer> {
+    featured_position(layers).and_then(|index| layers.get(index))
+}
+
+/// The place of the layer [`featured_layer`] picks among `layers`, given
+/// bottom to top: the topmost that covers the whole zone, else the top.
+#[must_use]
+pub fn featured_position<'a>(layers: impl IntoIterator<Item = &'a SceneLayer>) -> Option<usize> {
+    let mut whole_zone = None;
+    let mut top = None;
+    for (index, layer) in layers.into_iter().enumerate() {
+        top = Some(index);
+        if layer.scope.is_none() {
+            whole_zone = Some(index);
+        }
+    }
+    whole_zone.or(top)
+}
+
+/// Display label of the layer a zone is known by (see
+/// [`featured_layer`]). Uses the layer's user-set name when it has one,
+/// otherwise a plain-words label for its source kind.
 fn top_layer_label(zone: &ZoneResource) -> Option<String> {
-    let top = zone.layers.last()?;
+    let top = featured_layer(&zone.layers)?;
     Some(
         top.name
             .clone()

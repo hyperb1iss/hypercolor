@@ -507,6 +507,7 @@ fn zone_state(zone_id: &str, effect_id: Option<&str>) -> ZoneEffectState {
         preset_id: None,
         revision: 1,
         layer_labels: Vec::new(),
+        featured_layer: None,
     }
 }
 
