@@ -122,7 +122,6 @@ impl DomainContexts {
             resources.display_frames,
             scene.clone(),
             effects.clone(),
-            layout.clone(),
             devices.clone(),
             resources.event_bus,
         );

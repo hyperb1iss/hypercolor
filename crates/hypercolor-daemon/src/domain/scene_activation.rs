@@ -103,10 +103,6 @@ pub async fn activate_selected_fields(
         }
     }
     let media = ctx.scene.media_admission_context().await;
-    let display = ctx
-        .layout
-        .known_screen_surfaces(ctx.scene.layout_runtime())
-        .await;
     let _activation = if command.context.is_some() {
         Some(ctx.layout.acquire_scene_activation_guard().await)
     } else {
@@ -118,6 +114,13 @@ pub async fn activate_selected_fields(
         None
     };
     let mut mutation = ctx.scene.begin_mutation().await;
+    // Read after the mutation begins. Its commit lands only if nothing
+    // else committed since, so the table it installs was read later than
+    // any table already installed and cannot take a newer one back.
+    let display = ctx
+        .layout
+        .known_screen_surfaces(ctx.scene.layout_runtime())
+        .await;
     command
         .expected
         .validate(mutation.scenes(), mutation.base_revision())?;

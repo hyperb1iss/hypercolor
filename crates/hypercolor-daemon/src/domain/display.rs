@@ -35,8 +35,7 @@ use crate::domain::context::{DeviceContext, SceneContext};
 use crate::domain::effect::{
     AdmittedEffectControls, EffectContext, EffectMutationAdmission, ResolvedEffect,
 };
-use crate::domain::layout::LayoutContext;
-use crate::domain::scene::SceneMutation;
+use crate::domain::scene::{COMMIT_ATTEMPTS, SceneMutation};
 use crate::domain::scene_tree::layer_error;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -245,11 +244,13 @@ pub async fn set_display_face(
     let admitted = admit_display_face_controls(ctx, command.effect, &command.controls).await?;
     let (effect, controls, _admission) = admitted.into_parts();
     let scene = ctx.scene_context();
-    // A face may be the first thing written for a display the surface
-    // table has not seen yet, so the write reads the registry itself.
-    let surfaces = scene.known_screen_surfaces().await;
     let mut mutation = scene.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning a display face")?;
+    // A face may be the first thing written for a display the surface
+    // table has not seen yet, so the write reads the registry itself. It
+    // reads after the mutation begins: the commit lands only if nothing
+    // else committed since, so this table cannot take a newer one back.
+    let surfaces = scene.known_screen_surfaces().await;
     mutation.set_screen_surfaces(surfaces);
     let stack = mutation.scenes().active_screen_stack(device_id);
     let change = if stack.is_some_and(|stack| !stack.layers().is_empty()) {
@@ -518,12 +519,16 @@ pub async fn patch_display_face_controls(
     }))
 }
 
-/// Publish the connected screens to the scene manager, and convert the
-/// active scene's stored display zones now that their screens are known.
+/// Install a table of known screens, and convert the active scene's
+/// stored display zones now that their screens are known.
 ///
 /// The surface table is runtime state, so a change to it alone commits
 /// without a scene-store write. Conversion skips a scene that forbids
 /// runtime rewriting, so this is a no-op there rather than an error.
+///
+/// The caller read `surfaces` before this began, so a commit that lands in
+/// between can be overwritten by it. The daemon's own sync is
+/// [`sync_known_screens`], which reads inside each attempt.
 ///
 /// # Errors
 ///
@@ -534,19 +539,57 @@ pub async fn sync_screen_surfaces(
     surfaces: ScreenSurfaces,
 ) -> Result<bool, DomainError> {
     let outcome = ctx
-        .commit_retrying(|mutation| {
-            let mut changed = mutation.set_screen_surfaces(surfaces.clone());
-            if let Some(scene_id) = mutation.scenes().active_scene_id().copied() {
-                changed |= mutation.convert_legacy_display_zones(scene_id).changed();
-            }
-            Ok(changed.then_some(()))
-        })
+        .commit_retrying(|mutation| Ok(install_screen_surfaces(mutation, surfaces.clone())))
         .await?;
 
     if let Some(((), commit)) = outcome.as_ref() {
         commit.log_if_retrying("Failed to persist converted screen layers");
     }
     Ok(outcome.is_some())
+}
+
+fn install_screen_surfaces(mutation: &mut SceneMutation, surfaces: ScreenSurfaces) -> Option<()> {
+    let mut changed = mutation.set_screen_surfaces(surfaces);
+    if let Some(scene_id) = mutation.scenes().active_scene_id().copied() {
+        changed |= mutation.convert_legacy_display_zones(scene_id).changed();
+    }
+    changed.then_some(())
+}
+
+/// Read the device registry and install its screens as the table of known
+/// screens, converting the active scene's stored display zones whose
+/// screens are now known.
+///
+/// Each attempt reads the registry after its mutation begins, and the
+/// commit lands only if nothing else committed since. So the table an
+/// attempt installs was read later than any table already installed, and
+/// two syncs racing each other, or one racing an activation, cannot leave
+/// the older read in place.
+///
+/// # Errors
+///
+/// [`DomainError::Conflict`] when every attempt loses to a concurrent
+/// scene mutation.
+pub async fn sync_known_screens(ctx: &SceneContext) -> Result<bool, DomainError> {
+    let mut last_conflict = None;
+    for _ in 0..COMMIT_ATTEMPTS {
+        let mut mutation = ctx.begin_mutation().await;
+        let surfaces = ctx.known_screen_surfaces().await;
+        if install_screen_surfaces(&mut mutation, surfaces).is_none() {
+            return Ok(false);
+        }
+        match ctx.commit(mutation).await {
+            Ok(commit) => {
+                commit.log_if_retrying("Failed to persist converted screen layers");
+                return Ok(true);
+            }
+            Err(conflict @ DomainError::Conflict { .. }) => last_conflict = Some(conflict),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_conflict.unwrap_or_else(|| {
+        DomainError::conflict("the screen sync did not converge after repeated concurrent writes")
+    }))
 }
 
 /// Drop every scene's display zone for a device, its runtime default
@@ -764,7 +807,6 @@ struct DisplayAuthorities {
     frames: Arc<RwLock<DisplayFrameRuntime>>,
     scene: SceneContext,
     effects: EffectContext,
-    layout: LayoutContext,
     devices: DeviceContext,
     event_bus: Arc<HypercolorBus>,
 }
@@ -780,7 +822,6 @@ impl DisplayContext {
         frames: Arc<RwLock<DisplayFrameRuntime>>,
         scene: SceneContext,
         effects: EffectContext,
-        layout: LayoutContext,
         devices: DeviceContext,
         event_bus: Arc<HypercolorBus>,
     ) -> Self {
@@ -790,7 +831,6 @@ impl DisplayContext {
                 frames,
                 scene,
                 effects,
-                layout,
                 devices,
                 event_bus,
             }),
@@ -1178,12 +1218,7 @@ impl DisplayContext {
     /// Tell the scene manager which screens the rig knows, and convert the
     /// active scene's stored display zones whose screens are now known.
     pub async fn sync_connected_surfaces(&self) {
-        let surfaces = self
-            .authorities
-            .layout
-            .known_screen_surfaces(&self.authorities.devices.layout_runtime())
-            .await;
-        if let Err(error) = sync_screen_surfaces(&self.authorities.scene, surfaces).await {
+        if let Err(error) = sync_known_screens(&self.authorities.scene).await {
             tracing::warn!(%error, "Failed to sync known screens");
         }
     }

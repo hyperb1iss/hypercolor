@@ -2681,14 +2681,17 @@ pub async fn activate_scene(
     command: ActivateScene,
 ) -> Result<SceneActivated, DomainError> {
     let media_admission = ctx.scene.media_admission_context().await;
-    let screens = ctx
-        .layout
-        .known_screen_surfaces(ctx.scene.layout_runtime())
-        .await;
     let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
     let layout_guard = ctx.layout.acquire_update_guard().await;
 
     let mut mutation = ctx.scene.begin_mutation().await;
+    // Read after the mutation begins. Its commit lands only if nothing
+    // else committed since, so the table it installs was read later than
+    // any table already installed and cannot take a newer one back.
+    let screens = ctx
+        .layout
+        .known_screen_surfaces(ctx.scene.layout_runtime())
+        .await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
 
     let scene = mutation
@@ -3405,14 +3408,17 @@ pub async fn delete_scene(
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactivated, DomainError> {
-    let screens = ctx
-        .layout
-        .known_screen_surfaces(ctx.scene.layout_runtime())
-        .await;
     let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
     let layout_guard = ctx.layout.acquire_update_guard().await;
 
     let mut mutation = ctx.scene.begin_mutation().await;
+    // Read after the mutation begins. Its commit lands only if nothing
+    // else committed since, so the table it installs was read later than
+    // any table already installed and cannot take a newer one back.
+    let screens = ctx
+        .layout
+        .known_screen_surfaces(ctx.scene.layout_runtime())
+        .await;
     let previous_scene = mutation.scenes().active_scene().cloned();
     mutation.set_screen_surfaces(screens);
     mutation.deactivate_current(SceneChangeReason::UserDeactivate);
@@ -3593,5 +3599,122 @@ mod revision_pairing_tests {
         assert_eq!(after, commit.revision());
         assert_eq!(after, before + 1);
         assert!(!service.scene_write_is_blocked_for_test());
+    }
+}
+
+#[cfg(test)]
+mod screen_table_ordering_tests {
+    use std::time::Duration;
+
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceInfo,
+        DeviceOrigin, DeviceState, DeviceTopologyHint, DisplayFrameFormat, SegmentInfo,
+    };
+
+    use super::*;
+    use crate::app_state::AppState;
+
+    fn display(device_id: DeviceId) -> DeviceInfo {
+        let mut info = DeviceInfo {
+            id: device_id,
+            name: "Panel".to_owned(),
+            vendor: "test".to_owned(),
+            family: DeviceFamily::new_static("test", "Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+            segments: vec![SegmentInfo {
+                name: "Display".to_owned(),
+                led_count: 0,
+                topology: DeviceTopologyHint::Display {
+                    width: 320,
+                    height: 200,
+                    circular: false,
+                    format: DisplayFrameFormat::Jpeg,
+                },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        };
+        info.sync_display_capabilities();
+        info
+    }
+
+    /// An activation waits on the layout guards before it begins its
+    /// mutation. A display that connects while it waits is synced into the
+    /// table of known screens, and the activation must not put back the
+    /// table as it stood before the wait.
+    #[tokio::test]
+    async fn an_activation_that_waited_does_not_take_back_a_newer_table() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let data_dir = tempdir.path().join("data");
+        std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+        let state = Arc::new(AppState::new_with_data_dir(data_dir));
+        let scene = hypercolor_core::scene::make_scene("Desk");
+        let scene_id = scene.id;
+        let mut mutation = state.domains.scene.begin_mutation().await;
+        mutation
+            .create_scene(scene)
+            .expect("scene should be created");
+        state
+            .domains
+            .scene
+            .commit(mutation)
+            .await
+            .expect("the scene should commit");
+
+        let guard = state.domains.layout.acquire_scene_activation_guard().await;
+        let waiting = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                activate_scene(
+                    &state.domains.scene_library,
+                    ActivateScene {
+                        scene_id,
+                        transition_ms: None,
+                    },
+                )
+                .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "the activation waits on the guard");
+
+        let device_id = DeviceId::new();
+        state.device_registry.add(display(device_id)).await;
+        assert!(
+            state
+                .device_registry
+                .set_state(&device_id, DeviceState::Connected)
+                .await
+        );
+        state.domains.display.sync_connected_surfaces().await;
+        let knows = |manager: &SceneManager| {
+            manager
+                .screen_surfaces()
+                .values()
+                .any(|surface| surface.device_id == device_id && surface.connected)
+        };
+        assert!(knows(&state.domains.scene.snapshot().await));
+
+        drop(guard);
+        waiting
+            .await
+            .expect("the activation task should join")
+            .expect("the activation should commit");
+
+        let manager = state.domains.scene.snapshot().await;
+        assert_eq!(manager.active_scene_id(), Some(&scene_id));
+        assert!(
+            knows(&manager),
+            "the screen that connected during the wait is still known"
+        );
+        assert_eq!(
+            manager.screen_views(&scene_id).len(),
+            1,
+            "and it is listed in the scene that was activated"
+        );
     }
 }
