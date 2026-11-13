@@ -250,20 +250,15 @@ pub async fn delete_zone(
     )
     .await
     {
-        // The scene this removal committed, at the revision it committed,
-        // never a later writer's state.
+        // The scene and the views of its screens as this removal committed
+        // them, at the revision it committed, never a later writer's state.
         Ok(removed) => {
             let revision = removed.commit.revision();
-            let views = state
-                .scene_manager
-                .snapshot()
-                .await
-                .screen_views(&removed.scene.id);
             with_revision(
                 state.scene_manager.run_epoch(),
                 envelope::ok(scene_tree::live_scene_document(
                     &removed.scene,
-                    &views,
+                    &removed.views,
                     revision,
                     state.scene_manager.run_epoch(),
                 )),

@@ -845,6 +845,43 @@ async fn a_screen_that_goes_away_is_listed_only_while_it_has_a_stack() {
     assert_eq!(rig.get_face(&faced).await["effect"]["id"], face.to_string());
 }
 
+#[tokio::test]
+async fn deleting_a_zone_answers_with_the_views_it_committed() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", true).await;
+    rig.put_face(&screen, face, "scene").await;
+    let desk = rig
+        .ok(
+            Method::POST,
+            "/api/v1/scene/zones",
+            Some(json!({ "name": "Desk" })),
+        )
+        .await;
+    let desk_id = desk["id"].as_str().expect("zone id").to_owned();
+
+    let document = rig
+        .ok(
+            Method::DELETE,
+            &format!("/api/v1/scene/zones/{desk_id}"),
+            None,
+        )
+        .await;
+
+    assert_eq!(
+        display_zone_ids(&document),
+        vec![screen.view.clone()],
+        "the answer lists the screen's view beside the zones that remain"
+    );
+    let view = document["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .find(|zone| zone["id"] == screen.view)
+        .expect("the view");
+    assert_eq!(view["layers"][0]["source"]["effect_id"], face.to_string());
+}
+
 // ── The zone's own effect ────────────────────────────────────────────────
 
 #[tokio::test]
