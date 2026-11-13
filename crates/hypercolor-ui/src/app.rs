@@ -61,17 +61,15 @@ pub struct WsContext {
     pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub web_viewport_canvas_frame: ReadSignal<Option<CanvasFrame>>,
     /// Latest per-display JPEG frame from the `display_preview` WS
-    /// channel. Cleared when the selected display changes (handled by
-    /// `set_display_preview_device`).
+    /// channel, by device. A device's frame is dropped when it stops
+    /// being followed (handled by `set_display_preview_devices`).
     pub display_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
-    /// Set to `Some(device_id)` to subscribe the live preview stream to
-    /// that display, or `None` to unsubscribe. Setting the same id twice
-    /// is safe — subsequent subscribes retarget without dropping the
-    /// existing relay task on the server.
-    pub set_display_preview_device: WriteSignal<Option<String>>,
+    /// The displays whose live preview streams to follow; empty to
+    /// follow none.
+    pub set_display_preview_devices: WriteSignal<std::collections::BTreeSet<String>>,
     pub preview_fps: ReadSignal<f32>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
@@ -615,7 +613,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         interactive_preview_frames: ws.interactive_preview_frames,
         interactive_preview_lifecycles: ws.interactive_preview_lifecycles,
         interactive_preview_available: ws.interactive_preview_available,
-        set_display_preview_device: ws.set_display_preview_device,
+        set_display_preview_devices: ws.set_display_preview_devices,
         preview_fps: ws.preview_fps,
         preview_target_fps: ws.preview_target_fps,
         set_preview_cap: ws.set_preview_cap,
@@ -774,11 +772,12 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         };
         let surfaces = crate::zones::surface::surfaces_from_zones(&scene.zones);
         effects_index.with(|effects| {
+            // A surface per zone, display zones left out of both.
             scene
                 .zones
                 .iter()
+                .filter(|zone| zone.role != hypercolor_types::scene::ZoneRole::Display)
                 .zip(surfaces)
-                .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)
                 .map(|(zone, surface)| {
                     let effect = api::zone_effect(zone);
                     let effect_id = effect.map(|effect| effect.effect_id.to_string());

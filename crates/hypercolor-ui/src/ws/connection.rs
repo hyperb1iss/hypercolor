@@ -1,7 +1,7 @@
 //! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -286,10 +286,10 @@ pub struct WsManager {
     /// subscription turns on at 0→n and off back at zero.
     pub set_screen_zones_consumers: WriteSignal<u32>,
     pub set_web_viewport_preview_consumers: WriteSignal<u32>,
-    /// Set to `Some(device_id)` to subscribe the `display_preview`
-    /// channel to that device, or `None` to unsubscribe. The subscription
-    /// effect inside `WsManager` sends the actual WS messages.
-    pub set_display_preview_device: WriteSignal<Option<String>>,
+    /// The devices whose `display_preview` streams to follow; empty to
+    /// follow none. The subscription effect inside `WsManager` sends the
+    /// actual WS messages.
+    pub set_display_preview_devices: WriteSignal<BTreeSet<String>>,
     pub send_zone_layout_preview: Callback<(String, SpatialLayout)>,
     pub clear_zone_layout_preview: Callback<String>,
     pub open_interactive_preview: Callback<InteractivePreviewRequest>,
@@ -322,7 +322,8 @@ impl WsManager {
         let (interactive_preview_available, set_interactive_preview_available) = signal(false);
         let interactive_preview_tracker =
             StoredValue::new(InteractivePreviewLifecycleTracker::default());
-        let (display_preview_device, set_display_preview_device) = signal(None::<String>);
+        let (display_preview_devices, set_display_preview_devices) =
+            signal(BTreeSet::<String>::new());
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (connection_generation, set_connection_generation) = signal(0_u64);
         let (run_epoch, set_run_epoch) = signal(None::<String>);
@@ -1082,53 +1083,60 @@ impl WsManager {
 
         // Display-preview subscription effect.
         //
-        // The device is the subscription key, so switching displays is an
-        // unsubscribe of the old key and a subscribe of the new one. The
-        // followed key is remembered because only it can be unsubscribed,
-        // and its cached frame is dropped with it so the UI never flashes
-        // a stale image for a display it no longer follows.
-        let followed_display = StoredValue::new(None::<String>);
+        // The device is the subscription key, so each display followed is
+        // a subscription of its own, and a change of the set is an
+        // unsubscribe of every key that left and a subscribe of every key
+        // that joined. The followed keys are remembered because only they
+        // can be unsubscribed, and a key's cached frame is dropped with
+        // it so the UI never flashes a stale image for a display it no
+        // longer follows.
+        let followed_displays = StoredValue::new(BTreeSet::<String>::new());
         Effect::new(move |_| {
             let state = connection_state.get();
-            let device = display_preview_device.get();
+            let devices = display_preview_devices.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
 
             // A dropped socket takes its subscriptions with it, so the
-            // followed key is forgotten here, above the handle guard. The
+            // followed keys are forgotten here, above the handle guard. The
             // handle is nulled on close without notifying anything, so a
             // reset below the guard would never run, and the effect would
             // come back from a reconnect believing it still followed the
-            // right device and skip the re-subscribe.
+            // right devices and skip the re-subscribe.
             if state != ConnectionState::Connected {
-                if followed_display.get_value().is_some() {
-                    followed_display.set_value(None);
+                if followed_displays.with_value(|followed| !followed.is_empty()) {
+                    followed_displays.set_value(BTreeSet::new());
                     set_display_preview_frames.update(HashMap::clear);
                 }
                 return;
             }
 
-            let wanted = (window_visible && is_visible)
-                .then_some(device)
-                .flatten()
-                .filter(|device_id| !device_id.is_empty());
-            if followed_display.get_value() == wanted {
+            let wanted: BTreeSet<String> = if window_visible && is_visible {
+                devices
+                    .into_iter()
+                    .filter(|device_id| !device_id.is_empty())
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
+            let followed = followed_displays.get_value();
+            if followed == wanted {
                 return;
             }
             let Some(ws) = ws_handle.get_value() else {
                 return;
             };
 
-            if let Some(previous) = followed_display.get_value() {
-                super::preview::send_display_preview_unsubscribe(ws.as_ref(), &previous);
+            for previous in followed.difference(&wanted) {
+                super::preview::send_display_preview_unsubscribe(ws.as_ref(), previous);
                 set_display_preview_frames.update(|frames| {
-                    frames.remove(&previous);
+                    frames.remove(previous);
                 });
             }
-            if let Some(device_id) = wanted.as_deref() {
+            for device_id in wanted.difference(&followed) {
                 super::preview::send_display_preview_subscribe(ws.as_ref(), device_id, 15);
             }
-            followed_display.set_value(wanted);
+            followed_displays.set_value(wanted);
         });
 
         // Visibility change listener
@@ -1276,7 +1284,7 @@ impl WsManager {
             screen_zones_frame,
             set_screen_zones_consumers,
             set_web_viewport_preview_consumers,
-            set_display_preview_device,
+            set_display_preview_devices,
             send_zone_layout_preview,
             clear_zone_layout_preview,
             open_interactive_preview,
