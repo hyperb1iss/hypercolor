@@ -359,6 +359,27 @@ pub fn LayerPanel(
                 .unwrap_or_default()
         })
     };
+    // One layer of any zone's stack, read in place. A row reads its own
+    // layer on every scene echo, and copies that layer, not the stack.
+    let layer_of = move |zone_id: &str, layer_id: &str| -> Option<SceneLayer> {
+        let find = |stack: &[SceneLayer]| {
+            stack
+                .iter()
+                .find(|layer| layer.id.to_string() == layer_id)
+                .cloned()
+        };
+        if selected_zone_id.with(|selected| selected.as_deref() == Some(zone_id)) {
+            return layers.with(|stack| find(stack));
+        }
+        active_scene.with(|scene| {
+            scene
+                .as_ref()?
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == zone_id)
+                .and_then(|zone| find(&zone.layers))
+        })
+    };
     // Which of the selected zone's layers are a screen's own. They are not
     // part of the zone's canvas, so its list leaves them to their screens.
     let screen_layer_ids = Memo::new(move |_| {
@@ -827,14 +848,12 @@ pub fn LayerPanel(
                     children=move |RowKey { scene_id, zone_id, mount: (layer_id, _), on_screen }| {
                         let row_zone = StoredValue::new(zone_id.clone());
                         let stack = Signal::derive(move || row_zone.with_value(|zone| stack_of(zone)));
-                        let Some(initial) = stack.with_untracked(|layers| {
-                            layers.iter().find(|layer| layer.id.to_string() == layer_id).cloned()
-                        }) else {
+                        let Some(initial) = untrack(|| row_zone.with_value(|zone| layer_of(zone, &layer_id))) else {
                             return ().into_any();
                         };
                         let lookup_id = layer_id.clone();
                         let current_layer = Memo::new(move |_| {
-                            stack.with(|layers| layers.iter().find(|layer| layer.id.to_string() == lookup_id).cloned()).unwrap_or_else(|| initial.clone())
+                            row_zone.with_value(|zone| layer_of(zone, &lookup_id)).unwrap_or_else(|| initial.clone())
                         });
                         let stack_index = Signal::derive(move || stack.with(|layers| layers.iter().position(|layer| layer.id.to_string() == layer_id).unwrap_or_default()));
                         // A row's two disclosures, each remembered by its slot:
