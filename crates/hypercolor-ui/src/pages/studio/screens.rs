@@ -802,10 +802,16 @@ pub(crate) fn screen_view(
             "Add layer to this screen"
         }
         .to_owned(),
+        // No home means the daemon is from before a screen's layers lived
+        // in its zone and keeps no zone for this screen either, which it
+        // only does once the screen has a face.
         no_add: selected
             .iter()
             .all(|screen| screen.home.is_none())
-            .then(|| "This screen is not connected, so it cannot take a layer yet.".to_owned()),
+            .then(|| {
+                "This Hypercolor is too old to keep a layer for a screen without a face. Update it to add one."
+                    .to_owned()
+            }),
     }
 }
 

@@ -186,6 +186,18 @@ pub struct ScreenFaceLine {
     pub outputs: Vec<String>,
 }
 
+impl ScreenFaceLine {
+    /// What the line's tooltip says a click opens.
+    #[must_use]
+    pub fn title(&self) -> &'static str {
+        if self.outputs.len() > 1 {
+            "Open these screens' layers"
+        } else {
+            "Open this screen's layers"
+        }
+    }
+}
+
 /// What a host that shows screens lends the panel.
 #[derive(Clone)]
 pub struct ScreenHost {
@@ -748,12 +760,13 @@ pub fn LayerPanel(
                                 let title = title_of(layer);
                                 let label = format!("{title} on {}", face.screens);
                                 let outputs = face.outputs.clone();
+                                let opens = face.title();
                                 let select = screens.with_value(|host| host.as_ref().map(|host| host.select));
                                 Some(view! {
                                     <button
                                         type="button"
                                         class="group flex w-full items-center gap-2.5 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 px-3 py-2 text-left transition-colors hover:border-accent-muted"
-                                        title="Open this screen's layers"
+                                        title=opens
                                         aria-label=label
                                         data-screen-face=""
                                         on:click=move |_| {

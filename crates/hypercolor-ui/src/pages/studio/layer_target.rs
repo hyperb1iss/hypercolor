@@ -889,7 +889,13 @@ pub(crate) fn OutputLayerButton(output_ids: Vec<String>) -> impl IntoView {
                 type="button"
                 id="output-face-settings"
                 class=BUTTON
-                title="Open this screen's layers and their settings"
+                title=move || {
+                    if studio.screens.selected.with(|on| on.len() > 1) {
+                        "Open these screens' layers and their settings"
+                    } else {
+                        "Open this screen's layers and their settings"
+                    }
+                }
                 on:click=move |_| studio.screens.open(studio, false)
             >
                 <span class="flex text-accent">

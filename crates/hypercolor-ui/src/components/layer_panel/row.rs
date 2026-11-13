@@ -338,7 +338,7 @@ pub fn LayerRow(
                                     layer=layer
                                     effect_cache=effect_cache
                                     on_layers_mutated=on_layers_mutated
-                                    label=if is_face { "Face settings" } else { "Effect controls" }
+                                    face=is_face
                                 />
                             </div>
                         }

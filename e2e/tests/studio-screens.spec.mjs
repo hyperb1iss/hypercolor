@@ -144,6 +144,7 @@ async function openStudio(page) {
 // settles before one is opened.
 async function panelSettled(page) {
   await expect(page.getByText("Loading controls…", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Loading settings…", { exact: true })).toHaveCount(0);
   await page.locator("#studio-composition-panel")
     .evaluate((panel) => Promise.all(panel.getAnimations({ subtree: true }).map((motion) => motion.finished)));
   await settle(page);
