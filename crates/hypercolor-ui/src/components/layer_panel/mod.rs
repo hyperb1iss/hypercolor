@@ -946,7 +946,12 @@ pub fn LayerPanel(
                     <Icon icon=LuPlus width="13px" height="13px" />
                     {move || view_now.with(|view| view.as_ref().map(|view| view.add_label.clone()))}
                 </button>
-                <div class="space-y-1.5 pt-2">
+                // A screen no zone places has no canvas behind it, and
+                // its view names no such group.
+                <div
+                    class="space-y-1.5 pt-2"
+                    class:hidden=move || view_now.with(|view| view.as_ref().is_none_or(|view| view.behind_heading.is_empty()))
+                >
                     <span class=label_class(LabelSize::Small, LabelTone::Default) data-screen-behind="">
                         {move || view_now.with(|view| view.as_ref().map(|view| view.behind_heading.clone()))}
                     </span>

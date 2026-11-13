@@ -37,8 +37,9 @@ use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
 use super::layer_target::{add_layer_to_outputs, offers_layer};
 use super::move_menu::{MoveMenuAnchor, is_menu_key};
-use super::moves::{assignable_segment_count, perform, zone_name_in};
+use super::moves::{assignable_segment_count, light_segment_count, perform, zone_name_in};
 use super::pane_model::{elsewhere_label, fold_label, output_list_folds, selects_part_of};
+use super::screen_model::UnplacedDisplay;
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
 
 /// Element id of a device card's body, keyed by the zone it speaks for
@@ -477,7 +478,31 @@ pub fn StudioDeviceCard(
             }
         });
     }
+    // A screen no zone places has no box to select, so its card opens its
+    // layers itself: the face and its settings are edited where the scene
+    // keeps them, placed or not.
+    let unplaced_display = (mode == CardMode::Unassigned
+        && device.segments.iter().any(|segment| {
+            matches!(
+                segment.topology_hint,
+                Some(api::SegmentTopologySummary::Display { .. })
+            )
+        }))
+    .then(|| UnplacedDisplay {
+        device_id: device.id.clone(),
+        layout_id: device.layout_device_id.clone(),
+        name: device.name.clone(),
+    });
+    let open_display = unplaced_display.clone();
+    let unplaced_id = unplaced_display.map(|display| display.device_id);
     let is_card_selected = Signal::derive(move || {
+        if let Some(device_id) = &unplaced_id {
+            return studio.screens.selected.with(|selected| {
+                selected.iter().any(|screen| {
+                    !screen.placed && screen.device_id.as_deref() == Some(device_id.as_str())
+                })
+            });
+        }
         !sel_check_ids.is_empty()
             && studio
                 .selected_output_ids
@@ -555,6 +580,10 @@ pub fn StudioDeviceCard(
                         }
                     }
                     on:click=move |_| {
+                        if let Some(display) = open_display.clone() {
+                            studio.screens.open_unplaced(studio, display);
+                            return;
+                        }
                         if studio.selected_surface_id.get_untracked().as_deref() != Some(select_body.as_str()) {
                             studio.selected_surface_id.set(Some(select_body.clone()));
                         }
@@ -920,6 +949,16 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                         })
                     };
                     let device_name = device.name.clone();
+                    // A screen placed on its own is what was asked for, so
+                    // it is selected where it lands and the chip and the
+                    // panel follow it. A device that brings lights too
+                    // keeps the selection where it was.
+                    let screen_alone = device.segments.iter().any(|segment| {
+                        matches!(
+                            segment.topology_hint,
+                            Some(api::SegmentTopologySummary::Display { .. })
+                        )
+                    }) && (light_segment_count(&device) == 0 || !payload.segments.is_empty());
                     view! {
                         <button
                             type="button"
@@ -935,6 +974,9 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                                     fallback: None,
                                 };
                                 perform(drag, payload, DropAction::MoveTo(select.clone()), Some(focus));
+                                if screen_alone {
+                                    studio.screens.placing.set(Some(device.layout_device_id.clone()));
+                                }
                             }
                         >
                             <Icon icon=LuPlus width="13px" height="13px" />

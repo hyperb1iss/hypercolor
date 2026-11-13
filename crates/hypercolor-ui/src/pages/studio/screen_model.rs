@@ -47,14 +47,20 @@ pub enum StackHome {
     Stored(String),
 }
 
-/// A screen some zone places.
+/// A screen as Studio addresses it: one some zone places, or one no zone
+/// places that the scene still keeps a stack for ([`unplaced_screen`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacedScreen {
-    /// The zone that places it.
+    /// Whether a zone places it. A screen no zone places has no box, no
+    /// output, and no canvas behind it: it shows its own layers alone.
+    pub placed: bool,
+    /// The zone that places it. For a screen no zone places, the zone of
+    /// its own that holds its stack.
     pub zone_id: String,
-    /// That zone's shown name.
+    /// The placing zone's shown name; empty for a screen no zone places.
     pub zone_name: String,
-    /// The screen's output in that zone.
+    /// The screen's output in that zone; empty for a screen no zone
+    /// places.
     pub output_id: String,
     /// The layout device id the output carries.
     pub layout_id: String,
@@ -132,6 +138,7 @@ pub fn placed_screens(
                 None => screen_layers.then_some(StackHome::Owner),
             };
             PlacedScreen {
+                placed: true,
                 zone_id: zone.id.to_string(),
                 zone_name: zone_display_name(&zone.name, zone.role),
                 output_id: member.id.to_string(),
@@ -142,6 +149,51 @@ pub fn placed_screens(
             }
         })
         .collect()
+}
+
+/// A display no zone places, as its card knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnplacedDisplay {
+    /// The physical display.
+    pub device_id: String,
+    /// The layout device id an output of it would carry.
+    pub layout_id: String,
+    /// What its card calls it.
+    pub name: String,
+}
+
+/// `display` as a screen no zone places: its layers live in the zone the
+/// scene keeps for it, and every write to them goes through that zone.
+/// `None` when a zone places the display, or the scene keeps no zone for
+/// it.
+#[must_use]
+pub fn unplaced_screen(
+    zones: &[ZoneResource],
+    placed: &[PlacedScreen],
+    display: &UnplacedDisplay,
+) -> Option<PlacedScreen> {
+    let UnplacedDisplay {
+        device_id,
+        layout_id,
+        name,
+    } = display;
+    if placed
+        .iter()
+        .any(|screen| screen.device_id.as_deref() == Some(device_id.as_str()))
+    {
+        return None;
+    }
+    let stored = stored_zone(zones, device_id)?;
+    Some(PlacedScreen {
+        placed: false,
+        zone_id: stored.id.to_string(),
+        zone_name: String::new(),
+        output_id: String::new(),
+        layout_id: layout_id.clone(),
+        name: name.clone(),
+        device_id: Some(device_id.clone()),
+        home: Some(StackHome::Stored(stored.id.to_string())),
+    })
 }
 
 /// The names of the displays no zone places, in the order given:
@@ -231,7 +283,8 @@ pub struct ScreenPanel {
     pub heading: &'static str,
     /// The screens' own layers, top first.
     pub rows: Vec<ScreenRow>,
-    /// "Behind it, from Main".
+    /// "Behind it, from Main". Empty for a screen no zone places, which
+    /// has nothing behind it.
     pub behind_heading: String,
     /// The zone's canvas layers that reach the screens, top first.
     pub behind: Vec<BehindRow>,
@@ -253,6 +306,32 @@ fn bottom_of<'a>(layers: impl Iterator<Item = &'a SceneLayer> + Clone) -> Option
 #[must_use]
 pub fn screen_panel(zones: &[ZoneResource], screens: &[&PlacedScreen]) -> Option<ScreenPanel> {
     let first = screens.first()?;
+    if !first.placed {
+        // A screen no zone places lists the stack of its own zone, top
+        // first. No canvas is behind it, so no row is how it meets one.
+        let stored = zones
+            .iter()
+            .find(|zone| zone.id.to_string() == first.zone_id)?;
+        return Some(ScreenPanel {
+            title: first.name.clone(),
+            heading: "On this screen",
+            rows: stored
+                .layers
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(stack_index, layer)| ScreenRow {
+                    zone_id: first.zone_id.clone(),
+                    layer_id: layer.id,
+                    stack_index,
+                    meets_backdrop: false,
+                    composition: Composition::Layer,
+                })
+                .collect(),
+            behind_heading: String::new(),
+            behind: Vec::new(),
+        });
+    }
     let owner = zones
         .iter()
         .find(|zone| zone.id.to_string() == first.zone_id)?;
@@ -656,6 +735,32 @@ pub fn zone_screen_lines(
                     .and_then(|device_id| kept.get(device_id).cloned())
             }),
             screen: screen.clone(),
+        })
+        .collect()
+}
+
+/// The screens no zone places, each with the face it goes on showing:
+/// `displays` in the order given, leaving out any a zone places or the
+/// scene keeps nothing for.
+#[must_use]
+pub fn unplaced_screen_lines(
+    zones: &[ZoneResource],
+    placed: &[PlacedScreen],
+    displays: &[UnplacedDisplay],
+    layer_name: impl Fn(&SceneLayer) -> String,
+    kept: &HashMap<String, String>,
+) -> Vec<ScreenLine> {
+    displays
+        .iter()
+        .filter_map(|display| unplaced_screen(zones, placed, display))
+        .map(|screen| ScreenLine {
+            face: card_face(zones, &screen).map(&layer_name).or_else(|| {
+                screen
+                    .device_id
+                    .as_ref()
+                    .and_then(|device_id| kept.get(device_id).cloned())
+            }),
+            screen,
         })
         .collect()
 }

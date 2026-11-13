@@ -11,13 +11,15 @@ use hypercolor_types::layer::{
     BlendMode, LayerAdjust, LayerScope, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{DisplayFaceTarget, SceneMutationMode, ZoneId, ZoneRole};
+use hypercolor_ui::pages::studio::screen_model::unplaced_screen_lines;
 use hypercolor_ui::pages::studio::screen_model::{
     Composition, FaceReport, FollowedLayoutStep, KEPT_CHIP, KEPT_NOTICE, KeptFaceRow,
-    KeptSelection, PlacedScreen, ScreenMove, ScreenRef, StackHome, add_outcome_words, card_face,
-    copy_layer_to_scene, copy_prompt, faceless_displays, followed_layout_step, is_screen_layer,
-    kept_face_row, kept_selection, placed_screens, plan_add_to_all_screens, plan_screen_adds,
-    reorder_within, screen_chip, screen_panel, screens_label, selected_screens, takes_copies,
-    unplaced_face, unplaced_screens, zone_screen_lines,
+    KeptSelection, PlacedScreen, ScreenMove, ScreenRef, StackHome, UnplacedDisplay,
+    add_outcome_words, card_face, copy_layer_to_scene, copy_prompt, faceless_displays,
+    followed_layout_step, is_screen_layer, kept_face_row, kept_selection, placed_screens,
+    plan_add_to_all_screens, plan_screen_adds, reorder_within, screen_chip, screen_panel,
+    screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screen,
+    unplaced_screens, zone_screen_lines,
 };
 
 fn member(id: &str, device: &str, segment: Option<&str>, name: &str) -> ZoneMember {
@@ -218,6 +220,125 @@ fn a_display_no_zone_places_is_unplaced() {
 }
 
 // ── The selection that turns the panel to screens ────────────────────────
+
+#[test]
+fn a_screen_no_zone_places_opens_on_the_stack_the_scene_keeps_for_it() {
+    let main = zone("Main", ZoneRole::Primary, Vec::new());
+    let device = DeviceId::new();
+    let mut own = display_zone(device, None);
+    own.layers = vec![layer("Glow", None), layer("Clock", None)];
+    let zones = vec![main, own.clone()];
+    let display = |device: DeviceId, name: &str| UnplacedDisplay {
+        device_id: device.to_string(),
+        layout_id: format!("simulator:{device}"),
+        name: name.to_owned(),
+    };
+
+    let screen = unplaced_screen(&zones, &[], &display(device, "Spare panel"))
+        .expect("the scene keeps its stack");
+    assert!(!screen.placed);
+    assert_eq!(screen.name, "Spare panel");
+    assert_eq!(screen.home, Some(StackHome::Stored(own.id.to_string())));
+    assert_eq!(screen.home_zone_id(), Some(own.id.to_string().as_str()));
+
+    // Its panel lists that stack top first, written through that zone,
+    // and nothing behind it: no canvas is behind a screen no zone places,
+    // so no row is how the stack meets one.
+    let panel = screen_panel(&zones, &[&screen]).expect("panel");
+    assert_eq!(panel.title, "Spare panel");
+    assert_eq!(panel.heading, "On this screen");
+    assert_eq!(
+        panel
+            .rows
+            .iter()
+            .map(|row| (row.zone_id.as_str(), row.layer_id, row.meets_backdrop))
+            .collect::<Vec<_>>(),
+        [
+            (screen.zone_id.as_str(), own.layers[1].id, false),
+            (screen.zone_id.as_str(), own.layers[0].id, false),
+        ]
+    );
+    assert!(
+        panel
+            .rows
+            .iter()
+            .all(|row| row.composition == Composition::Layer)
+    );
+    assert!(panel.behind_heading.is_empty());
+    assert!(panel.behind.is_empty());
+
+    // A new layer goes on top of that stack, with no target of its own.
+    let adds = plan_screen_adds(&zones, &[&screen]);
+    assert_eq!(adds.len(), 1);
+    assert_eq!(adds[0].zone_id, screen.zone_id);
+    assert_eq!(adds[0].scope, None);
+    assert_eq!(adds[0].beneath, 2);
+
+    // A display with no zone kept for it has nothing to open.
+    assert_eq!(
+        unplaced_screen(&zones, &[], &display(DeviceId::new(), "Other")),
+        None
+    );
+}
+
+#[test]
+fn the_screens_no_zone_places_are_listed_with_the_faces_they_show() {
+    let main = zone("Main", ZoneRole::Primary, Vec::new());
+    let (clock, saved, bare) = (DeviceId::new(), DeviceId::new(), DeviceId::new());
+    let mut with_face = display_zone(clock, None);
+    with_face.layers = vec![layer("Clock", None)];
+    let zones = vec![
+        main,
+        with_face,
+        display_zone(saved, None),
+        display_zone(bare, None),
+    ];
+    let display = |device: DeviceId, name: &str| UnplacedDisplay {
+        device_id: device.to_string(),
+        layout_id: format!("simulator:{device}"),
+        name: name.to_owned(),
+    };
+    let kept = HashMap::from([(saved.to_string(), "Gauge".to_owned())]);
+    let lines = unplaced_screen_lines(
+        &zones,
+        &[],
+        &[
+            display(clock, "Pump LCD"),
+            display(saved, "Spare"),
+            display(bare, "Side"),
+            display(DeviceId::new(), "Gone"),
+        ],
+        |layer| layer.name.clone().unwrap_or_default(),
+        &kept,
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| (line.screen.name.as_str(), line.face.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            ("Pump LCD", Some("Clock")),
+            ("Spare", Some("Gauge")),
+            ("Side", None),
+        ]
+    );
+    assert!(lines.iter().all(|line| !line.screen.placed));
+}
+
+#[test]
+fn a_screen_some_zone_places_is_never_opened_as_unplaced() {
+    // A stack the daemon could not convert stays in a zone of the
+    // screen's own while its box sits in Main. That screen is placed.
+    let mut rig = Rig::new();
+    rig.zones[2].view_of = None;
+    let placed = rig.screens();
+    let display = UnplacedDisplay {
+        device_id: rig.devices[0].to_string(),
+        layout_id: placed[0].layout_id.clone(),
+        name: "TL LCD 1".to_owned(),
+    };
+    assert_eq!(unplaced_screen(&rig.zones, &placed, &display), None);
+}
 
 #[test]
 fn only_a_selection_of_screens_alone_turns_the_panel_to_them() {

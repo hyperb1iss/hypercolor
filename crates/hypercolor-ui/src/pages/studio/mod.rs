@@ -534,6 +534,7 @@ fn StudioWorkspace() -> impl IntoView {
         screens,
     };
     provide_context(studio);
+    screens.follow_placements(studio);
     let root_ref = NodeRef::<leptos::html::Div>::new();
     let drag = DragController::new(studio, devices_ctx, root_ref);
     provide_context(drag);

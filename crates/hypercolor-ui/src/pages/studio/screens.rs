@@ -35,15 +35,21 @@ use crate::control_session::{
 use crate::icons::*;
 use crate::optimistic_controls::ControlValueMap;
 use crate::toasts;
+use crate::zones::surface::zone_display_name;
+use hypercolor_types::scene::ZoneRole;
 
 use super::StudioContext;
+use super::drag::DragController;
+use super::drag_model::{DropAction, MovePayload};
 use super::history::{AddOutcome, LayerAdd};
+use super::moves::{perform, registry_device};
 use super::screen_model::{
     Composition, FaceReport, KEPT_CHIP, KEPT_CHIP_SEVERAL, KEPT_NOTICE, KeptSelection,
-    PlacedScreen, ScreenPanel, ScreenRef, StackHome, add_outcome_words, card_face,
+    PlacedScreen, ScreenPanel, ScreenRef, StackHome, UnplacedDisplay, add_outcome_words, card_face,
     copy_layer_to_scene, copy_prompt, faceless_displays, is_screen_layer, kept_face_row,
     kept_selection, placed_screens, plan_add_to_all_screens, plan_screen_adds, screen_panel,
-    screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screens,
+    screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screen,
+    unplaced_screens,
 };
 
 /// Flush debounce for face-setting edits, the layer inspector's cadence.
@@ -90,6 +96,12 @@ pub(crate) struct Screens {
     pub focus: RwSignal<bool>,
     /// The layer "Copy to every scene" is asking about.
     pub copy: RwSignal<Option<CopyRequest>>,
+    /// The screen no zone places whose layers are open. It has no box to
+    /// select, so its card selects it here.
+    pub unplaced: RwSignal<Option<UnplacedDisplay>>,
+    /// The layout device whose screen was just asked onto the canvas, to
+    /// select once it lands.
+    pub placing: RwSignal<Option<String>>,
 }
 
 /// Every screen a zone of `active_scene` places, with where each keeps
@@ -234,7 +246,34 @@ impl Screens {
         selected_output_ids: RwSignal<HashSet<String>>,
     ) -> Self {
         let placed = use_placed_screens(active_scene);
+        let unplaced = RwSignal::new(None::<UnplacedDisplay>);
+        let placing = RwSignal::new(None::<String>);
+        // A selection on the canvas takes over from a screen opened by
+        // its card.
+        Effect::new(move |_| {
+            if selected_output_ids.with(|selection| !selection.is_empty()) {
+                if unplaced.with_untracked(Option::is_some) {
+                    unplaced.set(None);
+                }
+                if placing.with_untracked(Option::is_some) {
+                    placing.set(None);
+                }
+            }
+        });
         let selected = Memo::new(move |_| {
+            if selected_output_ids.with(HashSet::is_empty)
+                && let Some(display) = unplaced.get()
+            {
+                return active_scene.with(|scene| {
+                    scene
+                        .as_ref()
+                        .and_then(|scene| {
+                            placed.with(|placed| unplaced_screen(&scene.zones, placed, &display))
+                        })
+                        .into_iter()
+                        .collect()
+                });
+            }
             let Some(zone_id) = selected_surface_id.get() else {
                 return Vec::new();
             };
@@ -294,7 +333,62 @@ impl Screens {
             add_requests: RwSignal::new(0),
             focus,
             copy: RwSignal::new(None),
+            unplaced,
+            placing,
         }
+    }
+
+    /// Open the layers of `display`, which no zone places. Answers
+    /// whether the scene keeps a stack to open.
+    pub fn open_unplaced(self, studio: StudioContext, display: UnplacedDisplay) -> bool {
+        let known = studio.active_scene.with_untracked(|scene| {
+            scene.as_ref().is_some_and(|scene| {
+                self.placed.with_untracked(|placed| {
+                    unplaced_screen(&scene.zones, placed, &display).is_some()
+                })
+            })
+        });
+        if !known {
+            return false;
+        }
+        studio.selected_output_ids.set(HashSet::new());
+        self.unplaced.set(Some(display));
+        studio.composition_open.set(true);
+        true
+    }
+
+    /// Select a screen that was asked onto the canvas once a zone places
+    /// it, so the chip and the panel follow it there. The scene that
+    /// shows it placed arrives after the write that placed it has ended,
+    /// so the ask waits for the scene, and is dropped only when the
+    /// person selects something else first.
+    pub fn follow_placements(self, studio: StudioContext) {
+        Effect::new(move |_| {
+            let Some(layout_id) = self.placing.get() else {
+                return;
+            };
+            let landed = self.placed.with(|placed| {
+                placed
+                    .iter()
+                    .find(|screen| screen.layout_id == layout_id)
+                    .cloned()
+            });
+            let Some(screen) = landed else {
+                return;
+            };
+            self.placing.set(None);
+            self.unplaced.set(None);
+            if studio.selected_surface_id.get_untracked().as_deref()
+                != Some(screen.zone_id.as_str())
+            {
+                studio.selected_surface_id.set(Some(screen.zone_id.clone()));
+            }
+            request_animation_frame(move || {
+                studio
+                    .selected_output_ids
+                    .try_set(HashSet::from([screen.output_id]));
+            });
+        });
     }
 
     /// The name of the face the selected screens show: the top layer of
@@ -486,6 +580,7 @@ impl Screens {
             all_screens,
             leave: Callback::new(move |()| {
                 studio.selected_output_ids.set(HashSet::new());
+                self.unplaced.set(None);
             }),
             copy: Callback::new(move |(zone_id, layer_id, name)| {
                 self.copy.set(Some(CopyRequest {
@@ -502,7 +597,12 @@ impl Screens {
                     refresh_face: self.refresh_face,
                     refresh_scene: studio.refresh_scene,
                 };
-                ViewFn::from(move || view! { <KeptFaceCard kept=kept /> })
+                ViewFn::from(move || {
+                    view! {
+                        <UnplacedNote screens=self studio=studio />
+                        <KeptFaceCard kept=kept />
+                    }
+                })
             },
             faces: Signal::derive(move || faces.get().unwrap_or_default()),
             select: Callback::new(move |outputs: Vec<String>| {
@@ -550,7 +650,13 @@ pub(crate) fn screen_view(
             .find(|zone| zone.id.to_string() == zone_id)
             .and_then(|zone| zone.layers.iter().find(|layer| layer.id == layer_id))
     };
-    let owner = selected.first().map(|screen| screen.zone_id.as_str());
+    // The zone that places the screens. A screen no zone places has
+    // none: its rows are its own zone's, written through that zone.
+    let on_canvas = selected.first().is_some_and(|screen| screen.placed);
+    let owner = selected
+        .first()
+        .filter(|screen| screen.placed)
+        .map(|screen| screen.zone_id.as_str());
     let rows = panel
         .rows
         .iter()
@@ -623,6 +729,94 @@ fn face_controls(face: &api::DisplayFaceResponse) -> ControlValueMap {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+/// What the panel says first for a screen no zone places: why it has
+/// nothing behind it, and the way onto the canvas. Its layers and their
+/// settings are all there without placing it.
+#[component]
+fn UnplacedNote(screens: Screens, studio: StudioContext) -> impl IntoView {
+    let drag = use_context::<DragController>();
+    let screen = Memo::new(move |_| {
+        screens
+            .selected
+            .with(|selected| selected.first().filter(|screen| !screen.placed).cloned())
+    });
+    // The zone the screen would join: the open one.
+    let zone = Memo::new(move |_| {
+        let open = studio.selected_surface_id.get()?;
+        studio.active_scene.with(|scene| {
+            scene
+                .as_ref()?
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == open && zone.role != ZoneRole::Display)
+                .map(|zone| (open.clone(), zone_display_name(&zone.name, zone.role)))
+        })
+    });
+    let place = move |_| {
+        let (Some(drag), Some(screen), Some((zone_id, _))) =
+            (drag, screen.get_untracked(), zone.get_untracked())
+        else {
+            return;
+        };
+        let segments: Vec<String> = registry_device(drag, &screen.layout_id)
+            .map(|device| {
+                device
+                    .segments
+                    .iter()
+                    .filter(|segment| {
+                        matches!(
+                            segment.topology_hint,
+                            Some(api::SegmentTopologySummary::Display { .. })
+                        )
+                    })
+                    .map(|segment| segment.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if segments.is_empty() {
+            return;
+        }
+        let payload = MovePayload::unassigned_segments(
+            &screen.layout_id,
+            &screen.name,
+            &screen.name,
+            segments,
+        );
+        perform(drag, payload, DropAction::MoveTo(zone_id), None);
+        screens.placing.set(Some(screen.layout_id));
+    };
+    move || {
+        let screen = screen.get()?;
+        let target = zone.get();
+        Some(view! {
+            <div
+                class="space-y-2 rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 px-3 py-2.5"
+                data-unplaced-note=""
+            >
+                <p class="text-[11px] leading-relaxed text-fg-tertiary">
+                    {format!(
+                        "{} is not on the canvas, so it shows its own layers with nothing behind them.",
+                        screen.name
+                    )}
+                </p>
+                {target.map(|(_, zone_name)| view! {
+                    <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-md border border-accent-muted bg-accent/10 px-2.5 py-1.5 text-[11px] font-medium text-fg-primary transition-colors btn-press hover:bg-accent/15 disabled:cursor-wait disabled:opacity-60"
+                        title=format!("Add {} to {zone_name}", screen.name)
+                        disabled=move || studio.history.busy.get()
+                        data-place-screen=""
+                        on:click=place
+                    >
+                        <Icon icon=LuPlus width="12px" height="12px" />
+                        "Place on canvas"
+                    </button>
+                })}
+            </div>
+        })
+    }
 }
 
 /// The row of a face saved with its screen, shown first among the
