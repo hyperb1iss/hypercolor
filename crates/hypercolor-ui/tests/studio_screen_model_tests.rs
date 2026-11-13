@@ -12,10 +12,11 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{DisplayFaceTarget, SceneMutationMode, ZoneId, ZoneRole};
 use hypercolor_ui::pages::studio::screen_model::{
-    Composition, FaceReport, KEPT_CHIP, KEPT_NOTICE, PlacedScreen, ScreenRef, StackHome,
-    add_outcome_words, card_face, copy_layer_to_scene, copy_prompt, is_screen_layer, kept_face_row,
-    placed_screens, plan_add_to_all_screens, plan_screen_adds, reorder_within, screen_chip,
-    screen_panel, screens_label, selected_screens, takes_copies, unplaced_screens,
+    Composition, FaceReport, FollowedLayoutStep, KEPT_CHIP, KEPT_NOTICE, PlacedScreen, ScreenMove,
+    ScreenRef, StackHome, add_outcome_words, card_face, copy_layer_to_scene, copy_prompt,
+    faceless_displays, followed_layout_step, is_screen_layer, kept_face_row, placed_screens,
+    plan_add_to_all_screens, plan_screen_adds, reorder_within, screen_chip, screen_panel,
+    screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screens,
     zone_screen_lines,
 };
 
@@ -498,6 +499,105 @@ fn a_zones_card_lists_its_screens_with_the_face_each_shows() {
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].screen.name, "Pump");
     assert_eq!(lines[0].face, None);
+}
+
+#[test]
+fn a_screen_no_zone_places_still_names_the_face_it_shows() {
+    // Its box is in no zone, and its face goes on showing from a zone of
+    // the screen's own. Its card names that face like any screen's.
+    let mut rig = Rig::new();
+    let spare = DeviceId::new();
+    let mut stored = display_zone(spare, None);
+    stored.layers = vec![layer("Under", None), layer("System Pulse", None)];
+    rig.zones.push(stored);
+
+    let face = unplaced_face(&rig.zones, &spare.to_string()).expect("the stored stack has a face");
+    assert_eq!(face.name.as_deref(), Some("System Pulse"));
+    // A placed screen's view is no stored stack, and a display the scene
+    // lists nothing for has none.
+    assert!(unplaced_face(&rig.zones, &rig.devices[0].to_string()).is_none());
+    assert!(unplaced_face(&rig.zones, &DeviceId::new().to_string()).is_none());
+}
+
+#[test]
+fn the_saved_face_is_asked_about_only_where_the_scene_shows_nothing() {
+    // A display zone lists a screen's layers, placed or not. The views
+    // of a real scene carry them; here the first panel's does.
+    let mut rig = Rig::new();
+    rig.zones[2].layers = vec![layer("Neon Clock", None)];
+    let spare = DeviceId::new();
+    rig.zones.push(display_zone(spare, None));
+
+    let asked = faceless_displays(&rig.zones);
+    assert_eq!(
+        asked,
+        [
+            rig.devices[1].to_string(),
+            rig.devices[2].to_string(),
+            spare.to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_screen_placed_where_the_rig_layout_decides_is_carried_into_that_layout() {
+    let primary = zone("Main", ZoneRole::Primary, Vec::new());
+    let display = display_zone(DeviceId::new(), Some((&primary, "lcd")));
+    let zones = vec![primary.clone(), display];
+    let arrived = ScreenMove {
+        output_id: "lcd".to_owned(),
+        from: None,
+        to: Some(primary.id),
+    };
+    assert_eq!(
+        followed_layout_step(&zones, std::slice::from_ref(&arrived)),
+        FollowedLayoutStep {
+            save: Some(primary.id),
+            forget: Vec::new(),
+        }
+    );
+
+    // Taking it out again is forgotten there, or the layout hands it back.
+    let left = ScreenMove {
+        output_id: "lcd".to_owned(),
+        from: Some(primary.id),
+        to: None,
+    };
+    assert_eq!(
+        followed_layout_step(&zones, &[left]),
+        FollowedLayoutStep {
+            save: None,
+            forget: vec!["lcd".to_owned()],
+        }
+    );
+
+    // A box that only moved within the zone asks nothing.
+    let stayed = ScreenMove {
+        output_id: "lcd".to_owned(),
+        from: Some(primary.id),
+        to: Some(primary.id),
+    };
+    assert!(followed_layout_step(&zones, &[stayed]).is_empty());
+}
+
+#[test]
+fn a_scene_with_zones_of_its_own_keeps_its_screens_itself() {
+    let primary = zone("Main", ZoneRole::Primary, Vec::new());
+    let desk = zone("Desk", ZoneRole::Custom, Vec::new());
+    let zones = vec![primary.clone(), desk.clone()];
+    let moves = [
+        ScreenMove {
+            output_id: "lcd".to_owned(),
+            from: None,
+            to: Some(primary.id),
+        },
+        ScreenMove {
+            output_id: "pump".to_owned(),
+            from: Some(desk.id),
+            to: None,
+        },
+    ];
+    assert!(followed_layout_step(&zones, &moves).is_empty());
 }
 
 fn report(scope: DisplayFaceScope, rendering: Option<DisplayFaceRendering>) -> FaceReport {

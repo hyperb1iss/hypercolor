@@ -11,7 +11,9 @@
 use std::collections::VecDeque;
 
 use super::placement::{self, Footprint};
+use super::screen_model::{ScreenMove, followed_layout_step};
 pub(crate) use crate::api::Fence;
+use crate::components::layer_panel::scope::is_screen_output;
 use crate::components::layout_builder::{keyed, writer};
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
@@ -20,7 +22,7 @@ use hypercolor_types::api::scene::{
 };
 use hypercolor_types::layer::{LayerScope, SceneLayerId};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior};
-use hypercolor_types::spatial::NormalizedPosition;
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout};
 use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
 
@@ -1661,11 +1663,100 @@ impl StudioHistory {
                 }
             }
         }
+        if let Some(revision) = self.teach_followed_layout(generation, &changes).await {
+            landed = revision;
+        }
         Sent::Landed {
             changes,
             layer_moves,
             revision: landed,
         }
+    }
+
+    /// Tell the rig's layout about the screens a membership write placed
+    /// in, or took out of, a zone that takes its outputs from that layout
+    /// (see [`followed_layout_step`]). Answers the revision the scene
+    /// stands at afterwards when anything was written.
+    async fn teach_followed_layout(self, generation: u64, changes: &[MemberEdit]) -> Option<u64> {
+        let scene = self.current_scene()?;
+        let moves = changes
+            .iter()
+            .filter_map(|change| {
+                let output = &change.after.as_ref().or(change.before.as_ref())?.output;
+                is_screen_output(output).then(|| ScreenMove {
+                    output_id: output.id.clone(),
+                    from: change.before.as_ref().map(|state| state.zone_id),
+                    to: change.after.as_ref().map(|state| state.zone_id),
+                })
+            })
+            .collect::<Vec<_>>();
+        let step = followed_layout_step(&scene.zones, &moves);
+        if step.is_empty() {
+            return None;
+        }
+        let mut wrote = false;
+        if let Some(zone) = step
+            .save
+            .and_then(|zone_id| scene.zones.iter().find(|zone| zone.id == zone_id))
+        {
+            let zone_id = zone.id.to_string();
+            // The layout route stores each member's placement and nothing
+            // else.
+            let layout = SpatialLayout {
+                id: zone_id.clone(),
+                name: String::new(),
+                description: None,
+                canvas_width: 1,
+                canvas_height: 1,
+                zones: api::zone_outputs(zone),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                version: 1,
+            };
+            let fence = Fence::of(&scene);
+            let key = keyed::new_key();
+            let saved = written(&fence, key.clone(), || {
+                api::zones::update_zone_layout(&zone_id, &layout, &fence, &key)
+            })
+            .await;
+            if matches!(
+                saved,
+                Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_)))
+            ) {
+                wrote = true;
+            } else {
+                toasts::toast_info(
+                    "The screen is placed, but may not stay after a scene switch. Move it once to save it.",
+                );
+            }
+        }
+        if !step.forget.is_empty()
+            && let Ok(active) = api::fetch_active_layout().await
+        {
+            let kept = active
+                .zones
+                .iter()
+                .filter(|output| !step.forget.contains(&output.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            if kept.len() != active.zones.len() {
+                let request = api::layouts::UpdateLayoutRequest {
+                    zones: Some(kept),
+                    ..Default::default()
+                };
+                match api::layouts::update_layout(&active.id, &request).await {
+                    Ok(_) => wrote = true,
+                    Err(_) => toasts::toast_info(
+                        "The screen is unassigned, but may come back after a scene switch.",
+                    ),
+                }
+            }
+        }
+        if !wrote || !self.is_current(generation) {
+            return None;
+        }
+        self.resync(generation).await;
+        self.current_scene().map(|scene| scene.revision)
     }
 
     /// Read the live scene after a stale reply, so the next operation does
@@ -1903,7 +1994,9 @@ impl StudioHistory {
                         };
                         self.journal.update(|j| j.settle(id, settled));
                         self.announce_replay();
+                        let landed = response.changes.clone();
                         self.accept(response, through);
+                        self.teach_followed_layout(generation, &landed).await;
                         toasts::toast_success(if redo {
                             "Assignment redone and saved"
                         } else {

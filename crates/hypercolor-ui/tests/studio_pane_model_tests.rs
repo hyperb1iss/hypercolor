@@ -128,6 +128,7 @@ fn pane(
         led_count: 32,
         member_count: 1,
         resolved: false,
+        segments: Vec::new(),
     }];
     build_pane(PaneInputs {
         zones: &zones,
@@ -288,6 +289,7 @@ fn row_matching_normalizes_and_treats_empty_as_everything() {
         led_count: 123,
         member_count: 1,
         resolved: true,
+        segments: Vec::new(),
     };
     let terms = HashMap::from([("usb:k70".to_owned(), vec!["Keyboard".to_owned()])]);
     assert_eq!(normalize_search("  K70  "), "k70");

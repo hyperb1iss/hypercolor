@@ -225,6 +225,37 @@ fn a_screen_no_zone_places_is_unassigned_like_any_device() {
 }
 
 #[test]
+fn a_screen_whose_devices_lights_are_placed_is_unassigned_on_its_own() {
+    // A pump with a ring and a panel: the ring sits in a zone and the
+    // panel in none. The panel is a row of its own, claiming only its
+    // segment, so adding it leaves the ring where it is.
+    let zones = vec![zone_resource_with_outputs(vec![output(
+        "usb:pump",
+        Some("Ring"),
+        12,
+    )])];
+    let mut pump = meta("usb:pump", "Galahad pump", 12);
+    pump.display_segments = vec!["Display".to_owned()];
+    let rows = unassigned_device_rows(&zones, std::slice::from_ref(&pump));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].device_id, "usb:pump");
+    assert_eq!(rows[0].segments, ["Display"]);
+    assert_eq!(rows[0].led_count, 0);
+
+    // Once a zone holds the panel too, nothing is left to add.
+    let zones = vec![zone_resource_with_outputs(vec![
+        output("usb:pump", Some("Ring"), 12),
+        output("usb:pump", Some("Display"), 1),
+    ])];
+    assert!(unassigned_device_rows(&zones, std::slice::from_ref(&pump)).is_empty());
+
+    // With nothing of it placed it is one row for the whole device.
+    let rows = unassigned_device_rows(&[], &[pump]);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].segments.is_empty());
+}
+
+#[test]
 fn unassigned_rows_empty_when_every_device_is_placed() {
     let zones = vec![zone_resource_with_outputs(vec![
         output("a", None, 10),

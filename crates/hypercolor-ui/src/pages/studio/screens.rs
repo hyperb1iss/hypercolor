@@ -40,8 +40,9 @@ use super::history::{AddOutcome, LayerAdd};
 use super::screen_model::{
     Composition, FaceReport, KEPT_CHIP, KEPT_NOTICE, KeptFaceRow, PlacedScreen, ScreenPanel,
     ScreenRef, StackHome, add_outcome_words, card_face, copy_layer_to_scene, copy_prompt,
-    is_screen_layer, kept_face_row, placed_screens, plan_add_to_all_screens, plan_screen_adds,
-    screen_panel, screens_label, selected_screens, takes_copies, unplaced_screens,
+    faceless_displays, is_screen_layer, kept_face_row, placed_screens, plan_add_to_all_screens,
+    plan_screen_adds, screen_panel, screens_label, selected_screens, takes_copies, unplaced_face,
+    unplaced_screens,
 };
 
 /// Flush debounce for face-setting edits, the layer inspector's cadence.
@@ -114,14 +115,13 @@ pub(crate) fn use_placed_screens(
 }
 
 /// The saved faces showing on the screens the scene gives nothing of
-/// their own, by display. A card names its screen's face, and for such a
-/// screen that face is the saved one, which only the display's face route
-/// knows. The list of those screens is what is read, so a control edit
+/// their own, placed or not, by display. A card names its screen's face,
+/// and for such a screen that face is the saved one, which only the
+/// display's face route knows. The list of those screens is what is read, so a control edit
 /// elsewhere in the scene reads nothing again; `tick` moves to read after
 /// a write to a saved face.
 pub(crate) fn use_kept_names(
     active_scene: Signal<Option<api::SceneDocument>>,
-    placed: Memo<Vec<PlacedScreen>>,
     tick: ReadSignal<u64>,
 ) -> Signal<HashMap<String, String>> {
     let ws = expect_context::<WsContext>();
@@ -130,17 +130,10 @@ pub(crate) fn use_kept_names(
             .with(|hint| hint.as_ref().map_or(0, |hint| hint.structural_generation))
     });
     let faceless = Memo::new(move |_| {
-        placed.with(|placed| {
-            active_scene.with(|scene| {
-                let Some(scene) = scene.as_ref() else {
-                    return Vec::new();
-                };
-                placed
-                    .iter()
-                    .filter(|screen| card_face(&scene.zones, screen).is_none())
-                    .filter_map(|screen| screen.device_id.clone())
-                    .collect::<Vec<_>>()
-            })
+        active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .map_or_else(Vec::new, |scene| faceless_displays(&scene.zones))
         })
     });
     let resource = api::daemon_resource(move || {
@@ -260,7 +253,7 @@ impl Screens {
         });
         let (face_tick, set_face_tick) = signal(0_u64);
         let (face, kept) = use_display_face(face_device.into(), face_tick);
-        let kept_names = use_kept_names(active_scene, placed, face_tick);
+        let kept_names = use_kept_names(active_scene, face_tick);
 
         let focus = RwSignal::new(false);
         // Focus is a view of one selected screen: it ends with it.
@@ -331,6 +324,23 @@ impl Screens {
                 let device_id = screen.device_id.as_ref()?;
                 self.kept_names.with(|names| names.get(device_id).cloned())
             })
+    }
+
+    /// The face a screen no zone places goes on showing: the top layer of
+    /// the stack kept for it, else the face saved with it.
+    pub fn unplaced_face_name(
+        self,
+        studio: StudioContext,
+        device_id: &str,
+        effect_name: impl Fn(&str) -> Option<String>,
+    ) -> Option<String> {
+        studio
+            .active_scene
+            .with(|scene| {
+                unplaced_face(&scene.as_ref()?.zones, device_id)
+                    .map(|layer| layer_name(layer, &effect_name))
+            })
+            .or_else(|| self.kept_names.with(|names| names.get(device_id).cloned()))
     }
 
     /// Open the composition panel on the screens selected, with the

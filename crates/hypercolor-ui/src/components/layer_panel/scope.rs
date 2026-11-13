@@ -46,6 +46,12 @@ pub fn is_screen_member(member: &ZoneMember) -> bool {
     member.segment.as_deref() == Some(SCREEN_SEGMENT)
 }
 
+/// Whether a placed output is a screen.
+#[must_use]
+pub fn is_screen_output(output: &hypercolor_types::spatial::Output) -> bool {
+    output.zone_name.as_deref() == Some(SCREEN_SEGMENT)
+}
+
 /// Every output of `zone`, in the zone's order. `names` gives a member's
 /// own shown name and its device's. Screens come out not pickable; pass
 /// the result through [`with_screens`] for a daemon that takes them.

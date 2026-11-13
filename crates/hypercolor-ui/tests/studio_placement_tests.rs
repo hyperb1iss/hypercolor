@@ -10,7 +10,7 @@ use hypercolor_ui::api::DeviceSummary;
 use hypercolor_ui::pages::studio::placement::{
     Arrival, FIT_MARGIN, Fallback, Footprint, Seed, assignment_seeds, center_seeds_on, fit_outputs,
     move_edits, offset_to_center, place_arrivals, restore_hardware_layout, rig_footprint,
-    rig_layouts, screen_arrivals,
+    rig_layouts,
 };
 
 const CANVAS: (u32, u32) = (640, 480);
@@ -925,49 +925,4 @@ fn hardware_layout_keeps_restored_assembly_on_canvas_without_changing_ratios() {
         assert!(bounds.min_y >= -EPSILON && bounds.max_y <= 1.0 + EPSILON);
     }
     assert_close(outputs[0].size.x, outputs[1].size.x * 2.0);
-}
-
-#[test]
-fn a_screen_arrives_as_a_box_of_its_panels_shape() {
-    // The daemon's assignment mints light segments only, so a screen is
-    // placed by an edit that says where its box goes.
-    let scene = scene(&[("primary", &[("fan", "case", "Fan", 0.2, 0.3)])], &[]);
-    let panel = device(
-        "sim:lcd",
-        serde_json::json!([{
-            "id": "segment_0", "name": "Display", "led_count": 0,
-            "topology": "custom",
-            "topology_hint": { "type": "display", "width": 960, "height": 160, "circular": false },
-        }]),
-    );
-    let zone_id = scene.zones[0].id.to_string();
-
-    let edits = screen_arrivals(&scene, &panel, &zone_id, None, CANVAS);
-
-    assert_eq!(edits.len(), 1);
-    assert!(edits[0].before.is_none());
-    let state = edits[0].after.as_ref().expect("the screen is added");
-    assert_eq!(state.zone_id, scene.zones[0].id);
-    assert_eq!(state.index, 1);
-    let output = &state.output;
-    assert_eq!(output.device_id, "sim:lcd");
-    assert_eq!(output.zone_name.as_deref(), Some("Display"));
-    assert_eq!(output.position, NormalizedPosition::new(0.5, 0.5));
-    // Six times as wide as tall on screen, whatever the canvas's shape.
-    let on_screen = (output.size.x * 640.0) / (output.size.y * 480.0);
-    assert!((on_screen - 6.0).abs() < 0.01, "aspect was {on_screen}");
-    assert!(output.size.x <= 0.22 + f32::EPSILON);
-
-    // A drop point is where the box lands.
-    let point = NormalizedPosition::new(0.25, 0.75);
-    let dropped = screen_arrivals(&scene, &panel, &zone_id, Some(point), CANVAS);
-    assert_eq!(
-        dropped[0].after.as_ref().map(|state| state.output.position),
-        Some(point)
-    );
-
-    // A device with no screen, or a zone the scene lacks, places nothing.
-    let lights = device("usb:strip", serde_json::json!([]));
-    assert!(screen_arrivals(&scene, &lights, &zone_id, None, CANVAS).is_empty());
-    assert!(screen_arrivals(&scene, &panel, "gone", None, CANVAS).is_empty());
 }

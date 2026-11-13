@@ -217,16 +217,6 @@ fn plan_move(
     if payload.origin == Origin::Unassigned {
         let segments = payload.segments.clone();
         let device = registry_device(drag, &payload.device_id);
-        // A device that is a screen and nothing else has no light segment
-        // for the daemon's assignment to mint, so its box is placed here.
-        if let Some(device) = &device
-            && light_segment_count(device) == 0
-        {
-            let arrivals = placement::screen_arrivals(scene, device, zone_id, point, canvas);
-            if !arrivals.is_empty() {
-                return Planned::Write(MovePlan::Edit(arrivals));
-            }
-        }
         // A channel brings only its own segment, so only its hint counts.
         let mut seeds = device
             .as_ref()
@@ -244,7 +234,7 @@ fn plan_move(
             })
             .unwrap_or_default();
         let claimed = if segments.is_empty() {
-            device.as_ref().map_or(0, light_segment_count)
+            device.as_ref().map_or(0, assignable_segment_count)
         } else {
             segments.len()
         };
@@ -461,7 +451,8 @@ pub(crate) fn registry_device(
     })
 }
 
-/// How many light segments a device would bring into a zone.
+/// How many light segments a device has: what moving "the device" means
+/// for a device whose screen sits elsewhere, or nowhere.
 #[must_use]
 pub(crate) fn light_segment_count(device: &DeviceSummary) -> usize {
     device
@@ -475,6 +466,23 @@ pub(crate) fn light_segment_count(device: &DeviceSummary) -> usize {
                 )
         })
         .count()
+}
+
+/// How many outputs a device no zone holds would bring into one: its
+/// light segments and its screens.
+#[must_use]
+pub(crate) fn assignable_segment_count(device: &DeviceSummary) -> usize {
+    light_segment_count(device)
+        + device
+            .segments
+            .iter()
+            .filter(|segment| {
+                matches!(
+                    segment.topology_hint,
+                    Some(api::SegmentTopologySummary::Display { .. })
+                )
+            })
+            .count()
 }
 
 /// The payload for a device's outputs in `zone_id`, read from the live

@@ -188,7 +188,7 @@ pub fn StudioPhoneSummary() -> impl IntoView {
     let active_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
     let placed = use_placed_screens(active_scene);
     let (face_tick, _) = signal(0_u64);
-    let kept_names = use_kept_names(active_scene, placed, face_tick);
+    let kept_names = use_kept_names(active_scene, face_tick);
     // Every zone's screens, each with the face it shows.
     let screen_lines = Memo::new(move |_| {
         let placed = placed.get();

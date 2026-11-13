@@ -37,7 +37,7 @@ use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
 use super::layer_target::{add_layer_to_outputs, offers_layer};
 use super::move_menu::{MoveMenuAnchor, is_menu_key};
-use super::moves::{light_segment_count, perform, zone_name_in};
+use super::moves::{assignable_segment_count, perform, zone_name_in};
 use super::pane_model::{elsewhere_label, fold_label, output_list_folds, selects_part_of};
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
 
@@ -131,6 +131,9 @@ pub fn StudioDeviceCard(
     let studio = expect_context::<StudioContext>();
     let drag = expect_context::<DragController>();
     let row_device_id = row.device_id.clone();
+    // The segments an Unassigned row stands for when it is not the whole
+    // device: a screen whose device's lights sit in a zone.
+    let part = row.segments.clone();
 
     let Some(device) = device else {
         return view! {
@@ -172,9 +175,11 @@ pub fn StudioDeviceCard(
         None => led_label(row.led_count),
     };
     // A screen's card carries a screen glyph and names the face it shows,
-    // once a zone places it. `None` for a device with no screen.
+    // whether a zone places it or not: a screen no zone places goes on
+    // showing its face. `None` for a device with no screen.
     let screen_face = {
         let layout_id = device.layout_device_id.clone();
+        let physical_id = device.id.clone();
         let zone_id = select.clone();
         let is_screen = resolution.is_some();
         let is_placed = mode == CardMode::Placed;
@@ -183,8 +188,20 @@ pub fn StudioDeviceCard(
             if !is_screen {
                 return None;
             }
+            let effect_name = |effect_id: &str| {
+                effects?.effects_index.with(|index| {
+                    index
+                        .iter()
+                        .find(|entry| entry.effect.id == effect_id)
+                        .map(|entry| entry.effect.name.clone())
+                })
+            };
             if !is_placed {
-                return Some(None);
+                return Some(
+                    studio
+                        .screens
+                        .unplaced_face_name(studio, &physical_id, effect_name),
+                );
             }
             let screen = studio.screens.placed.with(|placed| {
                 placed
@@ -192,16 +209,10 @@ pub fn StudioDeviceCard(
                     .find(|screen| screen.layout_id == layout_id && screen.zone_id == zone_id)
                     .cloned()
             });
-            Some(screen.and_then(|screen| {
-                studio.screens.card_face_name(studio, &screen, |effect_id| {
-                    effects?.effects_index.with(|index| {
-                        index
-                            .iter()
-                            .find(|entry| entry.effect.id == effect_id)
-                            .map(|entry| entry.effect.name.clone())
-                    })
-                })
-            }))
+            Some(
+                screen
+                    .and_then(|screen| studio.screens.card_face_name(studio, &screen, effect_name)),
+            )
         })
     };
 
@@ -317,7 +328,8 @@ pub fn StudioDeviceCard(
             })
         })
         .collect();
-    let show_components = layout_utils::card_lists_channels(total_components);
+    // A row that is a device's screen alone has no channels to list.
+    let show_components = part.is_empty() && layout_utils::card_lists_channels(total_components);
     let channels_id = format!("studio-channels-{zone_key}-{row_device_id}");
     // A placed card lists its outputs unless there are many; an Unassigned
     // card folds them until asked. The pane rebuilds its cards on scene
@@ -350,14 +362,32 @@ pub fn StudioDeviceCard(
             &select,
             device_output_ids.clone(),
         )
-    } else {
+    } else if part.is_empty() {
         MovePayload::unassigned_device(
             &device.layout_device_id,
             &device.name,
-            light_segment_count(&device),
+            assignable_segment_count(&device),
+        )
+    } else {
+        // The device's screen alone: its lights sit in a zone already, and
+        // adding the screen must not move them.
+        MovePayload::unassigned_segments(
+            &device.layout_device_id,
+            &device.name,
+            &format!("{}: screen", device.name),
+            part.clone(),
         )
     };
-    let mut scopes = vec![("Whole device".to_owned(), whole.clone())];
+    let add_payload = (mode == CardMode::Unassigned).then(|| whole.clone());
+    let mut scopes = vec![(
+        if part.is_empty() {
+            "Whole device"
+        } else {
+            "Screen"
+        }
+        .to_owned(),
+        whole.clone(),
+    )];
     if show_components {
         scopes.extend(
             component_rows
@@ -573,9 +603,7 @@ pub fn StudioDeviceCard(
                         // screen glyph; the face's name is what gives way.
                         {move || screen_face.get().map(|face| {
                             let named = face.is_some();
-                            let words = face.unwrap_or_else(|| {
-                                if placed { "No face" } else { "Screen" }.to_owned()
-                            });
+                            let words = face.unwrap_or_else(|| "No face".to_owned());
                             view! {
                                 <div class="flex min-w-0 items-center gap-1 text-[11px]" data-card-face="">
                                     <span class="flex shrink-0 text-accent/75">
@@ -625,6 +653,7 @@ pub fn StudioDeviceCard(
                     output_ids: device_output_ids,
                     scene_key: scene_key.clone(),
                     add_device,
+                    add_payload,
                     ops_open,
                     kebab_id,
                 })}
@@ -740,6 +769,9 @@ struct CardActionsArgs {
     output_ids: Vec<String>,
     scene_key: Option<String>,
     add_device: Option<DeviceSummary>,
+    /// What an Unassigned card's "+" adds: the whole device, or the part
+    /// of it the card stands for.
+    add_payload: Option<MovePayload>,
     ops_open: RwSignal<bool>,
     kebab_id: String,
 }
@@ -758,6 +790,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
         output_ids,
         scene_key,
         add_device,
+        add_payload,
         ops_open,
         kebab_id,
     } = args;
@@ -875,7 +908,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     }
                     .into_any(),
                 ),
-                CardMode::Unassigned => add_device.map(|device| {
+                CardMode::Unassigned => add_device.zip(add_payload).map(|(device, payload)| {
                     // Read live, so a zone renamed after this card mounted
                     // is the one the button names.
                     let target = {
@@ -896,11 +929,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                             disabled=move || studio.history.busy.get()
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
-                                let payload = MovePayload::unassigned_device(
-                                    &device.layout_device_id,
-                                    &device.name,
-                                    light_segment_count(&device),
-                                );
+                                let payload = payload.clone();
                                 let focus = FocusReturn {
                                     target: device_card_dom_id(&select, &device.layout_device_id),
                                     fallback: None,
