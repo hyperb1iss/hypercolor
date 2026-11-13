@@ -2063,6 +2063,61 @@ one tap away (`pages/studio/phone_view.rs:1-7`).
 - Hover highlights have no touch twin; the checklist and the "Showing" header
   carry the same information.
 
+### 7.7 As built in W6
+
+Where the build differs from the text above.
+
+**One path serves every daemon, so the tab is gone outright.** Where a
+screen's layers live is resolved by one rule in the UI
+(`pages/studio/screen_model.rs`, `placed_screens`): in the zone that places
+the screen when its `display` zone carries `view_of`, in that `display` zone
+itself when it does not. The second case is the legacy spelling of §6.6, and
+it is also every screen on a daemon without `screen-layers`. Studio writes
+such a stack through the stored zone's layer routes and reads the bottom
+row's blend and amount from its `display_target`, written through
+`PATCH /displays/{id}/face/composition`. So the Screens tab was not kept
+behind the capability: the legacy path the spec already requires is the
+older-daemon path. `screen-layers` gates only what needs a scoped screen
+layer: a screen in the target editor and in canvas picking, and one layer on
+several screens.
+
+**The zone's own list leaves screen layers out.** They are no part of the
+zone's canvas, and their place among its layers means nothing (§6.3). With no
+screen selected the composition panel lists the zone's canvas layers, and
+leads with "On screens": one line per face, naming its screens, which selects
+them. The zone's caption, the sidebar, and the phone's "Also playing" leave
+screen layers out for the same reason.
+
+**"Add to all screens" is offered whenever the scene places a screen beyond
+the ones selected**, not only when screens sit in more than one zone. The
+picker shows "Add to" with the selection and "All screens", and says what the
+second reaches before anything is picked ("4 screens in Main and Desk. Spare
+panel is in no zone and is skipped."), which stands in for a confirmation
+dialog. Every add made from a selection of screens goes through Studio's
+journal as one step, one screen or five.
+
+**"Copy to every scene" is a button on the row**, since the menu it would sit
+in had one item. It reads every saved scene that is not locked, counts the
+ones that place the layer's screens, and asks once. A scene that still stores
+a display zone for the screen takes the copy as that zone's one layer, with
+the copy's blend and amount as the zone's target, so it converts on its next
+activation. A scene that places the screen nowhere is not counted.
+
+**Selecting a screen does not open the panel.** The chip and the properties
+bar's "Face settings" do, so arranging boxes on a canvas the panel overlays
+is not interrupted. The hour format is two clicks from the box.
+
+**A saved face's name on a card is read from the display.** The scene does
+not hold it, so Studio reads `GET /displays/{id}/face` for the screens the
+scene gives nothing, again on structural scene events.
+
+**Layer health** is read under the view of each selected screen a layer is
+on, least healthy first, as §6.8 left it. The daemon was not changed.
+
+**The zone's effect** is `hypercolor_types::layer::zone_effect_layer`
+everywhere in the UI; the UI's own rule, which fell back to a limited layer,
+is deleted.
+
 ---
 
 ## 8. Delivery waves
