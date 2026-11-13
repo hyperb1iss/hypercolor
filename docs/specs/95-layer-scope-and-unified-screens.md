@@ -1277,15 +1277,23 @@ and no newly written document says "display zone" after this spec.
   another zone. This is a behavior change (§10).
 - **Roles.** A scene authors `Primary` and `Custom` zones only. `Display`
   stays in the enum for stored documents and for the views in §6.7.
-- **A screen layer needs a placed screen.** A layer can only be scoped to an
-  output, so a screen holds its stack as screen layers once some zone has its
-  `Display` output. A screen no zone places has no output to scope to. Its
-  stack is a stored display zone, the legacy spelling of §6.6, written and
-  rendered as it is today, and its backdrop comes from wherever the render
-  thread finds its device (§5.10). Nothing places a screen on its own: a box
-  the daemon chose would move the backdrop under a blended face. Placing the
-  screen, which is a membership edit, converts its stored zone in the same
-  commit (§6.6).
+- **A screen's stack follows its placement.** A layer can only be scoped to an
+  output, so where a screen's stack lives is decided by whether some zone of
+  the scene holds its `Display` output. This holds at the end of every scene
+  write, for every screen the rig knows:
+  - **Placed:** the stack is screen layers in the zone that holds the output,
+    unless the scene stores a display zone for the screen that cannot convert
+    exactly (§6.6), in which case that zone is the whole stack.
+  - **Unplaced:** the stack is a stored display zone under the screen's view
+    id (§6.7.1), written and rendered as it is today, and its backdrop comes
+    from wherever the render thread finds its device (§5.10). No layer scoped
+    only to that screen is left dormant in the zone its output left.
+
+  Nothing places a screen on its own: a box the daemon chose would move the
+  backdrop under a blended face. The two spellings are inverses of each other
+  (§6.6), they share one zone id and one set of layer ids, and so a screen
+  that leaves a zone and returns keeps its document, its effect slots and its
+  running renderer.
 
 ### 6.4 Lowering
 
@@ -1402,11 +1410,44 @@ screen layers. It changes no schema number (§4.6 moved those in W2).
 
 Nothing is rewritten at load. A stored display zone is the **legacy spelling**
 of a screen's stack: it parses, lowering passes it through, and it renders as
-it does today. The scene domain converts a scene's legacy zones in one commit
-when the scene is activated, again when a screen's surface first becomes
-known, and again when a membership edit places a screen, because conversion
-needs the binding from a physical device to its output, which a file loader
-does not have. Conversion is idempotent.
+it does today.
+
+**One settle pass, at the end of every scene write.** Each write to the scene
+manager, a commit or a layout publication, ends by settling the live scene's
+screens against the invariant of §6.3, whatever the write was: an activation,
+a membership edit and its undo, a zone-layout save, a layout applied or
+published, a zone or device deleted, a screen becoming known. It needs the
+binding from a physical device to its output, which a file loader does not
+have, and which outputs each scene held before the write, because a departed
+output can only be tied to its screen from the state before it left. The pass
+is idempotent. It has two halves:
+
+- **Unplaced to placed (conversion).** A stored display zone whose screen a
+  zone now holds becomes screen layers in that zone, when the result is exact
+  (below).
+- **Placed to unplaced (return).** A screen whose output was in a zone before
+  the write and is in none after it gets its layers back as a stored display
+  zone: the layers scoped only to it, in order, under their ids, with the
+  bottom enabled layer's blend and opacity as the target and that layer as
+  the opaque base. That is the zone lowering rendered, so the frames do not
+  change. The stored zone inherits a paused owner's `enabled: false`. A layer
+  the screen shared with screens that are still placed stays with them and
+  loses the departed id from its scope; the departed screen gets a copy under
+  a new layer id, and when it returns that copy converts as a layer of its
+  own and does not rejoin the shared one. A layer scoped to the screen and to
+  an LED output is a canvas layer and stays as it is (R5). A zone that is
+  deleted takes its layers with it, faces included (R6), so there is nothing
+  to return. A screen that already has a stored display zone keeps it as its
+  whole stack.
+
+Return then conversion, and conversion then return, are each the identity on
+what the scene stores for a convertible stack, apart from the one field a
+display zone never reads, its bottom layer's own blend.
+
+An activation aligns the scene's primary zone with the layout the scene will
+use, its own when it names one, before it settles. So where each stack lives
+is decided once, against the outputs the scene will have, and activating a
+scene twice changes nothing.
 
 **Conversion is exact or it does not happen.** A legacy zone has two
 compositions the new model has one field for (§6.1, §6.3). A zone converts
@@ -1428,7 +1469,8 @@ conversion again whenever it changes.
 | Display zone whose first layer is disabled | Left as stored | The layer that meets the backdrop is not the one the target was authored for |
 | Display zone that is disabled, or whose brightness is not 1 | Left as stored | |
 | Display zone with no layers | Removed | The daemon created these as bare surfaces (`core/src/scene/mod.rs:711-725`). The screen stays addressable through its view (§6.7) |
-| Convertible display zone whose screen is in no zone | Left as stored | Converts when the screen is placed: the membership edit that gives a zone the screen's `Display` output converts in the same commit, so no layer can be written for the screen beside the stored zone |
+| Convertible display zone whose screen is in no zone | Left as stored | Converts in the write that places the screen, so no layer can be written for the screen beside the stored zone |
+| Screen layers whose screen's output leaves every zone | Returned to a stored display zone under the view id, in that write | The inverse of the first row. The panel shows the same frames |
 | Convertible display zone whose owning zone already holds screen layers for the screen | Left as stored | Those layers are covered while the zone exists and would become the bottom of its stack |
 | Display zone whose device is unknown on this rig | Left as stored | Converts when the device first binds |
 | Display zone in a snapshot-locked scene | Left as stored | Converts if the scene is unlocked |
@@ -1625,17 +1667,31 @@ activation that waited on its guards cannot put an older one back.
 **Nothing places a screen but its owner.** Automatic layout leaves screens
 off the canvas on purpose, and the render thread finds an unplaced screen a
 backdrop through its device's other outputs. A box minted for it would move
-that backdrop under a blended face, so conversion, the face routes and the
-layer routes never add one. An unplaced screen keeps its stack in a stored
-display zone, and the frame comparison holds that case too: a translucent
-face over a lit canvas shows the same frames before and after activation.
+that backdrop under a blended face, so nothing adds one.
+
+**The settle pass has two call sites.** Scene state is written in two places:
+the commit of a mutation, and a layout publication, which rewrites a primary
+zone that follows the layout under the same lock. Both settle the live scene
+and announce its display zones. A mutation records which screen outputs each
+scene held when it began; a publication reads them from the state it is about
+to replace. A service that answers with the scene settles before it reads, so
+its answer is the scene as committed.
+
+**Frames across the two spellings.** On both compositors, a translucent face
+on a placed screen keeps the panel byte for byte through a layout that drops
+the screen and one that brings it back, with no other frame in between, and
+the stored zone on a cold start is the same picture. Scenes that follow a
+layout with no screen keep their faces through activation and through coming
+back, which is the shape of a rig whose stored layouts hold no screens. In
+those tests the screen's device holds one box on the canvas placed or not, so
+the backdrop is the same and any difference would be the face.
 
 **Conversion has three more guards.** A zone also stays in the legacy spelling
 when its stored target is one the renderer clamps (a replacing target with a
 partial opacity), when the zone that places its screen is paused (the face
 would stop, §6.3), and when that zone already uses one of its layer ids. The
-fourth row of the table above, a zone whose owner already holds screen layers
-for the screen, is reported the same way. Each
+table's row for an owner that already holds screen layers for the screen is
+reported the same way. Each
 is reported with its reason.
 
 **A stored display zone is the screen's whole stack while it exists.** Screen
@@ -1646,15 +1702,22 @@ has two bindings.
 the owning zone's stack, above its lighting. "The effect this zone is running"
 is therefore one rule in `hypercolor-types`, `zone_effect_layer`: the top
 layer with no scope that has an effect source. The daemon's active effect, the
-CLI's `effects patch` and `effects reset`, and the TUI read it there. The
+effect a stop reports, the previous effect an apply reports, the layer whose
+input bindings an apply keeps, the CLI's `effects patch` and `effects reset`,
+and the TUI all read it there. A client with no primary zone to read falls
+back to the first zone that is not a `display` zone. The
 error fallback follows the same line: a failed layer that carries a scope is
 removed alone, and only a failed whole-zone layer clears its zone.
 
-**A view's events come from the commit.** A view changes whenever its owning
-zone is written, whoever the write was addressed to. Each commit compares the
-live scene's views, and whether each stack draws, before and after, and
-publishes `ZoneChanged` under the id of every view that differs and that the
-mutation did not already announce.
+**A display zone's events come from the write.** A screen is listed as one
+`display` zone, its stored zone or its view, and both change through writes
+that never address them: a layer added through the owning zone, the owner
+paused or deleted, a layout that takes the screen's output away, the settle
+pass turning one spelling into the other under one id. Each write compares
+what the live scene lists, and whether each stack draws, before and after. A
+zone that appears or goes is announced as that; one that is still listed is
+announced as changed, so removing the stored zone of a screen that stays
+listed as an empty view is a change and not a removal.
 
 **Layer health is published under the view's id.** That is the zone id an
 unchanged client holds for a screen's layers. W6 reads screens from their
@@ -1674,9 +1737,9 @@ so a document read from `GET /scene` writes back unchanged.
 it from the stored zone's id to the derived id once, which is one renderer
 start, and a second conversion, the surface table arriving again and a move of
 the screen between zones all leave the key alone. A zone the daemon stored
-for an unplaced screen already carries the derived id, so placing that screen
-starts no renderer at all. One layer on three panels
-asks for three slots, as three display zones do. The captured 0.9.0 store
+for an unplaced screen already carries the derived id, so a screen that is
+placed, unplaced and placed again starts no renderer at all. One layer on
+three panels asks for three slots, as three display zones do. The captured 0.9.0 store
 converts whole: two zones become screen layers, the bare surface is removed,
 none is left legacy, and all three panels show the same frames before and
 after on both compositors. The evidence rig's stored scenes and the hardware
