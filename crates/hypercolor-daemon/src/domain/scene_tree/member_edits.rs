@@ -217,6 +217,11 @@ pub async fn edit_members(
     mutation
         .apply_layer_moves(scene_id, &layer_moves)
         .map_err(layer_move_error)?;
+    // A screen that just gained its output can hold its stored face as
+    // layers. Converting here, in the commit that places it, leaves no
+    // moment where a layer could be written for the screen beside the
+    // stored zone and be covered by it.
+    mutation.convert_legacy_display_zones(scene_id);
     for zone_id in changes
         .iter()
         .flat_map(|change| {

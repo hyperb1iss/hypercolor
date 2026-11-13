@@ -670,6 +670,57 @@ async fn a_view_is_refused_where_a_display_zone_always_was() {
     );
 }
 
+#[tokio::test]
+async fn placing_a_screen_converts_its_stored_face_in_the_same_commit() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", false).await;
+    let written = rig
+        .ok(
+            Method::PUT,
+            &format!("/api/v1/displays/{}/face", screen.device),
+            Some(json!({
+                "effect_id": face.to_string(),
+                "scope": "scene",
+                "blend_mode": "screen",
+                "opacity": 0.5
+            })),
+        )
+        .await;
+    let stored_layers = layer_ids(&written["zone"]);
+    assert!(rig.scene().await.display_zone_for(screen.device).is_some());
+    let revision = rig.state.scene_manager.revision();
+
+    rig.place(&screen).await;
+
+    assert_eq!(
+        rig.state.scene_manager.revision(),
+        revision + 1,
+        "the placement and the conversion are one commit"
+    );
+    let scene = rig.scene().await;
+    assert!(
+        scene.display_zone_for(screen.device).is_none(),
+        "no stored zone is left to cover a layer written for the screen"
+    );
+    let primary = scene.primary_zone().expect("primary zone");
+    assert_eq!(
+        scoped(primary),
+        vec![(stored_layers[0].clone(), vec![screen.output.clone()])]
+    );
+    let layer = primary.layers.last().expect("the face layer");
+    assert_eq!(layer.blend, BlendMode::Screen, "the target moved onto the layer");
+    assert!((layer.opacity - 0.5).abs() < f32::EPSILON);
+
+    // The zone id the client held goes on addressing the screen.
+    let view = rig.view(&screen).await;
+    assert_eq!(view["id"], screen.view);
+    assert_eq!(layer_ids(&view), stored_layers);
+    assert_eq!(view["view_of"]["member"], screen.output);
+    let read = rig.get_face(&screen).await;
+    assert_face(&read, face, &screen.view, "scene", (true, false), "scene");
+}
+
 // ── The zone's own effect ────────────────────────────────────────────────
 
 #[tokio::test]
