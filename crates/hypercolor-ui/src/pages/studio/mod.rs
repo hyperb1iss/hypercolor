@@ -23,6 +23,7 @@ pub mod phone_summary;
 pub mod phone_view;
 pub mod placement;
 mod screen_list;
+pub mod screen_model;
 mod stage;
 pub use crate::zones::surface;
 pub mod tab_model;
