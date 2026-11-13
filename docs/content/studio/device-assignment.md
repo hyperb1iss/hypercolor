@@ -23,7 +23,7 @@ Every physical device in the open zone renders as a card. The card carries the d
 - The **device name**, wrapping to a second line before it truncates, then a meta line with the **LED count**, the transport (USB, Network, SMBus, Bridge, MIDI, or Serial), and a driver label when there is no vendor mark.
 - For a screen device, the card shows the real **resolution** (for example `2560 × 1440`) instead of an LED count, because a screen is a pixel grid rather than addressable LEDs.
 
-Clicking the card body selects the device's outputs on the canvas, and hovering it previews them. The link runs the other way too: resting the pointer on a box on the canvas softly lights the card that owns it. A screen device whose face has no boxes in this zone opens its screen on the Screens tab instead.
+Clicking the card body selects the device's outputs on the canvas, and hovering it previews them. The link runs the other way too: resting the pointer on a box on the canvas softly lights the card that owns it. A screen's card also names the face the screen shows, under its name.
 
 {{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
@@ -54,6 +54,8 @@ A card in the open zone carries exactly two trailing icons:
 **Hide** is a Studio view convenience, not a render change. A hidden output's box fades to a faint gray ghost that ignores clicks, which declutters a busy canvas; the output keeps rendering on your hardware. Hidden state is client-side, kept per scene and per zone in your browser, and it is not the daemon's discovery memory. Use a channel row's eye to hide one output, or the card's eye to hide them all.
 
 Cards in the **Unassigned** section look different. They carry a lightning **Identify** button and a **+** that adds the device to the open tab's zone; hover the **+** to see which zone that is. Their channels fold behind a `N channels` toggle until the device is in a zone.
+
+Screens start here. Hypercolor places your lights on the canvas as it finds them, but it leaves a screen in Unassigned until you place it, because where a screen's box sits decides what shows behind its face. An unassigned screen still shows its face, and its card says which. Click the card to open that face and its settings without placing the screen. **+** adds the screen to the open zone, with its face, and selects it there. A device with lights and a screen, such as a pump with a ring and an LCD, can have its lights in a zone while its screen waits in Unassigned as a row of its own; **+** on a device that is wholly unassigned brings both.
 
 ### Offline devices
 

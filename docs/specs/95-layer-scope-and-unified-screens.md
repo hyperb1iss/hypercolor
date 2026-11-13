@@ -2118,17 +2118,31 @@ on, least healthy first, as §6.8 left it. The daemon was not changed.
 everywhere in the UI; the UI's own rule, which fell back to a limited layer,
 is deleted.
 
-**A screen is placed by assigning its device, and the daemon mints its box.**
+**A screen is placed by naming its segment, and the daemon mints its box.**
 Automatic layout still leaves screens off the canvas. A member assignment
-(`POST /scene/members/edit` with `assignment`) is someone placing the device,
-so it mints one output per screen as well: the panel's shape fitted to a
-fifth of the canvas, centered on the device's lights when the layout holds
-them. Empty `segments` brings every segment the device has. "+" on a device
-in Unassigned therefore brings its lights and its screen, and a device whose
-lights are placed while its screen is not shows the screen in Unassigned as a
-row of its own. A screen no zone places keeps rendering the face stored under
-its view id (§6.6), so its card names that face, and placing it brings the
-face along as its layer.
+(`POST /scene/members/edit` with `assignment`) that names a screen's segment
+is someone placing it, so it mints one output for that screen: the panel's
+shape fitted to a fifth of the canvas, centered on the device's lights where
+the zone holds them. An assignment that names no segment means the device's
+lights, as it did before this spec, so no existing client gains a screen it
+did not ask for. Studio names every segment when "+" adds a device that has a
+screen, and a device whose lights are placed while its screen is not shows the
+screen in Unassigned as a row of its own. A screen no zone places keeps
+rendering the face stored under its view id (§6.6), so its card names that
+face, and placing it brings the face along as its layer.
+
+**A screen no zone places is edited where it is.** Its card opens the
+composition panel on the stored zone that holds its stack, read and written
+through that zone's layer routes. The panel names no "Behind it" group and no
+row is how the stack meets a canvas, since none is behind it. "Place on
+canvas" adds it to the open zone, and the box is selected where it lands. The
+phone summary lists these screens under "Unassigned".
+
+**Removing a row removes it from the screens shown.** A face on three
+screens, removed with one selected, is limited to the other two as one
+undoable change of target. The layer is deleted only when every screen it is
+on is selected. Removing a face saved with the screen asks first, since it
+goes from every scene and cannot be undone.
 
 **A zone that follows the rig's layout tells that layout about its screens.**
 A scene with one zone of lights rebuilds that zone from the active layout on
@@ -2147,9 +2161,10 @@ closed and names what it holds: "Blend with what is behind", then the mode
 and amount. One screen and several read the same way.
 
 **A saved face shared by several selected screens gets one row.** Studio
-reads the face of every selected screen. When each shows a saved face and it
-is the same one, the row stands for all of them and writes to each. When they
-differ, or only some show a saved face, one line says so and points at a
+reads the face of every selected screen. When each shows a saved face, the
+same one with the same settings, the row stands for all of them and writes to
+each. When the faces or their settings differ, or only some screens show a
+saved face, one line says so, names the screens it means, and points at a
 single screen.
 
 **On a phone** a screen's sheet says which screens each layer is on, as a

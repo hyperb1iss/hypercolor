@@ -112,9 +112,10 @@ SceneDocument
 `active_scene` off the context and call `refresh` after a mutation.
 
 The UI's presentation type for a zone is `zones::Surface` (`src/zones/surface.rs`):
-`id`, `name`, `kind` (`SurfaceKind::Light` for LED zones, `Screen` for display
-faces), `enabled`, `role` (`Primary` is the permanent primary zone, `Custom` is
-deletable), `color`, `display_device_id`, `layer_ids`, `top_layer`.
+`id`, `name`, `enabled`, `role` (`Primary` is the permanent primary zone,
+`Custom` is deletable), `color`, `layer_ids`, `top_layer`. Only zones of lights
+are surfaces. A screen is an output of the zone that places it, and its face is
+a layer of that zone limited to the screen (`pages/studio/screen_model.rs`).
 `ZoneEffectState` (`src/zones.rs:141`) pairs a `Surface` with what it is showing:
 `effect_id`, `effect_name`, `effect_category`, `control_values`, `preset_id`,
 and the scene `revision` those values were read at.
@@ -165,8 +166,9 @@ Studio lives in `src/pages/studio/`, one zone tab at a time:
 | ---- | ------- |
 | Page state | `mod` (`StudioContext`, selection, the target-zone effect) |
 | Tab strip | `zone_strip`, `tab_model`, `zone_controls` (zone create, rename, color, pause, reorder) |
-| Device pane | `device_pane`, `pane_model`, `device_card`, `offline_device_card`, `device_assignment`, `screen_list` |
-| Stage and layers | `stage`, `composition_panel`, `face_composition` |
+| Device pane | `device_pane`, `pane_model`, `device_card`, `offline_device_card`, `device_assignment` |
+| Stage and layers | `stage`, `composition_panel`, `layer_target` |
+| Screens | `screens` (shared state, the saved-face row, copy to every scene, the phone sheet), `screen_model` (the rules, tested without the DOM) |
 | Moves | `drag`, `drag_model`, `move_menu`, `moves` (one drag controller, the "Move to" twin, announcements) |
 | History and placement | `history`, `undo_notice`, `placement` (rig seeding, first-arrival fit, Fit) |
 

@@ -36,7 +36,7 @@ Because the scene projection is shared and WebSocket-fresh, a structural change 
 
 `ZonesContext` derives the rest with memos, so a refetch returning identical state does not wake every zone-aware surface in the app:
 
-- `zones`: every surface of the active scene in scene order (LED zones and display Screens).
+- `zones`: every zone of lights in the active scene, in scene order. A screen is no surface of its own: it is an output of the zone that places it.
 - `led_zones`: LED-role zones only; what effect application targets.
 - `multi_zone`: whether the scene has more than one LED zone. This is the trigger for every per-zone affordance outside Studio.
 - `scene_resolved`: whether the active scene has been read for this connection, so `multi_zone` describes the scene rather than an empty page still loading.
@@ -48,7 +48,7 @@ Because the scene projection is shared and WebSocket-fresh, a structural change 
 
 Three writers move it:
 
-- Studio's selection effect writes it whenever the open tab is an LED zone. Opening the Screens tab leaves it alone.
+- Studio's selection effect writes it whenever a tab is opened.
 - `CompactZoneTabs` (`components/zone_tabs.rs`) writes it from the preview cabinet on the Dashboard and Effects page. The tabs hide while `multi_zone` is false.
 - Nothing else. There is no "all zones" target and no second signal to keep in step.
 
@@ -61,17 +61,16 @@ Three writers move it:
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `history` | `StudioHistory` | The page's undo journal and write queue (also provided as its own context) |
-| `selected_surface_id` | `RwSignal<Option<String>>` | The open tab's zone, or the selected Screen; the single selection source |
+| `selected_surface_id` | `RwSignal<Option<String>>` | The open tab's zone; the single selection source |
 | `active_scene` | `Signal<Option<SceneDocument>>` | Re-exposed shared active-scene document, the last one read through a failed read |
 | `refresh_scene` | `Callback<()>` | Re-fetch the shared active scene after a zone mutation |
 | `composition_open` | `RwSignal<bool>` | Whether the composition slide-over is open |
-| `screen_face`, `refresh_screen_face` | `Signal<Option<DisplayFaceResponse>>`, `Callback<()>` | The selected Screen's live face and its refetch |
+| `screens` | `screens::Screens` | Everything Studio shares about screens: the ones zones place, the ones selected, the panel they turn the composition panel to, their saved faces, Focus, and the screen no zone places whose layers are open |
 | `hidden_outputs` | `RwSignal<HashMap<String, HashSet<String>>>` | Per-`(scene, zone)` hidden-output sets, client UI state only |
 | `selected_output_ids` | `RwSignal<HashSet<String>>` | Pane click selection bridged into the canvas |
 | `hovered_output_ids` | `RwSignal<HashSet<String>>` | Pane hover highlight bridged into the canvas |
 | `pointer_output_id` | `RwSignal<Option<String>>` | The canvas box under the pointer, mirrored back so the pane can highlight the owning card |
 | `attachment_cache` | `RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>` | Per-device component-binding cache the cards fill lazily and search reads |
-| `screen_labels` | `Memo<HashMap<String, String>>` | Screen labels that tell identical device names apart ("TL LCD 2") |
 | `render_canvas_size` | `Memo<(u32, u32)>` | The daemon's render canvas extent, read by anything fitting a footprint to the canvas |
 | `rig_layout`, `refresh_rig_layout` | `Signal<Option<SpatialLayout>>`, `Callback<()>` | The active named layout, read once for Studio; arriving outputs are placed from it |
 | `rail_disclosure` | `RwSignal<Option<String>>` | The single open-disclosure slot shared by the device cards' menus |
@@ -87,7 +86,7 @@ Two more details are easy to get wrong. The hidden-output state is keyed `(scene
 
 ## How selection drives everything
 
-Tab selection is the spine of the page. `selected_surface_id` lives in `StudioContext`, the tab strip and the Screens list write it, and the rest of the page reacts to it.
+Tab selection is the spine of the page. `selected_surface_id` lives in `StudioContext`, the tab strip writes it, and the rest of the page reacts to it. Which outputs are selected lives beside it in `selected_output_ids`; a selection that holds only screens turns the composition panel to those screens.
 
 {% <mermaid> %}
 flowchart TD
@@ -121,7 +120,8 @@ The rules behind the tab strip, the pane, placement, and moves live in Leptos-fr
 
 | Module | Rules |
 | --- | --- |
-| `pages/studio/tab_model.rs` | Which tabs fit and which overflow, reorder targets and the full-order `index`, keyboard stepping, delete eligibility and prompts, Screen labels |
+| `pages/studio/tab_model.rs` | Which tabs fit and which overflow, reorder targets and the full-order `index`, keyboard stepping, delete eligibility and prompts, screen labels |
+| `pages/studio/screen_model.rs` | Where a screen's layers live and how each write addresses them, what the panel lists for a selection of screens, the chip and card wording, saved faces, where a new face goes, and what removing or copying one reaches |
 | `pages/studio/pane_model.rs` | The pane's sections, split-device hints, search and hit counts, when Unassigned shows, the policy select |
 | `pages/studio/placement.rs` | Where arrivals land from the rig, the first-arrival fit, and Fit |
 | `pages/studio/drag_model.rs` | What a drag carries, what each drop target does with it, spring-loaded tabs, announcements, names for zones made from a device |
@@ -166,7 +166,7 @@ Two pieces of Studio are shared components mounted with a fixed contract, so the
 
 Studio passes a `surface_label`, which tells the panel to show the open tab's name in its header and drop its own zone selector. The tab strip already owns selection.
 
-New layers land on the open tab. The only multi-target add is the Screens tab's **All screens**, offered when the scene has more than one screen.
+New layers land on the open tab, limited to the selection when there is one. A selection of screens adds through Studio's journal as one step, to those screens or to **All screens**, which is offered when the scene places a screen beyond the ones selected.
 
 One display detail worth knowing when you read the code: layers are authored bottom-to-top, but the row list is reversed for display so "Top" reads first. The Top and Bottom stack markers only show with more than one layer.
 
@@ -249,7 +249,7 @@ match api::update_layer(&zone_id, &layer_id, &request, Some(revision)).await {
 
 `LayerStackOutcome::Stale` is a refetch-and-retry signal, not an error and not a clobber. The same pattern covers `delete_layer` and `reorder_layer`.
 
-Adding a layer to every screen carries the document revision across the targets. Each applied structural write returns a projected stack carrying the next revision, which becomes the precondition for the next target. The loop stops on the first stale or failed write.
+Adding a face to screens in several zones is one layer per zone, written in order through the journal, each against the revision the previous write returned. The loop stops on the first stale or failed write, and the step records what landed so one undo takes it all back.
 
 Live control editing is separate. `patch_layer_controls` sends `PatchControlsRequest` to `/scene/zones/{zone}/layers/{layer}/controls` without a revision header. The layer id comes from the current document; replacing a layer retires that id, so a late control patch cannot land on its replacement.
 

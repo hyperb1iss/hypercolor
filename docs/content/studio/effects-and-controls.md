@@ -22,8 +22,8 @@ There are two ways to light a zone with an effect, and they differ in what happe
 
 Search filters as you type. Click an effect to add it on top of the zone's stack; the layers already there stay.
 
-{% <callout type="info" title="LED zones and screens"> %}
-On the Screens tab the **Effect** tab relabels to **Face** and floats the display-category effects (clocks, faces, ambient screen art) to the top of the list. The picker always leads with what makes sense for the tab you are composing.
+{% <callout type="info" title="Lights and screens"> %}
+When you add a layer to a screen (select its box, then **+ Layer** or **Face settings**), the **Effect** tab reads **Face** and puts clocks, gauges, and other screen art first. The picker always leads with what makes sense for what you are adding to. A face's own controls are called its settings and come first in its row.
 {% </callout> %}
 
 **From the Effects page, apply.** Click an effect card and it applies to the target zone, replacing that zone's layer stack with one layer running the effect. A favorite or a command palette pick applies the same way.

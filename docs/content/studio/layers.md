@@ -43,7 +43,7 @@ Click **Add layer** to open the picker. It has two tabs, **Effect** and **Media*
 
 The **Effect** tab lists every runnable effect from the catalog. Search filters by name or category. Picking one adds it as a layer named after the effect.
 
-When the open tab is the **Screens** tab, the tab relabels to **Face** and floats the display-category effects (the animated faces meant for screens rather than LED zones) to the top of the list, with the rest still available below. Either way you are adding an effect layer; "Face" is the screen-flavored framing of the same picker. Browse the full set on the [effect catalog](@/effects/catalog.md).
+When you add a layer to a screen, the tab reads **Face** and puts the faces first: clocks, gauges, and the other effects made for a panel, with the rest still available below. Either way you are adding an effect layer; "Face" is the same picker pointed at a screen. Browse the full set on the [effect catalog](@/effects/catalog.md).
 
 ### Media layers
 
@@ -120,18 +120,44 @@ Each layer carries a small status pill next to its title that flags runtime trou
 
 If a layer is **Missing** or **Failed**, the Stage also raises a surface-level degraded banner so you notice without opening the stack.
 
-## Sending a face to every screen
+## A screen's layers
 
-A new layer lands on the one zone or screen you are editing. The one exception is the Screens tab: when the scene drives more than one screen, the picker grows an **Add to** row with two choices:
+Select a screen's box on the canvas, or click its card, and open **Face settings**. The panel turns to that screen and shows two groups.
 
-- **This screen**: the selected screen only. The default.
-- **All screens**: every screen in the scene gets the layer.
+**On this screen** lists the screen's own layers, top first. A face leads its row with its own settings, so the thing you came to change is the first thing you see. How the layer blends sits under them in a section that starts closed and says what it holds, such as "Blend with what is behind" and the current blend. A screen can have more than one layer: a clock over a photo, for example.
+
+**Behind it, from Main** lists the zone's layers that reach the screen from behind its box. They are shown for reference; click one to open it in the zone's own list.
+
+With no screen selected, the zone's list leads with **On screens**: one line per face, naming the screens it is on. Click a line to select those screens.
+
+### One face on several screens
+
+Shift-click several screens and add a face, and they share it as one layer. It is one row, its target chip names the screens ("TL LCD 1 and TL LCD 2", then "3 screens"), and a change to its settings reaches all of them. Click the chip to add or remove screens, from a checklist or by picking boxes on the canvas. Removing the row with only some of its screens selected takes just those screens out of it.
+
+### Sending a face to every screen
+
+When the scene has screens beyond the ones you selected, the picker grows an **Add to** row with two choices:
+
+- The screens you selected. The default.
+- **All screens**: every screen a zone has placed gets the layer. The picker says how many that is before you pick, and names any screen that is in no zone and will be skipped.
+
+Either way the add is one step in Studio's undo history.
 
 LED zones have no such choice. Each zone is its own canvas, and the same effect added to several zones would run as separate, unsynchronized copies. To give several parts of your rig one look, put them in one zone.
 
-{% <callout type="info"> %}
-When you add a layer to every screen at once, the screens are written in order, each against the scene revision the previous write returned. The first stale or failed write stops the run, and the toast tells you how many screens got the layer and how many did not.
-{% </callout> %}
+### Copying a face to every scene
+
+A face you add in Studio belongs to the scene you added it in. The copy button on a face's row puts the same face on the same screens in every other scene that places them, after telling you how many scenes that is. Each copy is its own afterwards: change the clock in one scene and the others keep theirs.
+
+### A face saved with the screen
+
+A screen can also carry a face saved with the screen itself instead of in a scene. It shows in every scene that gives that screen nothing of its own. Studio marks its row **Saved with this screen** and says beside its settings that a change applies in every scene using it. **Use in this scene** makes the current scene its own copy as a layer. **Remove** takes the saved face away from every scene, and asks first.
+
+Select several screens that show the same saved face with the same settings and the row stands for all of them. If their saved faces or settings differ, one line says so and points you at a single screen.
+
+### A screen that is not on the canvas
+
+A screen in **Unassigned** has no box, but it still has layers and still shows them, with nothing behind. Click its card to open them. Everything above works the same, except that there is no "Behind it" group. **Place on canvas** adds the screen to the open zone and brings its face along.
 
 ## How edits are saved
 
