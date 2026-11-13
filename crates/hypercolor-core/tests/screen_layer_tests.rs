@@ -1949,6 +1949,60 @@ fn a_scope_is_left_alone_when_no_segment_or_more_than_one_could_be_meant() {
     assert_eq!(zone.layers, vec![keys]);
 }
 
+// ── One screen, one output ───────────────────────────────────────────────
+
+/// A layout can name one panel twice. The face sits on the second output
+/// here, and every reader has to agree that the second is the screen's.
+#[test]
+fn a_screen_with_two_outputs_has_one_stack_that_every_reader_finds() {
+    let rig = rig();
+    let face = scoped(effect_layer(), &[PUMP_SCREEN]);
+    let authored = scene(vec![primary(
+        vec![screen("pump-again", PUMP), screen(PUMP_SCREEN, PUMP)],
+        vec![face.clone()],
+    )]);
+    let owner_id = authored.zones[0].id;
+    let scene_id = authored.id;
+    let mut manager = active(&rig, authored);
+    let kept = kept_face(rig.pump);
+    manager.set_default_display_zone(kept.clone());
+
+    let view = manager.screen_view(&scene_id, rig.pump).expect("view");
+    assert_eq!(view.owner, Some((owner_id, PUMP_SCREEN.to_owned())));
+    assert_eq!(
+        view.zone
+            .layers
+            .iter()
+            .map(|layer| layer.id)
+            .collect::<Vec<_>>(),
+        vec![face.id],
+        "the view lists the face"
+    );
+
+    let stack = manager.active_screen_stack(rig.pump).expect("stack");
+    assert!(stack.assigned() && stack.rendering());
+    let lowered = display_zones(&manager)
+        .into_iter()
+        .filter(|zone| {
+            zone.display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == rig.pump)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lowered.len(), 1, "one display zone for the panel");
+    assert_ne!(lowered[0].id, kept.id, "and it is not the kept face");
+    assert_eq!(lowered[0].layers[0].id, face.id);
+
+    // With no stack anywhere the first output is the screen's.
+    let bare = scene(vec![primary(
+        vec![screen("pump-again", PUMP), screen(PUMP_SCREEN, PUMP)],
+        Vec::new(),
+    )]);
+    let placed = hypercolor_core::scene::screens::screen_placement(&bare, &rig.surfaces, rig.pump)
+        .expect("placed");
+    assert_eq!(placed.1.id, "pump-again");
+}
+
 // ── Shared faces on a move ───────────────────────────────────────────────
 
 #[test]

@@ -118,23 +118,43 @@ pub(super) fn known_screens(surfaces: &ScreenSurfaces) -> Vec<&ScreenSurface> {
 }
 
 /// The zone and output that place a screen in a scene.
+///
+/// A scene can hold more than one `Display` output for a device, when a
+/// layout names the panel twice. The screen has one stack, so one of them
+/// is the screen's output: the first that holds a stack, else the first.
+/// Views, writes, lowering, and the kept face's coverage all ask here, so
+/// they agree on which it is.
 #[must_use]
 pub fn screen_placement<'a>(
     scene: &'a Scene,
     surfaces: &ScreenSurfaces,
     device_id: DeviceId,
 ) -> Option<(&'a Zone, &'a Output)> {
-    scene
+    let mut placements = scene
         .zones
         .iter()
         .filter(|zone| zone.display_target.is_none())
-        .find_map(|zone| {
+        .flat_map(|zone| {
             zone.layout
                 .zones
                 .iter()
-                .find(|output| output_is_screen_of(surfaces, output, device_id))
-                .map(|output| (zone, output))
+                .filter(|output| output_is_screen_of(surfaces, output, device_id))
+                .map(move |output| (zone, output))
+        });
+    let first = placements.next()?;
+    let holds_stack = |(zone, output): &(&Zone, &Output)| {
+        zone.layers.iter().any(|layer| {
+            is_screen_layer(zone, layer)
+                && layer
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.contains(&output.id))
         })
+    };
+    if holds_stack(&first) {
+        return Some(first);
+    }
+    Some(placements.find(holds_stack).unwrap_or(first))
 }
 
 fn output_is_screen_of(surfaces: &ScreenSurfaces, output: &Output, device_id: DeviceId) -> bool {
@@ -381,11 +401,8 @@ pub(super) fn lower_zones(scene: &Scene, surfaces: &ScreenSurfaces) -> Vec<Zone>
             };
             let device_id = surface.device_id;
             if scene.display_zone_for(device_id).is_some()
-                || derived.iter().any(|zone| {
-                    zone.display_target
-                        .as_ref()
-                        .is_some_and(|target| target.device_id == device_id)
-                })
+                || !screen_placement(scene, surfaces, device_id)
+                    .is_some_and(|(owner, held)| owner.id == zone.id && held.id == output.id)
             {
                 continue;
             }

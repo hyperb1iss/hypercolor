@@ -1316,6 +1316,11 @@ and no newly written document says "display zone" after this spec.
     only to that screen is left dormant in the zone its output left. No zone
     pauses it: a stored zone is enabled whatever the zone its screen left was.
 
+  A layout can hold more than one `Display` output for one device. The screen
+  still has one stack, and one output is the screen's: the first that holds a
+  stack, else the first. Views, face writes, lowering, and the kept face's
+  coverage all read it from one function (`screens::screen_placement`).
+
   A screen that a layout holds under another output id has not left: its
   layers follow it to the new id (R5).
 

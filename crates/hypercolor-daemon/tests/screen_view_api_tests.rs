@@ -1297,6 +1297,71 @@ async fn a_screen_assigned_away_from_a_layer_it_shares_keeps_its_face() {
     }
 }
 
+/// A layout that names one panel twice. The face sits on the second
+/// output, and the view, the kept face's coverage, a face write, and the
+/// render list all have to mean that one.
+#[tokio::test]
+async fn a_screen_a_layout_names_twice_has_one_face_everywhere() {
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let kept = rig.face("kept").await;
+    let next = rig.face("next").await;
+    let screen = rig.screen("Pump", false).await;
+    let desk = rig.layout("Desk", vec![screen_output(&screen)]).await;
+    let mut again = screen_output(&screen);
+    again.id = "the-same-lcd-again".to_owned();
+    let twice = rig
+        .layout("Twice", vec![again, screen_output(&screen)])
+        .await;
+    rig.put_face(&screen, kept, "default").await;
+    rig.apply_layout(&desk).await;
+    rig.put_face(&screen, face, "scene").await;
+    let layer = layer_ids(&rig.view(&screen).await).remove(0);
+
+    rig.apply_layout(&twice).await;
+
+    let panel_zones = || async {
+        rig.state
+            .scene_manager
+            .snapshot()
+            .await
+            .resolved_zones()
+            .iter()
+            .filter(|zone| {
+                zone.display_target
+                    .as_ref()
+                    .is_some_and(|target| target.device_id == screen.device)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        scoped(&rig.primary().await),
+        vec![(layer.clone(), vec![screen.output.clone()])]
+    );
+    assert_eq!(
+        layer_ids(&rig.view(&screen).await),
+        vec![layer.clone()],
+        "the view lists the face"
+    );
+    let lowered = panel_zones().await;
+    assert_eq!(lowered.len(), 1, "one display zone, not the kept face too");
+    assert_eq!(lowered[0].layers[0].id.to_string(), layer);
+
+    // A face write replaces the face where it is.
+    rig.put_face(&screen, next, "scene").await;
+    let layers = scoped(&rig.primary().await);
+    assert_eq!(layers.len(), 1, "no layer is orphaned on the other output");
+    assert_eq!(layers[0].1, vec![screen.output.clone()]);
+    assert_eq!(
+        rig.get_face(&screen).await["effect"]["id"],
+        next.to_string()
+    );
+    let lowered = panel_zones().await;
+    assert_eq!(lowered.len(), 1);
+    assert_eq!(lowered[0].layers.len(), 1);
+}
+
 #[tokio::test]
 async fn a_layer_write_that_makes_a_stored_zone_convertible_answers_with_the_view() {
     let rig = rig();
