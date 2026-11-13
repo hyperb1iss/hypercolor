@@ -468,6 +468,17 @@ pub fn outputs_label(ids: &HashSet<&str>, outputs: &[TargetOutput]) -> Option<St
     })
 }
 
+/// What a selection of several boxes is called by its count: "2 screens"
+/// while screens are all it holds, "3 outputs" for lights or a mix.
+#[must_use]
+pub fn selection_count_words(count: usize, screens: usize) -> String {
+    if count > 0 && screens == count {
+        format!("{count} screens")
+    } else {
+        format!("{count} outputs")
+    }
+}
+
 /// Every output a set of ids names, in full, for a tooltip: "Fan 1 (Uni
 /// Fan SL), Corsair K70".
 #[must_use]

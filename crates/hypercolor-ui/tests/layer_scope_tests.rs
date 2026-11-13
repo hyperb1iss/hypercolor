@@ -13,8 +13,8 @@ use hypercolor_ui::components::layer_panel::scope::{
     Checked, NOT_IN_ZONE, NoCreateTarget, Target, TargetOutput, TargetWords, WHOLE_ZONE,
     applies_to, create_scope, draft_words, hover_outputs, is_dormant, is_new_selection,
     is_screen_scope, layer_count_words, names_output, offers_targets, outputs_detail,
-    outputs_label, pickable_count, stands_back, target_groups, target_words, with_screens,
-    zone_target_outputs,
+    outputs_label, pickable_count, selection_count_words, stands_back, target_groups, target_words,
+    with_screens, zone_target_outputs,
 };
 use hypercolor_ui::components::layer_panel::target_checklist::hang_popover;
 
@@ -547,4 +547,13 @@ fn a_scope_is_a_screens_own_only_when_screens_are_all_it_reaches() {
     assert!(!is_screen_scope(Some(&scope_of(&["k70", "lcd"])), &outputs));
     assert!(!is_screen_scope(Some(&scope_of(&["gone"])), &outputs));
     assert!(!is_screen_scope(None, &outputs));
+}
+
+#[test]
+fn a_selection_of_screens_is_counted_as_screens() {
+    assert_eq!(selection_count_words(2, 2), "2 screens");
+    assert_eq!(selection_count_words(3, 3), "3 screens");
+    // Lights, or lights and a screen together, are outputs.
+    assert_eq!(selection_count_words(2, 0), "2 outputs");
+    assert_eq!(selection_count_words(3, 1), "3 outputs");
 }
