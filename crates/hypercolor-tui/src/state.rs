@@ -207,7 +207,15 @@ pub fn primary_zone(scene: &SceneDocument) -> Option<&ZoneResource> {
         .zones
         .iter()
         .find(|zone| zone.role == ZoneRole::Primary)
-        .or_else(|| scene.zones.first())
+        // A scene with no primary zone falls back to its first lighting
+        // zone, never to a screen's zone: a face there has no scope to
+        // tell it from an effect.
+        .or_else(|| {
+            scene
+                .zones
+                .iter()
+                .find(|zone| zone.role != ZoneRole::Display)
+        })
 }
 
 /// Select a zone's effect layer from a canonical zone resource: its top

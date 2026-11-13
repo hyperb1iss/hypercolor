@@ -428,3 +428,24 @@ fn the_zones_effect_is_not_a_face_or_a_scoped_overlay_stacked_above_it() {
     assert_eq!(zone_effect_id(&only_scoped), None);
     assert!(zone_effect_controls(&only_scoped).is_empty());
 }
+
+#[test]
+fn a_scene_with_no_primary_zone_falls_back_to_a_lighting_zone_not_a_screen() {
+    use hypercolor_tui::state::primary_zone;
+
+    let display: ZoneResource = serde_json::from_value(serde_json::json!({
+        "id": "019a0000-0000-7000-8000-0000000000d1",
+        "name": "Pump Face",
+        "role": "display",
+        "enabled": true,
+        "brightness": 1.0,
+        "members": [],
+        "layers": []
+    }))
+    .expect("zone fixture should decode");
+    let desk = zone("019a0000-0000-7000-8000-0000000000d2", "Desk", false);
+
+    let scene = scene_with(vec![display.clone(), desk.clone()]);
+    assert_eq!(primary_zone(&scene).map(|zone| zone.id), Some(desk.id));
+    assert!(primary_zone(&scene_with(vec![display])).is_none());
+}

@@ -59,3 +59,33 @@ fn a_zone_with_only_scoped_layers_has_no_effect_to_patch() {
     );
     assert!(effect_layer_of(&[]).is_none());
 }
+
+fn zone(id: u8, role: &str) -> hypercolor_types::api::scene::ZoneResource {
+    serde_json::from_value(serde_json::json!({
+        "id": format!("019a0000-0000-7000-8000-0000000000a{id}"),
+        "name": role,
+        "role": role,
+        "enabled": true,
+        "brightness": 1.0,
+        "members": [],
+        "layers": []
+    }))
+    .expect("zone fixture should decode")
+}
+
+#[test]
+fn a_scene_with_no_primary_zone_falls_back_to_a_lighting_zone_not_a_screen() {
+    use hypercolor_cli::commands::effects::effect_zone_of;
+
+    let zones = [zone(1, "display"), zone(2, "custom"), zone(3, "primary")];
+    assert_eq!(
+        effect_zone_of(&zones).map(|zone| zone.id),
+        Some(zones[2].id)
+    );
+    assert_eq!(
+        effect_zone_of(&zones[..2]).map(|zone| zone.id),
+        Some(zones[1].id),
+        "a screen's zone listed first is not the zone an effect command edits"
+    );
+    assert!(effect_zone_of(&zones[..1]).is_none());
+}

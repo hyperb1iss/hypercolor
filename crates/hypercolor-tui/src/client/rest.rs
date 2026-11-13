@@ -445,7 +445,12 @@ impl DaemonClient {
                     .zones
                     .iter()
                     .find(|zone| zone.role == ZoneRole::Primary)
-                    .or_else(|| document.zones.first())
+                    .or_else(|| {
+                        document
+                            .zones
+                            .iter()
+                            .find(|zone| zone.role != ZoneRole::Display)
+                    })
             },
             |zone_id| {
                 document

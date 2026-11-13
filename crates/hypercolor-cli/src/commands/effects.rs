@@ -441,15 +441,22 @@ async fn active_effect_layer(
     client: &DaemonClient,
 ) -> Result<(ZoneId, SceneLayer, String, Vec<String>)> {
     let scene: SceneDocument = client.get("/scene").await?;
-    let zone = scene
-        .zones
-        .iter()
-        .find(|zone| zone.role == ZoneRole::Primary)
-        .or_else(|| scene.zones.first())
-        .ok_or_else(|| anyhow::anyhow!("The active scene has no zones"))?;
+    let zone = effect_zone_of(&scene.zones)
+        .ok_or_else(|| anyhow::anyhow!("The active scene has no lighting zone"))?;
     let (layer, effect_id, bindings) = effect_layer_of(&zone.layers)
         .ok_or_else(|| anyhow::anyhow!("The active zone has no effect layer"))?;
     Ok((zone.id, layer, effect_id, bindings))
+}
+
+/// The zone `effects patch` and `effects reset` act on: the primary zone,
+/// or the first lighting zone of a scene that has none. Never a screen's
+/// zone: a face there has no scope to tell it from an effect.
+#[must_use]
+pub fn effect_zone_of(zones: &[ZoneResource]) -> Option<&ZoneResource> {
+    zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .or_else(|| zones.iter().find(|zone| zone.role != ZoneRole::Display))
 }
 
 /// The layer `effects patch` and `effects reset` act on, with its effect id
