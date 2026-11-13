@@ -202,7 +202,7 @@ fn a_deleted_zone_keeps_its_layers_and_restores_them_bottom_to_top() {
     assert_eq!(record.zone_id, scene.zones[0].id.to_string());
     assert_eq!(record.layers, vec![wash.clone(), glow.clone()]);
 
-    let requests = restore_layer_requests(&record, &HashSet::new(), &[]).requests;
+    let requests = restore_layer_requests(&record, &HashSet::new(), &[], &HashSet::new()).requests;
     assert_eq!(requests.len(), 2);
     for (request, layer) in requests.iter().zip([&wash, &glow]) {
         assert_eq!(request.name, layer.name);
@@ -235,7 +235,7 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
     let record = DeletedZone::of(&scene.zones[0], 0, 7);
 
     let all_back = HashSet::from(["out-keys", "out-logo", "out-strip"]);
-    let requests = restore_layer_requests(&record, &all_back, &[]).requests;
+    let requests = restore_layer_requests(&record, &all_back, &[], &HashSet::new()).requests;
     assert_eq!(
         requests
             .iter()
@@ -251,7 +251,7 @@ fn a_restored_scoped_layer_is_never_wider_than_it_was() {
 
     // The logo and the strip were claimed by another zone before the undo.
     let some_back = HashSet::from(["out-keys"]);
-    let restore = restore_layer_requests(&record, &some_back, &[]);
+    let restore = restore_layer_requests(&record, &some_back, &[], &HashSet::new());
     assert_eq!(
         restore.lost, 1,
         "the strip's layer has nowhere to come back to"
@@ -307,8 +307,9 @@ fn a_face_that_came_back_with_its_screen_is_not_created_again() {
     let mut record = DeletedZone::of(&scene.zones[0], 0, 7);
     record.outputs = hypercolor_ui::api::zone_outputs(&scene.zones[0]);
     let all_back = HashSet::from(["keys", "lcd-1", "lcd-2"]);
-    let scopes = |returned: &[SceneLayer]| {
-        let restore = restore_layer_requests(&record, &all_back, returned);
+    let both_viewed = HashSet::from(["lcd-1", "lcd-2"]);
+    let restore_with = |returned: &[SceneLayer], viewed: &HashSet<&str>| {
+        let restore = restore_layer_requests(&record, &all_back, returned, viewed);
         assert_eq!(restore.lost, 0);
         restore
             .requests
@@ -321,6 +322,9 @@ fn a_face_that_came_back_with_its_screen_is_not_created_again() {
             })
             .collect::<Vec<_>>()
     };
+    // Unless a case says otherwise, the rebuilt zone is where the scene
+    // keeps both screens' layers.
+    let scopes = |returned: &[SceneLayer]| restore_with(returned, &both_viewed);
     let named = |name: &str, outputs: Option<&[&str]>| {
         (
             name.to_owned(),
@@ -328,8 +332,8 @@ fn a_face_that_came_back_with_its_screen_is_not_created_again() {
         )
     };
 
-    // A daemon that deleted the faces with the zone returns nothing, and
-    // every layer is rebuilt as it was.
+    // A zone that holds both screens' layers and has none yet gets every
+    // layer rebuilt as it was.
     assert_eq!(
         scopes(&[]),
         [
@@ -361,6 +365,25 @@ fn a_face_that_came_back_with_its_screen_is_not_created_again() {
     ];
     assert_eq!(
         scopes(&both),
+        [named("Wash", None), named("Glow", Some(&["keys", "lcd-1"]))]
+    );
+
+    // The first screen's stack could not come back as layers: its bottom
+    // layer is switched off, so the scene keeps it in a zone of the
+    // screen's own and the rebuilt zone holds nothing for it. Its faces
+    // are still not created again. A copy over a stack kept apart could
+    // never be removed, and would keep that stack from coming back.
+    let second_only = HashSet::from(["lcd-2"]);
+    assert_eq!(
+        restore_with(&[], &second_only),
+        [
+            named("Wash", None),
+            named("Clock", Some(&["lcd-2"])),
+            named("Glow", Some(&["keys", "lcd-1"])),
+        ]
+    );
+    assert_eq!(
+        restore_with(&[scoped("Clock", &["lcd-2"])], &second_only),
         [named("Wash", None), named("Glow", Some(&["keys", "lcd-1"]))]
     );
 }
