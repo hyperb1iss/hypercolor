@@ -636,10 +636,10 @@ fn KeptFaceCard() -> impl IntoView {
                     let effect_id = screens.kept.with(|kept| kept.as_ref().map(|kept| kept.effect_id.clone()))?;
                     Some(view! {
                         <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
-                            <KeptFaceControls device_id=device_id effect_id=effect_id />
                             <p class="text-[11px] leading-relaxed text-fg-tertiary" data-kept-notice="">
                                 {KEPT_NOTICE}
                             </p>
+                            <KeptFaceControls device_id=device_id effect_id=effect_id />
                         </div>
                     })
                 }}
@@ -773,10 +773,10 @@ fn KeptFaceControls(device_id: String, effect_id: String) -> impl IntoView {
 enum CopyPlan {
     /// Still reading.
     Reading,
-    /// The scenes that can take the copy, already edited, and what the
-    /// layer lands on, in words.
+    /// The scenes that can take the copy, already edited, each with the
+    /// layers the edit made, and what the layer lands on, in words.
     Ready {
-        scenes: Vec<api::SceneDocument>,
+        scenes: Vec<(api::SceneDocument, Vec<SceneLayerId>)>,
         screens: String,
     },
     /// Nothing can take it, and why.
@@ -860,8 +860,19 @@ async fn plan_copies(
         let Ok(mut document) = api::fetch_stored_scene(&summary.id).await else {
             continue;
         };
+        let known: HashSet<SceneLayerId> = document
+            .zones
+            .iter()
+            .flat_map(|zone| zone.layers.iter().map(|layer| layer.id))
+            .collect();
         if copy_layer_to_scene(&mut document.zones, &layer, &screens) > 0 {
-            scenes.push(document);
+            let added = document
+                .zones
+                .iter()
+                .flat_map(|zone| zone.layers.iter().map(|layer| layer.id))
+                .filter(|id| !known.contains(id))
+                .collect();
+            scenes.push((document, added));
         }
     }
     if scenes.is_empty() {
@@ -920,25 +931,30 @@ pub(super) fn CopyEverywhereHost() -> impl IntoView {
         plan.set(CopyPlan::Writing);
         spawn_local(async move {
             let mut written = 0_usize;
+            let mut refused = None;
             let total = scenes.len();
-            for document in &scenes {
-                if api::save_stored_scene(document).await.is_ok() {
-                    written += 1;
+            for (document, added) in &scenes {
+                match api::save_stored_scene(document, added).await {
+                    Ok(()) => written += 1,
+                    Err(error) => refused = Some(error.to_string()),
                 }
             }
-            if written == total {
-                toasts::toast_success(&format!(
-                    "{name} copied to {}",
-                    if total == 1 {
-                        "1 scene".to_owned()
-                    } else {
-                        format!("{total} scenes")
-                    },
-                ));
-            } else {
-                toasts::toast_error(&format!(
-                    "{name} copied to {written} of {total} scenes. The rest changed while it was being copied; try again for those.",
-                ));
+            let scenes = |count: usize| {
+                if count == 1 {
+                    "1 scene".to_owned()
+                } else {
+                    format!("{count} scenes")
+                }
+            };
+            match refused {
+                None => toasts::toast_success(&format!("{name} copied to {}", scenes(total))),
+                Some(why) if written == 0 => {
+                    toasts::toast_error(&format!("{name} could not be copied: {why}"));
+                }
+                Some(why) => toasts::toast_error(&format!(
+                    "{name} copied to {} of {total}. The rest were refused: {why}",
+                    scenes(written),
+                )),
             }
             let _ = screens.copy.try_set(None);
         });

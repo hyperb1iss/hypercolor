@@ -4,7 +4,7 @@ pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectId;
 pub use hypercolor_types::layer::zone_effect_layer;
-use hypercolor_types::layer::{LayerSource, SceneLayer};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::SceneMutationMode;
 use hypercolor_types::spatial::Output;
@@ -165,9 +165,20 @@ pub async fn fetch_stored_scene(scene_id: &str) -> ApiResult<SceneDocument> {
 }
 
 /// Write a stored scene back at the revision it was read at, so a
-/// concurrent change is refused rather than clobbered.
-pub async fn save_stored_scene(document: &SceneDocument) -> ApiResult<()> {
-    let request = ReplaceSceneRequest::from(document);
+/// concurrent change is refused rather than clobbered. `added` names the
+/// layers the edit made: a stored scene takes a new layer without an id
+/// and refuses one it does not know.
+pub async fn save_stored_scene(document: &SceneDocument, added: &[SceneLayerId]) -> ApiResult<()> {
+    let mut request = ReplaceSceneRequest::from(document);
+    for layer in request
+        .zones
+        .iter_mut()
+        .flat_map(|zone| zone.layers.iter_mut())
+    {
+        if layer.id.is_some_and(|id| added.contains(&id)) {
+            layer.id = None;
+        }
+    }
     match client::send_json_versioned::<_, SceneDocument>(
         HttpMethod::Put,
         &format!("/api/v1/scenes/{}", document.id),
@@ -190,7 +201,7 @@ async fn replace_stored_scene(
 ) -> ApiResult<()> {
     let mut document = fetch_stored_scene(scene_id).await?;
     edit(&mut document);
-    save_stored_scene(&document).await
+    save_stored_scene(&document, &[]).await
 }
 
 /// Delete a scene.
