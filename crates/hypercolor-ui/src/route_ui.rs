@@ -1,5 +1,7 @@
 use leptos::prelude::use_context;
 
+use crate::pages::effects::phone_view::PhoneView;
+
 /// Independent, application-root paths for routes and bundled static assets.
 /// Empty paths and `/` select the origin root. Mounts are fixed at startup.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -112,11 +114,20 @@ pub fn route_is_active(pathname: &str, route: &str) -> bool {
         .route_is_active(pathname, route)
 }
 
-/// Select the sidebar canvas using an application-relative pathname.
+/// [`now_playing_canvas_mode`] for the browser's pathname under the current
+/// UI mount.
 #[must_use]
-pub fn mounted_canvas_mode(pathname: &str) -> NowPlayingCanvasMode {
+pub fn mounted_canvas_mode(
+    pathname: &str,
+    view: Option<&str>,
+    phone: bool,
+) -> NowPlayingCanvasMode {
     let mount = use_context::<UiMount>().unwrap_or_default();
-    now_playing_canvas_mode(mount.relative_path(pathname).unwrap_or_default())
+    now_playing_canvas_mode(
+        mount.relative_path(pathname).unwrap_or_default(),
+        view,
+        phone,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,8 +136,16 @@ pub enum NowPlayingCanvasMode {
     Palette,
 }
 
-pub fn now_playing_canvas_mode(path: &str) -> NowPlayingCanvasMode {
-    if page_has_own_preview(path) {
+/// The player's thumbnail for an application-relative `path`: a palette
+/// swatch where the page shows its own preview, the live canvas elsewhere.
+/// `view` and `phone` are as in [`page_has_own_preview`].
+#[must_use]
+pub fn now_playing_canvas_mode(
+    path: &str,
+    view: Option<&str>,
+    phone: bool,
+) -> NowPlayingCanvasMode {
+    if page_has_own_preview(path, view, phone) {
         NowPlayingCanvasMode::Palette
     } else {
         NowPlayingCanvasMode::Preview
@@ -135,16 +154,17 @@ pub fn now_playing_canvas_mode(path: &str) -> NowPlayingCanvasMode {
 
 /// Whether a page renders its own main preview with a zone picker beside
 /// it: the dashboard and effects cabinet's zone tabs, and Studio's zone
-/// list. The sidebar hides its thumbnail on these pages. Every preview
-/// follows the shared selected zone, including the sidebar thumbnail.
+/// list. The player hides its live thumbnail on these pages. Every preview
+/// follows the shared selected zone, including the player thumbnail.
+///
+/// `view` is the address's `view` query value and `phone` the phone
+/// layout. A phone splits Effects into Browse and Controls, and only
+/// Controls mounts the cabinet, so Effects counts as having its own
+/// preview there only in Controls. Wider layouts ignore the view.
 #[must_use]
-pub fn page_has_own_preview(path: &str) -> bool {
-    path == "/" || path.starts_with("/effects") || path.starts_with("/studio")
-}
-
-/// [`page_has_own_preview`] for a pathname under the current UI mount.
-#[must_use]
-pub fn mounted_page_has_own_preview(pathname: &str) -> bool {
-    let mount = use_context::<UiMount>().unwrap_or_default();
-    page_has_own_preview(mount.relative_path(pathname).unwrap_or_default())
+pub fn page_has_own_preview(path: &str, view: Option<&str>, phone: bool) -> bool {
+    if path.starts_with("/effects") {
+        return !phone || PhoneView::from_query(view) == PhoneView::Controls;
+    }
+    path == "/" || path.starts_with("/studio")
 }
