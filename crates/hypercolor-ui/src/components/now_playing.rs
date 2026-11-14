@@ -18,6 +18,7 @@ use crate::api;
 use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
+use crate::pages::effects::phone_view::VIEW_PARAM;
 use crate::preview_zone::{PlayerTarget, PreviewZoneContext, player_target, shown_zone_state};
 use crate::route_ui::NowPlayingCanvasMode;
 use crate::style_utils::category_accent_rgb;
@@ -250,8 +251,15 @@ pub fn provide_now_playing() -> NowPlaying {
                         .any(|state| state.effect_id.is_some() || state.zone.top_layer.is_some())
                 }))
     });
-    let canvas_mode =
-        Signal::derive(move || crate::route_ui::mounted_canvas_mode(&location.pathname.get()));
+    // A phone's Effects page shows its own preview only in Controls, which
+    // the `view` query value names, so the mode reads it and the layout too.
+    let phone = crate::viewport::is_phone_layout();
+    let canvas_mode = Signal::derive(move || {
+        let pathname = location.pathname.get();
+        location.query.with(|query| {
+            crate::route_ui::mounted_canvas_mode(&pathname, query.get_str(VIEW_PARAM), phone.get())
+        })
+    });
 
     let ws = use_context::<WsContext>();
     let (canvas_frame, preview_fps, preview_target_fps): (

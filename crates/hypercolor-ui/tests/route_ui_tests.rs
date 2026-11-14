@@ -1,6 +1,15 @@
+use hypercolor_ui::pages::effects::phone_view::PhoneView;
 use hypercolor_ui::route_ui::{
     NowPlayingCanvasMode, now_playing_canvas_mode, page_has_own_preview,
 };
+
+/// An application address split into its path and `view` query value.
+fn path_and_view(href: &str) -> (&str, Option<&str>) {
+    match href.split_once("?view=") {
+        Some((path, view)) => (path, Some(view)),
+        None => (href, None),
+    }
+}
 
 #[test]
 fn mounts_keep_navigation_assets_and_relative_state_separate() {
@@ -137,12 +146,24 @@ fn contextual_helpers_use_the_mount_without_changing_imperative_route_inputs() {
         assert_eq!(asset_href("/assets/mark.png"), "/bundles/assets/mark.png");
         assert!(route_is_active("/embedded/device/devices", "/devices"));
         assert_eq!(
-            mounted_canvas_mode("/embedded/device/studio"),
+            mounted_canvas_mode("/embedded/device/studio", None, false),
             NowPlayingCanvasMode::Palette
         );
         assert_eq!(
-            mounted_canvas_mode("/embedded/device/devices"),
+            mounted_canvas_mode("/embedded/device/devices", None, false),
             NowPlayingCanvasMode::Preview
+        );
+        assert_eq!(
+            mounted_canvas_mode("/embedded/device/effects", None, true),
+            NowPlayingCanvasMode::Preview
+        );
+        assert_eq!(
+            mounted_canvas_mode("/embedded/device/effects", Some("controls"), true),
+            NowPlayingCanvasMode::Palette
+        );
+        assert_eq!(
+            mounted_canvas_mode("/embedded/device/effects", None, false),
+            NowPlayingCanvasMode::Palette
         );
         let core = hypercolor_ui::nav_model(&[]);
         assert!(core.iter().all(|item| !item.path.starts_with("/embedded")));
@@ -155,13 +176,16 @@ fn contextual_helpers_use_the_mount_without_changing_imperative_route_inputs() {
 
 #[test]
 fn home_and_effect_routes_use_live_palette_mode() {
-    assert_eq!(now_playing_canvas_mode("/"), NowPlayingCanvasMode::Palette);
     assert_eq!(
-        now_playing_canvas_mode("/effects"),
+        now_playing_canvas_mode("/", None, false),
         NowPlayingCanvasMode::Palette
     );
     assert_eq!(
-        now_playing_canvas_mode("/effects/pulse-temp"),
+        now_playing_canvas_mode("/effects", None, false),
+        NowPlayingCanvasMode::Palette
+    );
+    assert_eq!(
+        now_playing_canvas_mode("/effects/pulse-temp", None, false),
         NowPlayingCanvasMode::Palette
     );
 }
@@ -171,11 +195,11 @@ fn studio_routes_use_live_palette_mode() {
     // Studio mounts its own Stage preview, so the sidebar must drop its
     // duplicate live canvas.
     assert_eq!(
-        now_playing_canvas_mode("/studio"),
+        now_playing_canvas_mode("/studio", None, false),
         NowPlayingCanvasMode::Palette
     );
     assert_eq!(
-        now_playing_canvas_mode("/studio/output"),
+        now_playing_canvas_mode("/studio/output", None, false),
         NowPlayingCanvasMode::Palette
     );
 }
@@ -183,15 +207,15 @@ fn studio_routes_use_live_palette_mode() {
 #[test]
 fn remaining_shell_routes_keep_sidebar_preview_mode() {
     assert_eq!(
-        now_playing_canvas_mode("/devices"),
+        now_playing_canvas_mode("/devices", None, false),
         NowPlayingCanvasMode::Preview
     );
     assert_eq!(
-        now_playing_canvas_mode("/media"),
+        now_playing_canvas_mode("/media", None, false),
         NowPlayingCanvasMode::Preview
     );
     assert_eq!(
-        now_playing_canvas_mode("/settings"),
+        now_playing_canvas_mode("/settings", None, false),
         NowPlayingCanvasMode::Preview
     );
 }
@@ -207,9 +231,79 @@ fn pages_with_their_own_preview_carry_a_zone_picker() {
         "/studio",
         "/studio/output",
     ] {
-        assert!(page_has_own_preview(path), "{path}");
+        assert!(page_has_own_preview(path, None, false), "{path}");
     }
     for path in ["/devices", "/media", "/settings", "/layouts"] {
-        assert!(!page_has_own_preview(path), "{path}");
+        assert!(!page_has_own_preview(path, None, false), "{path}");
+    }
+}
+
+#[test]
+fn phone_effects_browse_leaves_the_live_canvas_to_the_player() {
+    // A phone mounts the effects cabinet only in Controls, so Browse
+    // shows no preview of its own and the strip shows the live canvas.
+    for path in ["/effects", "/effects/pulse-temp"] {
+        for view in [None, Some(""), Some("grid")] {
+            assert!(!page_has_own_preview(path, view, true), "{path} {view:?}");
+            assert_eq!(
+                now_playing_canvas_mode(path, view, true),
+                NowPlayingCanvasMode::Preview,
+                "{path} {view:?}"
+            );
+        }
+        assert!(page_has_own_preview(path, Some("controls"), true), "{path}");
+        assert_eq!(
+            now_playing_canvas_mode(path, Some("controls"), true),
+            NowPlayingCanvasMode::Palette,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn each_phone_effects_address_picks_its_player_thumbnail() {
+    // The addresses the view switch and the player sheet navigate to.
+    for (view, expected) in [
+        (PhoneView::Browse, NowPlayingCanvasMode::Preview),
+        (PhoneView::Controls, NowPlayingCanvasMode::Palette),
+    ] {
+        let (path, value) = path_and_view(view.href());
+        assert_eq!(
+            now_playing_canvas_mode(path, value, true),
+            expected,
+            "{view:?}"
+        );
+    }
+}
+
+#[test]
+fn desktop_effects_keeps_its_own_preview_in_every_view() {
+    // Wider layouts show the grid and the cabinet side by side and ignore
+    // the view, so the sidebar keeps its palette swatch.
+    for path in ["/effects", "/effects/pulse-temp"] {
+        for view in [None, Some("controls"), Some("grid")] {
+            assert!(page_has_own_preview(path, view, false), "{path} {view:?}");
+            assert_eq!(
+                now_playing_canvas_mode(path, view, false),
+                NowPlayingCanvasMode::Palette,
+                "{path} {view:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_phone_layout_moves_only_effects_browse() {
+    // Studio's own phone views share the `view` parameter; only Effects
+    // reads it.
+    for path in ["/", "/studio", "/studio/output"] {
+        for view in [None, Some("controls"), Some("editor")] {
+            assert!(page_has_own_preview(path, view, true), "{path} {view:?}");
+        }
+    }
+    for path in ["/devices", "/media", "/settings", "/layouts"] {
+        for view in [None, Some("controls")] {
+            assert!(!page_has_own_preview(path, view, true), "{path} {view:?}");
+        }
     }
 }
