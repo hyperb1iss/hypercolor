@@ -149,6 +149,10 @@ fn trimmed_servo_preferences() -> Preferences {
         // Workshop effects require WebGL + OffscreenCanvas composition.
         dom_webgl2_enabled: true,
         dom_offscreen_canvas_enabled: true,
+        // Off by default upstream, but it renders correctly at both canonical
+        // face sizes (servo_css_probe_tests), so face CSS previewed in a
+        // browser keeps its backdrop layers here.
+        layout_css_backdrop_filter_enabled: true,
         // Hypercolor effects render a single offscreen document; parallel CSS
         // parsing and extra style workers are wasted overhead here.
         dom_parallel_css_parsing_enabled: false,
