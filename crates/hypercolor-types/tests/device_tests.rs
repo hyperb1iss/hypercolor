@@ -590,7 +590,11 @@ fn color_space_defaults_to_rgb() {
 
 #[test]
 fn color_space_serde_round_trip() {
-    for color_space in [DeviceColorSpace::Rgb, DeviceColorSpace::CieXy] {
+    for color_space in [
+        DeviceColorSpace::Rgb,
+        DeviceColorSpace::Srgb,
+        DeviceColorSpace::CieXy,
+    ] {
         let json = serde_json::to_string(&color_space).expect("serialize");
         let back: DeviceColorSpace = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, color_space);
