@@ -7,7 +7,7 @@
 //! pixels. The asserted matrix below gates which CSS the SDK layout module
 //! may rely on — JS layout over the display descriptor stays the baseline.
 //!
-//! ## Support matrix (Servo 0.6, software GL, verified by this test on Linux and macOS)
+//! ## Support matrix (Servo 0.8, software GL, verified by this test on Linux and macOS)
 //!
 //! | Probe                | 480x480 | 960x160 |
 //! |----------------------|---------|---------|
@@ -18,14 +18,26 @@
 //! | clip-path-circle     | yes     | yes     |
 //! | aspect-media-query   | yes     | yes     |
 //! | transform-translate  | yes     | yes     |
+//! | backdrop-filter      | yes     | yes     |
+//! | container-query      | ignored | ignored |
 //! | webgl2-clear         | yes     | yes     |
 //!
-//! Consequences for the SDK: flexbox (including gap), transforms,
-//! `clip-path: circle()` (the face circular mask), and aspect-ratio media
-//! queries are safe. Servo 0.6 also renders the CSS grid probe, which Servo
-//! 0.5 and earlier left stacked full-width; faces built for older daemons
-//! still cannot rely on grid. JS over the display descriptor remains the
-//! baseline for device-specific geometry.
+//! Consequences for the SDK: flexbox (including gap), CSS grid, transforms,
+//! `clip-path: circle()` (the face circular mask), aspect-ratio media
+//! queries, and `backdrop-filter` are safe. Grid has rendered since Servo
+//! 0.6 (Hypercolor 0.6.0). `backdrop-filter` is off by default upstream;
+//! the worker turns it on, so this probe also guards that preference.
+//! Container size queries are ignored. With Servo's preference on, the probe
+//! still renders its no-query fallback (Servo's layout does not appear to
+//! hand container sizes to the style engine); with it off, Stylo drops
+//! `@container` rules at parse time. The worker leaves that preference off.
+//! JS over the display descriptor remains the baseline for device-specific
+//! geometry.
+//!
+//! A probe reports `pass` when its feature checks match, `ignored` when it
+//! renders the fallback a browser without the feature would draw, and
+//! `fail` for anything else: a page that never loads, a render error, or a
+//! frame that matches neither.
 //!
 //! The `webgl2-clear` probe is not CSS, but it rides this harness because
 //! every shader effect needs a WebGL2 context, and Servo 0.6 made WebGL an
@@ -60,14 +72,18 @@ const FRAME_DT_SECONDS: f32 = 1.0 / 30.0;
 const RENDER_ATTEMPTS: u64 = 240;
 const COLOR_TOLERANCE: i16 = 12;
 
-/// Expected matrix — every probe at every size. A Servo upgrade that
+/// Expected matrix: every probe at every size. A Servo upgrade that
 /// changes coverage fails this test loudly instead of silently shifting
-/// what the SDK may rely on.
+/// what the SDK may rely on, including a probe that starts passing.
 const EXPECTED_MATRIX: &str = "\
 aspect-media 480x480 pass
 aspect-media 960x160 pass
+backdrop-filter 480x480 pass
+backdrop-filter 960x160 pass
 clip-path-circle 480x480 pass
 clip-path-circle 960x160 pass
+container-query 480x480 ignored
+container-query 960x160 ignored
 flex-column 480x480 pass
 flex-column 960x160 pass
 flex-gap 480x480 pass
@@ -86,6 +102,7 @@ const RED: [u8; 3] = [255, 0, 0];
 const GREEN: [u8; 3] = [0, 255, 0];
 const BLUE: [u8; 3] = [0, 0, 255];
 const YELLOW: [u8; 3] = [255, 255, 0];
+const CYAN: [u8; 3] = [0, 255, 255];
 const BLACK: [u8; 3] = [0, 0, 0];
 
 /// One pixel expectation at a fractional position.
@@ -135,6 +152,12 @@ fn probe_checks(probe: &str, width: u32, height: u32) -> Vec<Check> {
             vec![check(0.5, 0.5, if wide { GREEN } else { BLUE })]
         }
         "transform-translate" => vec![check(0.75, 0.75, RED), check(0.25, 0.25, BLACK)],
+        // Both containers start red. A working size query turns the narrow
+        // one blue and the wide one green at every canonical width.
+        "container-query" => vec![check(0.05, 0.5, BLUE), check(0.55, 0.5, GREEN)],
+        // A full-page layer inverts what sits behind it: red reads cyan and
+        // blue reads yellow. Without backdrop-filter the layer is clear.
+        "backdrop-filter" => vec![check(0.25, 0.5, CYAN), check(0.75, 0.5, YELLOW)],
         // Red page background shows through unless a WebGL2 context exists
         // and clears the full-page canvas to green.
         "webgl2-clear" => vec![check(0.5, 0.5, GREEN), check(0.1, 0.1, GREEN)],
@@ -142,9 +165,21 @@ fn probe_checks(probe: &str, width: u32, height: u32) -> Vec<Check> {
     }
 }
 
-const PROBES: [&str; 8] = [
+/// What a probe draws when the engine ignores the feature under test.
+/// Probes without one report `fail` whenever their checks miss.
+fn probe_fallback_checks(probe: &str) -> Vec<Check> {
+    match probe {
+        "container-query" => vec![check(0.05, 0.5, RED), check(0.55, 0.5, RED)],
+        "backdrop-filter" => vec![check(0.25, 0.5, RED), check(0.75, 0.5, BLUE)],
+        _ => Vec::new(),
+    }
+}
+
+const PROBES: [&str; 10] = [
     "aspect-media",
+    "backdrop-filter",
     "clip-path-circle",
+    "container-query",
     "flex-column",
     "flex-gap",
     "flex-row",
@@ -195,8 +230,7 @@ fn run_probe_child() {
     let mut lines = Vec::new();
     for probe in PROBES {
         for (width, height) in SIZES {
-            let passed = run_probe(probe, width, height);
-            let verdict = if passed { "pass" } else { "fail" };
+            let verdict = run_probe(probe, width, height);
             println!("css-probe {probe} {width}x{height}: {verdict}");
             lines.push(format!("{probe} {width}x{height} {verdict}"));
         }
@@ -209,10 +243,11 @@ fn run_probe_child() {
     std::process::exit(0);
 }
 
-fn run_probe(probe: &str, width: u32, height: u32) -> bool {
+fn run_probe(probe: &str, width: u32, height: u32) -> &'static str {
     let html_path = fixture_path(probe);
     let metadata = probe_metadata(probe, html_path);
     let checks = probe_checks(probe, width, height);
+    let fallback = probe_fallback_checks(probe);
 
     let mut renderer = ServoRenderer::new();
     if renderer
@@ -220,26 +255,34 @@ fn run_probe(probe: &str, width: u32, height: u32) -> bool {
         .is_err()
     {
         std::mem::forget(renderer);
-        return false;
+        return "fail";
     }
 
-    let mut passed = false;
+    // The verdict follows the newest rendered frame, so a fallback seen
+    // while the page was still settling cannot excuse a later render error.
+    let mut verdict = "fail";
     for frame_number in 0..RENDER_ATTEMPTS {
         let input = frame_input(frame_number, width, height);
         let Ok(output) = renderer.render_output(&input) else {
+            verdict = "fail";
             break;
         };
-        if let EffectRenderOutput::Cpu(canvas) = output
-            && checks_pass(&canvas, &checks)
-        {
-            passed = true;
-            break;
+        if let EffectRenderOutput::Cpu(canvas) = output {
+            if checks_pass(&canvas, &checks) {
+                verdict = "pass";
+                break;
+            }
+            verdict = if !fallback.is_empty() && checks_pass(&canvas, &fallback) {
+                "ignored"
+            } else {
+                "fail"
+            };
         }
         thread::sleep(Duration::from_millis(16));
     }
 
     std::mem::forget(renderer);
-    passed
+    verdict
 }
 
 fn checks_pass(canvas: &Canvas, checks: &[Check]) -> bool {

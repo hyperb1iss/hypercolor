@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><style>
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000000; }
+body { display: flex; }
+.narrow { width: 10%; height: 100%; container-type: inline-size; }
+.wide { width: 90%; height: 100%; container-type: inline-size; }
+.fill { width: 100%; height: 100%; background: #ff0000; }
+@container (max-width: 199px) { .fill { background: #0000ff; } }
+@container (min-width: 200px) { .fill { background: #00ff00; } }
+</style></head>
+<body><div class="narrow"><div class="fill"></div></div><div class="wide"><div class="fill"></div></div></body>
+</html>
