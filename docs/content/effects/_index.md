@@ -55,7 +55,7 @@ This is the only documentation for the native Rust authoring path. Read [native 
 
 ### Display faces
 
-Full-fidelity HTML faces for LCD surfaces such as AIO pump screens and the Ableton Push 2 strip. Author with `face()` in the SDK: a setup function runs once and returns a per-frame update closure with access to sensors, audio, now-playing media, network, and scene lighting. Faces render through Servo, lay out with flexbox (CSS grid is not reliable under Servo), and adapt to the device shape the daemon injects through the display descriptor.
+Full-fidelity HTML faces for LCD surfaces such as AIO pump screens and the Ableton Push 2 strip. Author with `face()` in the SDK: a setup function runs once and returns a per-frame update closure with access to sensors, audio, now-playing media, network, and scene lighting. Faces render through Servo, lay out with flexbox or CSS grid, and adapt to the device shape the daemon injects through the display descriptor.
 
 Choose this when you're filling a real screen, not a strip. Read [display faces](@/effects/display-faces.md) for the contract, the canonical displays a face must satisfy, and the Servo CSS matrix.
 

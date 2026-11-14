@@ -181,19 +181,23 @@ Faces render in Servo, not Chrome. The pixel-proven matrix (asserted by
 
 | Works | Silently ignored |
 |---|---|
-| flexbox (row / column / gap), transforms, `clip-path: circle()`, aspect-ratio media queries | CSS grid layout |
+| flexbox (row / column / gap), CSS grid, transforms, `clip-path: circle()`, aspect-ratio media queries, `backdrop-filter` | container queries (`@container`) |
 
 Aspect-ratio media queries are safe for visual refinements such as
 switching ornament density between a square face and a wide strip. Keep
 device class, circular safe areas, and exact geometry driven by
 `ctx.display`, since aspect ratio alone does not carry those contracts.
 
+CSS grid needs Hypercolor 0.6.0 or newer, and `backdrop-filter` needs the
+first release after 0.9.0. Older daemons ignore them.
+
 {% <callout type="danger"> %}
-Never structure a layout with CSS grid. Children render stacked
-full-width with no error and no warning. Use flexbox for everything.
-Canvas gradients throw on malformed colors, so pass hex or `rgba()`
-strings; the SDK's `withAlpha` is hex-only, so handle `hsl()` yourself if
-you generate it.
+Never size a layout with `@container` queries. Servo drops them, so
+every rule inside stays dormant with no error and no warning. Drive
+per-display sizing from `ctx.display` or aspect-ratio media queries
+instead. Canvas gradients throw on malformed colors, so pass hex or
+`rgba()` strings; the SDK's `withAlpha` is hex-only, so handle `hsl()`
+yourself if you generate it.
 {% </callout> %}
 
 ## The dev loop
