@@ -7,13 +7,12 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::jsapi::{
-    ExceptionStackBehavior, Heap, JS_IsExceptionPending, JS_SetPendingException, JSObject,
-};
+use js::jsapi::{ExceptionStackBehavior, Heap, JSObject};
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use script_bindings::cell::DomRefCell;
+use script_bindings::js::{JS_IsExceptionPending, JS_SetPendingException};
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use crate::dom::bindings::callback::{ExceptionHandling, TracedCallback};
@@ -570,7 +569,6 @@ impl TransformStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#transform-stream-default-controller-enqueue>
-    #[expect(unsafe_code)]
     pub(crate) fn enqueue(
         &self,
         cx: &mut JSContext,
@@ -603,17 +601,11 @@ impl TransformStreamDefaultController {
             stream.error_writable_and_unblock_write(cx, global, rooted_error.handle());
 
             // Throw stream.[[readable]].[[storedError]].
-            unsafe {
-                if !JS_IsExceptionPending(cx.raw_cx()) {
-                    rooted!(&in(cx) let mut stored_error = UndefinedValue());
-                    readable.get_stored_error(stored_error.handle_mut());
+            if !JS_IsExceptionPending(cx) {
+                rooted!(&in(cx) let mut stored_error = UndefinedValue());
+                readable.get_stored_error(stored_error.handle_mut());
 
-                    JS_SetPendingException(
-                        cx.raw_cx(),
-                        stored_error.handle().into(),
-                        ExceptionStackBehavior::Capture,
-                    );
-                }
+                JS_SetPendingException(cx, stored_error.handle(), ExceptionStackBehavior::Capture);
             }
             return Err(error);
         }

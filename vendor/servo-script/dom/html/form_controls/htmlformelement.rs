@@ -20,6 +20,7 @@ use rustc_hash::FxBuildHasher;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::DocumentFragmentBinding::DocumentFragmentMethods;
 use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::match_domstring_ascii;
 use script_bindings::reflector::DomObject;
 use servo_constellation_traits::{LoadData, LoadOrigin, NavigationHistoryBehavior};
@@ -36,7 +37,7 @@ use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMeth
 use crate::dom::bindings::codegen::Bindings::HTMLFormControlsCollectionBinding::HTMLFormControlsCollectionMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::HTMLFormElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::HTMLInputElementMethods;
-use crate::dom::bindings::codegen::Bindings::HTMLOrSVGElementBinding::FocusOptions;
+use crate::dom::bindings::codegen::Bindings::HTMLOrSVGOrMathMLElementBinding::FocusOptions;
 use crate::dom::bindings::codegen::Bindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::{NodeConstants, NodeMethods};
 use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
@@ -469,7 +470,7 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
             candidates_length = candidates.Length(cx);
         }
 
-        let mut past_names_map = self.past_names_map.borrow_mut();
+        let mut past_names_map = self.past_names_map.safe_borrow_mut(cx.no_gc());
 
         // Step 3
         if candidates_length == 0 {
@@ -651,7 +652,7 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
         let mut names_vec: Vec<DOMString> = Vec::new();
         for elem in sourced_names_vec.iter() {
             if !names_vec.iter().any(|name| *name == *elem.name) {
-                names_vec.push(DOMString::from(&*elem.name));
+                names_vec.push(TracedDOMString::from(elem.name.clone()).root());
             }
         }
 
@@ -715,9 +716,9 @@ impl HTMLFormElement {
             .any(|control| control.is_invalid(cx, false));
 
         self.upcast::<Element>()
-            .set_state(ElementState::VALID, !is_any_invalid);
+            .set_state(cx.no_gc(), ElementState::VALID, !is_any_invalid);
         self.upcast::<Element>()
-            .set_state(ElementState::INVALID, is_any_invalid);
+            .set_state(cx.no_gc(), ElementState::INVALID, is_any_invalid);
     }
 
     /// [Form submission](https://html.spec.whatwg.org/multipage/#concept-form-submit)
@@ -1411,7 +1412,7 @@ impl HTMLFormElement {
         {
             let root = self.upcast::<Element>().root_element();
             let root = root.upcast::<Node>();
-            let mut controls = self.controls.borrow_mut();
+            let mut controls = self.controls.safe_borrow_mut(cx.no_gc());
 
             // https://html.spec.whatwg.org/multipage/#create-an-element-for-the-token
             // associates form control elements with a form before they are bound to the tree.
@@ -1431,7 +1432,7 @@ impl HTMLFormElement {
     fn remove_control<T: ?Sized + FormControl>(&self, cx: &mut JSContext, control: &T) {
         {
             let control = control.to_element();
-            let mut controls = self.controls.borrow_mut();
+            let mut controls = self.controls.safe_borrow_mut(cx.no_gc());
             controls
                 .iter()
                 .position(|c| &**c == control)
@@ -1441,7 +1442,7 @@ impl HTMLFormElement {
             // "If an element listed in a form element's past names map
             // changes form owner, then its entries must be removed
             // from that map."
-            let mut past_names_map = self.past_names_map.borrow_mut();
+            let mut past_names_map = self.past_names_map.safe_borrow_mut(cx.no_gc());
             past_names_map.0.retain(|_k, v| v.0 != control);
         }
         self.update_validity(cx);
@@ -1546,10 +1547,10 @@ pub(crate) struct FormDatum {
 }
 
 impl FormDatum {
-    pub(crate) fn replace_value(&self) -> &DOMString {
+    pub(crate) fn replace_value(&self) -> DOMString {
         match self.value {
-            FormDatumValue::File(ref f) => f.name(),
-            FormDatumValue::String(ref s) => s,
+            FormDatumValue::File(ref f) => f.name().clone().root(),
+            FormDatumValue::String(ref s) => s.clone(),
         }
     }
 }

@@ -15,6 +15,8 @@ use js::typedarray::{ArrayBufferU8, Uint8};
 use net_traits::filemanager_thread::RelativePos;
 use rustc_hash::FxHashMap;
 use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object_with_proto};
+use script_bindings::serializable::Serializable;
+use script_bindings::structuredclone::StructuredData;
 use servo_base::id::{BlobId, BlobIndex};
 use servo_constellation_traits::{BlobData, BlobImpl};
 use uuid::Uuid;
@@ -29,9 +31,7 @@ use crate::dom::bindings::codegen::UnionTypes::{
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::serializable::Serializable;
 use crate::dom::bindings::str::DOMString;
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::encoding::textdecoderstream::TextDecoderStream;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
@@ -99,7 +99,7 @@ impl Blob {
     }
 }
 
-impl Serializable for Blob {
+impl Serializable<crate::DomTypeHolder> for Blob {
     type Index = BlobIndex;
     type Data = BlobImpl;
 
@@ -217,12 +217,12 @@ pub(crate) fn process_blob_parts(
                 // Step 2.1.2. If the endings member of options is "native",
                 // set s to the result of converting line endings to native of blobpart.
                 if endings == BlobBinding::EndingType::Native {
-                    let converted = convert_line_endings_to_native(&s.as_bytes());
+                    let converted = convert_line_endings_to_native(&s.as_bytes(no_gc));
                     // Step 2.1.3. Append the result of UTF-8 encoding s to bytes.
                     bytes.extend(converted);
                 } else {
                     // Step 2.1.3: Append the result of UTF-8 encoding s to bytes.
-                    bytes.extend_from_slice(&s.as_bytes());
+                    bytes.extend_from_slice(&s.as_bytes(no_gc));
                 }
             },
             // Step 2.2. If element is a BufferSource,
@@ -384,7 +384,7 @@ impl BlobMethods<crate::DomTypeHolder> for Blob {
                 // 4. Return the result of transforming promise by a fulfillment handler that returns a new
                 //    [ArrayBuffer]
                 let array_buffer =
-                    create_buffer_source::<ArrayBufferU8>(cx, bytes, js_object.handle_mut())
+                    create_buffer_source::<ArrayBufferU8>(cx, &bytes, js_object.handle_mut())
                         .expect("Converting input to ArrayBufferU8 should never fail");
                 success_promise.resolve_native(cx, &array_buffer);
             }),
@@ -420,7 +420,7 @@ impl BlobMethods<crate::DomTypeHolder> for Blob {
             cx,
             Rc::new(move |cx, bytes| {
                 rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
-                let arr = create_buffer_source::<Uint8>(cx, bytes, js_object.handle_mut())
+                let arr = create_buffer_source::<Uint8>(cx, &bytes, js_object.handle_mut())
                     .expect("Converting input to uint8 array should never fail");
                 p_success.resolve_native(cx, &arr);
             }),

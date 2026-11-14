@@ -187,7 +187,10 @@ impl HypercolorWebViewDelegate {
         }
 
         match level {
-            ConsoleLogLevel::Log | ConsoleLogLevel::Info | ConsoleLogLevel::Dir => {
+            ConsoleLogLevel::Log
+            | ConsoleLogLevel::Info
+            | ConsoleLogLevel::Dir
+            | ConsoleLogLevel::Table => {
                 trace!(message = message, "Servo console");
             }
             ConsoleLogLevel::Debug => debug!(message = message, "Servo console"),
@@ -267,6 +270,7 @@ fn level_label(level: &ConsoleLogLevel) -> &'static str {
         ConsoleLogLevel::Error => "error",
         ConsoleLogLevel::Trace => "trace",
         ConsoleLogLevel::Dir => "dir",
+        ConsoleLogLevel::Table => "table",
     }
 }
 
@@ -331,6 +335,9 @@ mod tests {
 
         delegate.on_console_message(&ConsoleLogLevel::Dir, "object");
         assert_eq!(delegate.drain_console_messages()[0].level, "dir");
+
+        delegate.on_console_message(&ConsoleLogLevel::Table, "rows");
+        assert_eq!(delegate.drain_console_messages()[0].level, "table");
     }
 
     #[test]

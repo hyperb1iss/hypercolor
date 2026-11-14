@@ -93,9 +93,9 @@ use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::dom::window::Window;
 use crate::engine::handle::current_js_engine_handle;
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
-use crate::modules::script_module::EnsureModuleHooksInitialized;
 use crate::realms::enter_auto_realm;
 use crate::runtime::job_queue::{JobQueue, job_queue_clear};
+use crate::scripting::script_module::EnsureModuleHooksInitialized;
 use crate::tasks::task_source::TaskSourceName;
 use crate::{DomTypeHolder, ScriptThread};
 
@@ -514,11 +514,17 @@ pub(crate) fn notify_about_rejected_promises(cx: &mut JSContext, global: &Global
                 // Step 4.1.3 If notCanceled is true, then the user agent may report
                 // p.[[PromiseResult]] to a developer console.
                 if not_canceled {
-                    let message = format!(
-                        "Unhandled promise rejection: {}",
-                        stringify_handle_value(cx, reason.handle())
+                    let global = target.global();
+                    let reason_string = run_a_script::<DomTypeHolder, _, _>(
+                        cx,
+                        &global,
+                        |cx: &mut JSContext| stringify_handle_value(cx, reason.handle()),
                     );
-                    Console::internal_error(cx, &target.global(), message);
+                    Console::internal_error(
+                        cx,
+                        &global,
+                        format!("Unhandled promise rejection: {reason_string}")
+                    );
                 }
 
                 // Step 4.1.4 If p.[[PromiseIsHandled]] is false, then append p to global's outstanding

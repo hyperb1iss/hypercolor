@@ -16,9 +16,7 @@ use js::realm::CurrentRealm;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use js::typedarray::{ArrayBufferView, ArrayBufferViewU8};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{
-    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto,
-};
+use script_bindings::reflector::{Reflector, reflect_dom_object, reflect_dom_object_with_proto};
 use script_bindings::root::Dom;
 
 use super::byteteereadintorequest::ByteTeeReadIntoRequest;
@@ -63,7 +61,7 @@ impl ReadIntoRequest {
                     cx,
                     &ReadableStreamReadResult {
                         done: Some(false),
-                        value: chunk,
+                        value: chunk.into_box(),
                     },
                 );
             },
@@ -91,17 +89,15 @@ impl ReadIntoRequest {
                     cx,
                     &ReadableStreamReadResult {
                         done: Some(true),
-                        value: chunk,
+                        value: chunk.into_box(),
                     },
                 ),
                 None => {
-                    let result = RootedTraceableBox::new(Heap::default());
-                    result.set(UndefinedValue());
                     promise.resolve_native(
                         cx,
                         &ReadableStreamReadResult {
                             done: Some(true),
-                            value: result,
+                            value: Heap::boxed(UndefinedValue()),
                         },
                     );
                 },
@@ -226,7 +222,7 @@ impl ReadableStreamBYOBReader {
         global: &GlobalScope,
     ) -> DomRoot<ReadableStreamBYOBReader> {
         let closed_promise = Promise::new(cx, global);
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited(&closed_promise)), global, cx)
+        reflect_dom_object(cx, Box::new(Self::new_inherited(&closed_promise)), global)
     }
 
     /// <https://streams.spec.whatwg.org/#set-up-readable-stream-byob-reader>

@@ -17,6 +17,7 @@ use markup5ever::TokenizerResult;
 use script_bindings::script_runtime::temp_cx;
 use script_bindings::trace::CustomTraceable;
 use servo_url::ServoUrl;
+use smallvec::SmallVec;
 use style::attr::AttrValue;
 use style::context::QuirksMode as StyleContextQuirksMode;
 use xml5ever::LocalName;
@@ -36,7 +37,7 @@ use crate::dom::html::htmltemplateelement::HTMLTemplateElement;
 use crate::dom::node::Node;
 use crate::dom::processinginstruction::ProcessingInstruction;
 use crate::dom::servoparser::{ParsingAlgorithm, Sink};
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -332,7 +333,7 @@ pub(crate) fn serialize_html_fragment<S: Serializer>(
                 // Shadow roots are serialized as template elements with a fixed set of
                 // attributes. Because these template elements don't actually exist in the DOM
                 // we have to make up a vector of attributes ourselves.
-                let mut attributes = vec![];
+                let mut attributes: SmallVec<[(QualName, &str); 4]> = SmallVec::new();
                 let mut push_attribute = |name, value| {
                     let qualified_name = QualName::new(None, ns!(), LocalName::from(name));
                     attributes.push((qualified_name, value))

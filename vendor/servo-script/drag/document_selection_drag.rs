@@ -5,31 +5,53 @@
 use std::cmp::Ordering;
 
 use js::context::{JSContext, NoGC};
+use layout_api::SegmentGranularity;
 use rustc_hash::FxHashMap;
 use script_bindings::dom::UnrootedDom;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::{Dom, DomRoot};
-use servo_base::text::Utf32CodeUnitsOrNodeOffset;
 use style::values::computed::UserSelect;
 
-use crate::dom::comparator::compare_dom_positions;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::selection::UsedUserSelect;
-use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
-use crate::dom::{Element, Node, NodeTraits};
+use crate::dom::selection_range::{RootedSelectionBoundary, SelectionRange};
+use crate::dom::{Document, Element, Node};
+
+/// Information stored when the start of the drag was triggered via double or triple
+/// click which highlighted a segment of text.
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+pub(crate) struct DocumentDragSegment {
+    /// The granularity of the selection drag.
+    #[no_trace]
+    pub granularity: SegmentGranularity,
+    /// The original segment that was highlighted at the start of the drag.
+    pub range: SelectionRange,
+}
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct DocumentSelectionDragHandler {
+    /// The [`Document`] of this [`DocumentSelectionDragHandler`].
+    document: Dom<Document>,
     /// The node with `user-select: contain` that this selection must not leave, if any.
     user_select_contain_node_for_selection_anchor: Option<Dom<Node>>,
+    /// Information when the start of the drag highlighted a segment of text.
+    segment: Option<DocumentDragSegment>,
 }
 
 impl DocumentSelectionDragHandler {
-    pub(crate) fn new(user_select_contain_node: Option<&Node>) -> Self {
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
+    pub(crate) fn new(
+        document: &Document,
+        user_select_contain_node: Option<&Node>,
+        segment: Option<DocumentDragSegment>,
+    ) -> Self {
         Self {
+            document: Dom::from_ref(document),
             user_select_contain_node_for_selection_anchor: user_select_contain_node
                 .map(Dom::from_ref),
+            segment,
         }
     }
 
@@ -43,21 +65,68 @@ impl DocumentSelectionDragHandler {
     ///
     /// Returns `true` if the drag should continue and `false` otherwise.
     pub(crate) fn moved(&self, cx: &mut JSContext, hit_test_result: &HitTestResult) -> bool {
-        let Some((container, offset)) = hit_test_result.dom_position_for_selection.as_ref() else {
+        let Some(selection) = self.document.selection() else {
             return true;
         };
-        let Some(selection) = container.owner_document().selection() else {
+
+        let Some(boundary) = hit_test_result.dom_position_for_selection.as_ref() else {
             return true;
         };
-        let (container, offset) = adjust_focus_for_user_select(
-            cx,
-            selection.composed_anchor_position(),
-            container.clone(),
-            *offset,
-            self.user_select_contain_node_for_selection_anchor
-                .as_deref(),
-        );
-        selection.collapse_or_extend_to_dom_position(cx, &container, offset);
+
+        let adjust_for_user_select =
+            |no_gc: &NoGC,
+             anchor: Option<&RootedSelectionBoundary>,
+             focus: RootedSelectionBoundary| {
+                adjust_focus_for_user_select(
+                    no_gc,
+                    anchor,
+                    focus,
+                    self.user_select_contain_node_for_selection_anchor
+                        .as_deref(),
+                )
+            };
+
+        let Some(segment) = &self.segment else {
+            selection.collapse_or_extend_to_dom_position(
+                cx,
+                &adjust_for_user_select(
+                    cx.no_gc(),
+                    selection.composed_anchor_position().as_ref(),
+                    boundary.clone(),
+                ),
+            );
+            return true;
+        };
+
+        let (start, end) = self
+            .document
+            .window()
+            .query_text_segment(
+                cx,
+                &boundary.container,
+                boundary.utf32_offset(),
+                segment.granularity,
+            )
+            .unwrap_or_else(|| (boundary.clone(), boundary.clone()));
+
+        let original_start = segment.range.start.rooted();
+        let original_end = segment.range.end.rooted();
+        let (anchor, focus) = if boundary.cmp(cx.no_gc(), &original_start) == Ordering::Less {
+            // If the drag position is before the original starting point, then the newly
+            // selected text extends from the old end to the start of the drag segment.
+            (original_end, start)
+        } else if boundary.cmp(cx.no_gc(), &original_end) == Ordering::Greater {
+            // If the drag position is after the original end, then the newly selected
+            // text extends from the original start to the end of the drag segment.
+            (original_start, end)
+        } else {
+            // This is when we are dragging within the original segment and want to keep
+            // it selected.
+            (original_start, original_end)
+        };
+
+        let focus = adjust_for_user_select(cx.no_gc(), Some(&anchor), focus);
+        selection.set_anchor_and_focus(cx, &anchor, &focus);
         true
     }
 }
@@ -74,15 +143,14 @@ impl DocumentSelectionDragHandler {
 /// [`user-select`]: https://drafts.csswg.org/css-ui-4/#content-selection
 pub(crate) fn adjust_anchor_for_user_select(
     no_gc: &NoGC,
-    mut anchor_container_candidate: DomRoot<Node>,
-    mut anchor_offset_candidate: Utf32CodeUnitsOrNodeOffset,
-) -> Option<(
-    DomRoot<Node>,
-    Utf32CodeUnitsOrNodeOffset,
-    Option<DomRoot<Node>>,
-)> {
+    mut anchor_candidate: RootedSelectionBoundary,
+) -> Option<(RootedSelectionBoundary, Option<DomRoot<Node>>)> {
     let mut cache = Default::default();
-    if anchor_container_candidate.used_user_select(no_gc, &mut cache) == UsedUserSelect::None {
+    if anchor_candidate
+        .container
+        .used_user_select(no_gc, &mut cache) ==
+        UsedUserSelect::None
+    {
         return None;
     }
 
@@ -94,7 +162,10 @@ pub(crate) fn adjust_anchor_for_user_select(
     let mut furthest_with_user_select_all = None;
     let mut each_so_far_has_user_select_all = true;
 
-    for ancestor in anchor_container_candidate.inclusive_ancestors_in_flat_tree_unrooted(no_gc) {
+    for ancestor in anchor_candidate
+        .container
+        .inclusive_ancestors_in_flat_tree_unrooted(no_gc)
+    {
         match ancestor.used_user_select(no_gc, &mut cache) {
             UsedUserSelect::Text | UsedUserSelect::None => {
                 each_so_far_has_user_select_all = false;
@@ -119,14 +190,9 @@ pub(crate) fn adjust_anchor_for_user_select(
         // `Node::len(atomic)` representing the end of that node. The latter would be used
         // when the range is backwards (if the end boundary is outside of and before `atomic`)
         // so that `atomic` would be entirely selected regardless of the range direction.
-        anchor_container_candidate = atomic.as_rooted();
-        anchor_offset_candidate = Utf32CodeUnitsOrNodeOffset(0);
+        anchor_candidate = RootedSelectionBoundary::start_of(&atomic);
     }
-    Some((
-        anchor_container_candidate,
-        anchor_offset_candidate,
-        nearest_with_user_select_contain,
-    ))
+    Some((anchor_candidate, nearest_with_user_select_contain))
 }
 
 /// Adjust the range boundary for the selection focus (end of a drag gesture)
@@ -135,11 +201,10 @@ pub(crate) fn adjust_anchor_for_user_select(
 /// [`user-select`]: https://drafts.csswg.org/css-ui-4/#content-selection
 pub(crate) fn adjust_focus_for_user_select(
     no_gc: &NoGC,
-    anchor: Option<(DomRoot<Node>, u32)>,
-    mut focus_container_candidate: DomRoot<Node>,
-    mut focus_offset_candidate: Utf32CodeUnitsOrNodeOffset,
+    anchor: Option<&RootedSelectionBoundary>,
+    mut focus_candidate: RootedSelectionBoundary,
     user_select_contain_node_for_anchor: Option<&Node>,
-) -> (DomRoot<Node>, Utf32CodeUnitsOrNodeOffset) {
+) -> RootedSelectionBoundary {
     let mut cache = Default::default();
     let mut user_select_contain_node_for_anchor_is_inclusive_ancestor = false;
     let mut each_so_far_has_user_select_all = true;
@@ -148,8 +213,9 @@ pub(crate) fn adjust_focus_for_user_select(
     // Either `user-select: contain` the selection starts outside of, or `user-select: none`
     let mut furthest_node_to_avoid = None;
 
-    for inclusive_ancestor in
-        focus_container_candidate.inclusive_ancestors_in_flat_tree_unrooted(no_gc)
+    for inclusive_ancestor in focus_candidate
+        .container
+        .inclusive_ancestors_in_flat_tree_unrooted(no_gc)
     {
         if user_select_contain_node_for_anchor == Some(&**inclusive_ancestor) {
             user_select_contain_node_for_anchor_is_inclusive_ancestor = true
@@ -188,47 +254,33 @@ pub(crate) fn adjust_focus_for_user_select(
         }
     }
     let selection_is_backward = || {
-        anchor
-            .as_ref()
-            .is_some_and(|(anchor_container, anchor_offset)| {
-                let (ordering, _containment) = compare_dom_positions::<
-                    FlatTreeForSelectionNoGcTraversal,
-                >(
-                    no_gc,
-                    anchor_container,
-                    *anchor_offset,
-                    &focus_container_candidate,
-                    focus_container_candidate.to_sibling_or_utf16_offset(focus_offset_candidate),
-                );
-                ordering == Some(Ordering::Greater)
-            })
+        anchor.is_some_and(|anchor| {
+            anchor.compare_dom_positions(no_gc, &focus_candidate) == Some(Ordering::Greater)
+        })
     };
     if let Some(contain_for_anchor) = user_select_contain_node_for_anchor &&
         !user_select_contain_node_for_anchor_is_inclusive_ancestor
     {
         // `focus_container` is outside of `contain_for_anchor`:
         // find the closest position within `contain_for_anchor`: either its start or end
-        focus_offset_candidate = if selection_is_backward() {
-            Utf32CodeUnitsOrNodeOffset(0)
+        focus_candidate = if selection_is_backward() {
+            RootedSelectionBoundary::start_of(contain_for_anchor)
         } else {
-            Utf32CodeUnitsOrNodeOffset(Node::len(contain_for_anchor))
+            RootedSelectionBoundary::end_of(contain_for_anchor)
         };
-        focus_container_candidate = DomRoot::from_ref(contain_for_anchor);
     } else if let Some(focus_ancestor_to_avoid) = furthest_node_to_avoid {
-        focus_offset_candidate = if selection_is_backward() {
-            Utf32CodeUnitsOrNodeOffset(Node::len(&focus_ancestor_to_avoid))
+        focus_candidate = if selection_is_backward() {
+            RootedSelectionBoundary::end_of(&focus_ancestor_to_avoid)
         } else {
-            Utf32CodeUnitsOrNodeOffset(0)
+            RootedSelectionBoundary::start_of(&focus_ancestor_to_avoid)
         };
-        focus_container_candidate = focus_ancestor_to_avoid.as_rooted();
     } else if let Some(with_user_select_all) = furthest_node_with_user_select_all {
         // anchor was snapped to the start of the `user-select: all` element,
         // so snap the focus to the end unconditionally
-        focus_offset_candidate = Utf32CodeUnitsOrNodeOffset(Node::len(&with_user_select_all));
-        focus_container_candidate = with_user_select_all.as_rooted();
+        focus_candidate = RootedSelectionBoundary::end_of(&with_user_select_all);
     }
 
-    (focus_container_candidate, focus_offset_candidate)
+    focus_candidate
 }
 
 impl Node {
@@ -247,6 +299,13 @@ impl Node {
         let cache_key = UnrootedDom::from_ref(self, no_gc);
         if let Some(&used_value) = cache.get(&cache_key) {
             return used_value;
+        }
+        // https://html.spec.whatwg.org/multipage/#inert
+        // > When a node is inert: Text selection functionality must act as if
+        // > the 'user-select' CSS property were set to 'none'.
+        if self.is_inert() {
+            cache.insert(cache_key, UsedUserSelect::None);
+            return UsedUserSelect::None;
         }
         // > The used value is the same as the computed value, except:
         // >

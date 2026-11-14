@@ -21,10 +21,11 @@ use net_traits::image_cache::{
     ImageOrMetadataAvailable, ImageResponse, PendingImageId,
 };
 use net_traits::request::{Destination, RequestBuilder, RequestId};
-use net_traits::{FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTiming};
+use net_traits::{FetchMetadata, FetchResponseMsg, Metadata, NetworkError, ResourceFetchTiming};
 use pixels::RasterImage;
 use rustc_hash::FxHashSet;
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
@@ -34,9 +35,8 @@ use crate::dom::bindings::codegen::Bindings::NotificationBinding::{
     NotificationAction, NotificationDirection, NotificationMethods, NotificationOptions,
     NotificationPermission, NotificationPermissionCallback,
 };
-use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::PermissionStatus_Binding::PermissionStatusMethods;
 use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::{
-    PermissionDescriptor, PermissionName, PermissionState,
+    PermissionDescriptor, PermissionName, PermissionState, PermissionStatusMethods,
 };
 use crate::dom::bindings::codegen::UnionTypes::UnsignedLongOrUnsignedLongSequence;
 use crate::dom::bindings::error::{Error, Fallible};
@@ -67,9 +67,9 @@ pub(crate) struct Notification {
     /// <https://notifications.spec.whatwg.org/#service-worker-registration>
     serviceworker_registration: Option<Dom<ServiceWorkerRegistration>>,
     /// <https://notifications.spec.whatwg.org/#concept-title>
-    title: DOMString,
+    title: TracedDOMString,
     /// <https://notifications.spec.whatwg.org/#body>
-    body: DOMString,
+    body: TracedDOMString,
     /// <https://notifications.spec.whatwg.org/#data>
     #[ignore_malloc_size_of = "mozjs"]
     data: Heap<JSVal>,
@@ -82,11 +82,11 @@ pub(crate) struct Notification {
     /// <https://notifications.spec.whatwg.org/#badge-url>
     badge: Option<USVString>,
     /// <https://notifications.spec.whatwg.org/#concept-language>
-    lang: DOMString,
+    lang: TracedDOMString,
     /// <https://notifications.spec.whatwg.org/#silent-preference-flag>
     silent: Option<bool>,
     /// <https://notifications.spec.whatwg.org/#tag>
-    tag: DOMString,
+    tag: TracedDOMString,
     /// <https://notifications.spec.whatwg.org/#concept-origin>
     #[no_trace] // ImmutableOrigin is not traceable
     origin: ImmutableOrigin,
@@ -104,15 +104,15 @@ pub(crate) struct Notification {
     #[no_trace] // RequestId is not traceable
     pending_request_ids: DomRefCell<FxHashSet<RequestId>>,
     /// <https://notifications.spec.whatwg.org/#image-resource>
-    #[ignore_malloc_size_of = "RasterImage"]
+    #[conditional_malloc_size_of]
     #[no_trace]
     image_resource: DomRefCell<Option<Arc<RasterImage>>>,
     /// <https://notifications.spec.whatwg.org/#icon-resource>
-    #[ignore_malloc_size_of = "RasterImage"]
+    #[conditional_malloc_size_of]
     #[no_trace]
     icon_resource: DomRefCell<Option<Arc<RasterImage>>>,
     /// <https://notifications.spec.whatwg.org/#badge-resource>
-    #[ignore_malloc_size_of = "RasterImage"]
+    #[conditional_malloc_size_of]
     #[no_trace]
     badge_resource: DomRefCell<Option<Arc<RasterImage>>>,
 }
@@ -223,20 +223,20 @@ impl Notification {
             eventtarget: EventTarget::new_inherited(),
             // A non-persistent notification is a notification whose service worker registration is null.
             serviceworker_registration: None,
-            title,
-            body,
+            title: title.traced(),
+            body: body.traced(),
             data: Heap::default(),
             dir,
             image,
             icon,
             badge,
-            lang,
+            lang: lang.traced(),
             silent,
             origin,
             vibration_pattern,
             timestamp,
             renotify,
-            tag,
+            tag: tag.traced(),
             require_interaction,
             actions,
             pending_request_ids: DomRefCell::new(Default::default()),
@@ -456,7 +456,7 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
 
     /// <https://notifications.spec.whatwg.org/#dom-notification-title>
     fn Title(&self) -> DOMString {
-        self.title.clone()
+        self.title.clone().root()
     }
 
     /// <https://notifications.spec.whatwg.org/#dom-notification-dir>
@@ -466,17 +466,17 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
 
     /// <https://notifications.spec.whatwg.org/#dom-notification-lang>
     fn Lang(&self) -> DOMString {
-        self.lang.clone()
+        self.lang.clone().root()
     }
 
     /// <https://notifications.spec.whatwg.org/#dom-notification-body>
     fn Body(&self) -> DOMString {
-        self.body.clone()
+        self.body.clone().root()
     }
 
     /// <https://notifications.spec.whatwg.org/#dom-notification-tag>
     fn Tag(&self) -> DOMString {
-        self.tag.clone()
+        self.tag.clone().root()
     }
 
     /// <https://notifications.spec.whatwg.org/#dom-notification-image>
@@ -581,8 +581,8 @@ struct Action {
     /// <https://notifications.spec.whatwg.org/#action-icon-url>
     icon_url: Option<USVString>,
     /// <https://notifications.spec.whatwg.org/#action-icon-resource>
-    #[ignore_malloc_size_of = "RasterImage"]
     #[no_trace]
+    #[conditional_malloc_size_of]
     icon_resource: DomRefCell<Option<Arc<RasterImage>>>,
 }
 
@@ -735,8 +735,6 @@ struct ResourceFetchListener {
     pending_image_id: PendingImageId,
     /// A reference to the global image cache.
     image_cache: Arc<dyn ImageCache>,
-    /// The notification instance which makes this request.
-    notification: Trusted<Notification>,
     /// Request status that indicates whether this request failed, and the reason.
     status: Result<(), NetworkError>,
     /// Resource URL of this request.
@@ -744,11 +742,12 @@ struct ResourceFetchListener {
 }
 
 impl FetchResponseListener for ResourceFetchListener {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -757,14 +756,11 @@ impl FetchResponseListener for ResourceFetchListener {
             FetchResponseMsg::ProcessResponse(request_id, metadata.clone()),
         );
 
-        let metadata = metadata.ok().map(|meta| match meta {
-            FetchMetadata::Unfiltered(m) => m,
-            FetchMetadata::Filtered { unsafe_, .. } => unsafe_,
-        });
+        let metadata = metadata.ok().map(Into::into);
 
         let status = metadata
             .as_ref()
-            .map(|m| m.status.clone())
+            .map(|metadata: &Metadata| metadata.status.clone())
             .unwrap_or_else(HttpStatus::new_error);
 
         self.status = {
@@ -786,6 +782,7 @@ impl FetchResponseListener for ResourceFetchListener {
     fn process_response_chunk(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         request_id: RequestId,
         payload: Bytes,
     ) {
@@ -800,6 +797,7 @@ impl FetchResponseListener for ResourceFetchListener {
     fn process_response_eof(
         self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         request_id: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -808,16 +806,16 @@ impl FetchResponseListener for ResourceFetchListener {
             self.pending_image_id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        network_listener::submit_timing(cx, &self, &response, &timing);
+        network_listener::submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -832,10 +830,6 @@ impl FetchResponseListener for ResourceFetchListener {
 impl ResourceTimingListener for ResourceFetchListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Other, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.notification.root().global()
     }
 }
 
@@ -898,7 +892,7 @@ impl Notification {
 
         let cache_result = global.image_cache().get_cached_image_status(
             request.url.url(),
-            global.origin().immutable().clone(),
+            global.origin().immutable(),
             None, // TODO: check which CORS should be used
         );
         match cache_result {
@@ -1023,7 +1017,6 @@ impl Notification {
         let context = ResourceFetchListener {
             pending_image_id,
             image_cache: global.image_cache(),
-            notification: Trusted::new(self),
             url: request.url.url(),
             status: Ok(()),
         };

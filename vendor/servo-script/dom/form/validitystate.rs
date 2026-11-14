@@ -11,6 +11,7 @@ use itertools::Itertools;
 use js::context::JSContext;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 use stylo_dom::ElementState;
 
@@ -78,7 +79,7 @@ impl fmt::Display for ValidationFlags {
 pub(crate) struct ValidityState {
     reflector_: Reflector,
     element: Dom<Element>,
-    custom_error_message: DomRefCell<DOMString>,
+    custom_error_message: DomRefCell<TracedDOMString>,
     invalid_flags: Cell<ValidationFlags>,
 }
 
@@ -87,7 +88,7 @@ impl ValidityState {
         ValidityState {
             reflector_: Reflector::new(),
             element: Dom::from_ref(element),
-            custom_error_message: DomRefCell::new(DOMString::new()),
+            custom_error_message: DomRefCell::new(DOMString::new().traced()),
             invalid_flags: Cell::new(ValidationFlags::empty()),
         }
     }
@@ -101,13 +102,13 @@ impl ValidityState {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#custom-validity-error-message>
-    pub(crate) fn custom_error_message(&self) -> Ref<'_, DOMString> {
+    pub(crate) fn custom_error_message(&self) -> Ref<'_, TracedDOMString> {
         self.custom_error_message.borrow()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#custom-validity-error-message>
     pub(crate) fn set_custom_error_message(&self, cx: &mut JSContext, error: DOMString) {
-        *self.custom_error_message.borrow_mut() = error;
+        *self.custom_error_message.safe_borrow_mut(cx.no_gc()) = error.traced();
         self.perform_validation_and_update(cx, ValidationFlags::CUSTOM_ERROR);
     }
 
@@ -151,11 +152,15 @@ impl ValidityState {
     pub(crate) fn update_pseudo_classes(&self, cx: &mut JSContext) {
         if self.element.is_instance_validatable(cx.no_gc()) {
             let is_valid = self.invalid_flags.get().is_empty();
-            self.element.set_state(ElementState::VALID, is_valid);
-            self.element.set_state(ElementState::INVALID, !is_valid);
+            self.element
+                .set_state(cx.no_gc(), ElementState::VALID, is_valid);
+            self.element
+                .set_state(cx.no_gc(), ElementState::INVALID, !is_valid);
         } else {
-            self.element.set_state(ElementState::VALID, false);
-            self.element.set_state(ElementState::INVALID, false);
+            self.element
+                .set_state(cx.no_gc(), ElementState::VALID, false);
+            self.element
+                .set_state(cx.no_gc(), ElementState::INVALID, false);
         }
 
         if let Some(form_control) = self.element.as_maybe_form_control() &&

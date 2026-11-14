@@ -4,6 +4,7 @@
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::str;
 
 use devtools_traits::{
@@ -155,6 +156,18 @@ pub(crate) fn handle_request_animation_frame(
     if let Some(doc) = documents.find_document(id) {
         doc.request_animation_frame(AnimationFrameCallback::DevtoolsFramerateTick { actor_name });
     }
+}
+
+pub(crate) fn handle_get_favicon(
+    documents: &DocumentCollection,
+    pipeline: PipelineId,
+    reply: GenericSender<Option<Vec<u8>>>,
+) {
+    let favicon = documents
+        .find_document(pipeline)
+        .and_then(|doc| doc.favicon())
+        .map(|image| image.data().to_vec());
+    let _ = reply.send(favicon);
 }
 
 pub(crate) fn handle_get_css_database(reply: GenericSender<HashMap<String, CssDatabaseProperty>>) {
@@ -329,6 +342,7 @@ pub(crate) fn handle_get_children(
             pref!(inspector_show_servo_internal_shadow_roots))
     {
         children.push(shadow_root.upcast::<Node>().summarize(cx));
+        pipeline_state.register_node(shadow_root.upcast::<Node>());
     }
     let children_iter = parent.children().enumerate().filter_map(|(i, child)| {
         // Filter whitespace only text nodes that are not inline level
@@ -672,7 +686,7 @@ pub(crate) fn handle_get_xpath(
 
             if matching_elements_before + matching_elements_after != 0 {
                 // Need to add an index (note that XPath uses 1-based indexing)
-                result.push_str(&format!("[{}]", matching_elements_before + 1));
+                write!(result, "[{}]", matching_elements_before + 1).unwrap();
             }
 
             Some(result)

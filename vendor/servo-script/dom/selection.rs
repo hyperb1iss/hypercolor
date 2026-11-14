@@ -5,6 +5,7 @@
 use std::cell::{Cell, LazyCell};
 use std::cmp::Ordering;
 
+use atomic_refcell::{AtomicRef, AtomicRefCell};
 use bitflags::bitflags;
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
@@ -19,6 +20,7 @@ use servo_base::text::{
 };
 
 use crate::dom::abstractrange::bp_position;
+use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::{GetRootNodeOptions, NodeMethods};
 use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
 use crate::dom::bindings::codegen::Bindings::SelectionBinding::{
@@ -36,7 +38,7 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::iterators::{PrePostIteration, UnrootedFollowingFlatTreeNodesTraversal};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::range::Range;
-use crate::dom::selection_range::{SelectionBoundary, SelectionRange};
+use crate::dom::selection_range::{RootedSelectionBoundary, SelectionBoundary, SelectionRange};
 use crate::dom::staticrange::StaticRange;
 use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
 use crate::dom::types::ShadowRoot;
@@ -73,7 +75,8 @@ pub(crate) struct Selection {
     ///
     /// * It is `None` if the selection is unrenderable.
     /// * Boundaries are in flat tree order.
-    visible_range: DomRefCell<Option<SelectionRange>>,
+    #[custom_trace]
+    visible_range: AtomicRefCell<Option<SelectionRange>>,
     /// The [`Direction`] of this [`Selection`] which determines which endpoint of
     /// [`Self::range`] is the anchor and which is the focus.
     direction: Cell<Direction>,
@@ -321,8 +324,8 @@ impl Selection {
         })
     }
 
-    fn set_visible_range(&self, flat_tree_selection: Option<FlatTreeSelection>) {
-        *self.visible_range.borrow_mut() = flat_tree_selection.map(|selection| {
+    fn set_visible_range(&self, no_gc: &NoGC, flat_tree_selection: Option<FlatTreeSelection>) {
+        *self.visible_range.safe_borrow_mut(no_gc) = flat_tree_selection.map(|selection| {
             SelectionRange::new(
                 SelectionBoundary::new(&selection.start.container, selection.start.offset),
                 SelectionBoundary::new(&selection.end.container, selection.end.offset),
@@ -345,7 +348,7 @@ impl Selection {
             flat_tree_selection.as_ref(),
             &self.document,
         );
-        self.set_visible_range(flat_tree_selection);
+        self.set_visible_range(no_gc, flat_tree_selection);
     }
 
     /// <https://w3c.github.io/selection-api/#dfn-schedule-a-selectionchange-event>
@@ -485,13 +488,16 @@ impl Selection {
         self.visible_selection_dirty.set(true);
     }
 
-    pub(crate) fn composed_anchor_position(&self) -> Option<(DomRoot<Node>, u32)> {
+    pub(crate) fn composed_anchor_position(&self) -> Option<RootedSelectionBoundary> {
         let range = self.range.borrow();
         let range = range.as_ref()?;
-        Some(match self.direction.get() {
+        let (container, offset) = match self.direction.get() {
             Direction::Forwards => (range.start.container.as_rooted(), range.start.offset),
             _ => (range.end.container.as_rooted(), range.end.offset),
-        })
+        };
+        Some(RootedSelectionBoundary::new_with_utf16_offset(
+            container, offset,
+        ))
     }
 
     /// <https://w3c.github.io/selection-api/#dfn-anchor>
@@ -747,34 +753,43 @@ impl Selection {
     pub(crate) fn collapse_to_dom_position(
         &self,
         cx: &mut JSContext,
-        container: &Node,
-        offset: Utf32CodeUnitsOrNodeOffset,
+        boundary: &RootedSelectionBoundary,
     ) {
-        let _ = self.Collapse(
-            cx,
-            Some(container),
-            container.to_sibling_or_utf16_offset(offset),
-        );
+        let _ = self.Collapse(cx, Some(&boundary.container), boundary.offset);
     }
 
     pub(crate) fn collapse_or_extend_to_dom_position(
         &self,
         cx: &mut JSContext,
-        container: &Node,
-        offset: Utf32CodeUnitsOrNodeOffset,
+        boundary: &RootedSelectionBoundary,
     ) {
-        let offset = container.to_sibling_or_utf16_offset(offset);
-        let is_anchor =
-            self.composed_anchor_position()
-                .is_some_and(|(anchor_node, anchor_offset)| {
-                    &*anchor_node == container && anchor_offset == offset
-                });
+        let is_anchor = self
+            .composed_anchor_position()
+            .is_some_and(|anchor| anchor == *boundary);
 
         if self.range.borrow().is_none() || is_anchor {
-            let _ = self.Collapse(cx, Some(container), offset);
+            let _ = self.Collapse(cx, Some(&boundary.container), boundary.offset);
         } else {
-            let _ = self.Extend(cx, container, offset);
+            let _ = self.Extend(cx, &boundary.container, boundary.offset);
         }
+    }
+
+    /// Call [`Selection::SetBaseAndExtent`] with the given `anchor` and `focus`
+    /// arguments. Like `SetBaseAndExtent` the selection direction is determined by the
+    /// order of `anchor` and `focus` in the DOM.
+    pub(crate) fn set_anchor_and_focus(
+        &self,
+        cx: &mut JSContext,
+        anchor: &RootedSelectionBoundary,
+        focus: &RootedSelectionBoundary,
+    ) {
+        let _ = self.SetBaseAndExtent(
+            cx,
+            &anchor.container,
+            anchor.offset,
+            &focus.container,
+            focus.offset,
+        );
     }
 }
 
@@ -919,7 +934,9 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
             self.set_range(no_gc, None);
             return Ok(());
         }
-        Err(Error::NotFound(None))
+        Err(Error::NotFound(Some(
+            "Range is not the selection's range".into(),
+        )))
     }
 
     /// <https://w3c.github.io/selection-api/#dom-selection-removeallranges>
@@ -1030,13 +1047,15 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // Step 2. If node is a DocumentType, throw an InvalidNodeTypeError exception and
         // abort these steps.
         if node.is_doctype() {
-            return Err(Error::InvalidNodeType(None));
+            return Err(Error::InvalidNodeType(Some("Node is a doctype".into())));
         }
 
         // Step 3. The method must throw an IndexSizeError exception if offset is longer
         // than node's length and abort these steps.
         if offset > node.len() {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Offset is greater than the node's length".into(),
+            )));
         }
 
         // Step 4. If document associated with this is not a shadow-including inclusive
@@ -1079,7 +1098,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
             .as_ref()
             .map(|range| (range.start.container.as_rooted(), range.start.offset))
         else {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some("Selection is empty".into())));
         };
         self.Collapse(cx, Some(&*start_container), start_offset)
     }
@@ -1095,7 +1114,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
             .as_ref()
             .map(|range| (range.end.container.as_rooted(), range.end.offset))
         else {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some("Selection is empty".into())));
         };
         self.Collapse(cx, Some(&*end_container), end_offset)
     }
@@ -1111,26 +1130,28 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // Step 2. If this is empty, throw an InvalidStateError exception and abort these steps.
         let range_borrow = self.range.borrow();
         let Some(range) = range_borrow.as_ref() else {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some("Selection is empty".into())));
         };
 
         // This isn't specified, but it appears to be implementation behavior of other
         // browsers. See w3c/selection-api#118.
         if node.is_doctype() {
-            return Err(Error::InvalidNodeType(None));
+            return Err(Error::InvalidNodeType(Some("Node is a doctype".into())));
         }
 
         // As with is_doctype, this is not explicit in the selection specification steps
         // here but implied by which exceptions are thrown in WPT tests.
         if offset > node.len() {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Offset is greater than the node's length".into(),
+            )));
         }
 
         // Step 3. Let oldAnchor and oldFocus be the this's anchor and focus, and let
         // newFocus be the boundary point (node, offset).
         //
         // Note: oldFocus is unused, so we do not set it here.
-        let (old_anchor_node, old_anchor_offset) = self
+        let old_anchor = self
             .composed_anchor_position()
             .expect("has range, therefore has anchor node");
 
@@ -1155,8 +1176,8 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
             let is_old_anchor_before_or_equal = matches!(
                 compare_shadow_including_dom_positions(
                     cx.no_gc(),
-                    &old_anchor_node,
-                    old_anchor_offset,
+                    &old_anchor.container,
+                    old_anchor.offset,
                     node,
                     offset
                 ),
@@ -1168,7 +1189,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
                 self.set_range(
                     cx.no_gc(),
                     Some(SelectionRange::new(
-                        SelectionBoundary::new(&old_anchor_node, old_anchor_offset),
+                        SelectionBoundary::new(&old_anchor.container, old_anchor.offset),
                         SelectionBoundary::new(node, offset),
                     )),
                 );
@@ -1180,7 +1201,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
                     cx.no_gc(),
                     Some(SelectionRange::new(
                         SelectionBoundary::new(node, offset),
-                        SelectionBoundary::new(&old_anchor_node, old_anchor_offset),
+                        SelectionBoundary::new(&old_anchor.container, old_anchor.offset),
                     )),
                 );
                 direction = Direction::Backwards;
@@ -1209,14 +1230,16 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // This isn't specified, but it appears to be implementation behavior of other
         // browsers. See w3c/selection-api#118.
         if anchor_node.is_doctype() || focus_node.is_doctype() {
-            return Err(Error::InvalidNodeType(None));
+            return Err(Error::InvalidNodeType(Some("Node is a doctype".into())));
         }
 
         // Step 1. If anchorOffset is longer than anchorNode's length or if focusOffset is
         // longer than focusNode's length, throw an IndexSizeError exception and abort
         // these steps.
         if anchor_offset > anchor_node.len() || focus_offset > focus_node.len() {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Offset is greater than the node's length".into(),
+            )));
         }
 
         // Step 2. If document associated with this is not a shadow-including inclusive
@@ -1282,7 +1305,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // Step 1. If node is a DocumentType, throw an InvalidNodeTypeError exception and
         // abort these steps.
         if node.is_doctype() {
-            return Err(Error::InvalidNodeType(None));
+            return Err(Error::InvalidNodeType(Some("Node is a doctype".into())));
         }
 
         // Step 2. If node's root is not the document associated with this, abort these
@@ -1392,6 +1415,11 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
 
     /// <https://w3c.github.io/selection-api/#dom-selection-stringifier>
     fn Stringifier(&self, cx: &mut JSContext) -> DOMString {
+        // Flush all layout before stringifying so that rendered text is up-to-date.
+        self.document
+            .window()
+            .layout_reflow(cx, QueryMsg::StyleQuery);
+
         // > The stringification must return the string, which is the concatenation of the
         // > rendered text if there is a range associated with this.
         // >
@@ -1402,9 +1430,6 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         else {
             return DOMString::new();
         };
-
-        // Flush all layout before stringifying so that rendered text is up-to-date.
-        self.document.window().layout_reflow(QueryMsg::StyleQuery);
 
         let mut user_select_cache = Default::default();
         let mut string = DOMString::new();
@@ -1429,9 +1454,8 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
 }
 
 impl<'dom> LayoutDom<'dom, Selection> {
-    #[expect(unsafe_code)]
-    pub(crate) fn range_for_layout(&self) -> &Option<SelectionRange> {
-        unsafe { self.unsafe_get().visible_range.borrow_for_layout() }
+    pub(crate) fn range_for_layout(&self) -> Option<AtomicRef<'dom, SelectionRange>> {
+        AtomicRef::filter_map(self.unsafe_get().visible_range.borrow(), Option::as_ref)
     }
 }
 
@@ -1498,6 +1522,21 @@ impl Node {
             offset.0
         }
     }
+
+    /// Get the `Utf32CodeUnitsOrNodeOffset` for `self` and the given UTF-16 offset if
+    /// `self` is `CharacterData` or else return the offset in the child list.
+    pub(crate) fn to_sibling_or_utf32_offset(&self, offset: u32) -> Utf32CodeUnitsOrNodeOffset {
+        Utf32CodeUnitsOrNodeOffset(
+            if let Some(character_data) = self.downcast::<CharacterData>() {
+                // TODO: ensure that each `CharacterData` holds no more than 4 GiB?
+                Utf16CodeUnits(offset)
+                    .to_utf32_code_units_in(&character_data.data())
+                    .0
+            } else {
+                offset
+            },
+        )
+    }
 }
 
 bitflags! {
@@ -1545,7 +1584,7 @@ fn project_into_shared_tree<'a>(
 /// Compare two shadow-including DOM positions by first projecting them into
 /// a shared root and then comparing the two positions. This function assumes
 /// that the two positions share a [`Document`].
-fn compare_shadow_including_dom_positions(
+pub(crate) fn compare_shadow_including_dom_positions(
     no_gc: &NoGC,
     container_a: &Node,
     offset_a: u32,

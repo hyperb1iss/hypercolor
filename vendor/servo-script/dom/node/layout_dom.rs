@@ -14,6 +14,7 @@ use pixels::ImageMetadata;
 use script_bindings::codegen::InheritTypes::{
     ElementTypeId, HTMLElementTypeId, SVGElementTypeId, SVGGraphicsElementTypeId,
 };
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use servo_url::ServoUrl;
@@ -31,7 +32,7 @@ use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmlslotelement::HTMLSlotElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::html::htmlvideoelement::HTMLVideoElement;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::svg::svgsvgelement::SVGSVGElement;
 use crate::dom::text::Text;
 use crate::dom::{Node, NodeFlags};
@@ -268,9 +269,7 @@ impl<'dom> LayoutDom<'dom, Node> {
         let text_node = self.downcast::<Text>()?;
         let text = text_node.upcast().data_for_layout();
         let selection = self.owner_doc_for_layout().visible_selection_for_layout()?;
-        let range = selection.range_for_layout();
-
-        let range = range.as_ref()?;
+        let range = selection.range_for_layout()?;
         let is_start_node = unsafe { range.start.container.to_layout() } == *self;
         let is_end_node = unsafe { range.end.container.to_layout() } == *self;
 
@@ -282,19 +281,15 @@ impl<'dom> LayoutDom<'dom, Node> {
     }
 
     pub(crate) fn text_node_paints_caret(&self) -> bool {
-        if let Some(shadow_root) = self.containing_shadow_root_for_layout() {
-            let host = shadow_root.get_host_for_layout();
-            if host.is::<HTMLInputElement>() || host.is::<HTMLTextAreaElement>() {
-                // This is the cases where, if `selection_for_text_node` returns a selection
-                // it is a `TextInput` selection
-                return true;
-            }
-        }
-        // This is the cases where, if `selection_for_text_node` returns a selection
-        // it is a document selection.
-        // For now, never paint a caret for document selection.
-        // This will change as we improve `contenteditable` support.
-        false
+        // TODO: Add support for `contenteditable`.
+        self.parent_node_ref()
+            .is_some_and(|parent| parent.is_text_container_of_single_line_input())
+    }
+
+    pub(crate) fn text_node_needs_caret_placeholder(&self) -> bool {
+        // TODO: Add support for `contenteditable`.
+        self.parent_node_ref()
+            .is_some_and(|parent| parent.is_text_container_of_single_line_input())
     }
 
     pub(crate) fn replaced_is_selected(&self) -> bool {
@@ -311,6 +306,11 @@ impl<'dom> LayoutDom<'dom, Node> {
 
     pub(crate) fn image_data(self) -> Option<(Option<Image>, Option<ImageMetadata>)> {
         self.downcast::<HTMLImageElement>().map(|e| e.image_data())
+    }
+
+    pub(crate) fn load_time(self) -> Option<CrossProcessInstant> {
+        self.downcast::<HTMLImageElement>()
+            .and_then(|image_element| image_element.load_time())
     }
 
     pub(crate) fn image_density(self) -> Option<f64> {
@@ -401,76 +401,38 @@ impl From<ElementTypeIdWrapper> for LayoutElementType {
     #[inline(always)]
     fn from(element_type: ElementTypeIdWrapper) -> LayoutElementType {
         match element_type.0 {
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLBodyElement) => {
-                LayoutElementType::HTMLBodyElement
+            ElementTypeId::HTMLElement(id) => match id {
+                HTMLElementTypeId::HTMLBRElement => Self::HTMLBRElement,
+                HTMLElementTypeId::HTMLBodyElement => Self::HTMLBodyElement,
+                HTMLElementTypeId::HTMLButtonElement => Self::HTMLButtonElement,
+                HTMLElementTypeId::HTMLCanvasElement => Self::HTMLCanvasElement,
+                HTMLElementTypeId::HTMLHtmlElement => Self::HTMLHtmlElement,
+                HTMLElementTypeId::HTMLIFrameElement => Self::HTMLIFrameElement,
+                HTMLElementTypeId::HTMLImageElement => Self::HTMLImageElement,
+                HTMLElementTypeId::HTMLInputElement => Self::HTMLInputElement,
+                HTMLElementTypeId::HTMLMediaElement(_) => Self::HTMLMediaElement,
+                HTMLElementTypeId::HTMLMeterElement => Self::HTMLMeterElement,
+                HTMLElementTypeId::HTMLObjectElement => Self::HTMLObjectElement,
+                HTMLElementTypeId::HTMLOptGroupElement => Self::HTMLOptGroupElement,
+                HTMLElementTypeId::HTMLOptionElement => Self::HTMLOptionElement,
+                HTMLElementTypeId::HTMLParagraphElement => Self::HTMLParagraphElement,
+                HTMLElementTypeId::HTMLPreElement => Self::HTMLPreElement,
+                HTMLElementTypeId::HTMLProgressElement => Self::HTMLProgressElement,
+                HTMLElementTypeId::HTMLSelectElement => Self::HTMLSelectElement,
+                HTMLElementTypeId::HTMLTableCellElement => Self::HTMLTableCellElement,
+                HTMLElementTypeId::HTMLTableColElement => Self::HTMLTableColElement,
+                HTMLElementTypeId::HTMLTableElement => Self::HTMLTableElement,
+                HTMLElementTypeId::HTMLTableRowElement => Self::HTMLTableRowElement,
+                HTMLElementTypeId::HTMLTableSectionElement => Self::HTMLTableSectionElement,
+                HTMLElementTypeId::HTMLTextAreaElement => Self::HTMLTextAreaElement,
+                _ => Self::Element,
             },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLButtonElement) => {
-                LayoutElementType::HTMLButtonElement
+            ElementTypeId::SVGElement(SVGElementTypeId::SVGGraphicsElement(id)) => match id {
+                SVGGraphicsElementTypeId::SVGImageElement => Self::SVGImageElement,
+                SVGGraphicsElementTypeId::SVGSVGElement => Self::SVGSVGElement,
+                _ => Self::Element,
             },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLBRElement) => {
-                LayoutElementType::HTMLBRElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLCanvasElement) => {
-                LayoutElementType::HTMLCanvasElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLHtmlElement) => {
-                LayoutElementType::HTMLHtmlElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLIFrameElement) => {
-                LayoutElementType::HTMLIFrameElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLImageElement) => {
-                LayoutElementType::HTMLImageElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLMediaElement(_)) => {
-                LayoutElementType::HTMLMediaElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLInputElement) => {
-                LayoutElementType::HTMLInputElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLOptGroupElement) => {
-                LayoutElementType::HTMLOptGroupElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLOptionElement) => {
-                LayoutElementType::HTMLOptionElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLObjectElement) => {
-                LayoutElementType::HTMLObjectElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLParagraphElement) => {
-                LayoutElementType::HTMLParagraphElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLPreElement) => {
-                LayoutElementType::HTMLPreElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLSelectElement) => {
-                LayoutElementType::HTMLSelectElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableCellElement) => {
-                LayoutElementType::HTMLTableCellElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableColElement) => {
-                LayoutElementType::HTMLTableColElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableElement) => {
-                LayoutElementType::HTMLTableElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableRowElement) => {
-                LayoutElementType::HTMLTableRowElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableSectionElement) => {
-                LayoutElementType::HTMLTableSectionElement
-            },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTextAreaElement) => {
-                LayoutElementType::HTMLTextAreaElement
-            },
-            ElementTypeId::SVGElement(SVGElementTypeId::SVGGraphicsElement(
-                SVGGraphicsElementTypeId::SVGImageElement,
-            )) => LayoutElementType::SVGImageElement,
-            ElementTypeId::SVGElement(SVGElementTypeId::SVGGraphicsElement(
-                SVGGraphicsElementTypeId::SVGSVGElement,
-            )) => LayoutElementType::SVGSVGElement,
-            _ => LayoutElementType::Element,
+            _ => Self::Element,
         }
     }
 }

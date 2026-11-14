@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::sync::LazyLock;
+
 use html5ever::{LocalName, Namespace, local_name, ns};
 use js::context::JSContext;
 use servo_arc::Arc as ServoArc;
@@ -12,10 +14,92 @@ use crate::dom::bindings::codegen::UnionTypes::{TrustedHTMLOrString, TrustedScri
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::element::Element;
 use crate::dom::element::attributes::storage::AttrRef;
+use crate::dom::element::storage::{
+    AttrName, AttrValueRef, AttributesBorrow, ContentAttributeData,
+};
 use crate::dom::node::NodeTraits;
+
+static EMPTY_CONTENTATTRIBUTE_DATA: LazyLock<ContentAttributeData> =
+    LazyLock::new(|| ContentAttributeData {
+        identifier: AttrName::new(local_name!(""), local_name!(""), ns!(), None),
+        value: AttrValue::Atom(atom!("")),
+    });
+
+pub(crate) struct AttrStrRefInner<'a> {
+    attributes_borrow: AttributesBorrow<'a>,
+    position: usize,
+}
+
+/// A reference to an attribute string value as that keeps the element's attributes
+/// borrowed while it is still alive. To convert this value to a `&str` use
+/// `value().as_ref()`.
+///
+/// This contains an `Option` in able to support the `Default` attribute, which allows
+/// treating a missing attribute as an empty string. This is kind of value is *only*
+/// created by `Default`, never returned from the attribute getter.
+#[derive(Default)]
+pub(crate) struct AttrStrRef<'a>(Option<AttrStrRefInner<'a>>);
+
+impl<'a> AttrStrRef<'a> {
+    /// Create a new [`AttrStrRef`] for the attribute named by `local_name`. Returns None
+    /// if the attribute was not found.
+    pub(in crate::dom::element) fn maybe_new(
+        attrs: AttributesBorrow<'a>,
+        namespace: &Namespace,
+        local_name: &LocalName,
+    ) -> Option<AttrStrRef<'a>> {
+        let position = attrs.iter().position(|attribute| {
+            attribute.local_name() == local_name && attribute.namespace() == namespace
+        });
+        position.map(|position| {
+            AttrStrRef(Some(AttrStrRefInner {
+                attributes_borrow: attrs,
+                position,
+            }))
+        })
+    }
+
+    /// Return the `AttrRef` from the `AttrStrRef`.
+    pub(crate) fn as_attr_ref<'b>(&'b self) -> AttrRef<'b> {
+        if let Some(inner) = &self.0 {
+            inner.attributes_borrow.get(inner.position).unwrap()
+        } else {
+            AttrRef::Raw(&EMPTY_CONTENTATTRIBUTE_DATA)
+        }
+    }
+
+    /// Return the [`AttrValueRef`] that underlies this [`AttrStrRef`].
+    pub(crate) fn value(&self) -> AttrValueRef<'_> {
+        self.as_attr_ref().value()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        if let Some(inner) = self.0.as_ref() {
+            inner
+                .attributes_borrow
+                .get(inner.position)
+                .unwrap()
+                .value()
+                .is_empty()
+        } else {
+            true
+        }
+    }
+
+    pub(crate) fn eq_ignore_ascii_case(&self, other: &str) -> bool {
+        if let Some(inner) = self.0.as_ref() {
+            let attr_ref = inner.attributes_borrow.get(inner.position).unwrap();
+            let value = attr_ref.value();
+            value.eq_ignore_ascii_case(other)
+        } else {
+            other.is_empty()
+        }
+    }
+}
 
 impl Element {
     /// Callers should convert the `LocalName` to ASCII lowercase before calling.
+    /// Consider using `get_attribute_string_ref`.
     /// <https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name>
     pub(crate) fn get_attribute_string_value(&self, local_name: &LocalName) -> Option<String> {
         // Step 1. If element is in the HTML namespace and its node document is an HTML document,
@@ -27,6 +111,20 @@ impl Element {
         );
 
         self.get_attribute_string_value_with_namespace(&ns!(), local_name)
+    }
+
+    /// This returns an attribute reference that can be seen as a `&str`. This keeps the borrow on attributes alive.
+    /// Callers should convert the `LocalName` to ASCII lowercase before calling.
+    pub(crate) fn get_attribute_string_ref<'a>(
+        &'a self,
+        local_name: &LocalName,
+    ) -> Option<AttrStrRef<'a>> {
+        debug_assert_eq!(
+            *local_name,
+            local_name.to_ascii_lowercase(),
+            "All namespace-less attribute accesses should use a lowercase ASCII name"
+        );
+        self.attribute_str_ref(&ns!(), local_name)
     }
 
     pub(crate) fn get_attribute_string_value_with_namespace(
@@ -76,13 +174,13 @@ impl Element {
     }
 
     pub(crate) fn get_url_attribute(&self, local_name: &LocalName) -> USVString {
-        let Some(value) = self.get_attribute_string_value(local_name) else {
+        let Some(value) = self.get_attribute_string_ref(local_name) else {
             return Default::default();
         };
         self.owner_document()
-            .encoding_parse_a_url(&value)
+            .encoding_parse_a_url(&value.as_attr_ref().value())
             .map(|parsed| USVString(parsed.into_string()))
-            .unwrap_or_else(|_| USVString(value))
+            .unwrap_or_else(|_| USVString(value.as_attr_ref().value().to_string()))
     }
 
     pub(crate) fn set_url_attribute(
@@ -98,13 +196,16 @@ impl Element {
         &self,
         local_name: &LocalName,
     ) -> TrustedScriptURLOrUSVString {
-        let Some(value) = self.get_attribute_string_value(local_name) else {
+        let Some(value) = self.get_attribute_string_ref(local_name) else {
             return TrustedScriptURLOrUSVString::USVString(USVString::default());
         };
+        let value_ref = value.as_attr_ref();
         self.owner_document()
-            .encoding_parse_a_url(&value)
+            .encoding_parse_a_url(&value_ref.value())
             .map(|parsed| TrustedScriptURLOrUSVString::USVString(USVString(parsed.into_string())))
-            .unwrap_or_else(|_| TrustedScriptURLOrUSVString::USVString(USVString(value)))
+            .unwrap_or_else(|_| {
+                TrustedScriptURLOrUSVString::USVString(USVString(value_ref.value().to_string()))
+            })
     }
 
     pub(crate) fn get_trusted_html_attribute(&self, local_name: &LocalName) -> TrustedHTMLOrString {

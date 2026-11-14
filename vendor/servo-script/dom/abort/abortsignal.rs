@@ -4,7 +4,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 use dom_struct::dom_struct;
 use indexmap::IndexSet;
@@ -12,11 +11,12 @@ use js::context::JSContext;
 use js::jsapi::{ExceptionStackBehavior, Heap};
 use js::jsval::{JSVal, UndefinedValue};
 use js::realm::CurrentRealm;
-use js::rust::wrappers2::JS_SetPendingException;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
 use script_bindings::callback::TracedCallback;
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::inheritance::Castable;
+use script_bindings::js::JS_SetPendingException;
 use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use script_bindings::weakref::WeakRef;
 
@@ -30,8 +30,10 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::internalclosewatcher::InternalCloseWatcher;
 use crate::dom::readablestream::PipeTo;
-use crate::fetch::fetch::{DeferredFetchRecordId, FetchContext};
+use crate::dom::request::Request;
+use crate::fetch::fetch::DeferredFetchRecordId;
 use crate::realms::enter_auto_realm;
 
 impl js::gc::Rootable for AbortAlgorithm {}
@@ -47,20 +49,18 @@ pub(crate) enum AbortAlgorithm {
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
     StreamPiping(PipeTo),
     /// <https://fetch.spec.whatwg.org/#dom-global-fetch>
-    Fetch(
-        #[no_trace]
-        #[conditional_malloc_size_of]
-        Arc<Mutex<Option<FetchContext>>>,
-    ),
+    Fetch(Dom<Request>),
     /// <https://fetch.spec.whatwg.org/#dom-window-fetchlater>
     FetchLater(#[no_trace] DeferredFetchRecordId),
+    /// <https://html.spec.whatwg.org/multipage/#dom-closewatcher>
+    CloseWatcher(#[conditional_malloc_size_of] Rc<InternalCloseWatcher>),
 }
 
 #[derive(Clone, JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct RemovableDomEventListener {
     pub(crate) event_target: Dom<EventTarget>,
-    pub(crate) ty: DOMString,
+    pub(crate) ty: TracedDOMString,
     pub(crate) listener: Option<TracedCallback<EventListener>>,
     pub(crate) options: EventListenerOptions,
 }
@@ -190,12 +190,10 @@ impl AbortSignal {
                 reason.set(self.abort_reason.get());
                 pipe.abort_with_reason(cx, global, reason.handle());
             },
-            AbortAlgorithm::Fetch(fetch_context) => {
+            AbortAlgorithm::Fetch(request) => {
                 rooted!(&in(cx) let mut reason = UndefinedValue());
                 reason.set(self.abort_reason.get());
-                if let Some(fetch_context) = &mut *fetch_context.lock().unwrap() {
-                    fetch_context.abort_fetch(reason.handle(), cx);
-                }
+                request.abort_fetch(cx, reason.handle(), global);
             },
             AbortAlgorithm::FetchLater(deferred_fetch_record_id) => {
                 global
@@ -205,10 +203,13 @@ impl AbortSignal {
             },
             AbortAlgorithm::DomEventListener(removable_listener) => {
                 removable_listener.event_target.remove_event_listener(
-                    removable_listener.ty.clone(),
+                    removable_listener.ty.clone().root(),
                     removable_listener.listener.as_deref(),
                     &removable_listener.options,
                 );
+            },
+            AbortAlgorithm::CloseWatcher(close_watcher) => {
+                close_watcher.destroy(cx.no_gc());
             },
         }
     }
@@ -441,13 +442,8 @@ impl AbortSignalMethods<crate::DomTypeHolder> for AbortSignal {
     fn ThrowIfAborted(&self, cx: &mut JSContext) -> Fallible<()> {
         // The throwIfAborted() method steps are to throw this’s abort reason, if this is aborted.
         if self.aborted() {
-            unsafe {
-                JS_SetPendingException(
-                    cx,
-                    HandleValue::from_raw(self.abort_reason.handle()),
-                    ExceptionStackBehavior::Capture,
-                )
-            };
+            let reason = unsafe { HandleValue::from_raw(self.abort_reason.handle()) };
+            JS_SetPendingException(cx, reason, ExceptionStackBehavior::Capture);
             return Err(Error::JSFailed);
         }
         Ok(())

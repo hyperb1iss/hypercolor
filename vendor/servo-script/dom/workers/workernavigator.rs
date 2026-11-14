@@ -5,7 +5,8 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::MutableHandleValue;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::inheritance::Castable;
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_config::pref;
 
 use crate::dom::bindings::codegen::Bindings::WorkerNavigatorBinding::WorkerNavigatorMethods;
@@ -43,7 +44,7 @@ impl WorkerNavigator {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &WorkerGlobalScope) -> DomRoot<WorkerNavigator> {
-        reflect_dom_object_with_cx(Box::new(WorkerNavigator::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(WorkerNavigator::new_inherited()), global)
     }
 }
 
@@ -110,7 +111,10 @@ impl WorkerNavigatorMethods<crate::DomTypeHolder> for WorkerNavigator {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-online>
     fn OnLine(&self) -> bool {
-        true
+        self.global()
+            .downcast::<WorkerGlobalScope>()
+            .expect("This always belongs to a WorkerGlobalScope")
+            .online()
     }
 
     /// <https://w3c.github.io/permissions/#navigator-and-workernavigator-extension>

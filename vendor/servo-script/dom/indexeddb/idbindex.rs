@@ -9,6 +9,7 @@ use js::rust::HandleValue;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::IDBIndexBinding::IDBIndexMethods;
 use script_bindings::codegen::GenericBindings::IDBTransactionBinding::IDBTransactionMode;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::error::{Error, ErrorResult, Fallible};
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::str::DOMString;
@@ -30,7 +31,7 @@ use crate::dom::indexeddb::key::convert_value_to_key_range;
 pub(crate) struct IDBIndex {
     reflector_: Reflector,
     object_store: Dom<IDBObjectStore>,
-    name: DomRefCell<DOMString>,
+    name: DomRefCell<TracedDOMString>,
     multi_entry: bool,
     unique: bool,
     key_path: KeyPath,
@@ -47,7 +48,7 @@ impl IDBIndex {
         IDBIndex {
             reflector_: Reflector::new(),
             object_store: Dom::from_ref(object_store),
-            name: DomRefCell::new(name),
+            name: DomRefCell::new(name.traced()),
             multi_entry,
             unique,
             key_path,
@@ -81,7 +82,7 @@ impl IDBIndex {
     }
 
     pub(crate) fn verify_not_deleted(&self) -> ErrorResult {
-        let stored_name = self.name.borrow().clone();
+        let stored_name = self.name.borrow().clone().root();
         let transaction = self.object_store.transaction();
         if !self.object_store.has_index(&stored_name) ||
             !transaction
@@ -108,16 +109,7 @@ impl IDBIndex {
         let transaction = self.object_store.transaction();
 
         // Step 2. If index or its object store has been deleted, throw an "InvalidStateError" DOMException.
-        let stored_name = self.name.borrow();
-        if !self.object_store.has_index(&stored_name) ||
-            !transaction
-                .get_db()
-                .object_store_exists(&self.object_store.get_name())
-        {
-            return Err(Error::InvalidState(Some(
-                "Index or its object store has been deleted".to_owned(),
-            )));
-        }
+        self.verify_not_deleted()?;
 
         // Step 3. If transaction is not active, throw a "TransactionInactiveError" DOMException.
         if !transaction.is_active() || !transaction.is_usable() {
@@ -181,7 +173,7 @@ impl IDBIndex {
 impl IDBIndexMethods<crate::DomTypeHolder> for IDBIndex {
     /// <https://www.w3.org/TR/IndexedDB/#dom-idbindex-name>
     fn Name(&self) -> DOMString {
-        self.name.borrow().clone()
+        self.name.borrow().clone().root()
     }
 
     /// <https://www.w3.org/TR/IndexedDB/#ref-for-dom-idbindex-name%E2%91%A2>
@@ -220,7 +212,7 @@ impl IDBIndexMethods<crate::DomTypeHolder> for IDBIndex {
         }
 
         // Step 7: If index’s name is equal to name, terminate these steps.
-        if *stored_name == name {
+        if *stored_name == *name {
             return Ok(());
         }
 
@@ -235,7 +227,7 @@ impl IDBIndexMethods<crate::DomTypeHolder> for IDBIndex {
         self.object_store.rename_index(&stored_name, &name);
 
         // Step 10: Set this’s name to name.
-        *stored_name = name;
+        *stored_name = name.traced();
         Ok(())
     }
 

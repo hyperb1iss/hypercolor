@@ -22,6 +22,7 @@ use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::MessagePortBinding::MessagePortMethods;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::structuredclone::StructuredData;
 use servo_base::id::{MessagePortId, MessagePortIndex};
 use servo_constellation_traits::MessagePortImpl;
 
@@ -35,7 +36,6 @@ use crate::dom::bindings::conversions::ConversionResult;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::domexception::{DOMErrorName, DOMException};
 use crate::dom::globalscope::GlobalScope;
@@ -45,7 +45,7 @@ use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::readablestream::{ReadableStream, get_type_and_value_from_message};
 use crate::dom::stream::countqueuingstrategy::{extract_high_water_mark, extract_size_algorithm};
 use crate::dom::stream::writablestreamdefaultcontroller::{
-    UnderlyingSinkType, WritableStreamDefaultController,
+    UnderlyingSinkTypeRef, WritableStreamDefaultController,
 };
 use crate::dom::stream::writablestreamdefaultwriter::WritableStreamDefaultWriter;
 use crate::realms::enter_auto_realm;
@@ -873,9 +873,9 @@ impl WritableStream {
         let controller = WritableStreamDefaultController::new(
             cx,
             &global,
-            UnderlyingSinkType::Transfer {
-                backpressure_promise: backpressure_promise.0.clone(),
-                port: Dom::from_ref(port),
+            UnderlyingSinkTypeRef::Transfer {
+                backpressure_promise: &backpressure_promise.0,
+                port,
             },
             1.0,
             size_algorithm,
@@ -937,7 +937,7 @@ impl WritableStream {
         let controller = WritableStreamDefaultController::new(
             cx,
             global,
-            UnderlyingSinkType::new_js(
+            UnderlyingSinkTypeRef::new_js(
                 underlying_sink.abort.as_ref(),
                 underlying_sink.start.as_ref(),
                 underlying_sink.close.as_ref(),
@@ -957,13 +957,12 @@ impl WritableStream {
 }
 
 /// <https://streams.spec.whatwg.org/#create-writable-stream>
-#[cfg_attr(crown, expect(crown::unrooted_must_root))]
 pub(crate) fn create_writable_stream(
     cx: &mut JSContext,
     global: &GlobalScope,
     writable_high_water_mark: f64,
     writable_size_algorithm: RootedCallback<QueuingStrategySize>,
-    underlying_sink_type: UnderlyingSinkType,
+    underlying_sink_type: UnderlyingSinkTypeRef<'_>,
 ) -> Fallible<DomRoot<WritableStream>> {
     // Assert: ! IsNonNegativeNumber(highWaterMark) is true.
     assert!(writable_high_water_mark >= 0.0);
@@ -1018,7 +1017,7 @@ impl WritableStreamMethods<crate::DomTypeHolder> for WritableStream {
             UnderlyingSink::empty()
         };
 
-        if !underlying_sink_dict.type_.handle().is_undefined() {
+        if !underlying_sink_dict.type_.get().is_undefined() {
             // If underlyingSinkDict["type"] exists, throw a RangeError exception.
             return Err(Error::Range(c"type is set".to_owned()));
         }

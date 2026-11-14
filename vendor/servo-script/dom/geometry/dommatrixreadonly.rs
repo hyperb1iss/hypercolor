@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::{f64, ptr};
+use std::ptr;
 
 use cssparser::Parser;
 use dom_struct::dom_struct;
@@ -18,6 +18,8 @@ use rustc_hash::FxHashMap;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::cformat;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::serializable::Serializable;
+use script_bindings::structuredclone::StructuredData;
 use script_bindings::trace::RootedTraceableBox;
 use servo_base::id::{DomMatrixId, DomMatrixIndex};
 use servo_constellation_traits::DomMatrix;
@@ -37,9 +39,7 @@ use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::serializable::Serializable;
 use crate::dom::bindings::str::DOMString;
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::dommatrix::DOMMatrix;
 use crate::dom::dompoint::DOMPoint;
 use crate::dom::globalscope::GlobalScope;
@@ -984,7 +984,7 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
     }
 }
 
-impl Serializable for DOMMatrixReadOnly {
+impl Serializable<crate::DomTypeHolder> for DOMMatrixReadOnly {
     type Index = DomMatrixIndex;
     type Data = DomMatrix;
 

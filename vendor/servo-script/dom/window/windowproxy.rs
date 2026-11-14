@@ -30,9 +30,8 @@ use js::jsapi::{
 use js::jsval::{NullValue, PrivateValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
 use js::rust::wrappers2::{
-    AppendToIdVector, GetPropertyKeys, JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById,
-    JS_HasOwnPropertyById, JS_HasPropertyById, JS_TransplantObject, NewWindowProxy, SetWindowProxy,
-    int_to_jsid,
+    AppendToIdVector, JS_ForwardGetPropertyTo, JS_HasOwnPropertyById, JS_HasPropertyById,
+    JS_TransplantObject, NewWindowProxy, SetWindowProxy, int_to_jsid,
 };
 use js::rust::{Handle, MutableHandle, MutableHandleValue, get_object_class};
 use js::typedarray::JSObjectStorage;
@@ -48,6 +47,8 @@ use script_bindings::codegen::GenericBindings::WindowBinding::{
     self, GetProtoObject, WindowMethods,
 };
 use script_bindings::conversions::jsid_to_string;
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::js::{GetPropertyKeys, JS_GetOwnPropertyDescriptorById};
 use script_bindings::proxyhandler::{
     self, CROSS_ORIGIN_PROPERTY_HOLDER_WEAK_MAP_SLOT, CrossOriginProperties,
     cross_origin_get_own_property_helper, cross_origin_own_property_keys,
@@ -119,7 +120,7 @@ pub(crate) struct WindowProxy {
 
     /// The name of the browsing context (sometimes, but not always,
     /// equal to the name of a container element)
-    name: DomRefCell<DOMString>,
+    name: DomRefCell<TracedDOMString>,
     /// The pipeline id of the currently active document.
     /// May be None, when the currently active document is in another script thread.
     /// We do not try to keep the pipeline id for documents in other threads,
@@ -178,7 +179,7 @@ impl WindowProxy {
             reflector: Reflector::new(),
             browsing_context_id,
             webview_id,
-            name: DomRefCell::new(name),
+            name: DomRefCell::new(name.traced()),
             currently_active: Cell::new(currently_active),
             discarded: Cell::new(false),
             disowned: Cell::new(false),
@@ -883,7 +884,13 @@ impl WindowProxy {
     /// If the containing `<iframe>` of this [`WindowProxy`] is from a same-origin page,
     /// this will return an [`Element`] of the `<iframe>` element in the realm of the parent
     /// page.
+    ///
+    /// This returns `None` if the browsing context for this [`WindowProxy`]
+    /// has been discarded.
     pub(crate) fn frame_element(&self) -> Option<&Element> {
+        if self.is_browsing_context_discarded() {
+            return None;
+        }
         self.frame_element.as_deref()
     }
 
@@ -1046,11 +1053,11 @@ impl WindowProxy {
     }
 
     pub(crate) fn get_name(&self) -> DOMString {
-        self.name.borrow().clone()
+        self.name.borrow().clone().root()
     }
 
     pub(crate) fn set_name(&self, name: DOMString) {
-        *self.name.borrow_mut() = name;
+        *self.name.borrow_mut() = name.traced();
     }
 }
 
@@ -1254,9 +1261,13 @@ unsafe extern "C" fn get_own_property_descriptor(
 
     // Step 3. If IsPlatformObjectSameOrigin(W) is true, then return ! OrdinaryGetOwnProperty(W, P).
     if is_platform_object_same_origin(cx, proxy) {
-        return unsafe {
-            JS_GetOwnPropertyDescriptorById(cx, target.handle(), id, property_descriptor, is_none)
-        };
+        return JS_GetOwnPropertyDescriptorById(
+            cx,
+            target.handle(),
+            id,
+            property_descriptor,
+            is_none,
+        );
     }
 
     // Step 4. Let property be CrossOriginGetOwnPropertyHelper(W, P).
@@ -1653,14 +1664,12 @@ unsafe extern "C" fn own_property_keys(
     if is_platform_object_same_origin(cx, proxy) {
         // Step 4. If IsPlatformObjectSameOrigin(W) is true, then return the concatenation of keys and
         // OrdinaryOwnPropertyKeys(W).
-        return unsafe {
-            GetPropertyKeys(
-                cx,
-                target.handle(),
-                JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS,
-                property_keys,
-            )
-        };
+        return GetPropertyKeys(
+            cx,
+            target.handle(),
+            JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS,
+            property_keys,
+        );
     }
 
     // Step 5. Return the concatenation of keys and ! CrossOriginOwnPropertyKeys(W).
@@ -1699,7 +1708,7 @@ unsafe extern "C" fn get_own_enumerable_property_keys(
     if is_platform_object_same_origin(cx, proxy) {
         // Step 4. If IsPlatformObjectSameOrigin(W) is true, then return the concatenation of keys and
         // OrdinaryOwnPropertyKeys(W).
-        return unsafe { GetPropertyKeys(cx, target.handle(), JSITER_OWNONLY, property_keys) };
+        return GetPropertyKeys(cx, target.handle(), JSITER_OWNONLY, property_keys);
     }
 
     // There are no other enumerable property keys for cross-origin WindowProxy other than
@@ -1720,7 +1729,7 @@ unsafe extern "C" fn enumerate(
     let cx = &mut cx;
     let proxy = unsafe { Handle::from_raw(proxy) };
 
-    unsafe { GetPropertyKeys(cx, proxy, 0, property_keys) }
+    GetPropertyKeys(cx, proxy, 0, property_keys)
 }
 
 static PROXY_TRAPS: ProxyTraps = ProxyTraps {

@@ -17,11 +17,13 @@ use js::glue::UnwrapObjectStatic;
 use js::jsapi::{HandleValueArray, Heap, IsCallable, IsConstructor, JSObject};
 use js::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
-use js::rust::wrappers2::{Construct1, JS_GetProperty, SameValue};
+use js::rust::wrappers2::{Construct1, SameValue};
 use js::rust::{HandleObject, MutableHandleValue};
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use script_bindings::callback::HasCallbackHolder;
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::js::JS_GetProperty;
 use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
 use script_bindings::settings_stack::{run_a_callback, run_a_script};
 use style::attr::AttrValue;
@@ -52,7 +54,7 @@ use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::promise::Promise;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::window::Window;
 use crate::dom::{RootedPromise, TracedPromise};
 use crate::event_loop::script_thread::ScriptThread;
@@ -221,25 +223,22 @@ impl CustomElementRegistry {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-define>
     /// Steps 10.1, 10.2
-    #[expect(unsafe_code)]
     fn check_prototype(
         &self,
         cx: &mut JSContext,
         constructor: HandleObject,
         mut prototype: MutableHandleValue,
     ) -> ErrorResult {
-        unsafe {
-            // Step 10.1
-            if !JS_GetProperty(cx, constructor, c"prototype".as_ptr(), prototype.reborrow()) {
-                return Err(Error::JSFailed);
-            }
+        // Step 10.1
+        if !JS_GetProperty(cx, constructor, c"prototype", prototype.reborrow()) {
+            return Err(Error::JSFailed);
+        }
 
-            // Step 10.2
-            if !prototype.is_object() {
-                return Err(Error::Type(
-                    c"constructor.prototype is not an object".to_owned(),
-                ));
-            }
+        // Step 10.2
+        if !prototype.is_object() {
+            return Err(Error::Type(
+                c"constructor.prototype is not an object".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -302,7 +301,7 @@ impl CustomElementRegistry {
         // only include elements whose is value is equal to name.
         for candidate in document
             .upcast::<Node>()
-            .traverse_preorder_non_rooting(cx, ShadowIncluding::Yes)
+            .traverse_preorder_unrooted(cx, ShadowIncluding::Yes)
             .filter_map(UnrootedDom::downcast::<Element>)
         {
             // Note: If the registry is scoped, only include elements whose custom
@@ -348,7 +347,7 @@ fn get_callback(
     rooted!(&in(cx) let mut callback = UndefinedValue());
     unsafe {
         // Step 10.4.1
-        if !JS_GetProperty(cx, prototype, name.as_ptr(), callback.handle_mut()) {
+        if !JS_GetProperty(cx, prototype, name, callback.handle_mut()) {
             return Err(Error::JSFailed);
         }
 
@@ -660,7 +659,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
             .0
             .values()
             .find(|definition| definition.constructor.callback() == constructor.callback())
-            .map(|definition| DOMString::from(definition.name.to_string()))
+            .map(|definition| TracedDOMString::from(definition.name.clone()).root())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-whendefined>
@@ -709,7 +708,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
     fn Upgrade(&self, cx: &JSContext, node: &Node) {
         // Step 1. For each shadow-including inclusive descendant candidate of
         // root, in shadow-including tree order:
-        for node in node.traverse_preorder_non_rooting(cx, ShadowIncluding::Yes) {
+        for node in node.traverse_preorder_unrooted(cx, ShadowIncluding::Yes) {
             // Step 1.1. If candidate is not an Element node, then continue.
             let Some(element) = node.downcast::<Element>() else {
                 continue;
@@ -861,8 +860,9 @@ impl From<RootedLifecycleCallbacks> for LifecycleCallbacks {
 }
 
 #[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum ConstructionStackEntry {
-    Element(DomRoot<Element>),
+    Element(Dom<Element>),
     AlreadyConstructedMarker,
 }
 
@@ -1067,7 +1067,7 @@ pub(crate) fn upgrade_element(
     definition
         .construction_stack
         .borrow_mut()
-        .push(ConstructionStackEntry::Element(DomRoot::from_ref(element)));
+        .push(ConstructionStackEntry::Element(Dom::from_ref(element)));
 
     // Steps 7-8, successful case
     let result = run_upgrade_constructor(cx, &definition, element);
@@ -1118,9 +1118,9 @@ pub(crate) fn upgrade_element(
         // a fact that's true or false about a node at a given time,
         // not a flag that belongs to the node and is updated,
         // so it doesn't describe this check as an action.)
-        element.check_disabled_attribute();
+        element.check_disabled_attribute(cx.no_gc());
         element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
-        element.update_read_write_state_from_readonly_attribute();
+        element.update_read_write_state_from_readonly_attribute(cx.no_gc());
 
         // Step 9.2: If element is disabled, then enqueue a custom element callback reaction
         // with element.
@@ -1224,7 +1224,9 @@ pub(crate) fn try_upgrade_element(cx: &JSContext, element: &Element) {
         {
             registry
         } else {
-            element.owner_document().custom_element_registry()
+            element
+                .owner_document_unrooted(cx.no_gc())
+                .custom_element_registry()
         }
     };
     if let Some(definition) = CustomElementRegistry::lookup_custom_element_definition(
@@ -1416,7 +1418,7 @@ impl CustomElementReactionStack {
                 let mut realm = enter_auto_realm(cx, &*element.global());
                 let cx = &mut realm;
 
-                let local_name = DOMString::from(&*local_name);
+                let local_name = TracedDOMString::from(local_name).root();
                 rooted!(&in(cx) let mut name_value = UndefinedValue());
                 local_name.to_jsval(cx, name_value.handle_mut());
 
@@ -1432,7 +1434,7 @@ impl CustomElementReactionStack {
 
                 rooted!(&in(cx) let mut namespace_value = NullValue());
                 if namespace != ns!() {
-                    let namespace = DOMString::from(&*namespace);
+                    let namespace = TracedDOMString::from(namespace).root();
                     namespace.to_jsval(cx, namespace_value.handle_mut());
                 }
 

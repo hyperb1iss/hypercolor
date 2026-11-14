@@ -50,7 +50,7 @@ impl Callback for RepresentationDataPromiseFulfillmentHandler {
             // 1.1 Let dataAsBytes be the result of UTF-8 encoding v.
             let data_as_bytes = match DOMString::from_jsval(cx, v, StringificationBehavior::Default)
             {
-                Ok(ConversionResult::Success(s)) => s.as_bytes().to_owned(),
+                Ok(ConversionResult::Success(s)) => s.as_bytes(cx.no_gc()).to_owned(),
                 _ => return,
             };
 
@@ -100,7 +100,6 @@ const CUSTOM_FORMAT_PREFIX: &str = "web ";
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(super) struct Representation {
     #[no_trace]
-    #[ignore_malloc_size_of = "Extern type"]
     pub mime_type: Mime,
     pub is_custom: bool,
     pub data: TracedPromise,

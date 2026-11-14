@@ -5,6 +5,7 @@
 use std::rc::Rc;
 
 use euclid::Rect;
+use html5ever::LocalName;
 use style::selector_parser::PseudoElement;
 use style_traits::CSSPixel;
 use stylo_atoms::Atom;
@@ -21,7 +22,7 @@ use crate::dom::intersectionobserver::IntersectionObserverRegistration;
 use crate::dom::mutationobserver::RegisteredObserver;
 use crate::dom::nodelist::NodeList;
 use crate::dom::range::Range;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::types::Element;
 use crate::dom::window::LayoutValue;
 
@@ -102,4 +103,10 @@ pub(crate) struct ElementRareData {
 
     /// <https://html.spec.whatwg.org/multipage/#previously-focused-element>
     pub(crate) previously_focused_element: MutNullableDom<Element>,
+
+    /// <https://dom.spec.whatwg.org/#concept-element-is-value>
+    ///
+    /// Only ever set on customized built-in elements, which are very rare.
+    #[no_trace]
+    pub(crate) is_value: Option<LocalName>,
 }

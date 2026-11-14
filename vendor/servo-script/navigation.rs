@@ -16,6 +16,7 @@ use embedder_traits::{ViewportDetails, WebDriverLoadStatus};
 use http::header;
 use js::context::JSContext;
 use net_traits::blob_url_store::UrlWithBlobClaim;
+use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::request::{
     CredentialsMode, InsecureRequestsPolicy, Origin, PreloadedResources, RedirectMode,
     RequestBuilder, RequestClient, RequestMode,
@@ -39,13 +40,13 @@ use url::Position;
 use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFrameElementMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::refcounted::Trusted;
+use crate::dom::document::AbortReason;
 use crate::dom::element::Element;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::node::node::NodeTraits;
 use crate::dom::window::Window;
 use crate::dom::windowproxy::WindowProxy;
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::FetchCanceller;
 use crate::messaging::MainThreadScriptMsg;
 
 #[derive(Clone)]
@@ -168,14 +169,15 @@ pub(crate) struct InProgressLoad {
     #[no_trace]
     pub(crate) navigation_start: CrossProcessInstant,
     /// For cancelling the fetch
-    pub(crate) canceller: FetchCanceller,
+    #[no_trace]
+    pub(crate) controller: FetchController,
     /// The [`LoadData`] associated with this load.
     #[no_trace]
     pub(crate) load_data: LoadData,
     /// A list of URL to keep track of all the redirects that have happened during
     /// this load.
     #[no_trace]
-    pub(crate) url_list: Vec<ServoUrl>,
+    pub(crate) url_list: Vec<UrlWithBlobClaim>,
     #[no_trace]
     /// The [`UserContentManagerId`] associated with this load's `WebView`.
     pub(crate) user_content_manager_id: Option<UserContentManagerId>,
@@ -204,9 +206,9 @@ impl InProgressLoad {
             activity: DocumentActivity::FullyActive,
             throttled: false,
             navigation_start: CrossProcessInstant::now(),
-            canceller: Default::default(),
+            controller: Default::default(),
             load_data: new_pipeline_info.load_data,
-            url_list: vec![url],
+            url_list: vec![UrlWithBlobClaim::from_url_without_having_claimed_blob(url)],
             user_content_manager_id: new_pipeline_info.user_content_manager_id,
             target_snapshot_params: new_pipeline_info.target_snapshot_params,
             frame_name: new_pipeline_info.frame_name,
@@ -238,6 +240,7 @@ impl InProgressLoad {
             is_nested_browsing_context: self.parent_info.is_some(),
             insecure_requests_policy,
             has_trustworthy_ancestor_origin: self.load_data.has_trustworthy_ancestor_origin,
+            network_partition_key: None,
         };
 
         let mut request_builder = RequestBuilder::new(
@@ -556,7 +559,7 @@ pub(crate) fn navigate(
         .task_manager()
         .navigation_and_traversal_task_source()
         .queue(task!(abort_a_document_and_its_descendants: move |cx| {
-            trusted_document.root().abort_a_document_and_its_descendants(cx);
+            trusted_document.root().abort_a_document_and_its_descendants(cx, AbortReason::Navigate);
         }));
 
     // Step 24.9. Attempt to populate the history entry's document for historyEntry,

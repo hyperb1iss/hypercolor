@@ -4,7 +4,7 @@
 use js::context::{JSContext, NoGC};
 
 use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
-use crate::dom::bindings::codegen::Bindings::HTMLOrSVGElementBinding::FocusOptions;
+use crate::dom::bindings::codegen::Bindings::HTMLOrSVGOrMathMLElementBinding::FocusOptions;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
@@ -108,7 +108,7 @@ pub(crate) fn is_barred_by_datalist_ancestor(no_gc: &NoGC, elem: &Node) -> bool 
 // Get message for given validation flags or custom error message
 fn validation_message_for_flags(state: &ValidityState, failed_flags: ValidationFlags) -> DOMString {
     if failed_flags.contains(ValidationFlags::CUSTOM_ERROR) {
-        state.custom_error_message().clone()
+        state.custom_error_message().clone().root()
     } else {
         DOMString::from(failed_flags.to_string())
     }

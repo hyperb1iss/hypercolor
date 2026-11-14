@@ -8,7 +8,7 @@ use dom_struct::dom_struct;
 use embedder_traits::{AllowOrDeny, EmbedderMsg};
 use js::context::JSContext;
 use js::realm::CurrentRealm;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_constellation_traits::ScriptToConstellationMessage;
 
 use crate::conversions::Convert;
@@ -41,7 +41,7 @@ impl WakeLock {
     }
 
     pub(crate) fn new(cx: &mut js::context::JSContext, global: &GlobalScope) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(Self::new_inherited()), global)
     }
 }
 
@@ -85,10 +85,10 @@ impl WakeLockMethods<crate::DomTypeHolder> for WakeLock {
         let task_manager = global.task_manager();
         let task_source = task_manager.dom_manipulation_task_source();
         let callback = callback_promise(&promise, self, task_source);
-        global.send_to_embedder(EmbedderMsg::RequestWakeLockPermission(
+        global.send_to_embedder(EmbedderMsg::RequestPermission(
             webview_id,
+            embedder_traits::PermissionFeature::ScreenWakeLock(self.type_.get().convert()),
             callback,
-            self.type_.get().convert(),
         ));
 
         promise
