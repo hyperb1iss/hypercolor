@@ -17,6 +17,11 @@ const ANCHORED_INSTALL_LOCK_FILE: &str = ".hypercolor-release-install.lock";
 const PROGRAM_MODE: u32 = 0o555;
 pub(crate) const INSTALL_JOURNAL_FILE: &str = "install-journal.json";
 const UNITS_DIRECTORY: &str = "units";
+/// Beside `units`, one directory per unit, named like it, holding what the
+/// installer renders for that unit outside its immutable tree: the desktop
+/// entry of a Linux user installation, whose `Exec` names the installation's
+/// own command path. Each lives and goes with its unit.
+pub(crate) const DESKTOP_ENTRIES_DIRECTORY: &str = "desktop-entries";
 const MAX_JOURNAL_STAGE_ATTEMPTS: usize = 128;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -864,6 +869,10 @@ pub enum InstallStoreError {
     CreateUnits(io::Error),
     #[error("failed to open the immutable unit directory: {0}")]
     OpenUnits(io::Error),
+    #[error("failed to open the rendered desktop entries: {0}")]
+    OpenDesktopEntries(io::Error),
+    #[error("failed to list the rendered desktop entries: {0}")]
+    InspectDesktopEntries(io::Error),
     #[error("failed to open the exact immutable unit: {0}")]
     OpenUnit(io::Error),
     #[error("failed to inspect active unit: {0}")]
@@ -1064,6 +1073,10 @@ mod tests {
 #[path = "store_collection.rs"]
 mod collection;
 pub use collection::UnitCollection;
+
+#[cfg(test)]
+#[path = "store_collection_tests.rs"]
+mod collection_tests;
 
 #[cfg(test)]
 #[path = "store_acquisition_tests.rs"]

@@ -607,6 +607,7 @@ pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
         executor.retain_prior_units()?;
     }
     let config = LinuxInstallConfig {
+        home: home.to_path_buf(),
         direct_fragment_path: home
             .join(".config/systemd/user/hypercolor.service")
             .to_str()

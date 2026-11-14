@@ -506,6 +506,13 @@ impl LinuxInstallExecutor for SimExecutor {
         config: &LinuxInstallConfig,
     ) -> Result<(), InstallPlatformError> {
         assert_eq!(config.direct_fragment_path, self.world.borrow().fragment);
+        assert_eq!(
+            config
+                .home
+                .join(".config/systemd/user/hypercolor.service")
+                .to_str(),
+            Some(self.world.borrow().fragment.as_str())
+        );
         self.active_root = Some(config.active_root.clone());
         Ok(())
     }
@@ -849,6 +856,27 @@ impl LinuxInstallExecutor for SimExecutor {
     ) -> Result<UnitRecord, InstallPlatformError> {
         Err(InstallPlatformError::new("no legacy regular-file layout"))
     }
+
+    /// The store is real, so the rendered entry is too: collection and
+    /// uninstall remove it from disk.
+    fn publish_desktop_entry(
+        &mut self,
+        unit: &UnitId,
+        contents: &[u8],
+    ) -> Result<(), InstallPlatformError> {
+        let release_root = self
+            .active_root
+            .as_ref()
+            .and_then(|active| active.parent())
+            .expect("validated topology");
+        let directory = release_root.join("desktop-entries").join(unit.as_str());
+        fs::create_dir_all(&directory).expect("rendered entry directory");
+        let staged = directory.join(".staged");
+        fs::write(&staged, contents).expect("staged entry");
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o444)).expect("entry mode");
+        fs::rename(&staged, directory.join("hypercolor.desktop")).expect("rendered entry");
+        Ok(())
+    }
 }
 
 // ── Hosts ───────────────────────────────────────────────────────────────
@@ -1144,6 +1172,7 @@ impl Fixture {
         let mut lock = old.acquire_anchored_lock(&self.home).expect("legacy lock");
         self.world.borrow_mut().historical.push(unit.clone());
         let config = LinuxInstallConfig {
+            home: self.home.clone(),
             direct_fragment_path: self.world.borrow().fragment.clone(),
             immutable_units_root: old.root().join("units"),
             active_root: old.active_path(),
@@ -2100,10 +2129,24 @@ fn same_entry(left: &LinuxExactEntry, right: &LinuxExactEntry) -> bool {
     }
 }
 
+/// The desktop entry `scripts/dist.sh` puts in every release.
+const RELEASE_DESKTOP_ENTRY: &[u8] = b"[Desktop Entry]\n\
+Type=Application\n\
+Version=1.0\n\
+Name=Hypercolor\n\
+Comment=Open the Hypercolor control UI\n\
+Exec=hypercolor-open\n\
+Terminal=false\n\
+Categories=Settings;Utility;\n\
+Keywords=rgb;lighting;led;\n\
+Icon=hypercolor\n\
+StartupNotify=true\n";
+
 fn write_release(root: &Path, version: &str, daemon: &[u8]) {
     let directories = [
         "bin",
         "share",
+        "share/applications",
         "share/hypercolor",
         "share/hypercolor/ui",
         "share/hypercolor/effects",
@@ -2122,6 +2165,10 @@ fn write_release(root: &Path, version: &str, daemon: &[u8]) {
         ("bin/hypercolor-app", b"app".as_slice()),
         ("bin/hypercolor-tui", b"tui".as_slice()),
         ("bin/hypercolor-open", b"open".as_slice()),
+        (
+            "share/applications/hypercolor.desktop",
+            RELEASE_DESKTOP_ENTRY,
+        ),
         ("share/hypercolor/ui/index.html", b"ui".as_slice()),
         (
             "share/hypercolor/effects/bundled/effect.html",
@@ -3017,10 +3064,11 @@ fn a_prior_waiting_to_restart_at_unload_is_drift_until_it_settles() {
 fn stop_first_refuses_a_service_that_is_not_the_on_disk_unit() {
     let (fixture, _) = managed_v1();
     let before = fixture.world.borrow().effects.len();
-    // Die before the third effect: the prior is stopped, the candidate's
-    // own unit is written, the pointer names the candidate and the manager
-    // reload is next.
-    fixture.world.borrow_mut().crash = Some(Crash::Before(before + 3));
+    // Die before the fourth effect: the prior is stopped, the menu entry
+    // links the candidate's rendered copy, the candidate's own unit is
+    // written, the pointer names the candidate and the manager reload is
+    // next.
+    fixture.world.borrow_mut().crash = Some(Crash::Before(before + 4));
     let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
     assert!(crashed.is_err());
     let pending = fixture.journal();
@@ -3307,12 +3355,13 @@ fn a_start_job_that_outlives_its_deadline_on_older_systemd_still_rolls_back() {
             world.start_job_persists = true;
         }
         if power_loss {
-            // An update's effects are the prior's stop, the candidate's
-            // unit, the manager reload and the candidate's start. Die before
-            // that start, then lose power: the boot queues the candidate
-            // from the unit that names it.
+            // An update's effects are the prior's stop, the menu entry's
+            // link to the candidate's rendered copy, the candidate's unit,
+            // the manager reload and the candidate's start. Die before that
+            // start, then lose power: the boot queues the candidate from
+            // the unit that names it.
             let before = fixture.world.borrow().effects.len();
-            fixture.world.borrow_mut().crash = Some(Crash::Before(before + 4));
+            fixture.world.borrow_mut().crash = Some(Crash::Before(before + 5));
             let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
             assert!(crashed.is_err());
             assert_eq!(
@@ -4637,5 +4686,180 @@ fn uninstall_removes_an_install_whose_data_directory_was_deleted() {
     assert!(
         !location.state_root().exists(),
         "the update state is removed"
+    );
+}
+
+// ── The rendered desktop entry ──────────────────────────────────────────
+
+impl Fixture {
+    fn desktop_link(&self) -> LinuxExactEntry {
+        self.world.borrow().layout[&LinuxLayoutItem::DesktopEntry].clone()
+    }
+}
+
+fn rendered_entry(location: &LinuxInstallLocation, release: &Release) -> PathBuf {
+    location
+        .release_root()
+        .join("desktop-entries")
+        .join(release.id.as_str())
+        .join("hypercolor.desktop")
+}
+
+fn link_to(path: &Path) -> LinuxExactEntry {
+    LinuxExactEntry::Symlink {
+        target: path.to_str().expect("UTF-8").to_owned(),
+    }
+}
+
+#[test]
+fn each_release_links_a_desktop_entry_naming_the_installations_own_launcher() {
+    let (fixture, location) = managed_v1();
+    let launcher = fixture.home.join(".local/bin/hypercolor-open");
+    let expected = String::from_utf8(RELEASE_DESKTOP_ENTRY.to_vec())
+        .expect("UTF-8")
+        .replace(
+            "Exec=hypercolor-open\n",
+            &format!("Exec={}\n", launcher.display()),
+        );
+    let v1 = rendered_entry(&location, &fixture.v1);
+    assert_eq!(fixture.desktop_link(), link_to(&v1));
+    assert_eq!(fs::read_to_string(&v1).expect("rendered entry"), expected);
+    assert_eq!(mode(&v1), 0o444);
+
+    let run = fixture.update(&fixture.v2).expect("update");
+    assert!(matches!(run.outcome, InstallOutcome::Committed { .. }));
+    let v2 = rendered_entry(&location, &fixture.v2);
+    assert_eq!(fixture.desktop_link(), link_to(&v2));
+    assert_eq!(fs::read_to_string(&v2).expect("rendered entry"), expected);
+    assert!(
+        v1.is_file(),
+        "the release a rollback returns to keeps its entry"
+    );
+
+    let run = fixture.update(&fixture.v3).expect("update");
+    assert!(matches!(run.outcome, InstallOutcome::Committed { .. }));
+    let v3 = rendered_entry(&location, &fixture.v3);
+    assert_eq!(fixture.desktop_link(), link_to(&v3));
+    assert!(v2.is_file());
+    assert!(
+        !v1.parent().expect("rendered directory").exists(),
+        "a collected release takes its entry with it"
+    );
+    assert!(
+        !location
+            .release_root()
+            .join("units")
+            .join(fixture.v1.id.as_str())
+            .exists()
+    );
+
+    fixture
+        .world
+        .borrow_mut()
+        .failing_starts
+        .insert("9.8.8".to_owned());
+    let run = fixture
+        .update(&fixture.v2)
+        .expect("a failing update settles");
+    assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+    assert_eq!(
+        fixture.desktop_link(),
+        link_to(&v3),
+        "a rollback links the prior's own entry again"
+    );
+    assert!(v3.is_file() && v2.is_file());
+
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+        .expect("uninstall accepts a rendered entry link as its own");
+    assert_eq!(fixture.desktop_link(), LinuxExactEntry::Absent);
+    assert!(!location.release_root().exists());
+}
+
+#[test]
+fn a_transaction_recorded_with_the_entry_linked_through_active_still_settles() {
+    // Where the first update links the desktop entry, uninterrupted.
+    let (probe, _) = managed_v1();
+    let before = probe.world.borrow().effects.len();
+    probe.update(&probe.v2).expect("probe update");
+    let desktop_effect = probe.world.borrow().effects[before..]
+        .iter()
+        .position(|effect| effect == "layout:DesktopEntry")
+        .expect("the update links the desktop entry")
+        + 1;
+
+    let (fixture, location) = managed_v1();
+    {
+        let mut world = fixture.world.borrow_mut();
+        let effects = world.effects.len();
+        world.crash = Some(Crash::Before(effects + desktop_effect));
+    }
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(crashed.is_err(), "lost right before linking the entry");
+    fixture.world.borrow_mut().crash = None;
+    // An installer from before entries were rendered linked every entry
+    // through `active`, the prior's included; rewrite the pending record
+    // and the public link as it would have left them.
+    let through_active = location
+        .release_root()
+        .join("active/share/applications/hypercolor.desktop");
+    fixture
+        .world
+        .borrow_mut()
+        .layout
+        .insert(LinuxLayoutItem::DesktopEntry, link_to(&through_active));
+    let journal_path = location.state_root().join("install-journal.json");
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&fs::read(&journal_path).expect("journal")).expect("journal JSON");
+    let payload: Vec<u8> = serde_json::from_value(journal["platform_record"]["payload"].clone())
+        .expect("record bytes");
+    let mut record: serde_json::Value = serde_json::from_slice(&payload).expect("record JSON");
+    let desktop = record["layout"]
+        .as_array_mut()
+        .expect("layout")
+        .iter_mut()
+        .find(|operation| operation["effect"]["item"] == "desktop-entry")
+        .expect("desktop entry effect");
+    assert_eq!(
+        desktop["effect"]["candidate_target"],
+        json!(rendered_entry(&location, &fixture.v2)),
+        "this installer links the rendered entry"
+    );
+    assert_eq!(
+        desktop["effect"]["prior"],
+        json!({"kind": "symlink", "target": rendered_entry(&location, &fixture.v1)})
+    );
+    desktop["effect"]["candidate_target"] = json!(through_active);
+    desktop["effect"]["prior"] = json!({"kind": "symlink", "target": through_active});
+    journal["platform_record"]["payload"] =
+        json!(serde_json::to_vec(&record).expect("record bytes"));
+    fs::write(
+        &journal_path,
+        serde_json::to_vec(&journal).expect("journal bytes"),
+    )
+    .expect("rewrite journal");
+
+    let run = fixture
+        .update(&fixture.v2)
+        .expect("the older record settles");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    assert!(run.recovered);
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(fixture.desktop_link(), link_to(&through_active));
+
+    // The next update moves the entry onto its own rendered copy.
+    let run = fixture.update(&fixture.v3).expect("update");
+    assert!(matches!(run.outcome, InstallOutcome::Committed { .. }));
+    assert_eq!(
+        fixture.desktop_link(),
+        link_to(&rendered_entry(&location, &fixture.v3))
     );
 }

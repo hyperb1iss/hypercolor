@@ -19,6 +19,7 @@ use super::super::{
 use super::command::{
     LinuxInstallCommandError, LinuxPlatformInputs, bind_linux_platform, pending, recover,
 };
+use super::desktop::rendered_unit;
 use super::model::{
     LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxLayoutItem, LinuxServicePhase, MAX_LAUNCHER_BYTES,
     MAX_SYSTEMD_SHOW_BYTES, parse_systemd_show,
@@ -399,7 +400,7 @@ fn remove_platform<H: LinuxUninstallHost>(
         foreign.push(direct_fragment.clone());
     }
     for (item, entry) in &layout {
-        if !owned_layout(*item, entry, active_roots) {
+        if !owned_layout(*item, entry, active_roots, managed) {
             foreign.push(format!("public layout entry {item:?}"));
         }
     }
@@ -476,13 +477,27 @@ fn named_release(bytes: &[u8], location: &LinuxInstallLocation) -> Option<super:
     })
 }
 
-fn owned_layout(item: LinuxLayoutItem, entry: &LinuxExactEntry, active_roots: &[PathBuf]) -> bool {
+/// Whether a public layout entry is one this installer links: the item
+/// through one of `active_roots`, or, for a managed installation's desktop
+/// entry, the copy rendered beneath its release root for any unit.
+fn owned_layout(
+    item: LinuxLayoutItem,
+    entry: &LinuxExactEntry,
+    active_roots: &[PathBuf],
+    managed: Option<&LinuxInstallLocation>,
+) -> bool {
     match entry {
         LinuxExactEntry::Absent => true,
         LinuxExactEntry::RegularFile { .. } => false,
-        LinuxExactEntry::Symlink { target } => active_roots
-            .iter()
-            .any(|root| *target == layout_target_for(root, item)),
+        LinuxExactEntry::Symlink { target } => {
+            active_roots
+                .iter()
+                .any(|root| *target == layout_target_for(root, item))
+                || item == LinuxLayoutItem::DesktopEntry
+                    && managed.is_some_and(|location| {
+                        rendered_unit(location.release_root(), target).is_some()
+                    })
+        }
     }
 }
 
@@ -578,9 +593,67 @@ fn stop<H: LinuxUninstallHost>(
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
 
-    use super::named_release;
+    use super::{named_release, owned_layout};
     use crate::linux::LinuxInstallLocation;
+    use crate::linux::desktop::rendered_target;
+    use crate::linux::model::{LinuxExactEntry, LinuxLayoutItem};
+    use crate::linux::proof::layout_target_for;
+
+    #[test]
+    fn a_managed_desktop_entry_linked_to_any_rendered_unit_is_the_installers() {
+        let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("home");
+        let uid = std::fs::metadata(home.path()).expect("owner").uid();
+        let location = LinuxInstallLocation::new(
+            home.path(),
+            &home.path().join("data"),
+            &home.path().join("state"),
+            &home.path().join("config"),
+            uid,
+        )
+        .expect("location");
+        let active = [location.release_root().join("active")];
+        let id = crate::UnitId::new("ab".repeat(32)).expect("unit ID");
+        let link = |target: String| LinuxExactEntry::Symlink { target };
+        let desktop = LinuxLayoutItem::DesktopEntry;
+        let rendered = link(rendered_target(location.release_root(), &id));
+
+        assert!(owned_layout(desktop, &rendered, &active, Some(&location)));
+        assert!(
+            owned_layout(
+                desktop,
+                &link(layout_target_for(&active[0], desktop)),
+                &active,
+                Some(&location)
+            ),
+            "an entry linked before entries were rendered is still the installer's"
+        );
+        assert!(
+            !owned_layout(desktop, &rendered, &active, None),
+            "the historical root renders no entry"
+        );
+        assert!(!owned_layout(
+            LinuxLayoutItem::HypercolorOpen,
+            &rendered,
+            &active,
+            Some(&location)
+        ));
+        for foreign in [
+            "/usr/share/applications/hypercolor.desktop".to_owned(),
+            rendered_target(Path::new("/opt/elsewhere/releases"), &id),
+            format!(
+                "{}/desktop-entries/{}/other.desktop",
+                location.release_root().display(),
+                id.as_str()
+            ),
+        ] {
+            assert!(
+                !owned_layout(desktop, &link(foreign.clone()), &active, Some(&location)),
+                "{foreign}"
+            );
+        }
+    }
 
     fn unit(exec_start: &str) -> Vec<u8> {
         format!("[Service]\nType=notify\nExecStart={exec_start}\n").into_bytes()

@@ -23,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 const VERSION: &str = "9.8.7";
 const UPGRADE_VERSION: &str = "9.8.8";
+const HOME: &str = "/home/test";
 const FRAGMENT: &str = "/home/test/.config/systemd/user/hypercolor.service";
 const ACTIVE_ROOT: &str = "/home/test/.local/lib/hypercolor/active";
 const UNITS_ROOT: &str = "/home/test/.local/lib/hypercolor/units";
@@ -679,6 +680,14 @@ impl LinuxInstallExecutor for FakeExecutor {
             .expect("legacy snapshot authority");
         bind_linux_retained_unit(snapshot.unit.clone(), root, authority)
     }
+
+    fn publish_desktop_entry(
+        &mut self,
+        _unit: &UnitId,
+        _contents: &[u8],
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
+        panic!("only a managed installation renders a desktop entry");
+    }
 }
 
 #[test]
@@ -1246,6 +1255,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         .expect("fragment")
         .to_owned();
     let old_config = LinuxInstallConfig {
+        home: home.path().to_path_buf(),
         direct_fragment_path: fragment.clone(),
         immutable_units_root: old.root().join("units"),
         active_root: old.active_path(),
@@ -1289,6 +1299,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
     let copied = retain_linux_unit(adoption.store(), adoption.lock(), &id).expect("copied unit");
     assert_ne!(original, copied);
     let new_config = LinuxInstallConfig {
+        home: home.path().to_path_buf(),
         direct_fragment_path: fragment,
         immutable_units_root: adoption.store().root().join("units"),
         active_root: adoption.store().active_path(),
@@ -2198,6 +2209,7 @@ fn byte_identical_unit_from_a_split_root_is_rejected_before_inspection() {
 
     let executor = FakeExecutor::absent(fixture.store.active_path(), fixture.daemon_digest.clone());
     let split_config = LinuxInstallConfig {
+        home: PathBuf::from(HOME),
         direct_fragment_path: FRAGMENT.to_owned(),
         immutable_units_root: PathBuf::from("/tmp/foreign/units"),
         active_root: PathBuf::from("/tmp/foreign/active"),
@@ -2215,6 +2227,7 @@ fn byte_identical_unit_from_a_split_root_is_rejected_before_inspection() {
 fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
     for root in ["/tmp/hyper color", "/tmp/hyper%color"] {
         let config = LinuxInstallConfig {
+            home: PathBuf::from(HOME),
             direct_fragment_path: FRAGMENT.to_owned(),
             immutable_units_root: PathBuf::from(root).join("units"),
             active_root: PathBuf::from(root).join("active"),
@@ -2237,6 +2250,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             b'/', b't', b'm', b'p', b'/', 0xff,
         ]));
         let config = LinuxInstallConfig {
+            home: PathBuf::from(HOME),
             direct_fragment_path: FRAGMENT.to_owned(),
             immutable_units_root: parent.join("units"),
             active_root: parent.join("active"),
@@ -2566,6 +2580,7 @@ fn config() -> LinuxInstallConfig {
 
 fn config_with_probation(probation: Duration) -> LinuxInstallConfig {
     LinuxInstallConfig {
+        home: PathBuf::from(HOME),
         direct_fragment_path: FRAGMENT.to_owned(),
         immutable_units_root: PathBuf::from(UNITS_ROOT),
         active_root: PathBuf::from(ACTIVE_ROOT),

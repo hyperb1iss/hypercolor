@@ -1,6 +1,7 @@
 mod adoption;
 mod adoption_roots;
 mod command;
+mod desktop;
 mod directory;
 mod effects;
 mod executor;

@@ -14,7 +14,9 @@ use hypercolor_platform_fs::{
 use sha2::{Digest as _, Sha256};
 
 use super::super::local_http::{LocalHttpResponse, http_get};
+use super::super::store::DESKTOP_ENTRIES_DIRECTORY;
 use super::super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
+use super::desktop::DESKTOP_ENTRY_NAME;
 use super::directory::{LinuxPublicTree, read_opened_public_bytes};
 use super::effects::autostart_operation;
 use super::legacy::{collect_public_legacy_inventory, prepare_legacy_files};
@@ -24,14 +26,17 @@ use super::legacy_validation::{
 use super::model::{
     LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
     LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacySnapshot, LinuxProcessExecutable,
-    LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch, MAX_SYSTEMD_SHOW_BYTES, error,
-    parse_systemd_show,
+    LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch, MAX_SYSTEMD_SHOW_BYTES,
+    PUBLIC_DIRECTORY_MODE, error, parse_systemd_show,
 };
 use super::runtime::{
     LinuxRuntimeManager, LinuxRuntimeSettlement, LinuxSystemdConnection, RuntimeJobOutcome,
 };
 
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
+/// A rendered desktop entry is regenerated, never edited, like the unit
+/// files it is rendered from.
+const RENDERED_DESKTOP_ENTRY_MODE: u32 = 0o444;
 const TIMEOUT: &str = "/usr/bin/timeout";
 const COMMAND_TIMEOUT: &str = "10s";
 const MAX_COMMAND_STDERR_BYTES: usize = 16 * 1024;
@@ -134,6 +139,14 @@ pub trait LinuxInstallExecutor {
         &mut self,
         snapshot: &LinuxLegacySnapshot,
     ) -> Result<super::super::UnitRecord, InstallPlatformError>;
+    /// Durably publish `contents` as the desktop entry rendered for `unit`
+    /// in the release root's per-unit desktop entries, unless exactly that
+    /// is already there.
+    fn publish_desktop_entry(
+        &mut self,
+        unit: &UnitId,
+        contents: &[u8],
+    ) -> Result<(), InstallPlatformError>;
 }
 
 #[derive(Debug)]
@@ -237,6 +250,7 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
             .join("active");
         if config.immutable_units_root != self.units_root_hint
             || config.active_root != active_root
+            || config.home != self.public_tree.home()
             || config.direct_fragment_path != self.public_tree.direct_fragment_path()
         {
             return Err(error(
@@ -532,6 +546,45 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
             readonly,
         )
         .map_err(io_error)
+    }
+
+    fn publish_desktop_entry(
+        &mut self,
+        unit: &UnitId,
+        contents: &[u8],
+    ) -> Result<(), InstallPlatformError> {
+        // `active` lives in the store root, which this authority retains.
+        let rendered = self
+            .active
+            .directory
+            .durable_ensure_child_directory(
+                Path::new(DESKTOP_ENTRIES_DIRECTORY),
+                PUBLIC_DIRECTORY_MODE,
+            )
+            .and_then(|entries| {
+                entries
+                    .durable_ensure_child_directory(Path::new(unit.as_str()), PUBLIC_DIRECTORY_MODE)
+            })
+            .map_err(io_error)?;
+        let name = Path::new(DESKTOP_ENTRY_NAME);
+        let observed = rendered.observe_entry(name).map_err(io_error)?;
+        if let ExactEntry::RegularFile { mode, sha256, .. } = &observed
+            && *mode == RENDERED_DESKTOP_ENTRY_MODE
+            && sha256[..] == Sha256::digest(contents)[..]
+        {
+            return Ok(());
+        }
+        rendered
+            .durable_replace_entry(
+                name,
+                &observed,
+                EntryReplacement::RegularFile {
+                    mode: RENDERED_DESKTOP_ENTRY_MODE,
+                    contents,
+                },
+            )
+            .map(drop)
+            .map_err(io_error)
     }
 }
 

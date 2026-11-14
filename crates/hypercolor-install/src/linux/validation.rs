@@ -147,7 +147,11 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 return Err(error("Linux directory effect follows a file effect"));
             };
             if *item != expected_item
-                || *candidate_target != self.layout_target(&record.candidate.unit, expected_item)
+                || !self.accepts_layout_target(
+                    &record.candidate.unit,
+                    expected_item,
+                    candidate_target,
+                )
             {
                 return Err(error(
                     "Linux layout effect order or target is not canonical",

@@ -117,13 +117,34 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             })
     }
 
+    /// The public link this installation publishes for `unit`'s `item`:
+    /// the item through `active`, except a managed installation's desktop
+    /// entry, which is the copy rendered for `unit` (see `desktop`).
     pub(super) fn layout_target(
         &self,
-        candidate: &super::super::UnitId,
+        unit: &super::super::UnitId,
         item: super::model::LinuxLayoutItem,
     ) -> String {
-        let _ = candidate;
-        layout_target_for(&self.config.active_root, item)
+        match &self.config.managed {
+            Some(location) if item == super::model::LinuxLayoutItem::DesktopEntry => {
+                super::desktop::rendered_target(location.release_root(), unit)
+            }
+            _ => layout_target_for(&self.config.active_root, item),
+        }
+    }
+
+    /// Whether `target` is a link this installation accepts for `unit`'s
+    /// `item`: the one it publishes now, or the link through `active`,
+    /// which a managed desktop entry linked to and transactions recorded
+    /// before the entry was rendered per unit, still carry.
+    pub(super) fn accepts_layout_target(
+        &self,
+        unit: &super::super::UnitId,
+        item: super::model::LinuxLayoutItem,
+        target: &str,
+    ) -> bool {
+        target == self.layout_target(unit, item)
+            || target == layout_target_for(&self.config.active_root, item)
     }
 }
 
