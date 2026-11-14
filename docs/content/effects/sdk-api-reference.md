@@ -161,8 +161,7 @@ once and **returns** the per-frame update function. Data sources are opt-in thro
 `FaceOptions` (`audio`, `media`, `net`, `lighting`; `sensors` is always present),
 and per-shape variants can be supplied via `variants`. See
 [Display faces](@/effects/display-faces.md) for the full contract, the Servo CSS
-matrix (flexbox yes, CSS grid no), and the two canonical displays every face must
-handle.
+matrix, and the two canonical displays every face must handle.
 
 ### Shared types
 

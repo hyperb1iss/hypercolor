@@ -360,10 +360,9 @@ curl -s http://localhost:9420/api/v1/system | jq '.data.status.effect_health | w
 
 ### Servo CSS and layout constraints
 
-{% <callout type="warning"> %}
-CSS grid does not work in Servo: children render stacked full-width instead of in a grid. Use
-flexbox for display-face layouts. This is a known Servo limitation, not a Hypercolor bug.
-{% </callout> %}
+Servo is not Chrome. The CSS a face can rely on is the pixel-proven matrix in
+[display faces](@/effects/display-faces.md#servo-css-support); anything outside it may be
+ignored without an error, so check the matrix before blaming your layout code.
 
 WebGL2 works via the Servo canvas but not all extensions available in Chrome are present. If a
 GLSL effect works in a browser but not in Hypercolor, check for extension dependencies.
@@ -457,8 +456,8 @@ If a face looks wrong on the round display:
 1. Check `ctx.display.circular` in your draw function. Round displays clip to a circle, so
    honor the `safeArea` inset (339x339 centered on a 480x480 round LCD) for content that must
    stay visible.
-2. Use `clip-path: circle()` or the SDK's container mask rather than CSS grid, which Servo does
-   not support.
+2. Mask with `clip-path: circle()` or the SDK's container mask so corners stay dark on the
+   round panel.
 
 ## Common issues quick reference
 

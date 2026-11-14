@@ -1,9 +1,9 @@
 /**
  * Grid and rail solvers — plain JS over the display descriptor.
  *
- * Servo does not lay out CSS grid (see the pixel-probe matrix in
- * hypercolor-core), so faces compute cell rects directly and draw or
- * absolutely position into them.
+ * Canvas-drawn faces and absolutely positioned layers need cell rects as
+ * numbers, so these compute them directly. DOM layouts can use CSS grid
+ * instead (see the pixel-probe matrix in hypercolor-core).
  */
 
 import type { Rect } from './rect'
