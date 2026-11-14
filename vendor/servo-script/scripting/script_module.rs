@@ -249,10 +249,9 @@ impl ModuleTree {
             // Step 5. Set script's fetch options to options.
             let module_script_data = Rc::new(BaseScript::new(url.clone(), options));
 
-            SetModulePrivate(
-                module_script.get(),
-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
-            );
+            set_script_source_private(module_script_data, |private| {
+                SetModulePrivate(module_script.get(), private)
+            });
 
             // Step 9. Set script's record to result.
             module.set_record(module_script.handle());
@@ -683,6 +682,30 @@ unsafe extern "C" fn host_add_ref_top_level_script(value: *const Value) {
 #[expect(unsafe_code)]
 unsafe extern "C" fn host_release_top_level_script(value: *const Value) {
     let _val = unsafe { Rc::from_raw((*value).to_private() as *const BaseScript) };
+}
+
+/// Stores `script` as the private value of a script source. `store` must
+/// hand the value to `SetScriptPrivate` or `SetModulePrivate`.
+///
+/// Both reach `ScriptSourceObject::setPrivate`, which takes the engine's own
+/// reference through `host_add_ref_top_level_script` and gives it back
+/// through `host_release_top_level_script` when the private is replaced or
+/// the script source is finalized. The caller's reference is released
+/// before this returns, so the engine's is the only one left and the
+/// `BaseScript` lives exactly as long as its script source.
+#[expect(unsafe_code)]
+pub(crate) fn set_script_source_private(script: Rc<BaseScript>, store: impl FnOnce(&JSVal)) {
+    let raw = Rc::into_raw(script);
+    store(&PrivateValue(raw as *const _));
+    // SAFETY: `raw` came from `Rc::into_raw` above and is reclaimed only here.
+    let ours = unsafe { Rc::from_raw(raw) };
+    if Rc::strong_count(&ours) > 1 {
+        drop(ours);
+    } else {
+        // No add-ref hook ran, so the script source holds this reference
+        // itself. Leak it rather than leave the private dangling.
+        std::mem::forget(ours);
+    }
 }
 
 #[expect(unsafe_code)]

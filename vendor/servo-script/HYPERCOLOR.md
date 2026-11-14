@@ -25,11 +25,11 @@ still apply.
 
 ### 1. Release the caller's reference to a script private
 
-Files: `modules/script_module.rs` (`set_script_source_private`, used by
+Files: `scripting/script_module.rs` (`set_script_source_private`, used by
 `ModuleTree::create_a_javascript_module_script`) and
-`dom/globalscope/script_execution.rs` (`maybe_associate_with_script`).
+`scripting/script_execution.rs` (`maybe_associate_with_script`).
 
-Upstream hands a fresh `Rc<ModuleScript>` to `SetScriptPrivate` or
+Upstream hands a fresh `Rc<BaseScript>` to `SetScriptPrivate` or
 `SetModulePrivate` through `Rc::into_raw` and never reclaims that
 reference. Both calls end in `ScriptSourceObject::setPrivate`
 (`js/src/vm/JSScript.cpp`), which releases the previous private and calls
@@ -39,29 +39,28 @@ for every JS runtime in `EnsureModuleHooksInitialized`:
 `host_release_top_level_script` drops one reference. `ScriptSourceObject`
 finalization calls `setPrivate(UndefinedValue())`, which releases the
 engine's reference. The engine's reference is therefore balanced on its
-own, and the `into_raw` one leaks one `ModuleScript` per compiled classic
+own, and the `into_raw` one leaks one `BaseScript` per compiled classic
 script or module. Embedders that call `evaluate_javascript` every frame
 compile one classic script per call, so the leak grows without bound. The
-module path gets the same correction, though it rarely frees anything: a
-module's `ModuleScript` holds a `Trusted<GlobalScope>` that roots its
-global, and that global reaches the module's script source through its
-module map, so the pair stays alive together as it does upstream. Hypercolor's
-built-in effects load classic scripts only.
+module path gets the same correction. Before servo-script 0.8.0 a module's
+private also held a `Trusted<GlobalScope>` that kept the pair alive
+regardless; upstream dropped it (servo/servo#48952), so module privates
+now free with their script source too. Hypercolor's built-in effects load
+classic scripts only.
 
 The patch reclaims the caller's reference right after the engine took its
-own, so the `ModuleScript` lives exactly as long as its script source. If
+own, so the `BaseScript` lives exactly as long as its script source. If
 no add-ref hook ran (the strong count is still 1), it leaks the reference
 as upstream does instead of leaving the private dangling. Every reader of
 the private (`module_script_from_reference_private` and its callers in
-`module_loading.rs`, `script_module.rs`, and `timers.rs`) borrows it while
-the script or module is rooted or on the stack, and none of them keeps the
-pointer.
+`scripting/module_loading.rs`, `scripting/script_module.rs`, and
+`event_loop/timers.rs`) borrows it while the script or module is rooted or
+on the stack, and none of them keeps the pointer. The one place that
+stores it, `ReferringScript` (`scripting/import_map.rs`), holds a
+`&BaseScript` bound to the rooted handle's lifetime.
 
-Upstream status: servo-script 0.7.0 and Servo `main` at `2b94d76a6971`
-(2026-11-01) still use `Rc::into_raw` in both places. On `main` they live
-in `components/script/scripting/script_execution.rs`
-(`maybe_associate_with_script`) and
-`components/script/scripting/script_module.rs`.
+Upstream status: servo-script 0.8.0 and Servo `main` at `c32ccc1a4edc`
+(2026-11-14) still use `Rc::into_raw` in both places.
 
 ### 2. Collect after sustained embedder script evaluation
 

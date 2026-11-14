@@ -14,7 +14,7 @@ use js::jsapi::{
     ExceptionStackBehavior, HadFrontendErrors, Heap, JSObject, JSScript, ModuleErrorBehaviour,
     SetScriptPrivate,
 };
-use js::jsval::{JSVal, PrivateValue, UndefinedValue};
+use js::jsval::{JSVal, UndefinedValue};
 use js::offthread::CompilationResult;
 use js::panic::maybe_resume_unwind;
 use js::rust::wrappers2::{
@@ -39,7 +39,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 use crate::realms::enter_auto_realm;
 use crate::scripting::fetching_options::{BaseScript, ScriptFetchOptions};
-use crate::scripting::script_module::{ModuleTree, RethrowError};
+use crate::scripting::script_module::{ModuleTree, RethrowError, set_script_source_private};
 use crate::unminify::{ScriptSource, unminify_js};
 
 /// Options that were used when creating a script.
@@ -457,11 +457,8 @@ pub(crate) fn maybe_associate_with_script(
     if script_private.is_undefined() {
         let module_script_data = Rc::new(BaseScript::new(url, fetch_options));
 
-        unsafe {
-            SetScriptPrivate(
-                script.get(),
-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
-            );
-        }
+        set_script_source_private(module_script_data, |private| unsafe {
+            SetScriptPrivate(script.get(), private)
+        });
     }
 }
