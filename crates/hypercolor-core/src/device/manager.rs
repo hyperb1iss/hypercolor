@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_driver_api::{DeviceBackend, DeviceFrameSink};
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceColorSpace, DeviceId};
 
 mod backend_io;
 mod brightness;
@@ -103,6 +103,9 @@ pub struct BackendManager {
 
     /// User-configured per-device software output brightness state.
     output_brightness: DeviceOutputBrightness,
+
+    /// Color model of each device that does not take linear-light bytes.
+    output_color_spaces: HashMap<DeviceId, DeviceColorSpace>,
 
     /// Frame-output warning dedupe and throttling state.
     warnings: DeviceOutputWarnings,

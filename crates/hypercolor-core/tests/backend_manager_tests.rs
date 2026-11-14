@@ -13,10 +13,10 @@ use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, Frame, OutputPolicy, PeerDisposition, SkipReason,
     Submission,
 };
-use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
+use hypercolor_types::canvas::{linear_to_output_u8, linear_to_srgb_u8, srgb_to_linear};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
-    DeviceFeatures,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
+    DeviceFamily, DeviceFeatures,
 };
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, OwnedDisplayFramePayload, SegmentInfo,
@@ -1413,17 +1413,16 @@ fn expected_led_color_with_brightness(color: [u8; 3], brightness: f32) -> [u8; 3
         return [0, 0, 0];
     }
 
-    let compensated = apply_led_perceptual_compensation([
+    linear_led_color(color, brightness).map(linear_to_output_u8)
+}
+
+fn linear_led_color(color: [u8; 3], brightness: f32) -> [f32; 3] {
+    apply_led_perceptual_compensation([
         srgb_to_linear(f32::from(color[0]) / 255.0),
         srgb_to_linear(f32::from(color[1]) / 255.0),
         srgb_to_linear(f32::from(color[2]) / 255.0),
-    ]);
-
-    [
-        linear_to_output_u8(compensated[0] * brightness),
-        linear_to_output_u8(compensated[1] * brightness),
-        linear_to_output_u8(compensated[2] * brightness),
-    ]
+    ])
+    .map(|channel| channel * brightness)
 }
 
 fn expected_led_color_with_zone_brightness(color: [u8; 3], brightness: f32) -> [u8; 3] {
@@ -2868,6 +2867,57 @@ async fn write_frame_scales_device_output_brightness() {
     assert!(
         brightness_writes.lock().await.is_empty(),
         "per-device output brightness should not issue hardware brightness writes"
+    );
+}
+
+#[tokio::test]
+async fn write_frame_encodes_srgb_for_devices_that_apply_their_own_gamma() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let backend = DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager.map_device("recording:strip", "recording", device_id);
+    manager.set_device_output_brightness(device_id, 0.33);
+
+    let mut device_info = make_multi_zone_device_info(device_id, 2, 2);
+    device_info.capabilities.color_space = DeviceColorSpace::Srgb;
+    assert!(manager.set_device_zone_segments("recording:strip", &device_info));
+
+    // A dim saturated background: the case a second gamma pass erases.
+    let dim_purple = [13, 0, 73];
+    let layout = make_layout(vec![make_zone("zone_0", "recording:strip", 4)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![dim_purple; 4],
+    }];
+    manager.write_frame(&zone_colors, &layout);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let linear = expected_led_color_with_brightness(dim_purple, 0.33);
+    let expected = linear_led_color(dim_purple, 0.33).map(linear_to_srgb_u8);
+    assert_eq!(*writes.lock().await, vec![vec![expected; 4]]);
+    assert!(
+        linear[2] < 8 && expected[2] >= 8,
+        "linear bytes {linear:?} vanish in a 5-bit channel; sRGB bytes {expected:?} must not"
+    );
+    assert!(expected[0] > 0, "the red half of the purple must survive");
+
+    device_info.capabilities.color_space = DeviceColorSpace::Rgb;
+    assert!(manager.set_device_zone_segments("recording:strip", &device_info));
+    manager.write_frame(&zone_colors, &layout);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        writes.lock().await.last(),
+        Some(&vec![linear; 4]),
+        "a device that reverts to linear bytes stops being re-encoded"
     );
 }
 

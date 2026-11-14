@@ -1,8 +1,9 @@
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use hypercolor_color::LinearRgba;
+use hypercolor_color::{LinearRgba, lut};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
+use hypercolor_types::device::DeviceColorSpace;
 use tracing::warn;
 
 use super::SegmentRange;
@@ -15,6 +16,25 @@ pub(super) fn prepare_output_for_led_ranges(
     colors: &mut [[u8; 3]],
     written_ranges: &[Range<usize>],
     brightness: f32,
+    color_space: DeviceColorSpace,
+) {
+    match color_space {
+        // The Hue driver converts to xy itself and keeps the bytes it has
+        // always been handed.
+        DeviceColorSpace::Rgb | DeviceColorSpace::CieXy => {
+            prepare_ranges(colors, written_ranges, brightness, linear_to_output_u8);
+        }
+        DeviceColorSpace::Srgb => {
+            prepare_ranges(colors, written_ranges, brightness, lut::linear_to_srgb_u8);
+        }
+    }
+}
+
+fn prepare_ranges(
+    colors: &mut [[u8; 3]],
+    written_ranges: &[Range<usize>],
+    brightness: f32,
+    encode: impl Fn(f32) -> u8 + Copy,
 ) {
     let brightness = brightness.clamp(0.0, 1.0);
     let full_brightness = brightness >= 0.999;
@@ -30,7 +50,7 @@ pub(super) fn prepare_output_for_led_ranges(
     if written_ranges.len() == 1 {
         let range = &written_ranges[0];
         if range.start == 0 && range.end == colors.len() {
-            prepare_output_for_leds(colors, brightness, full_brightness);
+            prepare_output_for_leds(colors, brightness, full_brightness, encode);
             return;
         }
     }
@@ -41,20 +61,28 @@ pub(super) fn prepare_output_for_led_ranges(
         if start >= end {
             continue;
         }
-        prepare_output_for_leds(&mut colors[start..end], brightness, full_brightness);
+        prepare_output_for_leds(&mut colors[start..end], brightness, full_brightness, encode);
     }
 }
 
-fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32, full_brightness: bool) {
+fn prepare_output_for_leds(
+    colors: &mut [[u8; 3]],
+    brightness: f32,
+    full_brightness: bool,
+    encode: impl Fn(f32) -> u8 + Copy,
+) {
     if full_brightness {
-        prepare_output_for_leds_full_brightness(colors);
+        prepare_output_for_leds_full_brightness(colors, encode);
         return;
     }
 
-    prepare_output_for_leds_scaled(colors, brightness);
+    prepare_output_for_leds_scaled(colors, brightness, encode);
 }
 
-fn prepare_output_for_leds_full_brightness(colors: &mut [[u8; 3]]) {
+fn prepare_output_for_leds_full_brightness(
+    colors: &mut [[u8; 3]],
+    encode: impl Fn(f32) -> u8 + Copy,
+) {
     for color in colors {
         let [red_u8, green_u8, blue_u8] = *color;
         if red_u8 == 0 && green_u8 == 0 && blue_u8 == 0 {
@@ -65,11 +93,7 @@ fn prepare_output_for_leds_full_brightness(colors: &mut [[u8; 3]]) {
         let mut green = decode_srgb_channel(green_u8);
         let mut blue = decode_srgb_channel(blue_u8);
         apply_led_perceptual_compensation_channels(&mut red, &mut green, &mut blue);
-        *color = [
-            linear_to_output_u8(red),
-            linear_to_output_u8(green),
-            linear_to_output_u8(blue),
-        ];
+        *color = [encode(red), encode(green), encode(blue)];
     }
 }
 
@@ -181,7 +205,11 @@ pub(super) fn write_segment_colors(
     true
 }
 
-fn prepare_output_for_leds_scaled(colors: &mut [[u8; 3]], brightness: f32) {
+fn prepare_output_for_leds_scaled(
+    colors: &mut [[u8; 3]],
+    brightness: f32,
+    encode: impl Fn(f32) -> u8 + Copy,
+) {
     for color in colors {
         let [red_u8, green_u8, blue_u8] = *color;
         if red_u8 == 0 && green_u8 == 0 && blue_u8 == 0 {
@@ -195,11 +223,7 @@ fn prepare_output_for_leds_scaled(colors: &mut [[u8; 3]], brightness: f32) {
         red *= brightness;
         green *= brightness;
         blue *= brightness;
-        *color = [
-            linear_to_output_u8(red),
-            linear_to_output_u8(green),
-            linear_to_output_u8(blue),
-        ];
+        *color = [encode(red), encode(green), encode(blue)];
     }
 }
 

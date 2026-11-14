@@ -144,6 +144,11 @@ impl BackendManager {
                 .unwrap_or(1.0);
             let brightness = (global_brightness * per_frame_brightness * device_output_brightness)
                 .clamp(0.0, 1.0);
+            let color_space = self
+                .output_color_spaces
+                .get(device_id)
+                .copied()
+                .unwrap_or_default();
 
             let values = {
                 let staging = self
@@ -158,6 +163,7 @@ impl BackendManager {
                     &mut staging.output,
                     &staging.written_ranges,
                     brightness,
+                    color_space,
                 );
 
                 let mut values = Vec::new();

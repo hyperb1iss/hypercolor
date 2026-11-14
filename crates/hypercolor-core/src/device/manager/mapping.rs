@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceColorSpace, DeviceId, DeviceInfo};
 use tracing::debug;
 
 use super::routing::{DeviceMapping, device_output_len, device_segments_from_device_info};
@@ -72,6 +72,12 @@ impl BackendManager {
 
             mapping.zone_segments = device_segments_from_device_info(device_info);
             mapping.physical_led_count = device_output_len(device_info);
+        }
+        let color_space = device_info.capabilities.color_space;
+        if color_space == DeviceColorSpace::default() {
+            self.output_color_spaces.remove(&device_info.id);
+        } else {
+            self.output_color_spaces.insert(device_info.id, color_space);
         }
         self.invalidate_routing_plan();
         true

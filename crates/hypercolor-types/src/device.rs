@@ -1165,13 +1165,19 @@ impl OwnedDisplayFramePayload {
     }
 }
 
-/// Native device/backend color model used for transport conversion.
+/// Native device/backend color model, which decides how the output stage
+/// encodes each frame for the device.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceColorSpace {
-    /// Standard sRGB/RGB byte triplets.
+    /// Linear-light RGB bytes: each byte drives an LED's PWM duty directly.
+    /// Addressable strips and most USB lighting controllers.
     #[default]
     Rgb,
+
+    /// sRGB-encoded RGB bytes: the device runs its own gamma curve, so a
+    /// linear-light byte would be darkened twice and crush shadows to black.
+    Srgb,
 
     /// CIE 1931 xy chromaticity with separate brightness.
     CieXy,
