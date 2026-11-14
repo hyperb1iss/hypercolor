@@ -380,6 +380,12 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
             autostart_enabled: prior.platform.autostart_enabled,
             ..prior_manager.clone()
         };
+        // Last, once the plan is sound: the candidate's desktop entry link
+        // points at this rendered copy, so it exists before any journal
+        // names it, as a first conversion's legacy snapshot does.
+        if self.config.managed.is_some() {
+            self.publish_desktop_entry(candidate)?;
+        }
         Ok(PreparedPlatformTransaction {
             record,
             transitions: PlatformTransitionStates {

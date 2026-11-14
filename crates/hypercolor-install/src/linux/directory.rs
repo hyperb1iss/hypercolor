@@ -127,6 +127,10 @@ impl LinuxPublicTree {
         &self.direct_fragment_path
     }
 
+    pub(super) fn home(&self) -> &Path {
+        &self.home_path
+    }
+
     /// Observe one fixed public scaffold directory through retained authorities.
     ///
     /// # Errors

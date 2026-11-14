@@ -417,9 +417,9 @@ class ReleaseArtifactTests(unittest.TestCase):
             self.assertIn(f"./usr/share/doc/hypercolor/third-party/{relative}", contents)
 
     def test_the_desktop_entry_names_its_launcher_by_command(self):
-        # The managed installer links this file into the user's own
-        # applications directory from an immutable unit, so no absolute
-        # launcher path can be right for every prefix the tree lands under.
+        # One immutable tree lands under every prefix (the managed
+        # installer renders its own copy with an absolute path), so no
+        # absolute launcher path can be right for every prefix.
         entry = (self.payload / "share/applications/hypercolor.desktop").read_text()
         executables = [line for line in entry.splitlines() if line.startswith("Exec=")]
         self.assertEqual(executables, ["Exec=hypercolor-open"])

@@ -157,7 +157,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             let layout_matches = inspection.layout.iter().all(|(item, entry)| match entry {
                 LinuxExactEntry::Absent => true,
                 LinuxExactEntry::Symlink { target }
-                    if *target == self.layout_target(unit.id(), *item) =>
+                    if self.accepts_layout_target(unit.id(), *item, target) =>
                 {
                     artifact_present = true;
                     true
@@ -218,7 +218,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         };
         self.known_units
             .iter()
-            .any(|unit| *target == self.layout_target(unit.id(), item))
+            .any(|unit| self.accepts_layout_target(unit.id(), item, target))
     }
 }
 

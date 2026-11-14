@@ -81,6 +81,145 @@ fn native_command_constructor_binds_initial_and_recorded_prior_exactly_once() {
     writable_directories(home.path());
 }
 
+#[test]
+fn a_managed_record_links_its_desktop_entry_to_the_rendered_copy_or_through_active() {
+    let home =
+        tempfile::tempdir_in(std::env::var_os("HOME").expect("owned home")).expect("isolated home");
+    let uid = fs::metadata(home.path()).expect("owner").uid();
+    let location = LinuxInstallLocation::new(
+        home.path(),
+        &home.path().join("data"),
+        &home.path().join("state"),
+        &home.path().join("config"),
+        uid,
+    )
+    .expect("managed location");
+    let store = InstallStore::with_roots(location.release_root(), location.state_root(), 65536)
+        .expect("managed store");
+    let lock = store
+        .acquire_anchored_lock(home.path())
+        .expect("state lock");
+    let source = home.path().join("source");
+    fs::create_dir(&source).expect("source");
+    let executable = write_release(&source);
+    let id = UnitId::new(digest(
+        &fs::read(source.join("manifest.json")).expect("manifest"),
+    ))
+    .expect("id");
+    let candidate =
+        stage_release_payload(&store, &lock, &source, &executable, &id).expect("candidate");
+    let connection = systemd_connection(home.path());
+    let rendered = |unit: &str| {
+        location
+            .release_root()
+            .join("desktop-entries")
+            .join(unit)
+            .join("hypercolor.desktop")
+    };
+    for (target, accepted) in [
+        (rendered(id.as_str()), true),
+        // Every transaction recorded before entries were rendered.
+        (
+            store
+                .active_path()
+                .join("share/applications/hypercolor.desktop"),
+            true,
+        ),
+        (rendered(&"ab".repeat(32)), false),
+        (
+            std::path::PathBuf::from("/usr/share/applications/hypercolor.desktop"),
+            false,
+        ),
+    ] {
+        let record = managed_record(&store, &candidate, &target);
+        let tree = LinuxPublicTree::new(&lock, home.path()).expect("public tree");
+        let executor = LinuxNativeExecutor::new_with_connection(
+            &store,
+            &lock,
+            tree,
+            "127.0.0.1:9420".parse().expect("loopback"),
+            connection.clone(),
+        )
+        .expect("native executor");
+        let bound = bind_platform(
+            home.path(),
+            &store,
+            vec![candidate.clone()],
+            executor,
+            Some(&record),
+            None,
+            std::time::Duration::ZERO,
+            Some(&location),
+            super::LinuxServiceRenderer::PUBLIC,
+        );
+        match bound {
+            Ok(_) => assert!(accepted, "{} must be refused", target.display()),
+            Err(error) => {
+                assert!(!accepted, "{} refused: {error}", target.display());
+                assert!(error.to_string().contains("not canonical"), "{error}");
+            }
+        }
+    }
+    drop(lock);
+    writable_directories(home.path());
+}
+
+/// A transaction that installs `candidate` into an empty managed layout,
+/// linking its desktop entry to `desktop_entry`.
+fn managed_record(
+    store: &InstallStore,
+    candidate: &UnitRecord,
+    desktop_entry: &Path,
+) -> PlatformTransactionRecord {
+    let directories: std::collections::BTreeMap<_, _> = LINUX_DIRECTORY_ITEMS
+        .into_iter()
+        .map(|item| (item, LinuxDirectoryState::Present))
+        .collect();
+    let layout: Vec<_> = LINUX_LAYOUT_ITEMS
+        .into_iter()
+        .map(|item| {
+            let target = if item == crate::LinuxLayoutItem::DesktopEntry {
+                desktop_entry.to_path_buf()
+            } else {
+                store.active_path().join(item.unit_path())
+            };
+            json!({"effect":{"kind":"entry","item":item,"prior":{"kind":"absent"},
+            "candidate_target":target}})
+        })
+        .collect();
+    PlatformTransactionRecord::linux(
+        1,
+        serde_json::to_vec(&json!({
+            "candidate":binding(candidate,store), "prior":null,
+            "baseline_systemd":{"load_state":"not-found","active_state":"inactive",
+                "sub_state":"dead","unit_file_state":"","fragment_path":"",
+                "exec_start":"","main_pid":0,"invocation_id":""},
+            "prior_launcher":{"kind":"absent"},"prior_launcher_bytes":[],
+            "candidate_launcher":null,"prior_directories":directories,"layout":layout,
+            "first_conversion":false
+        }))
+        .expect("complete record"),
+    )
+    .expect("record bound")
+}
+
+/// A user manager connection to a socket that nothing serves, for
+/// platforms that only bind.
+fn systemd_connection(home: &Path) -> LinuxSystemdConnection {
+    let runtime = home.join("runtime");
+    fs::create_dir(&runtime).expect("runtime");
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).expect("private runtime");
+    fs::create_dir(runtime.join("systemd")).expect("manager directory");
+    fs::set_permissions(runtime.join("systemd"), fs::Permissions::from_mode(0o755))
+        .expect("manager directory mode");
+    std::mem::forget(UnixListener::bind(runtime.join("systemd/private")).expect("manager socket"));
+    LinuxSystemdConnection::from_runtime_directory(
+        &runtime,
+        fs::metadata(&runtime).expect("owner").uid(),
+    )
+    .expect("connection authority")
+}
+
 fn record(
     store: &InstallStore,
     copied: &UnitRecord,

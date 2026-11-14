@@ -205,6 +205,7 @@ fn native_topology_rejects_a_fragment_outside_the_retained_home() {
     )
     .expect("native executor");
     let config = LinuxInstallConfig {
+        home: fixture.path().join("foreign"),
         direct_fragment_path: fixture
             .path()
             .join("foreign/.config/systemd/user/hypercolor.service")
@@ -488,6 +489,80 @@ fn historical_prior_authority_refuses_missing_or_symlinked_root() {
         },
         |_, executor| {
             assert!(executor.retain_prior_units().is_err());
+        },
+    );
+}
+
+#[test]
+fn a_rendered_desktop_entry_is_published_read_only_beside_the_units_and_replaced_only_when_it_changes()
+ {
+    with_native_public_tree(
+        |_| {},
+        |home, executor| {
+            let unit = crate::UnitId::new("ab".repeat(32)).expect("unit ID");
+            let path = home
+                .parent()
+                .expect("fixture root")
+                .join("store/desktop-entries")
+                .join(unit.as_str())
+                .join("hypercolor.desktop");
+
+            executor
+                .publish_desktop_entry(&unit, b"Exec=/home/a/.local/bin/hypercolor-open\n")
+                .expect("first publication");
+            assert_eq!(
+                fs::read(&path).expect("rendered entry"),
+                b"Exec=/home/a/.local/bin/hypercolor-open\n"
+            );
+            let first = fs::metadata(&path).expect("rendered metadata");
+            assert_eq!(first.permissions().mode() & 0o7777, 0o444);
+            for directory in [
+                path.parent().expect("unit"),
+                path.parent().and_then(Path::parent).expect("entries"),
+            ] {
+                assert_eq!(
+                    fs::metadata(directory)
+                        .expect("directory")
+                        .permissions()
+                        .mode()
+                        & 0o7777,
+                    0o755
+                );
+            }
+
+            executor
+                .publish_desktop_entry(&unit, b"Exec=/home/a/.local/bin/hypercolor-open\n")
+                .expect("republication");
+            assert_eq!(
+                fs::metadata(&path).expect("unchanged metadata").ino(),
+                first.ino(),
+                "the same rendering leaves the published file alone"
+            );
+
+            executor
+                .publish_desktop_entry(&unit, b"Exec=/home/b/.local/bin/hypercolor-open\n")
+                .expect("replacement");
+            assert_eq!(
+                fs::read(&path).expect("replaced entry"),
+                b"Exec=/home/b/.local/bin/hypercolor-open\n"
+            );
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("replaced metadata")
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                0o444
+            );
+            let names: Vec<OsString> = fs::read_dir(path.parent().expect("unit"))
+                .expect("unit entries")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect();
+            assert_eq!(
+                names,
+                [OsString::from("hypercolor.desktop")],
+                "no staging is left"
+            );
         },
     );
 }

@@ -362,11 +362,12 @@ if [[ -n "${SITE_BUILD_DIR}" ]]; then
   cp -R "${SITE_BUILD_DIR}/." "${DIST_DIR}/share/hypercolor/site/"
 fi
 
-# One release tree lands under different prefixes: the managed installer
-# links this entry into ~/.local/share/applications straight from an
-# immutable unit, while system packages install it under /usr. Each of them
-# puts hypercolor-open on PATH, so the entry names the command rather than
-# one absolute path that would be wrong for every other layout.
+# One release tree lands under different prefixes, so the entry names the
+# command rather than one absolute path that would be wrong for every other
+# layout. System packages install it under /usr with hypercolor-open on
+# PATH; the managed installer renders its own copy beside the immutable
+# unit with the installation's absolute launcher path, since a session's
+# PATH may lack ~/.local/bin.
 sed "s|@BIN_DIR@/||g" packaging/desktop/hypercolor.desktop.in \
   > "${DIST_DIR}/share/applications/hypercolor.desktop"
 

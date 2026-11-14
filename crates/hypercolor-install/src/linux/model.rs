@@ -252,6 +252,10 @@ pub const MAX_PROBATION_WINDOW: Duration = Duration::from_mins(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxInstallConfig {
+    /// The installing user's home. The public layout lives beneath it, and
+    /// a managed installation's rendered desktop entry names the commands
+    /// it publishes in `~/.local/bin` by their absolute paths.
+    pub home: PathBuf,
     pub direct_fragment_path: String,
     pub immutable_units_root: PathBuf,
     pub active_root: PathBuf,
