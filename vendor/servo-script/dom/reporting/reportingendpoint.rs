@@ -21,16 +21,15 @@ use servo_url::{ImmutableOrigin, ServoUrl};
 use crate::dom::bindings::codegen::Bindings::CSPViolationReportBodyBinding::CSPViolationReportBody;
 use crate::dom::bindings::codegen::Bindings::ReportingObserverBinding::Report;
 use crate::dom::bindings::codegen::Bindings::SecurityPolicyViolationEventBinding::SecurityPolicyViolationEventDisposition;
-use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::root::DomRoot;
 use crate::dom::csp::Violation;
 use crate::dom::csppolicyviolationreport::serialize_disposition;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
+use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request_with_claim};
 use crate::fetch::network_listener::{
     FetchResponseListener, ResourceTimingListener, submit_timing,
 };
+use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 /// <https://w3c.github.io/reporting/#endpoint>
 #[derive(Clone, Eq, Hash, MallocSizeOf, PartialEq)]
@@ -98,7 +97,7 @@ impl ReportingEndpoint {
             // Step 5.4. Let endpoint be a new endpoint whose properties are set as follows:
             // Step 5.5. Add endpoint to endpoints.
             endpoints.push(ReportingEndpoint {
-                name: name.into(),
+                name: DOMString::from(name),
                 url: endpoint_url,
                 failures: 0,
             });
@@ -128,8 +127,6 @@ impl SendReportsToEndpoints for GlobalScope {
         endpoints: Vec<ReportingEndpoint>,
     ) {
         // Step 1. Let endpoint map be an empty map of endpoint objects to lists of report objects.
-        #[expect(clippy::mutable_key_type)]
-        // See `impl Hash for DOMString`.
         let mut endpoint_map: HashMap<&ReportingEndpoint, Vec<Report>> = HashMap::new();
         // Step 2. For each report in reports:
         reports.retain(|report| {
@@ -198,9 +195,10 @@ impl SendReportsToEndpoints for GlobalScope {
         headers.typed_insert(ContentType::from(
             "application/reports+json".parse::<mime::Mime>().unwrap(),
         ));
-        let request = create_a_potential_cors_request(
+        let url = ensure_blob_referenced_by_url_is_kept_alive(self, endpoint.clone());
+        let request = create_a_potential_cors_request_with_claim(
             None,
-            endpoint.clone(),
+            url,
             Destination::Report,
             None,
             None,
@@ -219,7 +217,6 @@ impl SendReportsToEndpoints for GlobalScope {
             request,
             CSPReportEndpointFetchListener {
                 endpoint: endpoint.clone(),
-                global: Trusted::new(self),
             },
             self.task_manager().networking_task_source().into(),
         );
@@ -309,16 +306,15 @@ impl From<CSPViolationReportBody> for CSPReportingEndpointBody {
 struct CSPReportEndpointFetchListener {
     /// Endpoint URL of this request.
     endpoint: ServoUrl,
-    /// The global object fetching the report uri violation
-    global: Trusted<GlobalScope>,
 }
 
 impl FetchResponseListener for CSPReportEndpointFetchListener {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         _: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -328,6 +324,7 @@ impl FetchResponseListener for CSPReportEndpointFetchListener {
     fn process_response_chunk(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         _: RequestId,
         chunk: Bytes,
     ) {
@@ -337,16 +334,18 @@ impl FetchResponseListener for CSPReportEndpointFetchListener {
     fn process_response_eof(
         self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        submit_timing(cx, &self, &response, &timing);
+        submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         _cx: &mut js::context::JSContext,
+        _: &GlobalScope,
         _request_id: RequestId,
         _violations: Vec<Violation>,
     ) {
@@ -356,9 +355,5 @@ impl FetchResponseListener for CSPReportEndpointFetchListener {
 impl ResourceTimingListener for CSPReportEndpointFetchListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Other, self.endpoint.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.global.root()
     }
 }

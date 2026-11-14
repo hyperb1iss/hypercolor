@@ -1,10 +1,10 @@
 # Hypercolor patches to servo-script
 
-This directory vendors `servo-script` 0.7.0, Servo's `components/script`
+This directory vendors `servo-script` 0.8.0, Servo's `components/script`
 crate, from crates.io. The files are the published package exactly as
-`servo-script-0.7.0.crate` unpacks (checksum
-`84ab625df5e83104d2b1ef7066f6fbc879d24be07c14438eb25f427657ed7fee`, upstream
-commit `aac43a3f31a259f04a574f5ec4e959c943ad7cc7` per
+`servo-script-0.8.0.crate` unpacks (checksum
+`b6c3e52be4165b3f98b992f384156b049d30b769004a96cf52903ea27cd32f9b`, upstream
+commit `4e136d8ef31b7c4748fbfac606ca463f3efd7537` per
 `.cargo_vcs_info.json`), plus this file. The root `Cargo.toml` swaps it in
 through `[patch.crates-io]`, so every other Servo crate still comes from
 crates.io. The crate is excluded from the workspace and keeps upstream's
@@ -18,8 +18,8 @@ shows every change against the published crate.
 One build setting differs from the published manifest: `Cargo.toml` ends
 with a `[lints.rust]` table that allows warnings. Cargo caps lints for
 crates.io dependencies but not for path dependencies, so without it every
-workspace build would print upstream's rustc warnings (51 under Rust 1.99).
-Deny-level lints still apply.
+workspace build would print upstream's rustc warnings. Deny-level lints
+still apply.
 
 ## Patches
 

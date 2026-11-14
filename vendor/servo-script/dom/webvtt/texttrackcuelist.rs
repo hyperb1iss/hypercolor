@@ -7,7 +7,7 @@ use std::ops::Deref;
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use crate::dom::bindings::codegen::Bindings::TextTrackCueListBinding::TextTrackCueListMethods;
 use crate::dom::bindings::root::{Dom, DomRoot, MutDom, UnrootedDom};
@@ -37,10 +37,10 @@ impl TextTrackCueList {
         text_track: &TextTrack,
         window: &Window,
     ) -> DomRoot<TextTrackCueList> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(TextTrackCueList::new_inherited(text_track)),
             window,
-            cx,
         )
     }
 
@@ -70,7 +70,7 @@ impl TextTrackCueList {
         // Only add a cue if it does not exist in the list
         if self.find(cue).is_none() {
             {
-                let mut dom_cues = self.dom_cues.borrow_mut();
+                let mut dom_cues = self.dom_cues.safe_borrow_mut(cx.no_gc());
                 dom_cues.push(Dom::from_ref(cue));
                 cue.set_initial_index_in_list(dom_cues.len());
             }

@@ -9,6 +9,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_media::audio::audio_node::{AudioNodeInit, AudioNodeMessage, AudioNodeType};
+use servo_media::audio::graph::NodeId;
 use servo_media::audio::panner_node::{
     DistanceModel, PannerNodeMessage, PannerNodeOptions, PanningModel,
 };
@@ -18,6 +19,7 @@ use crate::conversions::Convert;
 use crate::dom::audio::audionode::{AudioNode, AudioNodeOptionsHelper};
 use crate::dom::audio::audioparam::AudioParam;
 use crate::dom::audio::baseaudiocontext::BaseAudioContext;
+use crate::dom::audionode::UnwrappedAudioNodeOptions;
 use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
     ChannelCountMode, ChannelInterpretation,
 };
@@ -55,132 +57,27 @@ pub(crate) struct PannerNode {
 }
 
 impl PannerNode {
-    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    pub(crate) fn new_inherited(
-        cx: &mut JSContext,
-        window: &Window,
+    fn new_inherited(
+        node_id: Option<NodeId>,
         context: &BaseAudioContext,
-        options: &PannerOptions,
-    ) -> Fallible<PannerNode> {
-        let node_options = options.parent.unwrap_or(
-            2,
-            ChannelCountMode::Clamped_max,
-            ChannelInterpretation::Speakers,
-        );
-        if node_options.mode == ChannelCountMode::Max {
-            return Err(Error::NotSupported(None));
-        }
-        if node_options.count > 2 || node_options.count == 0 {
-            return Err(Error::NotSupported(None));
-        }
-        if *options.maxDistance <= 0. {
-            return Err(Error::Range(c"maxDistance should be positive".into()));
-        }
-        if *options.refDistance < 0. {
-            return Err(Error::Range(c"refDistance should be non-negative".into()));
-        }
-        if *options.rolloffFactor < 0. {
-            return Err(Error::Range(c"rolloffFactor should be non-negative".into()));
-        }
-        if *options.coneOuterGain < 0. || *options.coneOuterGain > 1. {
-            return Err(Error::InvalidState(None));
-        }
-        let options = options.convert();
-        let node = AudioNode::new_inherited(
-            cx,
-            AudioNodeInit::PannerNode(options),
-            context,
-            node_options,
-            1, // inputs
-            1, // outputs
-        )?;
-        let id = node.node_id();
-        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-positionx>
-        let position_x = AudioParam::new(
-            cx,
-            window,
-            context,
-            id,
-            AudioNodeType::PannerNode,
-            ParamType::Position(ParamDir::X),
-            AutomationRate::A_rate,
-            options.position_x, // default value
-            f32::MIN,           // min value
-            f32::MAX,           // max value
-        );
-        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-positiony>
-        let position_y = AudioParam::new(
-            cx,
-            window,
-            context,
-            id,
-            AudioNodeType::PannerNode,
-            ParamType::Position(ParamDir::Y),
-            AutomationRate::A_rate,
-            options.position_y, // default value
-            f32::MIN,           // min value
-            f32::MAX,           // max value
-        );
-        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-positionz>
-        let position_z = AudioParam::new(
-            cx,
-            window,
-            context,
-            id,
-            AudioNodeType::PannerNode,
-            ParamType::Position(ParamDir::Z),
-            AutomationRate::A_rate,
-            options.position_z, // default value
-            f32::MIN,           // min value
-            f32::MAX,           // max value
-        );
-        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-orientationx>
-        let orientation_x = AudioParam::new(
-            cx,
-            window,
-            context,
-            id,
-            AudioNodeType::PannerNode,
-            ParamType::Orientation(ParamDir::X),
-            AutomationRate::A_rate,
-            options.orientation_x, // default value
-            f32::MIN,              // min value
-            f32::MAX,              // max value
-        );
-        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-orientationy>
-        let orientation_y = AudioParam::new(
-            cx,
-            window,
-            context,
-            id,
-            AudioNodeType::PannerNode,
-            ParamType::Orientation(ParamDir::Y),
-            AutomationRate::A_rate,
-            options.orientation_y, // default value
-            f32::MIN,              // min value
-            f32::MAX,              // max value
-        );
-        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-orientationz>
-        let orientation_z = AudioParam::new(
-            cx,
-            window,
-            context,
-            id,
-            AudioNodeType::PannerNode,
-            ParamType::Orientation(ParamDir::Z),
-            AutomationRate::A_rate,
-            options.orientation_z, // default value
-            f32::MIN,              // min value
-            f32::MAX,              // max value
-        );
-        Ok(PannerNode {
-            node,
-            position_x: Dom::from_ref(&position_x),
-            position_y: Dom::from_ref(&position_y),
-            position_z: Dom::from_ref(&position_z),
-            orientation_x: Dom::from_ref(&orientation_x),
-            orientation_y: Dom::from_ref(&orientation_y),
-            orientation_z: Dom::from_ref(&orientation_z),
+        node_options: UnwrappedAudioNodeOptions,
+        audio_params: [&AudioParam; 6],
+        options: PannerNodeOptions,
+    ) -> Self {
+        PannerNode {
+            node: AudioNode::new_inherited(
+                node_id,
+                context,
+                node_options,
+                1, // inputs
+                1, // outputs
+            ),
+            position_x: Dom::from_ref(audio_params[0]),
+            position_y: Dom::from_ref(audio_params[1]),
+            position_z: Dom::from_ref(audio_params[2]),
+            orientation_x: Dom::from_ref(audio_params[3]),
+            orientation_y: Dom::from_ref(audio_params[4]),
+            orientation_z: Dom::from_ref(audio_params[5]),
             panning_model: Cell::new(options.panning_model),
             distance_model: Cell::new(options.distance_model),
             ref_distance: Cell::new(options.ref_distance),
@@ -189,33 +86,7 @@ impl PannerNode {
             cone_inner_angle: Cell::new(options.cone_inner_angle),
             cone_outer_angle: Cell::new(options.cone_outer_angle),
             cone_outer_gain: Cell::new(options.cone_outer_gain),
-        })
-    }
-
-    pub(crate) fn new(
-        cx: &mut JSContext,
-        window: &Window,
-        context: &BaseAudioContext,
-        options: &PannerOptions,
-    ) -> Fallible<DomRoot<PannerNode>> {
-        Self::new_with_proto(cx, window, None, context, options)
-    }
-
-    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    fn new_with_proto(
-        cx: &mut JSContext,
-        window: &Window,
-        proto: Option<HandleObject>,
-        context: &BaseAudioContext,
-        options: &PannerOptions,
-    ) -> Fallible<DomRoot<PannerNode>> {
-        let node = PannerNode::new_inherited(cx, window, context, options)?;
-        Ok(reflect_dom_object_with_proto(
-            cx,
-            Box::new(node),
-            window,
-            proto,
-        ))
+        }
     }
 }
 
@@ -228,7 +99,142 @@ impl PannerNodeMethods<crate::DomTypeHolder> for PannerNode {
         context: &BaseAudioContext,
         options: &PannerOptions,
     ) -> Fallible<DomRoot<PannerNode>> {
-        PannerNode::new_with_proto(cx, window, proto, context, options)
+        let node_options = options.parent.unwrap_or(
+            2,
+            ChannelCountMode::Clamped_max,
+            ChannelInterpretation::Speakers,
+        );
+        if AudioNode::channel_count_check(node_options.count) {
+            return Err(Error::NotSupported(Some(String::from(
+                "Channel count not supported",
+            ))));
+        }
+        if node_options.mode == ChannelCountMode::Max {
+            return Err(Error::NotSupported(Some(
+                "Channel count mode cannot be \"max\"".into(),
+            )));
+        }
+        if node_options.count > 2 || node_options.count == 0 {
+            return Err(Error::NotSupported(Some(
+                "Channel count must be 1 or 2".into(),
+            )));
+        }
+        if *options.maxDistance <= 0. {
+            return Err(Error::Range(c"maxDistance should be positive".into()));
+        }
+        if *options.refDistance < 0. {
+            return Err(Error::Range(c"refDistance should be non-negative".into()));
+        }
+        if *options.rolloffFactor < 0. {
+            return Err(Error::Range(c"rolloffFactor should be non-negative".into()));
+        }
+        if *options.coneOuterGain < 0. || *options.coneOuterGain > 1. {
+            return Err(Error::InvalidState(Some(
+                "coneOuterGain must be between 0 and 1".into(),
+            )));
+        }
+        let options = options.convert();
+        let audio_node_init = AudioNodeInit::PannerNode(options);
+        let node_id =
+            AudioNode::generate_audio_node_id(cx, &node_options, audio_node_init, context);
+
+        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-positionx>
+        let position_x = AudioParam::new(
+            cx,
+            window,
+            context,
+            node_id,
+            AudioNodeType::PannerNode,
+            ParamType::Position(ParamDir::X),
+            AutomationRate::A_rate,
+            options.position_x, // default value
+            f32::MIN,           // min value
+            f32::MAX,           // max value
+        );
+        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-positiony>
+        let position_y = AudioParam::new(
+            cx,
+            window,
+            context,
+            node_id,
+            AudioNodeType::PannerNode,
+            ParamType::Position(ParamDir::Y),
+            AutomationRate::A_rate,
+            options.position_y, // default value
+            f32::MIN,           // min value
+            f32::MAX,           // max value
+        );
+        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-positionz>
+        let position_z = AudioParam::new(
+            cx,
+            window,
+            context,
+            node_id,
+            AudioNodeType::PannerNode,
+            ParamType::Position(ParamDir::Z),
+            AutomationRate::A_rate,
+            options.position_z, // default value
+            f32::MIN,           // min value
+            f32::MAX,           // max value
+        );
+        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-orientationx>
+        let orientation_x = AudioParam::new(
+            cx,
+            window,
+            context,
+            node_id,
+            AudioNodeType::PannerNode,
+            ParamType::Orientation(ParamDir::X),
+            AutomationRate::A_rate,
+            options.orientation_x, // default value
+            f32::MIN,              // min value
+            f32::MAX,              // max value
+        );
+        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-orientationy>
+        let orientation_y = AudioParam::new(
+            cx,
+            window,
+            context,
+            node_id,
+            AudioNodeType::PannerNode,
+            ParamType::Orientation(ParamDir::Y),
+            AutomationRate::A_rate,
+            options.orientation_y, // default value
+            f32::MIN,              // min value
+            f32::MAX,              // max value
+        );
+        // <https://webaudio.github.io/web-audio-api/#dom-pannernode-orientationz>
+        let orientation_z = AudioParam::new(
+            cx,
+            window,
+            context,
+            node_id,
+            AudioNodeType::PannerNode,
+            ParamType::Orientation(ParamDir::Z),
+            AutomationRate::A_rate,
+            options.orientation_z, // default value
+            f32::MIN,              // min value
+            f32::MAX,              // max value
+        );
+        Ok(reflect_dom_object_with_proto(
+            cx,
+            Box::new(PannerNode::new_inherited(
+                node_id,
+                context,
+                node_options,
+                [
+                    &position_x,
+                    &position_y,
+                    &position_z,
+                    &orientation_x,
+                    &orientation_y,
+                    &orientation_z,
+                ],
+                options,
+            )),
+            window,
+            proto,
+        ))
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-pannernode-positionx>
@@ -360,7 +366,9 @@ impl PannerNodeMethods<crate::DomTypeHolder> for PannerNode {
     /// <https://webaudio.github.io/web-audio-api/#dom-pannernode-coneoutergain>
     fn SetConeOuterGain(&self, val: Finite<f64>) -> Fallible<()> {
         if *val < 0. || *val > 1. {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some(
+                "coneOuterGain must be between 0 and 1".into(),
+            )));
         }
         self.cone_outer_gain.set(*val);
         let msg = PannerNodeMessage::SetConeGain(self.cone_outer_gain.get());

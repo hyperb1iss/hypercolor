@@ -131,7 +131,7 @@ def sync_detailed(
         level (EffectConsoleLevel | Unset): Severity floor for `GET /api/v1/effects/console`.
 
             Raw console levels fold onto four floors: `trace` and `debug` are
-            `debug`; `log`, `info`, and `dir` are `log`.
+            `debug`; `log`, `info`, `dir`, and `table` are `log`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -172,7 +172,7 @@ def sync(
         level (EffectConsoleLevel | Unset): Severity floor for `GET /api/v1/effects/console`.
 
             Raw console levels fold onto four floors: `trace` and `debug` are
-            `debug`; `log`, `info`, and `dir` are `log`.
+            `debug`; `log`, `info`, `dir`, and `table` are `log`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -208,7 +208,7 @@ async def asyncio_detailed(
         level (EffectConsoleLevel | Unset): Severity floor for `GET /api/v1/effects/console`.
 
             Raw console levels fold onto four floors: `trace` and `debug` are
-            `debug`; `log`, `info`, and `dir` are `log`.
+            `debug`; `log`, `info`, `dir`, and `table` are `log`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -247,7 +247,7 @@ async def asyncio(
         level (EffectConsoleLevel | Unset): Severity floor for `GET /api/v1/effects/console`.
 
             Raw console levels fold onto four floors: `trace` and `debug` are
-            `debug`; `log`, `info`, and `dir` are `log`.
+            `debug`; `log`, `info`, `dir`, and `table` are `log`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

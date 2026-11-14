@@ -227,7 +227,9 @@ impl Range {
 
         // Step 12.
         if contained_children.iter().any(|n| n.is_doctype()) {
-            return Err(Error::HierarchyRequest(None));
+            return Err(Error::HierarchyRequest(Some(
+                "Range contains a doctype node".into(),
+            )));
         }
 
         Ok(ContainedChildren {
@@ -272,17 +274,21 @@ impl Range {
         // Step 1. If node’s root is not this’s root, then throw a "WrongDocumentError"
         // DOMException.
         if node.GetRootNode(&Default::default()) != self.root() {
-            return Err(Error::WrongDocument(None));
+            return Err(Error::WrongDocument(Some(
+                "Node is not in the same tree as the range".into(),
+            )));
         }
         // Step 2. If node is a doctype, then throw an "InvalidNodeTypeError"
         // DOMException.
         if node.is_doctype() {
-            return Err(Error::InvalidNodeType(None));
+            return Err(Error::InvalidNodeType(Some("Node is a doctype".into())));
         }
         // Step 3. If offset is greater than node’s length, then throw an "IndexSizeError"
         // DOMException.
         if offset > node.len() {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Offset is greater than the node's length".into(),
+            )));
         }
         // Step 4. If (node, offset) is before start, then return −1.
         let start_node = self.start_container();
@@ -369,7 +375,7 @@ impl Range {
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-range-getclientrects>
-    fn client_rects(&self, no_gc: &NoGC) -> Vec<Rect<Au, CSSPixel>> {
+    fn client_rects(&self, cx: &mut JSContext) -> Vec<Rect<Au, CSSPixel>> {
         // FIXME: For text nodes that are only partially selected, this should return the client
         // rect of the selected part, not the whole text node.
         let start = self.start_container();
@@ -384,19 +390,30 @@ impl Range {
         // (including when the boundary points are identical).
         if self.collapsed() {
             if start.is::<CharacterData>() {
-                return start.border_boxes();
+                return start.border_boxes(cx);
             } else {
                 return vec![];
             }
         }
 
         let document = start.owner_doc();
-        let unrooted_end = end.as_unrooted(no_gc);
-        start
-            .following_nodes_unrooted(no_gc, document.upcast::<Node>(), ShadowIncluding::No)
-            .take_while(move |node| *node != *end)
-            .chain(iter::once(unrooted_end))
-            .flat_map(move |node| node.border_boxes())
+        let nodes: Vec<DomRoot<Node>> = {
+            let unrooted_end = end.as_unrooted(cx.no_gc());
+            start
+                .following_nodes_unrooted(
+                    cx.no_gc(),
+                    document.upcast::<Node>(),
+                    ShadowIncluding::No,
+                )
+                .take_while(|node| *node != *end)
+                .chain(iter::once(unrooted_end))
+                .map(|node| node.as_rooted())
+                .collect()
+        };
+
+        nodes
+            .iter()
+            .flat_map(move |node| node.border_boxes(cx))
             .collect()
     }
 
@@ -411,13 +428,15 @@ impl Range {
         // Step 1. If node is a doctype, then throw an "InvalidNodeTypeError"
         // DOMException.
         if node.is_doctype() {
-            return Err(Error::InvalidNodeType(None));
+            return Err(Error::InvalidNodeType(Some("Node is a doctype".into())));
         }
 
         // Step 2. If offset is greater than node’s length, then throw an "IndexSizeError"
         // DOMException.
         if offset > node.len() {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Offset is greater than the node's length".into(),
+            )));
         }
 
         // Step 3. Let bp be the boundary point (node, offset).
@@ -553,25 +572,33 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
 
     /// <https://dom.spec.whatwg.org/#dom-range-setstartbefore>
     fn SetStartBefore(&self, no_gc: &NoGC, node: &Node) -> ErrorResult {
-        let parent = node.GetParentNode().ok_or(Error::InvalidNodeType(None))?;
+        let parent = node
+            .GetParentNode()
+            .ok_or(Error::InvalidNodeType(Some("Node has no parent".into())))?;
         self.SetStart(no_gc, &parent, node.index())
     }
 
     /// <https://dom.spec.whatwg.org/#dom-range-setstartafter>
     fn SetStartAfter(&self, no_gc: &NoGC, node: &Node) -> ErrorResult {
-        let parent = node.GetParentNode().ok_or(Error::InvalidNodeType(None))?;
+        let parent = node
+            .GetParentNode()
+            .ok_or(Error::InvalidNodeType(Some("Node has no parent".into())))?;
         self.SetStart(no_gc, &parent, node.index() + 1)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-range-setendbefore>
     fn SetEndBefore(&self, no_gc: &NoGC, node: &Node) -> ErrorResult {
-        let parent = node.GetParentNode().ok_or(Error::InvalidNodeType(None))?;
+        let parent = node
+            .GetParentNode()
+            .ok_or(Error::InvalidNodeType(Some("Node has no parent".into())))?;
         self.SetEnd(no_gc, &parent, node.index())
     }
 
     /// <https://dom.spec.whatwg.org/#dom-range-setendafter>
     fn SetEndAfter(&self, no_gc: &NoGC, node: &Node) -> ErrorResult {
-        let parent = node.GetParentNode().ok_or(Error::InvalidNodeType(None))?;
+        let parent = node
+            .GetParentNode()
+            .ok_or(Error::InvalidNodeType(Some("Node has no parent".into())))?;
         self.SetEnd(no_gc, &parent, node.index() + 1)
     }
 
@@ -587,7 +614,9 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
     /// <https://dom.spec.whatwg.org/#dom-range-selectnode>
     fn SelectNode(&self, no_gc: &NoGC, node: &Node) -> ErrorResult {
         // Steps 1, 2.
-        let parent = node.GetParentNode().ok_or(Error::InvalidNodeType(None))?;
+        let parent = node
+            .GetParentNode()
+            .ok_or(Error::InvalidNodeType(Some("Node has no parent".into())))?;
         // Step 3.
         let index = node.index();
         // Step 4.
@@ -601,7 +630,7 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
     fn SelectNodeContents(&self, no_gc: &NoGC, node: &Node) -> ErrorResult {
         if node.is_doctype() {
             // Step 1.
-            return Err(Error::InvalidNodeType(None));
+            return Err(Error::InvalidNodeType(Some("Node is a doctype".into())));
         }
         // Step 2.
         let length = node.len();
@@ -621,12 +650,16 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         //    * END_TO_START,
         // then throw a "NotSupportedError" DOMException.
         if how > RangeConstants::END_TO_START {
-            return Err(Error::NotSupported(None));
+            return Err(Error::NotSupported(Some(
+                "Invalid comparison method".into(),
+            )));
         }
         // Step 2. If this’s root is not sourceRange’s root, then throw a
         // "WrongDocumentError" DOMException.
         if self.root() != source_range.root() {
-            return Err(Error::WrongDocument(None));
+            return Err(Error::WrongDocument(Some(
+                "Ranges are not in the same tree".into(),
+            )));
         }
         // Step 3. Let thisPoint and sourcePoint be null.
         // Step 4.  Switch on how:
@@ -679,7 +712,7 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             Ok(Ordering::Less) => Ok(false),
             Ok(Ordering::Equal) => Ok(true),
             Ok(Ordering::Greater) => Ok(false),
-            Err(Error::WrongDocument(None)) => {
+            Err(Error::WrongDocument(_)) => {
                 // Step 2.  If node’s root is not this’s root, then return false.
                 // Note: This is the only step that differs from `Self::compare_point`.
                 Ok(false)
@@ -995,12 +1028,18 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
 
         // Step 1.
         if &*start_node == node {
-            return Err(Error::HierarchyRequest(None));
+            return Err(Error::HierarchyRequest(Some(
+                "Node is the range's start container".into(),
+            )));
         }
         match start_node.type_id() {
             // Handled under step 2.
             NodeTypeId::CharacterData(CharacterDataTypeId::Text(_)) => (),
-            NodeTypeId::CharacterData(_) => return Err(Error::HierarchyRequest(None)),
+            NodeTypeId::CharacterData(_) => {
+                return Err(Error::HierarchyRequest(Some(
+                    "Cannot insert into a Comment or ProcessingInstruction node".into(),
+                )));
+            },
             _ => (),
         }
 
@@ -1011,7 +1050,11 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
                 let parent = match start_node.GetParentNode() {
                     Some(parent) => parent,
                     // Step 1.
-                    None => return Err(Error::HierarchyRequest(None)),
+                    None => {
+                        return Err(Error::HierarchyRequest(Some(
+                            "Range's start container has no parent".into(),
+                        )));
+                    },
                 };
                 // Step 5.
                 (Some(DomRoot::from_ref(&*start_node)), parent)
@@ -1187,7 +1230,9 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             end.inclusive_ancestors(ShadowIncluding::No)
                 .any(|n| !n.is_inclusive_ancestor_of(&start) && !n.is::<Text>())
         {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some(
+                "Range partially contains a non-Text node".into(),
+            )));
         }
 
         // Step 2.
@@ -1195,7 +1240,9 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             NodeTypeId::Document(_) |
             NodeTypeId::DocumentType |
             NodeTypeId::DocumentFragment(_) => {
-                return Err(Error::InvalidNodeType(None));
+                return Err(Error::InvalidNodeType(Some(
+                    "Node cannot be a Document, DocumentType or DocumentFragment".into(),
+                )));
             },
             _ => (),
         }
@@ -1335,7 +1382,7 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         let start = self.start_container();
         let window = start.owner_window();
 
-        let client_rects = self.client_rects(cx.no_gc());
+        let client_rects = self.client_rects(cx);
         let client_rects = client_rects
             .iter()
             .map(|rect| {
@@ -1358,7 +1405,7 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         let window = self.start_container().owner_window();
 
         // Step 1. Let list be the result of invoking getClientRects() on the same range this method was invoked on.
-        let list = self.client_rects(cx.no_gc());
+        let list = self.client_rects(cx);
 
         // Step 2. If list is empty return a DOMRect object whose x, y, width and height members are zero.
         // Step 3. If all rectangles in list have zero width or height, return the first rectangle in list.

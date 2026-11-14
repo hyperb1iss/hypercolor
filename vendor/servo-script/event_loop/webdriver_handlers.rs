@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
-
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::ptr::NonNull;
@@ -22,8 +20,7 @@ use js::jsapi::{HandleValueArray, JSITER_OWNONLY, JSType, PropertyDescriptor};
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
-    GetPropertyKeys, IsArgumentsObject, JS_CallFunctionName, JS_GetOwnPropertyDescriptorById,
-    JS_GetProperty, JS_GetPropertyById, JS_HasOwnProperty, JS_IsExceptionPending, JS_TypeOfValue,
+    IsArgumentsObject, JS_CallFunctionName, JS_HasOwnProperty, JS_TypeOfValue,
 };
 use js::rust::{HandleObject, HandleValue, IdVector};
 use net_traits::CookieSource::{HTTP, NonHTTP};
@@ -33,11 +30,17 @@ use script_bindings::codegen::GenericBindings::PermissionStatusBinding::{
 };
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::conversions::is_array_like;
+use script_bindings::js::{
+    GetPropertyKeys, JS_GetOwnPropertyDescriptorById, JS_GetProperty, JS_GetPropertyById,
+    JS_IsExceptionPending,
+};
 use script_bindings::num::Finite;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
+use servo_base::Epoch;
 use servo_base::generic_channel::{self, GenericOneshotSender, GenericSend, GenericSender};
 use servo_base::id::{BrowsingContextId, PipelineId};
+use servo_config::pref;
 use webdriver::command::SetPermissionState;
 use webdriver::error::ErrorStatus;
 
@@ -53,7 +56,7 @@ use crate::dom::bindings::codegen::Bindings::ElementBinding::{
 use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::HTMLInputElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLOptionElementBinding::HTMLOptionElementMethods;
-use crate::dom::bindings::codegen::Bindings::HTMLOrSVGElementBinding::FocusOptions;
+use crate::dom::bindings::codegen::Bindings::HTMLOrSVGOrMathMLElementBinding::FocusOptions;
 use crate::dom::bindings::codegen::Bindings::HTMLSelectElementBinding::HTMLSelectElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
@@ -295,18 +298,19 @@ pub(crate) fn find_node_by_unique_id_in_document(
 }
 
 /// <https://w3c.github.io/webdriver/#dfn-link-text-selector>
-fn matching_links<'a>(
-    cx: &'a NoGC,
-    links: &'a NodeList,
+fn matching_links(
+    cx: &mut JSContext,
+    links: &NodeList,
     link_text: String,
     partial: bool,
-) -> impl Iterator<Item = String> + 'a {
+) -> Vec<String> {
+    let links: Vec<_> = links.iter(cx).map(|node| node.as_rooted()).collect();
     links
-        .iter(cx)
-        .filter(move |node| {
+        .into_iter()
+        .filter(|node| {
             let content = node
                 .downcast::<HTMLElement>()
-                .map(|element| element.InnerText())
+                .map(|element| element.InnerText(cx))
                 .map_or(String::new(), String::from)
                 .trim()
                 .to_owned();
@@ -317,6 +321,7 @@ fn matching_links<'a>(
             }
         })
         .map(|node| node.unique_id(node.owner_doc().window().pipeline_id()))
+        .collect()
 }
 
 fn all_matching_links(
@@ -331,7 +336,7 @@ fn all_matching_links(
     root_node
         .query_selector_all(cx, DOMString::from_static("a"))
         .map_err(|_| ErrorStatus::InvalidSelector)
-        .map(|nodes| matching_links(cx, &nodes, link_text, partial).collect())
+        .map(|nodes| matching_links(cx, &nodes, link_text, partial))
 }
 
 #[expect(unsafe_code)]
@@ -344,14 +349,14 @@ fn object_has_to_json_property(
     let mut found = false;
     if unsafe { JS_HasOwnProperty(cx, object, name.as_ptr(), &mut found) } && found {
         rooted!(&in(cx) let mut value = UndefinedValue());
-        let result = unsafe { JS_GetProperty(cx, object, name.as_ptr(), value.handle_mut()) };
+        let result = JS_GetProperty(cx, object, &name, value.handle_mut());
         if !result {
             throw_dom_exception(cx, global_scope, Error::JSFailed);
             false
         } else {
             result && unsafe { JS_TypeOfValue(cx, value.handle()) } == JSType::JSTYPE_FUNCTION
         }
-    } else if unsafe { JS_IsExceptionPending(cx) } {
+    } else if JS_IsExceptionPending(cx) {
         throw_dom_exception(cx, global_scope, Error::JSFailed);
         false
     } else {
@@ -492,7 +497,6 @@ fn jsval_to_webdriver_inner(
     }
 }
 
-#[expect(unsafe_code)]
 /// <https://w3c.github.io/webdriver/#dfn-clone-an-object>
 fn clone_an_object(
     cx: &mut CurrentRealm,
@@ -560,8 +564,7 @@ fn clone_an_object(
         let mut result = HashMap::new();
 
         let mut ids = IdVector::new(cx);
-        let succeeded =
-            unsafe { GetPropertyKeys(cx, object_handle, JSITER_OWNONLY, ids.handle_mut()) };
+        let succeeded = GetPropertyKeys(cx, object_handle, JSITER_OWNONLY, ids.handle_mut());
         if !succeeded {
             return Err(JavaScriptEvaluationError::SerializationError(
                 JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -572,15 +575,13 @@ fn clone_an_object(
             rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
 
             let mut is_none = false;
-            let succeeded = unsafe {
-                JS_GetOwnPropertyDescriptorById(
-                    cx,
-                    object_handle,
-                    id.handle(),
-                    desc.handle_mut(),
-                    &mut is_none,
-                )
-            };
+            let succeeded = JS_GetOwnPropertyDescriptorById(
+                cx,
+                object_handle,
+                id.handle(),
+                desc.handle_mut(),
+                &mut is_none,
+            );
             if !succeeded {
                 return Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -588,9 +589,8 @@ fn clone_an_object(
             }
 
             rooted!(&in(cx) let mut property = UndefinedValue());
-            let succeeded = unsafe {
-                JS_GetPropertyById(cx, object_handle, id.handle(), property.handle_mut())
-            };
+            let succeeded =
+                JS_GetPropertyById(cx, object_handle, id.handle(), property.handle_mut());
             if !succeeded {
                 return Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -649,10 +649,10 @@ impl Callback for WebDriverExecuteScriptRejectionHandler {
 }
 
 pub(crate) fn handle_execute_script(
+    cx: &mut JSContext,
     window: Option<DomRoot<Window>>,
     eval: String,
     reply_sender: GenericSender<WebDriverJSResult>,
-    cx: &mut JSContext,
 ) {
     let Some(window) = window else {
         reply_sender
@@ -1195,6 +1195,7 @@ impl Element {
 }
 
 fn handle_send_keys_file(
+    cx: &mut JSContext,
     file_input: &HTMLInputElement,
     text: &str,
     reply_sender: GenericSender<Result<bool, ErrorStatus>>,
@@ -1236,7 +1237,7 @@ fn handle_send_keys_file(
     //
     // Do not reply to the response yet, as we are waiting for the files to arrive
     // asynchronously.
-    file_input.select_files_for_webdriver(files, reply_sender);
+    file_input.select_files_for_webdriver(cx, files, reply_sender);
 }
 
 /// We have verify previously that input element is not textual.
@@ -1346,7 +1347,7 @@ pub(crate) fn handle_will_send_keys(
     if let Some(input_element) = input_element {
         // Step 8 (Handle file upload)
         if is_file_input {
-            handle_send_keys_file(input_element, &text, reply);
+            handle_send_keys_file(cx, input_element, &text, reply);
             return;
         }
 
@@ -1393,18 +1394,25 @@ pub(crate) fn handle_get_active_element(
 }
 
 pub(crate) fn handle_get_computed_role(
+    cx: &mut JSContext,
     documents: &DocumentCollection,
     pipeline: PipelineId,
     node_id: String,
     reply: GenericSender<Result<Option<String>, ErrorStatus>>,
 ) {
+    if !pref!(accessibility_enabled) {
+        return reply.send(Err(ErrorStatus::UnsupportedOperation)).unwrap();
+    }
     reply
         .send(
-            get_known_element(documents, pipeline, node_id)
-                // FIXME: Actually compute the role instead of using WAI-ARIA role.
-                // <https://github.com/servo/servo/issues/43734>
-                // The logic can then be shared with devtools accessibility inspector.
-                .map(|element| element.GetRole().map(String::from)),
+            get_known_element(documents, pipeline, node_id).map(|element| {
+                let document = element.upcast::<Node>().owner_doc();
+                let window = document.window();
+                window
+                    .layout()
+                    .set_accessibility_active(true, Epoch::default());
+                element.get_computed_role(cx).map(String::from)
+            }),
         )
         .unwrap();
 }
@@ -1683,6 +1691,7 @@ pub(crate) fn handle_scroll_and_get_bounding_client_rect(
 
 /// <https://w3c.github.io/webdriver/#dfn-get-element-text>
 pub(crate) fn handle_get_text(
+    cx: &mut JSContext,
     documents: &DocumentCollection,
     pipeline: PipelineId,
     node_id: String,
@@ -1693,7 +1702,7 @@ pub(crate) fn handle_get_text(
             get_known_element(documents, pipeline, node_id).map(|element| {
                 element
                     .downcast::<HTMLElement>()
-                    .map(|htmlelement| String::from(htmlelement.InnerText()))
+                    .map(|htmlelement| String::from(htmlelement.InnerText(cx)))
                     .unwrap_or_else(|| {
                         element
                             .upcast::<Node>()
@@ -1748,12 +1757,12 @@ pub(crate) fn handle_get_attribute(
 }
 
 pub(crate) fn handle_get_property(
+    cx: &mut JSContext,
     documents: &DocumentCollection,
     pipeline: PipelineId,
     node_id: String,
     name: String,
     reply: GenericSender<Result<JSValue, ErrorStatus>>,
-    cx: &mut JSContext,
 ) {
     reply
         .send(

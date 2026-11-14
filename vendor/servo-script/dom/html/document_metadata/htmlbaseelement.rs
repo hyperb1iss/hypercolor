@@ -9,6 +9,7 @@ use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use servo_url::ServoUrl;
 
+use crate::dom::MoveContext;
 use crate::dom::bindings::codegen::Bindings::HTMLBaseElementBinding::HTMLBaseElementMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
@@ -70,8 +71,9 @@ impl HTMLBaseElement {
         // with document's fallback base URL, and document's character encoding. (Thus, the base element isn't affected by itself.)
         let href_value = self
             .upcast::<Element>()
-            .get_attribute_string_value(&local_name!("href"))
+            .get_attribute_string_ref(&local_name!("href"))
             .expect("Must always have a href set when setting frozen base URL");
+        let href_value = href_value.as_attr_ref().value();
         let document_fallback_url = document.fallback_base_url();
         let url_record = document_fallback_url.join(&href_value).ok();
         // Step 3. If any of the following are true:
@@ -91,11 +93,11 @@ impl HTMLBaseElement {
                 ))
         {
             // then set element's frozen base URL to document's fallback base URL and return.
-            *self.frozen_base_url.borrow_mut() = Some(document_fallback_url);
+            *self.frozen_base_url.safe_borrow_mut(cx.no_gc()) = Some(document_fallback_url);
             return;
         }
         // Step 4. Set element's frozen base URL to urlRecord.
-        *self.frozen_base_url.borrow_mut() = url_record;
+        *self.frozen_base_url.safe_borrow_mut(cx.no_gc()) = url_record;
         // Step 5. Respond to base URL changes given document.
         // TODO
     }
@@ -139,6 +141,12 @@ impl HTMLBaseElementMethods<crate::DomTypeHolder> for HTMLBaseElement {
 
     // https://html.spec.whatwg.org/multipage/#dom-base-href
     make_setter!(SetHref, "href");
+
+    // https://html.spec.whatwg.org/multipage/#dom-base-target
+    make_getter!(Target, "target");
+
+    // https://html.spec.whatwg.org/multipage/#dom-base-target
+    make_setter!(SetTarget, "target");
 }
 
 impl VirtualMethods for HTMLBaseElement {
@@ -173,9 +181,19 @@ impl VirtualMethods for HTMLBaseElement {
     fn bind_to_tree(&self, cx: &mut JSContext, context: &BindContext) {
         self.super_type().unwrap().bind_to_tree(cx, context);
         // https://html.spec.whatwg.org/multipage/#frozen-base-url
-        // > The base element becomes the first base element in tree order with an href content attribute in its Document.
-        let document = self.owner_document();
-        document.refresh_base_element(cx);
+        // > The base element becomes the first base element in tree order with an href content
+        // > attribute in its Document.
+        self.owner_document().refresh_base_element(cx);
+    }
+
+    fn moving_steps(&self, cx: &mut JSContext, context: &MoveContext) {
+        if let Some(super_type) = self.super_type() {
+            super_type.moving_steps(cx, context);
+        }
+        // https://html.spec.whatwg.org/multipage/#frozen-base-url
+        // > The base element becomes the first base element in tree order with an href content
+        // > attribute in its Document.
+        self.owner_document().refresh_base_element(cx);
     }
 
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {

@@ -8,6 +8,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use style::attr::AttrValue;
 
+use crate::dom::MoveContext;
 use crate::dom::bindings::codegen::Bindings::HTMLSourceElementBinding::HTMLSourceElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::Node_Binding::NodeMethods;
 use crate::dom::bindings::inheritance::Castable;
@@ -158,7 +159,7 @@ impl VirtualMethods for HTMLSourceElement {
             parent
                 .downcast::<HTMLMediaElement>()
                 .unwrap()
-                .handle_source_child_insertion(self, cx);
+                .handle_source_child_insertion(cx, self);
         }
 
         // Step 3. If parent is a picture element, then for each child of parent's children, if
@@ -173,6 +174,35 @@ impl VirtualMethods for HTMLSourceElement {
         }
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#html-element-moving-steps>
+    fn moving_steps(&self, cx: &mut JSContext, context: &MoveContext) {
+        if let Some(super_type) = self.super_type() {
+            super_type.moving_steps(cx, context);
+        }
+
+        // Step 1. If movedNode's parent is a media element that has no src attribute and whose networkState
+        // has the value NETWORK_EMPTY, then invoke that media element's resource selection
+        // algorithm.
+        if let Some(parent) = self
+            .upcast::<Node>()
+            .GetParentNode()
+            .and_then(DomRoot::downcast::<HTMLMediaElement>)
+        {
+            parent.handle_source_child_insertion(cx, self);
+        }
+
+        // Step 2. If isSubtreeRoot is true and oldAncestor is a picture element, then for each child of
+        // oldAncestor's children: if child is an img element, then count this as a relevant
+        // mutation for child.
+        if context.is_subtree_root && context.old_ancestor.is::<HTMLPictureElement>() {
+            for child in context.old_ancestor.child_elements() {
+                if let Some(image_child) = child.downcast::<HTMLImageElement>() {
+                    image_child.update_the_image_data(cx);
+                }
+            }
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#the-source-element:html-element-removing-steps>
     fn unbind_from_tree(&self, cx: &mut js::context::JSContext, context: &UnbindContext) {
         self.super_type().unwrap().unbind_from_tree(cx, context);
@@ -180,7 +210,6 @@ impl VirtualMethods for HTMLSourceElement {
         // Step 1. If oldParent is a picture element, then for each child of oldParent's children,
         // if child is an img element, then count this as a relevant mutation for child.
         if context.parent.is::<HTMLPictureElement>() &&
-            !self.upcast::<Node>().has_parent() &&
             let Some(next_sibling) = context.next_sibling
         {
             let next_sibling_iterator = next_sibling.inclusively_following_siblings();

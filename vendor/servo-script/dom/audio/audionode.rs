@@ -49,46 +49,6 @@ pub(crate) struct AudioNode {
 
 impl AudioNode {
     pub(crate) fn new_inherited(
-        cx: &mut JSContext,
-        node_type: AudioNodeInit,
-        context: &BaseAudioContext,
-        options: UnwrappedAudioNodeOptions,
-        number_of_inputs: u32,
-        number_of_outputs: u32,
-    ) -> Fallible<AudioNode> {
-        if options.count == 0 || options.count > MAX_CHANNEL_COUNT {
-            return Err(Error::NotSupported(None));
-        }
-        let ch = ChannelInfo {
-            count: options.count as u8,
-            mode: options.mode.convert(),
-            interpretation: options.interpretation.convert(),
-            context_channel_count: context.channel_count() as u8,
-        };
-        let node_id = context
-            .audio_context_impl()
-            .lock()
-            .unwrap()
-            .create_node(node_type, ch);
-
-        if node_id.is_none() {
-            // Follow Chromuim and Gecko, we just warn and create an inert AudioNode.
-            const MESSAGE: &str =
-                "Failed to create an AudioNode backend. The constructed AudioNode will be inert.";
-            warn!("{MESSAGE}");
-            Console::internal_warn(cx, &context.global(), MESSAGE.to_string());
-        }
-
-        Ok(AudioNode::new_inherited_for_id(
-            node_id,
-            context,
-            options,
-            number_of_inputs,
-            number_of_outputs,
-        ))
-    }
-
-    pub(crate) fn new_inherited_for_id(
         node_id: Option<NodeId>,
         context: &BaseAudioContext,
         options: UnwrappedAudioNodeOptions,
@@ -105,6 +65,40 @@ impl AudioNode {
             channel_count_mode: Cell::new(options.mode),
             channel_interpretation: Cell::new(options.interpretation),
         }
+    }
+
+    /// <https://webaudio.github.io/web-audio-api/#dom-audionode-channelcount>
+    /// > If this value is set to zero or to a value greater than the implementation’s
+    /// > maximum number of channels the implementation MUST throw a NotSupportedError exception.
+    pub(crate) fn channel_count_check(count: u32) -> bool {
+        count == 0 || count > MAX_CHANNEL_COUNT
+    }
+
+    pub(crate) fn generate_audio_node_id(
+        cx: &mut JSContext,
+        node_options: &UnwrappedAudioNodeOptions,
+        audio_node_init: AudioNodeInit,
+        context: &BaseAudioContext,
+    ) -> Option<NodeId> {
+        let ch = ChannelInfo {
+            count: node_options.count as u8,
+            mode: node_options.mode.convert(),
+            interpretation: node_options.interpretation.convert(),
+            context_channel_count: context.channel_count() as u8,
+        };
+        let node_id = context
+            .audio_context_impl()
+            .lock()
+            .unwrap()
+            .create_node(audio_node_init, ch);
+        if node_id.is_none() {
+            // Follow Chromuim and Gecko, we just warn and create an inert AudioNode.
+            const MESSAGE: &str =
+                "Failed to create an AudioNode backend. The constructed AudioNode will be inert.";
+            warn!("{MESSAGE}");
+            Console::internal_warn(cx, &context.global(), MESSAGE.to_string());
+        }
+        node_id
     }
 
     pub(crate) fn message(&self, message: AudioNodeMessage) {
@@ -131,11 +125,15 @@ impl AudioNodeMethods<crate::DomTypeHolder> for AudioNode {
         input: u32,
     ) -> Fallible<DomRoot<AudioNode>> {
         if self.context != destination.context {
-            return Err(Error::InvalidAccess(None));
+            return Err(Error::InvalidAccess(Some(
+                "Destination node belongs to a different AudioContext".into(),
+            )));
         }
 
         if output >= self.NumberOfOutputs() || input >= destination.NumberOfInputs() {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Output or input index is out of range".into(),
+            )));
         }
 
         // servo-media takes care of ignoring duplicated connections.
@@ -159,11 +157,15 @@ impl AudioNodeMethods<crate::DomTypeHolder> for AudioNode {
     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-connect-destinationparam-output>
     fn Connect_(&self, dest: &AudioParam, output: u32) -> Fallible<()> {
         if self.context != dest.context() {
-            return Err(Error::InvalidAccess(None));
+            return Err(Error::InvalidAccess(Some(
+                "Destination AudioParam belongs to a different AudioContext".into(),
+            )));
         }
 
         if output >= self.NumberOfOutputs() {
-            return Err(Error::IndexSize(None));
+            return Err(Error::IndexSize(Some(
+                "Output index is out of range".into(),
+            )));
         }
 
         // servo-media takes care of ignoring duplicated connections.
@@ -299,24 +301,36 @@ impl AudioNodeMethods<crate::DomTypeHolder> for AudioNode {
         match self.upcast::<EventTarget>().type_id() {
             EventTargetTypeId::AudioNode(AudioNodeTypeId::AudioDestinationNode) => {
                 if self.context.is_offline() {
-                    return Err(Error::InvalidState(None));
+                    return Err(Error::InvalidState(Some(
+                        "Cannot change channel count".into(),
+                    )));
                 } else if !(1..=MAX_CHANNEL_COUNT).contains(&value) {
-                    return Err(Error::IndexSize(None));
+                    return Err(Error::IndexSize(Some(
+                        "Channel count is out of range".into(),
+                    )));
                 }
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::PannerNode) if value > 2 => {
-                return Err(Error::NotSupported(None));
+                return Err(Error::NotSupported(Some(
+                    "PannerNode channel count cannot be greater than 2".into(),
+                )));
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::AudioScheduledSourceNode(
                 AudioScheduledSourceNodeTypeId::StereoPannerNode,
             )) if value > 2 => {
-                return Err(Error::NotSupported(None));
+                return Err(Error::NotSupported(Some(
+                    "StereoPannerNode channel count cannot be greater than 2".into(),
+                )));
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::ChannelMergerNode) => {
-                return Err(Error::InvalidState(None));
+                return Err(Error::InvalidState(Some(
+                    "Cannot change channel count of a ChannelMergerNode".into(),
+                )));
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::ChannelSplitterNode) => {
-                return Err(Error::InvalidState(None));
+                return Err(Error::InvalidState(Some(
+                    "Cannot change channel count of a ChannelSplitterNode".into(),
+                )));
             },
             // XXX We do not support any of the other AudioNodes with
             // constraints yet. Add more cases here as we add support
@@ -325,7 +339,9 @@ impl AudioNodeMethods<crate::DomTypeHolder> for AudioNode {
         };
 
         if value == 0 || value > MAX_CHANNEL_COUNT {
-            return Err(Error::NotSupported(None));
+            return Err(Error::NotSupported(Some(
+                "Channel count is out of range".into(),
+            )));
         }
 
         self.channel_count.set(value);
@@ -349,23 +365,33 @@ impl AudioNodeMethods<crate::DomTypeHolder> for AudioNode {
             EventTargetTypeId::AudioNode(AudioNodeTypeId::AudioDestinationNode)
                 if self.context.is_offline() =>
             {
-                return Err(Error::InvalidState(None));
+                return Err(Error::InvalidState(Some(
+                    "Cannot change channel count mode".into(),
+                )));
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::PannerNode)
                 if value == ChannelCountMode::Max =>
             {
-                return Err(Error::NotSupported(None));
+                return Err(Error::NotSupported(Some(
+                    "PannerNode channel count mode cannot be \"max\"".into(),
+                )));
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::AudioScheduledSourceNode(
                 AudioScheduledSourceNodeTypeId::StereoPannerNode,
             )) if value == ChannelCountMode::Max => {
-                return Err(Error::NotSupported(None));
+                return Err(Error::NotSupported(Some(
+                    "StereoPannerNode channel count mode cannot be \"max\"".into(),
+                )));
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::ChannelMergerNode) => {
-                return Err(Error::InvalidState(None));
+                return Err(Error::InvalidState(Some(
+                    "Cannot change channel count mode of a ChannelMergerNode".into(),
+                )));
             },
             EventTargetTypeId::AudioNode(AudioNodeTypeId::ChannelSplitterNode) => {
-                return Err(Error::InvalidState(None));
+                return Err(Error::InvalidState(Some(
+                    "Cannot change channel count mode of a ChannelSplitterNode".into(),
+                )));
             },
             // XXX We do not support any of the other AudioNodes with
             // constraints yet. Add more cases here as we add support
@@ -393,7 +419,9 @@ impl AudioNodeMethods<crate::DomTypeHolder> for AudioNode {
         if let EventTargetTypeId::AudioNode(AudioNodeTypeId::ChannelSplitterNode) =
             self.upcast::<EventTarget>().type_id()
         {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some(
+                "Cannot change channel interpretation of a ChannelSplitterNode".into(),
+            )));
         };
 
         self.channel_interpretation.set(value);

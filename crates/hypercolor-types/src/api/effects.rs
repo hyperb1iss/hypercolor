@@ -197,7 +197,7 @@ pub struct RescanResponse {
 /// Severity floor for `GET /api/v1/effects/console`.
 ///
 /// Raw console levels fold onto four floors: `trace` and `debug` are
-/// `debug`; `log`, `info`, and `dir` are `log`.
+/// `debug`; `log`, `info`, `dir`, and `table` are `log`.
 #[derive(
     Debug,
     Clone,
@@ -221,7 +221,7 @@ pub enum EffectConsoleLevel {
     /// Everything, including debug and trace output.
     #[default]
     Debug,
-    /// `console.log`, `info`, and `dir` output and above.
+    /// `console.log`, `info`, `dir`, and `table` output and above.
     Log,
     /// Warnings and errors.
     Warn,
@@ -252,7 +252,7 @@ pub struct EffectConsoleEntry {
     /// Wall-clock time the message was recorded, in Unix milliseconds.
     pub timestamp_ms: u64,
     /// Raw console level: `log`, `info`, `warn`, `error`, `debug`, `trace`,
-    /// or `dir`.
+    /// `dir`, or `table`.
     pub level: String,
     /// Message text. File locations in the effect's own page point at the
     /// author's source file and line, not the engine's runtime copy.

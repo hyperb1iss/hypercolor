@@ -7,8 +7,10 @@ use core::fmt;
 use std::cell::RefCell;
 use std::option::Option;
 use std::result::Result;
+use std::time::Instant;
 
-use crossbeam_channel::{Receiver, Select, SelectedOperation, SendError, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Select, SelectedOperation, SendError, Sender};
+#[cfg(feature = "devtools")]
 use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg};
 use embedder_traits::{EmbedderControlId, EmbedderControlResponse, ScriptToEmbedderChan};
 use net_traits::FetchResponseMsg;
@@ -27,6 +29,7 @@ use timers::TimerScheduler;
 #[cfg(feature = "webgpu")]
 use webgpu_traits::WebGPUMsg;
 
+use crate::dom::WorkletExecutor;
 use crate::dom::abstractworker::WorkerScriptMsg;
 use crate::dom::bindings::trace::CustomTraceable;
 use crate::dom::csp::Violation;
@@ -34,7 +37,6 @@ use crate::dom::dedicatedworkerglobalscope::DedicatedWorkerScriptMsg;
 use crate::dom::serviceworkerglobalscope::ServiceWorkerScriptMsg;
 use crate::dom::sharedworkerglobalscope::SharedWorkerScriptMsg;
 use crate::dom::worker::TrustedWorkerAddress;
-use crate::dom::{WorkletControl, WorkletExecutor};
 use crate::runtime::script_runtime::ScriptThreadEventCategory;
 use crate::tasks::task::TaskBox;
 use crate::tasks::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
@@ -46,6 +48,7 @@ use crate::tasks::task_source::TaskSourceName;
 pub(crate) enum MixedMessage {
     FromConstellation(ScriptThreadMessage),
     FromScript(MainThreadScriptMsg),
+    #[cfg(feature = "devtools")]
     FromDevtools(Box<DevtoolScriptControlMsg>),
     FromImageCache(ImageCacheResponseMessage),
     #[cfg(feature = "webgpu")]
@@ -57,6 +60,9 @@ impl MixedMessage {
     pub(crate) fn pipeline_id(&self) -> Option<PipelineId> {
         match self {
             MixedMessage::FromConstellation(inner_msg) => match inner_msg {
+                ScriptThreadMessage::UpdateServiceWorkerState { pipeline_id, .. } => {
+                    Some(*pipeline_id)
+                },
                 ScriptThreadMessage::StopDelayingLoadEventsMode(id) => Some(*id),
                 ScriptThreadMessage::SpawnPipeline(new_pipeline_info) => new_pipeline_info
                     .parent_info
@@ -86,12 +92,9 @@ impl MixedMessage {
                 ScriptThreadMessage::WebDriverScriptCommand(id, ..) => Some(*id),
                 ScriptThreadMessage::TickAllAnimations(..) => None,
                 ScriptThreadMessage::WebFontLoadFinished(id, ..) => Some(*id),
-                ScriptThreadMessage::DispatchIFrameLoadEvent {
-                    target: _,
-                    parent: id,
-                    child: _,
-                } => Some(*id),
+                ScriptThreadMessage::IFrameLoadFinished { parent: id, .. } => Some(*id),
                 ScriptThreadMessage::DispatchStorageEvent(id, ..) => Some(*id),
+                #[cfg(feature = "devtools")]
                 ScriptThreadMessage::ReportCSSError(id, ..) => Some(*id),
                 ScriptThreadMessage::Reload(id, ..) => Some(*id),
                 ScriptThreadMessage::PaintMetric(id, ..) => Some(*id),
@@ -113,6 +116,7 @@ impl MixedMessage {
                 ScriptThreadMessage::SetAccessibilityActive(..) => None,
                 ScriptThreadMessage::ForwardAccessibilityAction(id, _) => Some(*id),
                 ScriptThreadMessage::TriggerGarbageCollection => None,
+                ScriptThreadMessage::SetNetworkOnlineState(_) => None,
             },
             MixedMessage::FromScript(inner_msg) => match inner_msg {
                 MainThreadScriptMsg::Common(CommonScriptMsg::Task(_, _, pipeline_id, _)) => {
@@ -141,7 +145,9 @@ impl MixedMessage {
                     Some(response.pipeline_id)
                 },
             },
-            MixedMessage::FromDevtools(_) | MixedMessage::TimerFired => None,
+            #[cfg(feature = "devtools")]
+            MixedMessage::FromDevtools(_) => None,
+            MixedMessage::TimerFired => None,
             #[cfg(feature = "webgpu")]
             MixedMessage::FromWebGPUServer(..) => None,
         }
@@ -178,6 +184,7 @@ pub(crate) enum MainThreadScriptMsg {
 
 /// Common messages used to control the event loops in both the script, the worker, and the
 /// worklet
+#[derive(MallocSizeOf)]
 pub(crate) enum CommonScriptMsg {
     /// Requests that the script thread measure its memory usage. The results are sent back via the
     /// supplied channel.
@@ -185,7 +192,7 @@ pub(crate) enum CommonScriptMsg {
     /// Generic message that encapsulates event handling.
     Task(
         ScriptThreadEventCategory,
-        Box<dyn TaskBox>,
+        #[ignore_malloc_size_of = "dyn is difficult"] Box<dyn TaskBox>,
         Option<PipelineId>,
         TaskSourceName,
     ),
@@ -256,9 +263,7 @@ impl ScriptEventLoopSender {
                     ))
                     .map_err(|_| SendError(()))
             },
-            Self::Worklet(executor) => {
-                executor.send_control_message(WorkletControl::Common(message))
-            },
+            Self::Worklet(executor) => executor.send_common_message(message),
         }
     }
 }
@@ -299,22 +304,34 @@ impl ScriptEventLoopReceiver {
             },
         }
     }
+
+    /// Like [`Self::recv`], but gives up once `deadline` has passed without receiving a message.
+    pub(crate) fn recv_deadline(
+        &self,
+        deadline: Instant,
+    ) -> Result<CommonScriptMsg, RecvTimeoutError> {
+        match self {
+            Self::MainThread(receiver) => match receiver.recv_deadline(deadline)? {
+                MainThreadScriptMsg::Common(script_msg) => Ok(script_msg),
+                _ => panic!("unexpected main thread event message!"),
+            },
+            Self::SharedWorker(receiver) => match receiver.recv_deadline(deadline)? {
+                SharedWorkerScriptMsg::CommonWorker(WorkerScriptMsg::Common(message)) => {
+                    Ok(message)
+                },
+                _ => panic!("unexpected shared worker event message!"),
+            },
+            Self::DedicatedWorker(receiver) => match receiver.recv_deadline(deadline)? {
+                DedicatedWorkerScriptMsg::CommonWorker(_, WorkerScriptMsg::Common(message)) => {
+                    Ok(message)
+                },
+                _ => panic!("unexpected worker event message!"),
+            },
+        }
+    }
 }
 
 impl QueuedTaskConversion for MainThreadScriptMsg {
-    fn task_source_name(&self) -> Option<&TaskSourceName> {
-        let script_msg = match self {
-            MainThreadScriptMsg::Common(script_msg) => script_msg,
-            _ => return None,
-        };
-        match script_msg {
-            CommonScriptMsg::Task(_category, _boxed, _pipeline_id, task_source) => {
-                Some(task_source)
-            },
-            _ => None,
-        }
-    }
-
     fn pipeline_id(&self) -> Option<PipelineId> {
         let script_msg = match self {
             MainThreadScriptMsg::Common(script_msg) => script_msg,
@@ -417,9 +434,11 @@ pub(crate) struct ScriptThreadSenders {
 
     /// For providing instructions to an optional devtools server.
     #[no_trace]
+    #[cfg(feature = "devtools")]
     pub(crate) devtools_server_sender: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
 
     #[no_trace]
+    #[cfg(feature = "devtools")]
     pub(crate) devtools_client_to_script_thread_sender: GenericSender<DevtoolScriptControlMsg>,
 }
 
@@ -436,6 +455,7 @@ pub(crate) struct ScriptThreadReceivers {
     /// For receiving commands from an optional devtools server. Will be ignored if no such server
     /// exists. When devtools are not active this will be [`crossbeam_channel::never()`].
     #[no_trace]
+    #[cfg(feature = "devtools")]
     pub(crate) devtools_server_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
 
     /// Receiver to receive commands from optional WebGPU server. When there is no active
@@ -459,6 +479,7 @@ impl ScriptThreadReceivers {
         let task_recv = task_queue.select();
         let task_index = select.recv(task_recv);
         let constellation_index = select.recv(&self.constellation_receiver);
+        #[cfg(feature = "devtools")]
         let devtools_index = select.recv(&self.devtools_server_receiver);
         let image_cache_index = select.recv(&self.image_cache_receiver);
 
@@ -483,16 +504,19 @@ impl ScriptThreadReceivers {
                         .unwrap()
                         .unwrap(),
                 )
-            } else if index == devtools_index {
-                MixedMessage::FromDevtools(Box::new(
-                    operation
-                        .recv(&self.devtools_server_receiver)
-                        .unwrap()
-                        .unwrap(),
-                ))
             } else if index == image_cache_index {
                 MixedMessage::FromImageCache(operation.recv(&self.image_cache_receiver).unwrap())
             } else {
+                #[cfg(feature = "devtools")]
+                if index == devtools_index {
+                    return MixedMessage::FromDevtools(Box::new(
+                        operation
+                            .recv(&self.devtools_server_receiver)
+                            .unwrap()
+                            .unwrap(),
+                    ));
+                }
+
                 #[cfg(feature = "webgpu")]
                 {
                     debug_assert_eq!(index, webgpu_index);
@@ -536,6 +560,7 @@ impl ScriptThreadReceivers {
         if let Ok(message) = task_queue.take_tasks_and_recv(fully_active) {
             return MixedMessage::FromScript(message).into();
         }
+        #[cfg(feature = "devtools")]
         if let Ok(message) = self.devtools_server_receiver.try_recv() {
             return MixedMessage::FromDevtools(Box::new(message.unwrap())).into();
         }

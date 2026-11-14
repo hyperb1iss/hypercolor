@@ -20,7 +20,7 @@ class EffectConsoleEntry:
         Attributes:
             effect_name (str): Display name of the effect that printed it.
             level (str): Raw console level: `log`, `info`, `warn`, `error`, `debug`, `trace`,
-                or `dir`.
+                `dir`, or `table`.
             message (str): Message text. File locations in the effect's own page point at the
                 author's source file and line, not the engine's runtime copy.
             seq (int): Journal sequence number; strictly increasing within one daemon run.

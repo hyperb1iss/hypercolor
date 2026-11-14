@@ -15,6 +15,7 @@ use rustc_hash::FxHashMap;
 use script_bindings::callback::ExceptionHandling;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::structuredclone::StructuredData;
 use servo_base::id::{MessagePortId, MessagePortIndex};
 use servo_constellation_traits::TransformStreamData;
 
@@ -30,7 +31,6 @@ use crate::dom::bindings::conversions::ConversionResult;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::messageport::MessagePort;
@@ -41,7 +41,7 @@ use crate::dom::stream::countqueuingstrategy::{extract_high_water_mark, extract_
 use crate::dom::stream::transformstreamdefaultcontroller::TransformerType;
 use crate::dom::stream::underlyingsourcecontainer::UnderlyingSourceType;
 use crate::dom::stream::writablestream::create_writable_stream;
-use crate::dom::stream::writablestreamdefaultcontroller::UnderlyingSinkType;
+use crate::dom::stream::writablestreamdefaultcontroller::UnderlyingSinkTypeRef;
 use crate::dom::types::{PromiseNativeHandler, TransformStreamDefaultController, WritableStream};
 use crate::realms::enter_auto_realm;
 
@@ -525,7 +525,7 @@ impl TransformStream {
             global,
             writable_high_water_mark,
             writable_size_algorithm,
-            UnderlyingSinkType::Transform(Dom::from_ref(self), start_promise.to_traced()),
+            UnderlyingSinkTypeRef::Transform(self, start_promise),
         )?;
         self.writable.set(Some(&writable));
 
@@ -970,12 +970,12 @@ impl TransformStreamMethods<crate::DomTypeHolder> for TransformStream {
         };
 
         // If transformerDict["readableType"] exists, throw a RangeError exception.
-        if !transformer_dict.readableType.handle().is_undefined() {
+        if !transformer_dict.readableType.get().is_undefined() {
             return Err(Error::Range(c"readableType is set".to_owned()));
         }
 
         // If transformerDict["writableType"] exists, throw a RangeError exception.
-        if !transformer_dict.writableType.handle().is_undefined() {
+        if !transformer_dict.writableType.get().is_undefined() {
             return Err(Error::Range(c"writableType is set".to_owned()));
         }
 

@@ -23,6 +23,8 @@ use servo_constellation_traits::{
 
 use crate::dom::bindings::root::MutNullableDom;
 use crate::dom::focusevent::FocusEventType;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::node::focus::{FocusNavigationScopeOwner, FocusTrigger};
 use crate::dom::types::{Element, EventTarget, FocusEvent, HTMLElement, HTMLIFrameElement, Window};
 use crate::dom::{Document, Event, EventBubbles, EventCancelable, Node, NodeTraits};
@@ -168,6 +170,7 @@ pub(crate) struct DocumentFocusHandler {
     has_focus: Cell<bool>,
     /// <https://html.spec.whatwg.org/multipage/#sequential-focus-navigation-starting-point>
     sequential_focus_navigation_starting_point: MutNullableDom<Node>,
+    last_non_script_focus_triggered_by_keyboard: Cell<bool>,
 }
 
 impl DocumentFocusHandler {
@@ -178,6 +181,7 @@ impl DocumentFocusHandler {
             focus_sequence: Cell::new(FocusSequenceNumber::default()),
             has_focus: Cell::new(has_focus),
             sequential_focus_navigation_starting_point: Default::default(),
+            last_non_script_focus_triggered_by_keyboard: Cell::new(true),
         }
     }
 
@@ -194,15 +198,32 @@ impl DocumentFocusHandler {
         self.focused_area.borrow()
     }
 
+    /// <https://drafts.csswg.org/selectors/#the-focus-visible-pseudo>
+    fn focused_element_supports_keyboard_input(element: &Element) -> bool {
+        // > If the element supports keyboard input (such as an input element,
+        // > or any other element that would triggers a virtual keyboard
+        // > to be shown on focus if a physical keyboard were not present), indicate focus.
+        element.is::<HTMLTextAreaElement>() ||
+            element
+                .downcast::<HTMLInputElement>()
+                .is_some_and(|input| input.is_textual_or_password()) ||
+            element
+                .downcast::<HTMLElement>()
+                .is_some_and(|html_element| html_element.is_editing_host())
+    }
+
     /// Set the element that currently has focus and update the focus state for both the previously
     /// set element (if any) and the new one, as well as the new one. This will not do anything if
     /// the new element is the same as the previous one. Note that this *will not* fire any focus
     /// events. If that is necessary the [`DocumentFocusHandler::focus`] should be used.
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    pub(crate) fn set_focused_area(&self, new_focusable_area: FocusableArea) {
+    pub(crate) fn set_focused_area(&self, no_gc: &NoGC, new_focusable_area: FocusableArea) {
         if new_focusable_area == *self.focused_area.borrow() {
             return;
         }
+        self.window
+            .layout()
+            .set_force_accessibility_update_if_active();
 
         // From <https://html.spec.whatwg.org/multipage/#selector-focus>
         // > For the purposes of the CSS :focus pseudo-class, an element has the focus when:
@@ -215,20 +236,26 @@ impl DocumentFocusHandler {
         //
         // We are trying to accomplish the last requirement here, by walking up the tree and
         // marking each shadow host as focused.
-        fn recursively_set_focus_status(element: &Element, new_state: bool) {
-            element.set_focus_state(new_state);
+        fn recursively_set_focus_status(no_gc: &NoGC, element: &Element, new_state: bool) {
+            element.set_focus_state(no_gc, new_state);
 
             let Some(shadow_root) = element.containing_shadow_root() else {
                 return;
             };
-            recursively_set_focus_status(&shadow_root.Host(), new_state);
+            recursively_set_focus_status(no_gc, &shadow_root.Host(), new_state);
         }
 
         if let Some(previously_focused_element) = self.focused_area.borrow().element() {
-            recursively_set_focus_status(previously_focused_element, false);
+            recursively_set_focus_status(no_gc, previously_focused_element, false);
+            previously_focused_element.set_focusring_state(no_gc, false);
         }
         if let Some(newly_focused_element) = new_focusable_area.element() {
-            recursively_set_focus_status(newly_focused_element, true);
+            recursively_set_focus_status(no_gc, newly_focused_element, true);
+            if self.last_non_script_focus_triggered_by_keyboard.get() ||
+                Self::focused_element_supports_keyboard_input(newly_focused_element)
+            {
+                newly_focused_element.set_focusring_state(no_gc, true);
+            }
         }
 
         *self.focused_area.borrow_mut() = new_focusable_area;
@@ -271,7 +298,12 @@ impl DocumentFocusHandler {
 
     /// Reassign the focus context to the element that last requested focus during this
     /// transaction, or the document if no elements requested it.
-    pub(crate) fn focus(&self, cx: &mut JSContext, new_focus_target: &FocusableArea) {
+    pub(crate) fn focus(
+        &self,
+        cx: &mut JSContext,
+        new_focus_target: &FocusableArea,
+        focus_trigger: FocusTrigger,
+    ) {
         rooted!(&in(cx) let new_focus_chain = new_focus_target.focus_chain());
         rooted!(&in(cx) let old_focus_chain = self.current_focus_chain());
 
@@ -281,6 +313,7 @@ impl DocumentFocusHandler {
             old_focus_chain,
             new_focus_target,
             false, /* for_system_focus_change */
+            focus_trigger,
         );
 
         // Advertise the change in the focus chain.
@@ -339,6 +372,7 @@ impl DocumentFocusHandler {
         mut old_focus_chain: RootedGuard<'_, Vec<FocusableArea>>,
         new_focus_target: &FocusableArea,
         for_system_focus_change: bool,
+        focus_trigger: FocusTrigger,
     ) {
         let new_focus_chain_was_empty = new_focus_chain.is_empty();
 
@@ -365,13 +399,36 @@ impl DocumentFocusHandler {
         if old_focus_chain.is_empty() && new_focus_chain.is_empty() {
             return;
         }
+
+        // https://drafts.csswg.org/selectors/#the-focus-visible-pseudo
+        // > If the previously-focused element indicated focus,
+        // > and a script causes focus to move elsewhere,
+        // > indicate focus on the newly focused element.
+        // > Conversely, if the previously-focused element did not indicate focus,
+        // > and a script causes focus to move elsewhere,
+        // > don’t indicate focus on the newly focused element.
+        //
+        // We use `last_non_script_focus_triggered_by_keyboard` to track whether the last non-script
+        // trigger was a keyboard trigger.
+        match focus_trigger {
+            FocusTrigger::Keyboard => {
+                self.last_non_script_focus_triggered_by_keyboard.set(true);
+            },
+            FocusTrigger::Click => {
+                self.last_non_script_focus_triggered_by_keyboard.set(false);
+            },
+            FocusTrigger::Script => {
+                // Explicitly not updating anything
+            },
+        }
+
         // Although the "focusing steps" in the HTML specification say to wait until after firing
         // the "blur" event to change the currently focused area of the Document, browsers tend
         // to set it to the viewport before firing the "blur" event.
         //
         // See https://github.com/whatwg/html/issues/1569
         if !for_system_focus_change {
-            self.set_focused_area(FocusableArea::Viewport);
+            self.set_focused_area(cx.no_gc(), FocusableArea::Viewport);
         }
 
         // Step 2: For each entry entry in old chain, in order, run these substeps:
@@ -466,7 +523,7 @@ impl DocumentFocusHandler {
 
                 // Step 4.1.2: Designate entry as the focused area of the document.
                 if !for_system_focus_change {
-                    self.set_focused_area(entry.clone());
+                    self.set_focused_area(cx.no_gc(), entry.clone());
                 }
             }
 
@@ -569,7 +626,7 @@ impl DocumentFocusHandler {
         {
             return;
         }
-        self.focus(cx, &FocusableArea::Viewport);
+        self.focus(cx, &FocusableArea::Viewport, FocusTrigger::Script);
     }
 
     pub(crate) fn set_sequential_focus_navigation_starting_point(&self, node: &Node) {
@@ -713,7 +770,7 @@ impl DocumentFocusHandler {
         // a child `<iframe>` and within a Document. If no suitable focusable area can be found
         // when moving into an `<iframe>`, we want to focus the `<iframe>`'s viewport itself.
         if allow_focusing_viewport {
-            self.focus(cx, &FocusableArea::Viewport);
+            self.focus(cx, &FocusableArea::Viewport, FocusTrigger::Keyboard);
             return;
         }
 
@@ -750,9 +807,11 @@ impl DocumentFocusHandler {
                 ),
             );
         } else {
-            iframe_element
-                .upcast::<Node>()
-                .run_the_focusing_steps(cx, None, FocusTrigger::Other);
+            iframe_element.upcast::<Node>().run_the_focusing_steps(
+                cx,
+                None,
+                FocusTrigger::Keyboard,
+            );
         }
     }
 
@@ -834,6 +893,7 @@ impl DocumentFocusHandler {
             old_focus_chain,
             &focused_area,
             true, /* for_system_focus_change */
+            FocusTrigger::Script,
         );
     }
 }

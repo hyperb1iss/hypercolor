@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, RefCell, RefMut};
-use std::{f64, ptr};
+use std::ptr;
 
 use dom_struct::dom_struct;
 use embedder_traits::{EmbedderControlRequest, InputMethodRequest, RgbColor, SelectedFile};
@@ -20,20 +20,21 @@ use js::rust::{HandleObject, MutableHandleObject};
 use num_traits::ToPrimitive;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
-use script_bindings::domstring::parse_floating_point_number;
+use script_bindings::domstring::{TracedDOMString, parse_floating_point_number};
 use servo_base::generic_channel::GenericSender;
 use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
-use style::attr::AttrValue;
+use style::attr::{AttrValue, LengthOrPercentageOrAuto};
 use style::str::split_commas;
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
 use time::OffsetDateTime;
 use unicode_bidi::{BidiClass, bidi_class};
 use webdriver::error::ErrorStatus;
+use xml5ever::ns;
 
+use crate::dom::MoveContext;
 use crate::dom::activation::Activatable;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
-use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::FileListBinding::FileListMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMode;
 use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::HTMLInputElementMethods;
@@ -43,7 +44,6 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
-use crate::dom::compositionevent::CompositionEvent;
 use crate::dom::document::Document;
 use crate::dom::document_embedder_controls::ControlElement;
 use crate::dom::element::attributes::storage::AttrRef;
@@ -52,19 +52,18 @@ use crate::dom::event::Event;
 use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::filelist::FileList;
-use crate::dom::html::form_controls::input_type::radio_input_type::{
-    broadcast_radio_checked, perform_radio_group_validation,
+use crate::dom::html::form_controls::input_type::radio_input_type::perform_radio_group_validation;
+use crate::dom::html::form_controls::input_type::{
+    InputActivationType, InputType, ValueChangeEvents,
 };
-use crate::dom::html::form_controls::input_type::{InputActivationType, InputType};
 use crate::dom::html::form_controls::text_control::TextControlElement;
 use crate::dom::html::form_controls::text_input::{KeyReaction, Lines, TextInput};
 use crate::dom::html::htmldatalistelement::HTMLDataListElement;
 use crate::dom::html::htmlelement::HTMLElement;
-use crate::dom::html::htmlfieldsetelement::HTMLFieldSetElement;
 use crate::dom::html::htmlformelement::{
     FormControl, FormDatum, FormDatumValue, FormSubmitterElement, HTMLFormElement, SubmittedFrom,
 };
-use crate::dom::inputevent::HitTestResult;
+use crate::dom::input_type::radio_input_type::radio_group_iter;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
@@ -72,7 +71,7 @@ use crate::dom::node::{
 };
 use crate::dom::nodelist::NodeList;
 use crate::dom::text_input::EmbedderClipboardProvider;
-use crate::dom::types::{FocusEvent, MouseEvent};
+use crate::dom::types::FocusEvent;
 use crate::dom::validation::{Validatable, is_barred_by_datalist_ancestor};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
 use crate::realms::enter_auto_realm;
@@ -107,7 +106,7 @@ pub(crate) struct HTMLInputElement {
     /// textual input. This is cached so that it can be read during layout.
     is_textual_or_password: Cell<bool>,
 
-    placeholder: DomRefCell<DOMString>,
+    placeholder: DomRefCell<TracedDOMString>,
     size: Cell<u32>,
     maxlength: Cell<i32>,
     minlength: Cell<i32>,
@@ -117,13 +116,19 @@ pub(crate) struct HTMLInputElement {
     checkedness: Cell<bool>,
     /// <https://html.spec.whatwg.org/multipage/#concept-input-checked-dirty-flag>
     checked_changed: Cell<bool>,
+    /// <https://html.spec.whatwg.org/multipage/#concept-input-indeterminate>
+    /// The indeterminateness of an input is independent of its indeterminate element state.
+    /// Every input type can be indeterminate, but this adds the :indeterminate pseudo class only to
+    /// checkboxes. At the same time, radio boxes are matched by :indeterminate when no button in the
+    /// groupo is checked, which is fully independent of the interminateness of the input element.
+    indeterminateness: Cell<bool>,
     #[no_trace]
     text_input: DomRefCell<TextInput<EmbedderClipboardProvider>>,
     form_owner: MutNullableDom<HTMLFormElement>,
     labels_node_list: MutNullableDom<NodeList>,
     validity_state: MutNullableDom<ValidityState>,
     #[no_trace]
-    pending_webdriver_response: RefCell<Option<PendingWebDriverResponse>>,
+    pending_webdriver_response: RefCell<Option<Box<PendingWebDriverResponse>>>,
     /// <https://html.spec.whatwg.org/multipage/#concept-input-value-dirty-flag>
     value_dirty: Cell<bool>,
 
@@ -166,9 +171,10 @@ impl HTMLInputElement {
             ),
             input_type: DomRefCell::new(InputType::new_text()),
             is_textual_or_password: Cell::new(true),
-            placeholder: DomRefCell::new(DOMString::new()),
+            placeholder: DomRefCell::new(DOMString::new().traced()),
             checkedness: Cell::new(false),
             checked_changed: Cell::new(false),
+            indeterminateness: Cell::new(false),
             maxlength: Cell::new(DEFAULT_MAX_LENGTH),
             minlength: Cell::new(DEFAULT_MIN_LENGTH),
             size: Cell::new(DEFAULT_INPUT_SIZE),
@@ -893,6 +899,17 @@ impl HTMLInputElement {
                 }),
             );
     }
+
+    /// <https://html.spec.whatwg.org/multipage/#input-img-dimensions>
+    fn dimensions(&self, cx: &mut JSContext) -> (u32, u32) {
+        // Step 1. If input's type attribute is not in the Image Button state,
+        // then return a width of 0 and a height of 0. (In that case no image is available.)
+        let InputType::Image(ref image_input_type) = *self.input_type() else {
+            return Default::default();
+        };
+        // The rest of the steps
+        image_input_type.dimensions(cx, self)
+    }
 }
 
 impl<'dom> LayoutDom<'dom, HTMLInputElement> {
@@ -917,6 +934,39 @@ impl<'dom> LayoutDom<'dom, HTMLInputElement> {
         #[expect(unsafe_code)]
         let text_input = unsafe { element.text_input.borrow_for_layout() };
         text_input.selection_for_layout
+    }
+
+    pub(crate) fn width(self) -> LengthOrPercentageOrAuto {
+        self.image_button_dimension(&local_name!("width"))
+    }
+
+    pub(crate) fn height(self) -> LengthOrPercentageOrAuto {
+        self.image_button_dimension(&local_name!("height"))
+    }
+
+    pub(crate) fn margin_right_left(self) -> LengthOrPercentageOrAuto {
+        self.image_button_dimension(&local_name!("hspace"))
+    }
+
+    pub(crate) fn margin_top_bottom(self) -> LengthOrPercentageOrAuto {
+        self.image_button_dimension(&local_name!("vspace"))
+    }
+
+    fn image_button_dimension(self, name: &LocalName) -> LengthOrPercentageOrAuto {
+        let element = self.upcast::<Element>();
+        let is_image_button = element
+            .get_attr_val_for_layout(&ns!(), &local_name!("type"))
+            .is_some_and(|value| value.eq_ignore_ascii_case("image"));
+
+        if !is_image_button {
+            return LengthOrPercentageOrAuto::Auto;
+        }
+
+        element
+            .get_attr_for_layout(&ns!(), name)
+            .map(AttrValue::as_dimension)
+            .cloned()
+            .unwrap_or(LengthOrPercentageOrAuto::Auto)
     }
 }
 
@@ -994,16 +1044,14 @@ impl TextControlElement for HTMLInputElement {
             selection
         };
 
-        if let Some(text_input_widget) = self.input_type.borrow().as_specific().text_input_widget()
+        // If an already laid out text run exists, we only need to repaint. If it doesn't
+        // exist (or the layout box is for different element type), it indicates that
+        // layout is not up-to-date and layout will get the selection value from the DOM
+        // when it rebuilds the box tree.
+        if let Some(text_input_widget) = self.input_type.borrow().as_specific().text_input_widget() &&
+            text_input_widget.borrow().set_text_run_selection(selection)
         {
-            if text_input_widget.borrow().set_text_run_selection(selection) {
-                // Found an already laid out text run to update, so we only need to repaint:
-                self.owner_window().layout().set_needs_new_display_list();
-            } else {
-                // If there isn’t a text run, layout is pending to create it anyway
-            }
-        } else {
-            // Non-text input type. Would this be even called?
+            self.owner_window().layout().set_needs_new_display_list();
         }
     }
 
@@ -1011,7 +1059,7 @@ impl TextControlElement for HTMLInputElement {
         matches!(*self.input_type(), InputType::Password(_))
     }
 
-    fn placeholder_text<'a>(&'a self) -> Ref<'a, DOMString> {
+    fn placeholder_text<'a>(&'a self) -> Ref<'a, TracedDOMString> {
         self.placeholder.borrow()
     }
 
@@ -1024,7 +1072,7 @@ impl TextControlElement for HTMLInputElement {
     }
 
     fn handle_text_content_changed(&self, cx: &mut JSContext) {
-        self.update_placeholder_shown_state();
+        self.update_placeholder_shown_state(cx.no_gc());
         self.upcast::<Node>()
             .dirty(cx.no_gc(), NodeDamage::ContentOrHeritage);
     }
@@ -1034,11 +1082,12 @@ impl TextControlElement for HTMLInputElement {
             KeyReaction::TriggerDefaultAction => {
                 self.implicit_submission(cx);
             },
-            KeyReaction::DispatchInput(text, is_composing, input_type) => {
-                self.queue_input_event(text, is_composing, input_type);
+            KeyReaction::DispatchInput(text, input_type) => {
+                self.queue_input_event(text, input_type);
                 self.value_dirty.set(true);
-                self.update_placeholder_shown_state();
+                self.update_placeholder_shown_state(cx.no_gc());
                 self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+                self.maybe_update_shared_selection();
             },
             KeyReaction::RedrawSelection => {
                 self.maybe_update_shared_selection();
@@ -1078,6 +1127,35 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
 
     // https://html.spec.whatwg.org/multipage/#dom-fe-disabled
     make_bool_setter!(SetDisabled, "disabled");
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-input-width>
+    fn Width(&self, cx: &mut JSContext) -> u32 {
+        // > The width and height getter steps are to return the
+        // > respective component of the result of determining the dimensions of this.
+        self.dimensions(cx).0
+    }
+
+    // <https://html.spec.whatwg.org/multipage/#dom-input-width>
+    make_dimension_uint_setter!(SetWidth, "width");
+
+    // <https://html.spec.whatwg.org/multipage/#dom-input-height>
+    fn Height(&self, cx: &mut JSContext) -> u32 {
+        // > The width and height getter steps are to return the
+        // > respective component of the result of determining the dimensions of this.
+        self.dimensions(cx).1
+    }
+    // <https://html.spec.whatwg.org/multipage/#dom-input-height>
+    make_dimension_uint_setter!(SetHeight, "height");
+
+    // https://html.spec.whatwg.org/multipage/#dom-input-hspace
+    make_dimension_uint_getter!(Hspace, "hspace");
+    // https://html.spec.whatwg.org/multipage/#dom-input-hspace
+    make_dimension_uint_setter!(SetHspace, "hspace");
+
+    // https://html.spec.whatwg.org/multipage/#dom-input-vspace
+    make_dimension_uint_getter!(Vspace, "vspace");
+    // https://html.spec.whatwg.org/multipage/#dom-input-vspace
+    make_dimension_uint_setter!(SetVspace, "vspace");
 
     /// <https://html.spec.whatwg.org/multipage/#dom-fae-form>
     fn GetForm(&self) -> Option<DomRoot<HTMLFormElement>> {
@@ -1192,7 +1270,7 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
                     // attribute's current state defines one.
                     self.sanitize_value(&mut value);
 
-                    let mut text_input = self.text_input.borrow_mut();
+                    let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
 
                     // Step 5. If the element's value (after applying the value sanitization algorithm)
                     // is different from oldValue, and the element has a text entry cursor position,
@@ -1209,7 +1287,7 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
                 // Additionally, update the placeholder shown state in another
                 // scope to prevent the borrow checker issue. This is normally
                 // being done in the attributed mutated.
-                self.update_placeholder_shown_state();
+                self.update_placeholder_shown_state(cx.no_gc());
                 self.maybe_update_shared_selection();
             },
             ValueMode::Default | ValueMode::DefaultOn => {
@@ -1444,15 +1522,13 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-input-indeterminate>
     fn Indeterminate(&self) -> bool {
-        self.upcast::<Element>()
-            .state()
-            .contains(ElementState::INDETERMINATE)
+        self.indeterminateness.get()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-input-indeterminate>
-    fn SetIndeterminate(&self, _cx: &mut JSContext, val: bool) {
-        self.upcast::<Element>()
-            .set_state(ElementState::INDETERMINATE, val)
+    fn SetIndeterminate(&self, cx: &mut JSContext, val: bool) {
+        self.indeterminateness.set(val);
+        self.update_indeterminate_state(cx.no_gc());
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-lfe-labels>
@@ -1521,32 +1597,38 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
-    fn SetRangeText(&self, replacement: DOMString) -> ErrorResult {
-        self.set_dom_range_text(replacement, None, None, Default::default())
+    fn SetRangeText(&self, cx: &mut JSContext, replacement: DOMString) -> ErrorResult {
+        self.set_dom_range_text(cx, replacement, None, None, Default::default())?;
+        self.value_changed(cx);
+        Ok(())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
     fn SetRangeText_(
         &self,
+        cx: &mut JSContext,
         replacement: DOMString,
         start: u32,
         end: u32,
         selection_mode: SelectionMode,
     ) -> ErrorResult {
         self.set_dom_range_text(
+            cx,
             replacement,
             Some(Utf16CodeUnits::from(start)),
             Some(Utf16CodeUnits::from(end)),
             selection_mode,
-        )
+        )?;
+        self.value_changed(cx);
+        Ok(())
     }
 
     /// Select the files based on filepaths passed in, enabled by
     /// `dom_testing_html_input_element_select_files_enabled`, used for test purpose.
-    fn SelectFiles(&self, paths: Vec<DOMString>) {
+    fn SelectFiles(&self, cx: &mut JSContext, paths: Vec<DOMString>) {
         self.input_type()
             .as_specific()
-            .select_files(self, Some(paths));
+            .select_files(cx, self, Some(paths));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-input-stepup>
@@ -1616,10 +1698,12 @@ impl HTMLInputElement {
             InputType::Radio(_) | InputType::Checkbox(_) if !self.Checked() => {
                 return (vec![], true);
             },
-
-            // Step 5.2: If the field element is an input element whose type attribute is in the Image Button state:
-            InputType::Image(_) => return (vec![], true), // Unimplemented
-
+            InputType::Image(_) => {
+                // Step 5.2.1 If the field element is not submitter, then continue.
+                if !is_submitter {
+                    return (vec![], true);
+                }
+            },
             // Step 5.4: If either the field element does not have a name attribute specified, or its name attribute's value is the empty string, then continue.
             _ => {
                 if name.is_empty() {
@@ -1629,6 +1713,41 @@ impl HTMLInputElement {
         }
 
         let datums = match *self.input_type() {
+            // Step 5.2: If the field element is an input element whose type attribute is in the Image Button state:
+            InputType::Image(ref image_input_type) => {
+                // Step 5.2.2: If the field element has a name attribute specified and its value is not
+                // the empty string, let name be that value followed by U+002E (.); otherwise, let name
+                // be the empty string.
+                // Note: step 5.2.1 is handled above.
+                let prefix = if name.is_empty() {
+                    String::new()
+                } else {
+                    format!("{name}.")
+                };
+
+                // Step 5.2.3: Let namex be the concatenation of name and "x", and let namey be the
+                // concatenation of name and "y".
+                let name_x: DOMString = format!("{prefix}x").into();
+                let name_y: DOMString = format!("{prefix}y").into();
+
+                // Step 5.2.4: The field element's selected coordinate consists of an x-component and a
+                // y-component. Create an entry with namex and the x-component, and an entry with namey
+                // and the y-component, and append them to entry list.
+                let coordinate = image_input_type.selected_coordinate();
+
+                vec![
+                    FormDatum {
+                        name: name_x,
+                        ty: ty.clone(),
+                        value: FormDatumValue::String(coordinate.x.to_string().into()),
+                    },
+                    FormDatum {
+                        name: name_y,
+                        ty,
+                        value: FormDatumValue::String(coordinate.y.to_string().into()),
+                    },
+                ]
+            },
             // Step 5.7: Otherwise, if the field element is an input element whose type attribute is in the Checkbox state or the Radio Button state:
             InputType::Checkbox(_) | InputType::Radio(_) => {
                 // Step 5.7.1: If the field element has a value attribute specified, then let value be the value of that attribute; otherwise, let value be the string "on".
@@ -1712,30 +1831,59 @@ impl HTMLInputElement {
     }
 
     fn update_checkedness(&self, cx: &mut JSContext, checked: bool, dirty: bool) {
-        self.checkedness.set(checked);
-        self.update_checked_state();
+        let previously_checked = self.checkedness.replace(checked);
+        self.update_checked_state(cx.no_gc());
 
         if dirty {
             self.checked_changed.set(true);
         }
 
-        if matches!(*self.input_type(), InputType::Radio(_)) && checked {
-            broadcast_radio_checked(cx, self, self.radio_group_name().as_ref());
-        }
+        self.input_type()
+            .as_specific()
+            .update_checkedness(cx, self, checked, previously_checked);
 
         self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#selector-checked>
-    fn update_checked_state(&self) {
+    fn update_checked_state(&self, no_gc: &NoGC) {
         // input elements whose type attribute is in the Checkbox state and whose checkedness state is true
         // input elements whose type attribute is in the Radio Button state and whose checkedness state is true
         let should_checked_state_apply = matches!(
             *self.input_type(),
             InputType::Checkbox(_) | InputType::Radio(_)
         ) && self.Checked();
-        self.upcast::<Element>()
-            .set_state(ElementState::CHECKED, should_checked_state_apply);
+        self.upcast::<Element>().set_state(
+            no_gc,
+            ElementState::CHECKED,
+            should_checked_state_apply,
+        );
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#selector-indeterminate>
+    pub(crate) fn update_indeterminate_state(&self, no_gc: &NoGC) {
+        // > The :indeterminate pseudo-class must match any element falling into one of the following categories:
+        // > - input elements whose type attribute is in the Checkbox state and whose indeterminateness is true
+        // > - input elements whose type attribute is in the Radio Button state and whose radio button
+        // >   group contains no input elements whose checkedness state is true.
+        let should_indeterminate_state_apply = match *self.input_type() {
+            InputType::Checkbox(_) => self.Indeterminate(),
+            InputType::Radio(_) => {
+                let group = self.radio_group_name();
+                let form = self.form_owner();
+                let root = self
+                    .upcast::<Node>()
+                    .GetRootNode(&GetRootNodeOptions::empty());
+                radio_group_iter(self, group.as_ref(), form.as_deref(), &root)
+                    .all(|elem| !elem.Checked())
+            },
+            _ => false,
+        };
+        self.upcast::<Element>().set_state(
+            no_gc,
+            ElementState::INDETERMINATE,
+            should_indeterminate_state_apply,
+        );
     }
 
     /// <https://html.spec.whatwg.org/multipage/#concept-fe-mutable>
@@ -1760,7 +1908,9 @@ impl HTMLInputElement {
         // We set the value and sanitize all in one go.
         let mut value = self.DefaultValue();
         self.sanitize_value(&mut value);
-        self.text_input.borrow_mut().set_content(value);
+        self.text_input
+            .safe_borrow_mut(cx.no_gc())
+            .set_content(value);
 
         let input_type = &*self.input_type();
         if matches!(input_type, InputType::Radio(_) | InputType::Checkbox(_)) {
@@ -1784,7 +1934,9 @@ impl HTMLInputElement {
         self.value_dirty.set(false);
         self.checked_changed.set(false);
         // Step 2. Set value to empty string.
-        self.text_input.borrow_mut().set_content(DOMString::new());
+        self.text_input
+            .safe_borrow_mut(cx.no_gc())
+            .set_content(DOMString::new());
         // Step 3. Set checkedness based on presence of content attribute.
         self.update_checkedness(cx, self.DefaultChecked(), false);
         // Step 4. Empty selected files
@@ -1797,7 +1949,7 @@ impl HTMLInputElement {
         // Step 5. Invoke the value sanitization algorithm iff the type attribute's
         // current state defines one.
         {
-            let mut text_input = self.text_input.borrow_mut();
+            let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
             let mut value = text_input.get_content();
             self.sanitize_value(&mut value);
             text_input.set_content(value);
@@ -1806,36 +1958,38 @@ impl HTMLInputElement {
         self.value_changed(cx);
     }
 
-    fn update_placeholder_shown_state(&self) {
+    fn update_placeholder_shown_state(&self, no_gc: &NoGC) {
         if !self.input_type().is_textual_or_password() {
-            self.upcast::<Element>().set_placeholder_shown_state(false);
+            self.upcast::<Element>()
+                .set_placeholder_shown_state(no_gc, false);
         } else {
             let has_placeholder = !self.placeholder.borrow().is_empty();
             let has_value = !self.text_input.borrow().is_empty();
             self.upcast::<Element>()
-                .set_placeholder_shown_state(has_placeholder && !has_value);
+                .set_placeholder_shown_state(no_gc, has_placeholder && !has_value);
         }
     }
 
     pub(crate) fn select_files_for_webdriver(
         &self,
+        cx: &mut JSContext,
         test_paths: Vec<DOMString>,
         response_sender: GenericSender<Result<bool, ErrorStatus>>,
     ) {
         let mut stored_sender = self.pending_webdriver_response.borrow_mut();
         assert!(stored_sender.is_none());
 
-        *stored_sender = Some(PendingWebDriverResponse {
+        *stored_sender = Some(Box::new(PendingWebDriverResponse {
             response_sender,
             expected_file_count: test_paths.len(),
-        });
+        }));
 
         self.input_type()
             .as_specific()
-            .select_files(self, Some(test_paths));
+            .select_files(cx, self, Some(test_paths));
     }
 
-    pub(crate) fn take_pending_webdriver_response(&self) -> Option<PendingWebDriverResponse> {
+    pub(crate) fn take_pending_webdriver_response(&self) -> Option<Box<PendingWebDriverResponse>> {
         self.pending_webdriver_response.borrow_mut().take()
     }
 
@@ -1899,6 +2053,7 @@ impl HTMLInputElement {
                     // lazily test for > 1 submission-blocking inputs
                     return;
                 }
+
                 form.submit(
                     cx,
                     SubmittedFrom::NotFromForm,
@@ -1937,11 +2092,39 @@ impl HTMLInputElement {
     fn value_changed(&self, cx: &mut JSContext) {
         self.maybe_update_shared_selection();
         self.update_related_validity_states(cx);
-        self.input_type().as_specific().update_shadow_tree(cx, self);
+        if self.upcast::<Node>().is_connected() {
+            self.input_type().as_specific().update_shadow_tree(cx, self);
+        }
+    }
+
+    /// Fire the events a value change asks for, in spec order.
+    ///
+    /// Shared function for the "fire `input`, then fire `change`" pair that several input
+    /// types need after a user interaction changed this element's value.
+    pub(crate) fn fire_value_change_events(&self, cx: &mut JSContext, events: ValueChangeEvents) {
+        let target = self.upcast::<EventTarget>();
+
+        // Fire an event named input at the element with the bubbles and composed attributes
+        // initialized to true.
+        if events.contains(ValueChangeEvents::Input) {
+            target.fire_event_with_params(
+                cx,
+                atom!("input"),
+                EventBubbles::Bubbles,
+                EventCancelable::NotCancelable,
+                EventComposed::Composed,
+            );
+        }
+
+        // Fire an event named change at the element with the bubbles attribute initialized
+        // to true.
+        if events.contains(ValueChangeEvents::Change) {
+            target.fire_bubbling_event(cx, atom!("change"));
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#show-the-picker,-if-applicable>
-    pub(crate) fn show_the_picker_if_applicable(&self) {
+    pub(crate) fn show_the_picker_if_applicable(&self, cx: &mut JSContext) {
         // FIXME: Implement most of this algorithm
 
         // Step 2. If element is not mutable, then return.
@@ -1953,7 +2136,7 @@ impl HTMLInputElement {
         // in the way it normally would when the user interacts with the control.
         self.input_type()
             .as_specific()
-            .show_the_picker_if_applicable(self);
+            .show_the_picker_if_applicable(cx, self);
     }
 
     pub(crate) fn handle_color_picker_response(
@@ -1979,7 +2162,11 @@ impl HTMLInputElement {
     fn handle_focus_event(&self, cx: &mut JSContext, event: &FocusEvent) {
         let event_type = event.upcast::<Event>().type_();
         let document = self.owner_document();
-        if *event_type == *"blur" {
+
+        // This hides the control if the input element has lost focus, but doesn't do this for
+        // file selection dialogs, which are often modal dialogs that may be represented as
+        // separate windows.
+        if *event_type == *"blur" && !matches!(&*self.input_type(), InputType::File(..)) {
             document
                 .embedder_controls()
                 .hide_embedder_control(self.upcast());
@@ -2000,6 +2187,7 @@ impl HTMLInputElement {
             }
 
             document.embedder_controls().show_embedder_control(
+                cx,
                 ControlElement::Ime(Dom::from_ref(self.upcast())),
                 EmbedderControlRequest::InputMethod(InputMethodRequest {
                     input_method_type,
@@ -2034,22 +2222,10 @@ impl VirtualMethods for HTMLInputElement {
 
         match *attr.local_name() {
             local_name!("disabled") => {
-                let disabled_state = match mutation {
-                    AttributeMutation::Set(None) => true,
-                    AttributeMutation::Set(Some(_)) => {
-                        // Input was already disabled before.
-                        return;
-                    },
-                    AttributeMutation::Removed => false,
-                };
-                let el = self.upcast::<Element>();
-                el.set_disabled_state(disabled_state);
-                el.set_enabled_state(!disabled_state);
-                el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
-
+                let element = self.upcast::<Element>();
                 if self.input_type().is_textual() {
-                    let read_write = !(self.ReadOnly() || el.disabled_state());
-                    el.set_read_write_state(read_write);
+                    let read_write = !(self.ReadOnly() || element.disabled_state());
+                    element.set_read_write_state(cx.no_gc(), read_write);
                 }
             },
             local_name!("checked") if !self.checked_changed.get() => {
@@ -2068,6 +2244,8 @@ impl VirtualMethods for HTMLInputElement {
                 self.size.set(size.unwrap_or(DEFAULT_INPUT_SIZE));
             },
             local_name!("type") => {
+                let element = self.upcast::<Element>();
+
                 match mutation {
                     AttributeMutation::Set(previous_value) => {
                         // https://html.spec.whatwg.org/multipage/#input-type-change
@@ -2082,17 +2260,16 @@ impl VirtualMethods for HTMLInputElement {
                         let (old_value_mode, old_idl_value) = (self.value_mode(), self.Value());
                         let previously_selectable = self.selection_api_applies();
 
-                        *self.input_type.borrow_mut() =
+                        *self.input_type.safe_borrow_mut(cx.no_gc()) =
                             InputType::new_from_atom(attr.value().as_atom());
                         self.is_textual_or_password
                             .set(self.input_type().is_textual_or_password());
 
-                        let element = self.upcast::<Element>();
                         if self.input_type().is_textual() {
                             let read_write = !(self.ReadOnly() || element.disabled_state());
-                            element.set_read_write_state(read_write);
+                            element.set_read_write_state(cx.no_gc(), read_write);
                         } else {
-                            element.set_read_write_state(false);
+                            element.set_read_write_state(cx.no_gc(), false);
                         }
 
                         let new_value_mode = self.value_mode();
@@ -2133,7 +2310,7 @@ impl VirtualMethods for HTMLInputElement {
                         self.input_type().as_specific().signal_type_change(cx, self);
 
                         // Step 6
-                        let mut text_input = self.text_input.borrow_mut();
+                        let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
                         let mut value = text_input.get_content();
                         self.sanitize_value(&mut value);
                         text_input.set_content(value);
@@ -2157,22 +2334,26 @@ impl VirtualMethods for HTMLInputElement {
                     },
                     AttributeMutation::Removed => {
                         self.input_type().as_specific().signal_type_change(cx, self);
-                        *self.input_type.borrow_mut() = InputType::new_text();
+                        *self.input_type.safe_borrow_mut(cx.no_gc()) = InputType::new_text();
                         self.is_textual_or_password
                             .set(self.input_type().is_textual_or_password());
 
                         let element = self.upcast::<Element>();
                         let read_write = !(self.ReadOnly() || element.disabled_state());
-                        element.set_read_write_state(read_write);
+                        element.set_read_write_state(cx.no_gc(), read_write);
                     },
                 }
 
-                self.update_placeholder_shown_state();
+                self.update_placeholder_shown_state(cx.no_gc());
                 self.input_type()
                     .as_specific()
                     .update_placeholder_contents(cx, self);
 
-                self.update_checked_state();
+                self.update_checked_state(cx.no_gc());
+                self.update_indeterminate_state(cx.no_gc());
+                if element.focus_state() {
+                    element.set_focusring_state(cx.no_gc(), self.is_textual_or_password());
+                }
             },
             local_name!("value") if !self.value_dirty.get() => {
                 // This is only run when the `value` or `defaultValue` attribute is set. It
@@ -2182,12 +2363,14 @@ impl VirtualMethods for HTMLInputElement {
                 let mut value = value.map_or(DOMString::new(), DOMString::from);
 
                 self.sanitize_value(&mut value);
-                self.text_input.borrow_mut().set_content(value);
-                self.update_placeholder_shown_state();
+                self.text_input
+                    .safe_borrow_mut(cx.no_gc())
+                    .set_content(value);
+                self.update_placeholder_shown_state(cx.no_gc());
             },
             local_name!("maxlength") if self.does_minmaxlength_apply() => match *attr.value() {
                 AttrValue::Int(_, value) => {
-                    let mut text_input = self.text_input.borrow_mut();
+                    let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
 
                     if value < 0 {
                         text_input.set_max_length(None);
@@ -2199,7 +2382,7 @@ impl VirtualMethods for HTMLInputElement {
             },
             local_name!("minlength") if self.does_minmaxlength_apply() => match *attr.value() {
                 AttrValue::Int(_, value) => {
-                    let mut text_input = self.text_input.borrow_mut();
+                    let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
 
                     if value < 0 {
                         text_input.set_min_length(None);
@@ -2211,14 +2394,14 @@ impl VirtualMethods for HTMLInputElement {
             },
             local_name!("placeholder") => {
                 {
-                    let mut placeholder = self.placeholder.borrow_mut();
+                    let mut placeholder = self.placeholder.safe_borrow_mut(cx.no_gc());
                     placeholder.clear();
                     if let AttributeMutation::Set(_) = mutation {
                         placeholder
                             .extend(attr.value().chars().filter(|&c| c != '\n' && c != '\r'));
                     }
                 }
-                self.update_placeholder_shown_state();
+                self.update_placeholder_shown_state(cx.no_gc());
                 self.input_type()
                     .as_specific()
                     .update_placeholder_contents(cx, self);
@@ -2228,10 +2411,10 @@ impl VirtualMethods for HTMLInputElement {
                     let el = self.upcast::<Element>();
                     match mutation {
                         AttributeMutation::Set(_) => {
-                            el.set_read_write_state(false);
+                            el.set_read_write_state(cx.no_gc(), false);
                         },
                         AttributeMutation::Removed => {
-                            el.set_read_write_state(!el.disabled_state());
+                            el.set_read_write_state(cx.no_gc(), !el.disabled_state());
                         },
                     }
                 }
@@ -2266,6 +2449,10 @@ impl VirtualMethods for HTMLInputElement {
             local_name!("minlength") => {
                 AttrValue::from_limited_i32(value.into(), DEFAULT_MIN_LENGTH)
             },
+            local_name!("width") |
+            local_name!("height") |
+            local_name!("hspace") |
+            local_name!("vspace") => AttrValue::from_dimension(value.into()),
             _ => self
                 .super_type()
                 .unwrap()
@@ -2274,38 +2461,32 @@ impl VirtualMethods for HTMLInputElement {
     }
 
     fn bind_to_tree(&self, cx: &mut JSContext, context: &BindContext) {
-        if let Some(s) = self.super_type() {
-            s.bind_to_tree(cx, context);
+        if let Some(super_type) = self.super_type() {
+            super_type.bind_to_tree(cx, context);
         }
-        self.upcast::<Element>()
-            .check_ancestors_disabled_state_for_form_control(cx.no_gc());
-
         self.input_type()
             .as_specific()
-            .bind_to_tree(cx, self, context);
-
+            .run_shared_bind_to_tree_or_moving_steps(cx, self);
         self.value_changed(cx);
+    }
+
+    fn moving_steps(&self, cx: &mut JSContext, context: &MoveContext) {
+        if let Some(super_type) = self.super_type() {
+            super_type.moving_steps(cx, context);
+        }
+        self.input_type()
+            .as_specific()
+            .run_shared_bind_to_tree_or_moving_steps(cx, self);
     }
 
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
         // Always attempt to hide IME when unbinding input elements from the tree.
-        self.owner_document()
+        self.owner_document_unrooted(cx.no_gc())
             .embedder_controls()
             .hide_embedder_control(self.upcast());
 
         let form_owner = self.form_owner();
         self.super_type().unwrap().unbind_from_tree(cx, context);
-
-        let node = self.upcast::<Node>();
-        let el = self.upcast::<Element>();
-        if node
-            .ancestors()
-            .any(|ancestor| ancestor.is::<HTMLFieldSetElement>())
-        {
-            el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
-        } else {
-            el.check_disabled_attribute();
-        }
 
         self.input_type()
             .as_specific()
@@ -2321,68 +2502,21 @@ impl VirtualMethods for HTMLInputElement {
     // https://w3c.github.io/uievents/#default-action
     /// <https://dom.spec.whatwg.org/#action-versus-occurance>
     fn handle_event(&self, cx: &mut JSContext, event: &Event) {
-        if (event.type_() == atom!("compositionstart") ||
-            event.type_() == atom!("compositionupdate") ||
-            event.type_() == atom!("compositionend")) &&
-            self.input_type().is_textual_or_password() &&
-            event.IsTrusted()
-        {
-            if let Some(compositionevent) = event.downcast::<CompositionEvent>() {
-                if event.type_() == atom!("compositionend") {
-                    let action = self
-                        .text_input
-                        .borrow_mut()
-                        .handle_compositionend(compositionevent);
-                    self.handle_key_reaction(cx, action);
-                    self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
-                    self.update_placeholder_shown_state();
-                } else if event.type_() == atom!("compositionupdate") {
-                    let action = self
-                        .text_input
-                        .borrow_mut()
-                        .handle_compositionupdate(compositionevent);
-                    self.handle_key_reaction(cx, action);
-                    self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
-                    self.update_placeholder_shown_state();
-                } else if event.type_() == atom!("compositionstart") {
-                    // Update placeholder state when composition starts
-                    self.update_placeholder_shown_state();
-                }
-                event.mark_as_handled();
-            }
-        } else if let Some(event) = event.downcast::<FocusEvent>() {
+        if let Some(event) = event.downcast::<FocusEvent>() {
             self.handle_focus_event(cx, event)
         }
 
+        let value_change_events = self
+            .input_type()
+            .as_specific()
+            .handle_event(cx, self, event);
+
         self.value_changed(cx);
+
+        self.fire_value_change_events(cx, value_change_events);
 
         if let Some(super_type) = self.super_type() {
             super_type.handle_event(cx, event);
-        }
-    }
-
-    fn handle_mousedown_event(
-        &self,
-        cx: &mut JSContext,
-        mouse_event: &MouseEvent,
-        hit_test_result: &HitTestResult,
-    ) {
-        // Only respond to mouse events if we are displayed as text input or a password. If the
-        // placeholder is displayed, also don't do any interactive mouse event handling.
-        if !self.input_type().is_textual_or_password() || self.text_input.borrow().is_empty() {
-            if let Some(super_type) = self.super_type() {
-                super_type.handle_mousedown_event(cx, mouse_event, hit_test_result);
-            }
-            return;
-        }
-
-        if self.text_input.borrow_mut().handle_mousedown_event(
-            self.upcast(),
-            mouse_event,
-            hit_test_result,
-        ) {
-            self.maybe_update_shared_selection();
-            mouse_event.upcast::<Event>().mark_as_handled();
         }
     }
 
@@ -2399,16 +2533,30 @@ impl VirtualMethods for HTMLInputElement {
         }
         let elem = copy.downcast::<HTMLInputElement>().unwrap();
         elem.value_dirty.set(self.value_dirty.get());
-        elem.checkedness.set(self.Checked());
+        elem.update_checkedness(cx, self.Checked(), false);
         elem.checked_changed.set(self.checked_changed.get());
         // The spec does not mention cloning the indeterminate state, but other browsers
         // do it and there are WPT tests expecting cloned nodes to preserve this attribute.
-        elem.upcast::<Element>()
-            .set_state(ElementState::INDETERMINATE, self.Indeterminate());
+        elem.SetIndeterminate(cx, self.Indeterminate());
         elem.text_input
-            .borrow_mut()
+            .safe_borrow_mut(cx.no_gc())
             .set_content(self.text_input.borrow().get_content());
         self.value_changed(cx);
+    }
+
+    fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
+        match attr.local_name() {
+            &local_name!("width") |
+            &local_name!("height") |
+            &local_name!("hspace") |
+            &local_name!("vspace") => {
+                matches!(*self.input_type(), InputType::Image(_))
+            },
+            _ => self
+                .super_type()
+                .unwrap()
+                .attribute_affects_presentational_hints(attr),
+        }
     }
 }
 
@@ -2417,8 +2565,9 @@ impl FormControl for HTMLInputElement {
         self.form_owner.get()
     }
 
-    fn set_form_owner(&self, _cx: &mut JSContext, form: Option<&HTMLFormElement>) {
+    fn set_form_owner(&self, cx: &mut JSContext, form: Option<&HTMLFormElement>) {
         self.form_owner.set(form);
+        self.input_type().as_specific().form_owner_changed(cx, self);
     }
 
     fn to_html_element(&self) -> &HTMLElement {
@@ -2569,7 +2718,9 @@ impl Activatable for HTMLInputElement {
     fn activation_behavior(&self, cx: &mut JSContext, event: &Event, target: &EventTarget) {
         // Step 1. If element is not mutable, and element's type attribute is
         // neither in the Checkbox nor in the Radio state, then return.
-        debug_assert!(self.is_instance_activatable());
+        if !self.is_instance_activatable() {
+            return;
+        }
 
         // Step 2. Run element's input activation behavior, if any, and do nothing otherwise.
         let input_activation_type = {

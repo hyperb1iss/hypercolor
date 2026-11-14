@@ -11,11 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
+#[cfg(feature = "devtools")]
 use devtools_traits::DevtoolScriptControlMsg;
 use dom_struct::dom_struct;
 use fonts::FontContext;
 use js::context::JSContext;
-use js::jsapi::{Heap, JSObject};
+use js::jsapi::JSObject;
 use js::jsval::UndefinedValue;
 use js::rust::{CustomAutoRooterGuard, HandleValue};
 use net_traits::blob_url_store::UrlWithBlobClaim;
@@ -49,7 +50,6 @@ use crate::dom::bindings::codegen::Bindings::WorkerBinding::{WorkerOptions, Work
 use crate::dom::bindings::error::{Error, ErrorInfo, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::num::Finite;
-use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
@@ -62,16 +62,19 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlscriptelement::Script;
 use crate::dom::messageevent::MessageEvent;
+#[cfg(feature = "devtools")]
 use crate::dom::types::DebuggerGlobalScope;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::worker::{TrustedWorkerAddress, Worker};
-use crate::dom::workerglobalscope::{ScriptFetchContext, WorkerGlobalScope};
+use crate::dom::workerglobalscope::{
+    ScriptFetchContext, WorkerDevtoolsControlMsg, WorkerGlobalScope,
+};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::modules::script_module::fetch_a_module_script_graph;
 use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::ScriptThreadEventCategory::WorkerEvent;
 use crate::runtime::script_runtime::{IntroductionType, Runtime, ThreadSafeJSContext};
+use crate::scripting::script_module::fetch_a_module_script_graph;
 use crate::tasks::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
 use crate::tasks::task_source::TaskSourceName;
 
@@ -109,8 +112,10 @@ pub(crate) enum DedicatedWorkerControlMsg {
     /// Shutdown the worker.
     Exit,
     AnimationFrameProviderUnsupported,
+    SetNetworkOnlineState(bool),
 }
 
+#[derive(MallocSizeOf)]
 pub(crate) enum DedicatedWorkerScriptMsg {
     /// Standard message from a worker.
     CommonWorker(TrustedWorkerAddress, WorkerScriptMsg),
@@ -120,6 +125,7 @@ pub(crate) enum DedicatedWorkerScriptMsg {
 
 pub(crate) enum MixedMessage {
     Worker(DedicatedWorkerScriptMsg),
+    #[cfg(feature = "devtools")]
     Devtools(DevtoolScriptControlMsg),
     Control(DedicatedWorkerControlMsg),
     AnimationFrameTick(WorkerAnimationFrameTick),
@@ -127,23 +133,6 @@ pub(crate) enum MixedMessage {
 }
 
 impl QueuedTaskConversion for DedicatedWorkerScriptMsg {
-    fn task_source_name(&self) -> Option<&TaskSourceName> {
-        let common_worker_msg = match self {
-            DedicatedWorkerScriptMsg::CommonWorker(_, common_worker_msg) => common_worker_msg,
-            _ => return None,
-        };
-        let script_msg = match common_worker_msg {
-            WorkerScriptMsg::Common(script_msg) => script_msg,
-            _ => return None,
-        };
-        match script_msg {
-            CommonScriptMsg::Task(_category, _boxed, _pipeline_id, source_name) => {
-                Some(source_name)
-            },
-            _ => None,
-        }
-    }
-
     fn pipeline_id(&self) -> Option<PipelineId> {
         // Workers always return None, since the pipeline_id is only used to check for document activity,
         // and this check does not apply to worker event-loops.
@@ -212,7 +201,6 @@ pub(crate) struct DedicatedWorkerGlobalScope {
     /// The [`WebViewId`] of the `WebView` that this worker is associated with.
     #[no_trace]
     webview_id: WebViewId,
-    #[ignore_malloc_size_of = "Defined in std"]
     task_queue: TaskQueue<DedicatedWorkerScriptMsg>,
     own_sender: Sender<DedicatedWorkerScriptMsg>,
     worker: DomRefCell<Option<TrustedWorkerAddress>>,
@@ -240,11 +228,9 @@ pub(crate) struct DedicatedWorkerGlobalScope {
     animation_frame_callbacks_active: Cell<bool>,
     /// A sender for animation frame ticks.
     #[no_trace]
-    #[ignore_malloc_size_of = "channels are hard"]
     animation_frame_tick_sender: Option<GenericSender<WorkerAnimationFrameTick>>,
     /// A receiver for animation frame ticks.
     #[no_trace]
-    #[ignore_malloc_size_of = "channels are hard"]
     animation_frame_tick_receiver: Option<RoutedReceiver<WorkerAnimationFrameTick>>,
     /// A receiver of control messages.
     #[no_trace]
@@ -282,6 +268,7 @@ impl WorkerEventLoopMethods for DedicatedWorkerGlobalScope {
         MixedMessage::Worker(msg)
     }
 
+    #[cfg(feature = "devtools")]
     fn from_devtools_msg(msg: DevtoolScriptControlMsg) -> MixedMessage {
         MixedMessage::Devtools(msg)
     }
@@ -311,7 +298,7 @@ impl DedicatedWorkerGlobalScope {
         worker_name: DOMString,
         worker_type: WorkerType,
         worker_url: ServoUrl,
-        from_devtools_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
+        from_devtools_receiver: Option<RoutedReceiver<WorkerDevtoolsControlMsg>>,
         runtime: Runtime,
         parent_event_loop_sender: ScriptEventLoopSender,
         own_sender: Sender<DedicatedWorkerScriptMsg>,
@@ -343,7 +330,7 @@ impl DedicatedWorkerGlobalScope {
                 None,
             ),
             webview_id,
-            task_queue: TaskQueue::new(receiver, own_sender.clone()),
+            task_queue: TaskQueue::new(receiver),
             own_sender,
             parent_event_loop_sender,
             worker: DomRefCell::new(None),
@@ -370,7 +357,7 @@ impl DedicatedWorkerGlobalScope {
         worker_name: DOMString,
         worker_type: WorkerType,
         worker_url: ServoUrl,
-        from_devtools_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
+        from_devtools_receiver: Option<RoutedReceiver<WorkerDevtoolsControlMsg>>,
         runtime: Runtime,
         parent_event_loop_sender: ScriptEventLoopSender,
         own_sender: Sender<DedicatedWorkerScriptMsg>,
@@ -385,7 +372,7 @@ impl DedicatedWorkerGlobalScope {
         control_receiver: Receiver<DedicatedWorkerControlMsg>,
         insecure_requests_policy: InsecureRequestsPolicy,
         font_context: Arc<FontContext>,
-        debugger_global: &DebuggerGlobalScope,
+        #[cfg(feature = "devtools")] debugger_global: &DebuggerGlobalScope,
         cx: &mut js::context::JSContext,
     ) -> DomRoot<DedicatedWorkerGlobalScope> {
         let scope = Box::new(DedicatedWorkerGlobalScope::new_inherited(
@@ -416,9 +403,10 @@ impl DedicatedWorkerGlobalScope {
             &scope.origin(),
             scope,
         );
+        #[cfg(feature = "devtools")]
         scope
             .upcast::<WorkerGlobalScope>()
-            .init_debugger_global(debugger_global, cx);
+            .init_debugger_global(Some(debugger_global), cx);
 
         scope
     }
@@ -430,7 +418,9 @@ impl DedicatedWorkerGlobalScope {
         mut init: WorkerGlobalScopeInit,
         webview_id: WebViewId,
         worker_url: UrlWithBlobClaim,
-        from_devtools_receiver: GenericReceiver<DevtoolScriptControlMsg>,
+        #[cfg(feature = "devtools")] from_devtools_receiver: GenericReceiver<
+            DevtoolScriptControlMsg,
+        >,
         worker: TrustedWorkerAddress,
         parent_event_loop_sender: ScriptEventLoopSender,
         own_sender: Sender<DedicatedWorkerScriptMsg>,
@@ -445,7 +435,7 @@ impl DedicatedWorkerGlobalScope {
         control_receiver: Receiver<DedicatedWorkerControlMsg>,
         context_sender: Sender<ThreadSafeJSContext>,
         insecure_requests_policy: InsecureRequestsPolicy,
-        policy_container: PolicyContainer,
+        policy_container: Arc<PolicyContainer>,
         font_context: Arc<FontContext>,
     ) -> JoinHandle<()> {
         let event_loop_id = ScriptEventLoopId::installed()
@@ -483,6 +473,7 @@ impl DedicatedWorkerGlobalScope {
                     is_nested_browsing_context,
                     insecure_requests_policy,
                     has_trustworthy_ancestor_origin: current_global_ancestor_trustworthy,
+                    network_partition_key: None,
                 };
 
                 let event_loop_sender = ScriptEventLoopSender::DedicatedWorker {
@@ -498,6 +489,7 @@ impl DedicatedWorkerGlobalScope {
                 // because it will never outlive it (runtime destruction happens at the end of this function)
                 let mut cx = unsafe { runtime.cx() };
                 let cx = &mut cx;
+                #[cfg(feature = "devtools")]
                 let debugger_global = DebuggerGlobalScope::new(
                     pipeline_id,
                     init.to_devtools_sender.clone(),
@@ -514,12 +506,16 @@ impl DedicatedWorkerGlobalScope {
                     gpu_id_hub.clone(),
                     cx,
                 );
+                #[cfg(feature = "devtools")]
                 debugger_global.execute(cx);
 
                 let context_for_interrupt = runtime.thread_safe_js_context();
                 let _ = context_sender.send(context_for_interrupt);
 
-                let devtools_mpsc_port = from_devtools_receiver.route_preserving_errors();
+                #[cfg(feature = "devtools")]
+                let devtools_mpsc_port = Some(from_devtools_receiver.route_preserving_errors());
+                #[cfg(not(feature = "devtools"))]
+                let devtools_mpsc_port = None;
                 let animation_frame_channel = init
                     .animation_frame_provider_supported
                     .then(|| generic_channel::channel().expect("Failed to create generic channel"));
@@ -548,8 +544,9 @@ impl DedicatedWorkerGlobalScope {
                 }
 
                 let worker_id = init.worker_id;
+                #[cfg(feature = "devtools")]
                 let devtools_enabled = init.to_devtools_sender.is_some();
-                let global = DedicatedWorkerGlobalScope::new(
+                let dedicated_worker_global_scope = DedicatedWorkerGlobalScope::new(
                     init,
                     webview_id,
                     worker_name.into(),
@@ -571,28 +568,31 @@ impl DedicatedWorkerGlobalScope {
                     control_receiver,
                     insecure_requests_policy,
                     font_context,
+                    #[cfg(feature = "devtools")]
                     &debugger_global,
                     cx,
                 );
 
+                #[cfg(feature = "devtools")]
                 if devtools_enabled {
                     debugger_global.fire_add_debuggee(
                         cx,
-                        global.upcast(),
+                        dedicated_worker_global_scope.upcast(),
                         pipeline_id,
                         Some(worker_id),
                     );
                 }
-                let scope = global.upcast::<WorkerGlobalScope>();
-                let global_scope = global.upcast::<GlobalScope>();
+                let worker_global_scope =
+                    dedicated_worker_global_scope.upcast::<WorkerGlobalScope>();
+                let global_scope = dedicated_worker_global_scope.upcast::<GlobalScope>();
 
                 // Step 12. Obtain script by switching on options["type"]:
                 {
-                    let _ar = AutoWorkerReset::new(&global, worker.clone());
+                    let _ar = AutoWorkerReset::new(&dedicated_worker_global_scope, worker.clone());
                     match worker_type {
                         WorkerType::Classic => {
                             fetch_a_classic_worker_script(
-                                scope,
+                                worker_global_scope,
                                 worker_url,
                                 request_client,
                                 Destination::Worker,
@@ -601,7 +601,7 @@ impl DedicatedWorkerGlobalScope {
                             );
                         },
                         WorkerType::Module => {
-                            let worker_scope = DomRoot::from_ref(scope);
+                            let worker_scope = DomRoot::from_ref(worker_global_scope);
                             fetch_a_module_script_graph(
                                 cx,
                                 global_scope,
@@ -612,36 +612,41 @@ impl DedicatedWorkerGlobalScope {
                                 credentials,
                                 Some(IntroductionType::WORKER),
                                 move |cx, module_tree| {
-                                    worker_scope.on_complete(cx, module_tree.map(Script::Module));
+                                    let module_script = module_tree.map(|module| {
+                                        Script::Module(RootedTraceableBox::new(module))
+                                    });
+                                    worker_scope.on_complete(cx, module_script);
                                 },
                             );
                         },
                     }
 
                     let reporter_name = format!("dedicated-worker-reporter-{}", worker_id);
-                    scope
-                        .upcast::<GlobalScope>()
-                        .mem_profiler_chan()
-                        .run_with_memory_reporting(
-                            || {
-                                // Step 27, Run the responsible event loop specified
-                                // by inside settings until it is destroyed.
-                                // The worker processing model remains on this step
-                                // until the event loop is destroyed,
-                                // which happens after the closing flag is set to true.
-                                while !scope.is_closing() {
-                                    run_worker_event_loop(&*global, Some(&worker), cx);
-                                }
-                            },
-                            reporter_name,
-                            event_loop_sender,
-                            CommonScriptMsg::CollectReports,
-                        );
+                    global_scope.mem_profiler_chan().run_with_memory_reporting(
+                        || {
+                            // Step 27, Run the responsible event loop specified
+                            // by inside settings until it is destroyed.
+                            // The worker processing model remains on this step
+                            // until the event loop is destroyed,
+                            // which happens after the closing flag is set to true.
+                            while !worker_global_scope.is_closing() {
+                                run_worker_event_loop(
+                                    &*dedicated_worker_global_scope,
+                                    Some(&worker),
+                                    cx,
+                                );
+                            }
+                        },
+                        reporter_name,
+                        event_loop_sender,
+                        CommonScriptMsg::CollectReports,
+                    );
                 }
 
                 // Drop worker rAF state before destroying the JS runtime.
-                global.clear_animation_frame_callbacks_and_unregister();
-                scope.clear_js_runtime();
+                dedicated_worker_global_scope.clear_animation_frame_callbacks_and_unregister();
+                global_scope.tear_down();
+                worker_global_scope.clear_js_runtime();
             })
             .expect("Thread spawning failed")
     }
@@ -965,6 +970,7 @@ impl DedicatedWorkerGlobalScope {
         }
         // FIXME(#26324): `self.worker` is None in devtools messages.
         match msg {
+            #[cfg(feature = "devtools")]
             MixedMessage::Devtools(msg) => self
                 .upcast::<WorkerGlobalScope>()
                 .handle_devtools_message(msg, cx),
@@ -980,6 +986,15 @@ impl DedicatedWorkerGlobalScope {
                 self.clear_animation_frame_callbacks_and_unregister();
                 self.upcast::<GlobalScope>()
                     .disable_owned_worker_animation_frame_providers();
+            },
+            MixedMessage::Control(DedicatedWorkerControlMsg::SetNetworkOnlineState(online)) => {
+                if self
+                    .upcast::<WorkerGlobalScope>()
+                    .set_network_online_state(online)
+                {
+                    self.upcast::<GlobalScope>()
+                        .set_network_online_state_on_dedicated_workers(online);
+                }
             },
             MixedMessage::AnimationFrameTick(_) => {
                 // Step 6.1.2. Run the animation frame callbacks for that
@@ -1113,11 +1128,7 @@ pub(crate) fn fetch_a_classic_worker_script(
         // and whose use-URL-credentials flag is set.
         .use_url_credentials(true);
 
-    let context = ScriptFetchContext::new(
-        Trusted::new(workerscope),
-        url_with_blob_lock.url(),
-        policy_container,
-    );
+    let context = ScriptFetchContext::new(url_with_blob_lock.url(), policy_container);
     let global = workerscope.upcast::<GlobalScope>();
     let task_source = global.task_manager().networking_task_source().to_sendable();
     global.fetch(request, context, task_source);
@@ -1150,7 +1161,7 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
             options
                 .transfer
                 .iter()
-                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+                .map(|js| js.get())
                 .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }

@@ -6,6 +6,7 @@ use html5ever::{local_name, ns};
 use js::context::{JSContext, NoGC};
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use script_bindings::cell::DomRefCell;
+use servo_url::ServoUrl;
 
 use crate::dom::bindings::conversions::DerivedFrom;
 use crate::dom::bindings::inheritance::Castable;
@@ -51,6 +52,7 @@ pub(crate) trait HyperlinkElementTraits {
         attr: AttrRef<'_>,
         mutation: AttributeMutation,
     );
+    fn full_href_url_for_user_interface(&self) -> Option<ServoUrl>;
 }
 
 impl<T: HyperlinkElement + DerivedFrom<Element> + Castable + NodeTraits> HyperlinkElementTraits
@@ -447,19 +449,20 @@ impl<T: HyperlinkElement + DerivedFrom<Element> + Castable + NodeTraits> Hyperli
 
         let attribute = self
             .upcast::<Element>()
-            .get_attribute_string_value(&local_name!("href"));
+            .get_attribute_string_ref(&local_name!("href"));
 
         // Step 2. If this element's href content attribute is absent, then return.
         let Some(attribute) = attribute else {
             return;
         };
+        let attribute = attribute.as_attr_ref();
 
         let document = self.owner_document();
         let global = self.owner_global();
 
         // Step 3. Let url be the result of encoding-parsing a URL given this element's href content
         // attribute's value, relative to this element's node document.
-        let url = document.encoding_parse_a_url(&attribute);
+        let url = document.encoding_parse_a_url(&attribute.value());
 
         // Step 4. If url is not failure, then set this element's url to url.
         if let Ok(url) = url {
@@ -538,5 +541,17 @@ impl<T: HyperlinkElement + DerivedFrom<Element> + Castable + NodeTraits> Hyperli
         // Step 4. If localName is href, referrerpolicy, or rel,
         // then consider speculative loads given element's node document.
         // TODO
+    }
+
+    /// Get the full URL of the `href` attribute of this hyperlink element, returning
+    /// `None` if the URL could not be parsed against the `Document`'s base URL.
+    fn full_href_url_for_user_interface(&self) -> Option<ServoUrl> {
+        let href = self
+            .upcast::<Element>()
+            .get_attribute_string_ref(&local_name!("href"))?;
+        self.owner_document()
+            .base_url()
+            .join(href.value().as_ref())
+            .ok()
     }
 }

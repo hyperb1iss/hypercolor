@@ -27,6 +27,7 @@ use crate::dom::html::htmlbuttonelement::HTMLButtonElement;
 use crate::dom::html::htmlcanvaselement::HTMLCanvasElement;
 use crate::dom::html::htmldetailselement::HTMLDetailsElement;
 use crate::dom::html::htmlelement::HTMLElement;
+use crate::dom::html::htmlembedelement::HTMLEmbedElement;
 use crate::dom::html::htmlfieldsetelement::HTMLFieldSetElement;
 use crate::dom::html::htmlfontelement::HTMLFontElement;
 use crate::dom::html::htmlformelement::HTMLFormElement;
@@ -37,6 +38,7 @@ use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmllabelelement::HTMLLabelElement;
 use crate::dom::html::htmllielement::HTMLLIElement;
 use crate::dom::html::htmllinkelement::HTMLLinkElement;
+use crate::dom::html::htmlmarqueeelement::HTMLMarqueeElement;
 use crate::dom::html::htmlmediaelement::HTMLMediaElement;
 use crate::dom::html::htmlmetaelement::HTMLMetaElement;
 use crate::dom::html::htmlmeterelement::HTMLMeterElement;
@@ -63,11 +65,11 @@ use crate::dom::html::htmltrackelement::HTMLTrackElement;
 use crate::dom::html::htmlvideoelement::HTMLVideoElement;
 use crate::dom::htmlbuttonelement::CommandState;
 use crate::dom::htmldialogelement::HTMLDialogElement;
-use crate::dom::inputevent::HitTestResult;
+use crate::dom::mathmlelement::MathMLElement;
 use crate::dom::node::{
     BindContext, ChildrenMutation, CloneChildrenFlag, MoveContext, Node, UnbindContext,
 };
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::svg::svgaelement::SVGAElement;
 use crate::dom::svg::svgcircleelement::SVGCircleElement;
 use crate::dom::svg::svgdefselement::SVGDefsElement;
@@ -89,7 +91,6 @@ use crate::dom::svg::svgsymbolelement::SVGSymbolElement;
 use crate::dom::svg::svgtextelement::SVGTextElement;
 use crate::dom::svg::svgtspanelement::SVGTSpanElement;
 use crate::dom::svg::svguseelement::SVGUseElement;
-use crate::dom::types::MouseEvent;
 
 /// Trait to allow DOM nodes to opt-in to overriding (or adding to) common
 /// behaviours. Replicates the effect of C++ virtual methods.
@@ -176,20 +177,6 @@ pub(crate) trait VirtualMethods {
         }
     }
 
-    /// Called after `mousedown`/`pointerdown` event dispatch completes. This needs to be
-    /// separate from `handle_event` because it's only invoked if `preventDefault` was
-    /// called on neither the `mousedown` nor the `pointerdown` event handler.
-    fn handle_mousedown_event(
-        &self,
-        cx: &mut js::context::JSContext,
-        mouse_event: &MouseEvent,
-        hit_test_result: &HitTestResult,
-    ) {
-        if let Some(super_type) = self.super_type() {
-            super_type.handle_mousedown_event(cx, mouse_event, hit_test_result);
-        }
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#is-valid-command-steps>
     fn is_valid_command_steps(&self, command: CommandState) -> bool {
         self.super_type()
@@ -229,7 +216,7 @@ pub(crate) trait VirtualMethods {
 
     /// Called on an element when it is popped off the stack of open elements
     /// of a parser.
-    fn pop(&self, cx: &mut js::context::JSContext) {
+    fn pop(&self, cx: &mut JSContext) {
         if let Some(s) = self.super_type() {
             s.pop(cx);
         }
@@ -266,6 +253,9 @@ pub(crate) fn vtable_for(node: &Node) -> &dyn VirtualMethods {
         NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLDialogElement)) => {
             node.downcast::<HTMLDialogElement>().unwrap() as &dyn VirtualMethods
         },
+        NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLEmbedElement)) => {
+            node.downcast::<HTMLEmbedElement>().unwrap() as &dyn VirtualMethods
+        },
         NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLFieldSetElement)) => {
             node.downcast::<HTMLFieldSetElement>().unwrap() as &dyn VirtualMethods
         },
@@ -298,6 +288,9 @@ pub(crate) fn vtable_for(node: &Node) -> &dyn VirtualMethods {
         },
         NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLLinkElement)) => {
             node.downcast::<HTMLLinkElement>().unwrap() as &dyn VirtualMethods
+        },
+        NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLMarqueeElement)) => {
+            node.downcast::<HTMLMarqueeElement>().unwrap() as &dyn VirtualMethods
         },
         NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLMediaElement(
             media_el,
@@ -372,6 +365,9 @@ pub(crate) fn vtable_for(node: &Node) -> &dyn VirtualMethods {
         },
         NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTrackElement)) => {
             node.downcast::<HTMLTrackElement>().unwrap() as &dyn VirtualMethods
+        },
+        NodeTypeId::Element(ElementTypeId::MathMLElement) => {
+            node.downcast::<MathMLElement>().unwrap() as &dyn VirtualMethods
         },
         NodeTypeId::Element(ElementTypeId::SVGElement(SVGElementTypeId::SVGGraphicsElement(
             SVGGraphicsElementTypeId::SVGGeometryElement(

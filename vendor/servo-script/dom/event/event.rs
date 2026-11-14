@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::default::Default;
 
 use bitflags::bitflags;
+#[cfg(feature = "devtools")]
 use devtools_traits::{TimelineMarker, TimelineMarkerType};
 use dom_struct::dom_struct;
 use embedder_traits::InputEventResult;
@@ -14,6 +15,7 @@ use js::rust::HandleObject;
 use keyboard_types::{Key, NamedKey};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::PointerEventBinding::PointerEventMethods;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::match_domstring_ascii;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use script_bindings::traits::DomEventTrait;
@@ -46,7 +48,7 @@ use crate::dom::html::htmlslotelement::HTMLSlotElement;
 use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::virtualmethods::vtable_for;
 use crate::dom::node::{Node, NodeTraits};
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::types::{KeyboardEvent, PointerEvent, UserActivation};
 use crate::dom::window::Window;
 use crate::tasks::task::TaskOnce;
@@ -302,6 +304,7 @@ impl Event {
         self.dispatch_inner(cx, target, legacy_target_override, None)
     }
 
+    /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
     fn dispatch_inner(
         &self,
         cx: &mut JSContext,
@@ -398,8 +401,8 @@ impl Event {
                 false,
             );
 
-            // Step 6.4. Let isActivationEvent be true, if event is a MouseEvent object and
-            // event’s type attribute is "click"; otherwise false.
+            // Step 6.4. Let isActivationEvent be true, if event is a MouseEvent object and event’s
+            // type attribute is "click"; otherwise false.
             let is_activation_event = self.is::<MouseEvent>() && self.type_() == atom!("click");
 
             // Step 6.5. If isActivationEvent is true and target has activation behavior,
@@ -599,6 +602,9 @@ impl Event {
                     .and_then(|activatable| activatable.legacy_pre_activation_behavior(cx));
             }
 
+            #[cfg(not(feature = "devtools"))]
+            let timeline_window: Option<DomRoot<Window>> = None;
+            #[cfg(feature = "devtools")]
             let timeline_window = DomRoot::downcast::<Window>(target.global())
                 .filter(|window| window.need_emit_timeline_marker(TimelineMarkerType::DOMEvent));
 
@@ -922,7 +928,7 @@ impl EventMethods<crate::DomTypeHolder> for Event {
 
     /// <https://dom.spec.whatwg.org/#dom-event-type>
     fn Type(&self) -> DOMString {
-        DOMString::from(&*self.type_()) // FIXME(ajeffrey): Directly convert from Atom to DOMString
+        TracedDOMString::from(self.type_()).root()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
@@ -1398,7 +1404,7 @@ fn inner_invoke(
     listeners: &EventListeners,
     phase: ListenerPhase,
     invocation_target_in_shadow_tree: bool,
-    timeline_window: Option<&Window>,
+    _timeline_window: Option<&Window>,
     legacy_output_did_listeners_throw: Option<&Cell<bool>>,
 ) -> bool {
     // Step 1. Let found be false.
@@ -1465,6 +1471,7 @@ fn inner_invoke(
         //     Step 2.10.1 Report exception for listener’s callback’s corresponding JavaScript object’s
         //     associated realm’s global object.
         //     Step 2.10.2 Set legacyOutputDidListenersThrowFlag if given.
+        #[cfg(feature = "devtools")]
         let marker = TimelineMarker::start("DOMEvent".to_owned());
         if compiled_listener
             .call_or_handle_event(cx, &event_target, event, ExceptionHandling::Report)
@@ -1473,7 +1480,8 @@ fn inner_invoke(
         {
             flag.set(true);
         }
-        if let Some(window) = timeline_window {
+        #[cfg(feature = "devtools")]
+        if let Some(window) = _timeline_window {
             window.emit_timeline_marker(marker.end());
         }
 

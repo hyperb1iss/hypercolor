@@ -2014,7 +2014,7 @@ reports it.
 | --- | --- | --- | --- |
 | `effect_id` | string or null | no | Catalog id of that effect, when it is still installed. |
 | `effect_name` | string | yes | Display name of the effect that printed it. |
-| `level` | string | yes | Raw console level: `log`, `info`, `warn`, `error`, `debug`, `trace`, or `dir`. |
+| `level` | string | yes | Raw console level: `log`, `info`, `warn`, `error`, `debug`, `trace`, `dir`, or `table`. |
 | `line` | integer (int32) or null | no | Line in that file the message points at, when it names one. |
 | `message` | string | yes | Message text. File locations in the effect's own page point at the author's source file and line, not the engine's runtime copy. |
 | `seq` | integer (int64) | yes | Journal sequence number; strictly increasing within one daemon run. |
@@ -2028,7 +2028,7 @@ reports it.
 Severity floor for `GET /api/v1/effects/console`.
 
 Raw console levels fold onto four floors: `trace` and `debug` are
-`debug`; `log`, `info`, and `dir` are `log`.
+`debug`; `log`, `info`, `dir`, and `table` are `log`.
 
 One of `debug`, `log`, `warn`, `error`.
 

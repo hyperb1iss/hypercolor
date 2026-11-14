@@ -7,7 +7,8 @@ use std::cell::RefCell;
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
 use script_bindings::dom::UnrootedDom;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use stylo_atoms::Atom;
 
 use crate::dom::ChildrenMutation;
@@ -52,7 +53,7 @@ impl NodeList {
         window: &Window,
         list_type: NodeListType,
     ) -> DomRoot<NodeList> {
-        reflect_dom_object_with_cx(Box::new(NodeList::new_inherited(list_type)), window, cx)
+        reflect_dom_object(cx, Box::new(NodeList::new_inherited(list_type)), window)
     }
 
     pub(crate) fn new_simple_list<T>(
@@ -150,7 +151,7 @@ impl NodeList {
     }
 
     pub(crate) fn item_unrooted<'a>(
-        &self,
+        &'a self,
         no_gc: &'a NoGC,
         index: u32,
     ) -> Option<UnrootedDom<'a, Node>> {
@@ -293,14 +294,14 @@ impl RadioList {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct ElementsByNameList {
     document: Dom<Document>,
-    name: DOMString,
+    name: TracedDOMString,
 }
 
 impl ElementsByNameList {
     pub(crate) fn new(document: &Document, name: DOMString) -> ElementsByNameList {
         ElementsByNameList {
             document: Dom::from_ref(document),
-            name,
+            name: name.traced(),
         }
     }
 
@@ -308,7 +309,9 @@ impl ElementsByNameList {
         self.document.elements_by_name_count(&self.name)
     }
 
-    pub(crate) fn item<'a>(&self, no_gc: &'a NoGC, index: u32) -> Option<UnrootedDom<'a, Node>> {
-        self.document.nth_element_by_name(no_gc, index, &self.name)
+    pub(crate) fn item<'a>(&'a self, no_gc: &'a NoGC, index: u32) -> Option<UnrootedDom<'a, Node>> {
+        self.document
+            .elements_by_name_iter(no_gc, &self.name)
+            .nth(index as usize)
     }
 }

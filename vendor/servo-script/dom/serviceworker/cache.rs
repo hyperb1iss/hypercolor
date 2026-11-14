@@ -7,7 +7,8 @@ use std::collections::VecDeque;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::root::DomRoot;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_url::ServoUrl;
@@ -31,10 +32,9 @@ pub(crate) struct Cache {
 
     /// The name used to identify
     /// <https://w3c.github.io/ServiceWorker/#dfn-relevant-request-response-list>
-    name: DOMString,
+    name: TracedDOMString,
 
     #[no_trace]
-    #[ignore_malloc_size_of = "GenericCallback"]
     callback: RefCell<Option<GenericCallback<CacheStorageThreadResponse>>>,
 
     // Dequeue of pending promises for backend operations.
@@ -45,14 +45,14 @@ impl Cache {
     fn new_inherited(name: DOMString) -> Cache {
         Cache {
             reflector_: Reflector::new(),
-            name,
+            name: name.traced(),
             callback: Default::default(),
             pending_promises: Default::default(),
         }
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope, name: DOMString) -> DomRoot<Cache> {
-        reflect_dom_object_with_cx(Box::new(Cache::new_inherited(name)), global, cx)
+        reflect_dom_object(cx, Box::new(Cache::new_inherited(name)), global)
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -138,7 +138,8 @@ impl Cache {
                         promise.reject_error(cx, Error::Type(c"Invalid URL".to_owned()));
                         return;
                     };
-                    let request = Request::new(cx, &self.global(), None, url);
+                    let request =
+                        Request::new(cx, &self.global(), None, url, None /* state */);
                     // TODO: associate request with a header.
                     request_list.push(request);
                 }
@@ -198,7 +199,7 @@ impl CacheMethods<crate::DomTypeHolder> for Cache {
                     promise.reject_error(cx, Error::Type(c"Invalid URL".to_owned()));
                     return promise;
                 };
-                let request = Request::new(cx, &global, None, url);
+                let request = Request::new(cx, &global, None, url, None /* state */);
                 r = Some(request);
             }
         }

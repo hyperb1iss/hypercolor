@@ -63,8 +63,12 @@ pub(crate) struct RootedPromise(Rc<(Promise, PermanentRoot)>);
 
 impl StackRootPromiseHelpers<crate::DomTypeHolder> for RootedPromise {
     type HeapTraced = TracedPromise;
+    type ThreadTrusted = TrustedPromise;
     fn to_traced(&self) -> TracedPromise {
         RootedPromise::to_traced(self)
+    }
+    fn to_trusted(&self) -> TrustedPromise {
+        TrustedPromise::new(self)
     }
 }
 
@@ -155,12 +159,6 @@ impl Deref for TracedPromise {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_in_rc)]
 pub(crate) struct Promise {
     reflector: Reflector,
-    /// Since Promise values are natively reference counted without the knowledge of
-    /// the SpiderMonkey GC, an explicit root for the reflector is stored while any
-    /// native instance exists. This ensures that the reflector will never be GCed
-    /// while native code could still interact with its native representation.
-    /// FIXME(#47747) Deprecated and planned for removal.
-    permanent_js_root: Option<PermanentRoot>,
 }
 
 impl Promise {
@@ -212,7 +210,6 @@ impl Promise {
     fn duplicate_unrooted(&self) -> Rc<Promise> {
         let promise = Promise {
             reflector: Reflector::new(),
-            permanent_js_root: None,
         };
         let promise = Rc::new(promise);
         unsafe {
@@ -231,7 +228,6 @@ impl Promise {
         }
         let promise = Promise {
             reflector: Reflector::new(),
-            permanent_js_root: None,
         };
         let promise = Rc::new((promise, PermanentRoot::default()));
         unsafe {
@@ -268,6 +264,21 @@ impl Promise {
     }
 
     #[expect(unsafe_code)]
+    fn new_with_settled_value(
+        cx: &mut JSContext,
+        global: &GlobalScope,
+        value: impl ToJSValConvertible,
+        settle_fn: unsafe fn(&mut JSContext, HandleValue) -> *mut JSObject,
+    ) -> RootedPromise {
+        let mut realm = enter_auto_realm(cx, global);
+        let cx = &mut realm.current_realm();
+        rooted!(&in(cx) let mut rval = UndefinedValue());
+        value.to_jsval(cx, rval.handle_mut());
+        rooted!(&in(cx) let p = unsafe { settle_fn(cx, rval.handle()) });
+        assert!(!p.handle().is_null());
+        Promise::new_with_js_promise(cx, p.handle())
+    }
+
     /// Create a new [RootedPromise] associated with the provided global,
     /// resolved with the provided value.
     pub(crate) fn new_resolved(
@@ -275,16 +286,9 @@ impl Promise {
         global: &GlobalScope,
         value: impl ToJSValConvertible,
     ) -> RootedPromise {
-        let mut realm = enter_auto_realm(cx, global);
-        let cx = &mut realm.current_realm();
-        rooted!(&in(cx) let mut rval = UndefinedValue());
-        value.to_jsval(cx, rval.handle_mut());
-        rooted!(&in(cx) let p = unsafe { CallOriginalPromiseResolve(cx, rval.handle()) });
-        assert!(!p.handle().is_null());
-        Promise::new_with_js_promise(cx, p.handle())
+        Promise::new_with_settled_value(cx, global, value, CallOriginalPromiseResolve)
     }
 
-    #[expect(unsafe_code)]
     /// Create a new [RootedPromise] associated with the provided global,
     /// rejected with the provided value.
     pub(crate) fn new_rejected(
@@ -292,13 +296,7 @@ impl Promise {
         global: &GlobalScope,
         value: impl ToJSValConvertible,
     ) -> RootedPromise {
-        let mut realm = enter_auto_realm(cx, global);
-        let cx = &mut realm.current_realm();
-        rooted!(&in(cx) let mut rval = UndefinedValue());
-        value.to_jsval(cx, rval.handle_mut());
-        rooted!(&in(cx) let p = unsafe { CallOriginalPromiseReject(cx, rval.handle()) });
-        assert!(!p.handle().is_null());
-        Promise::new_with_js_promise(cx, p.handle())
+        Promise::new_with_settled_value(cx, global, value, CallOriginalPromiseReject)
     }
 
     pub(crate) fn resolve_native<T>(&self, cx: &mut JSContext, val: &T)
@@ -721,6 +719,7 @@ pub(crate) fn wait_for_all_promise(
 impl PromiseHelpers<crate::DomTypeHolder> for Promise {
     type StackRoot = RootedPromise;
     type HeapTraced = TracedPromise;
+    type ThreadTrusted = TrustedPromise;
 
     fn new_in_realm(cx: &mut CurrentRealm) -> RootedPromise {
         Promise::new_in_realm(cx)

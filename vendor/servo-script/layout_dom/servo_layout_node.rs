@@ -15,6 +15,7 @@ use layout_api::{
 use net_traits::image_cache::Image;
 use pixels::ImageMetadata;
 use servo_arc::Arc;
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_base::text::{RangeAny, Utf32CodeUnits};
 use servo_url::ServoUrl;
@@ -139,6 +140,17 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
             .map(|parent_element| parent_element.upcast().into())
     }
 
+    unsafe fn dangerous_flat_tree_parent_considering_pseudos(self) -> Option<Self> {
+        if let Some(pseudo_element_chain) = self.pseudo_element_chain.without_innermost() {
+            Some(ServoLayoutNode {
+                pseudo_element_chain,
+                node: self.node,
+            })
+        } else {
+            unsafe { self.dangerous_flat_tree_parent() }
+        }
+    }
+
     fn is_connected(&self) -> bool {
         unsafe { self.node.get_flag(NodeFlags::IS_CONNECTED) }
     }
@@ -175,12 +187,7 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
     }
 
     fn parent_style(&self, context: &SharedStyleContext) -> Arc<ComputedValues> {
-        if let Some(chain) = self.pseudo_element_chain.without_innermost() {
-            let mut parent = *self;
-            parent.pseudo_element_chain = chain;
-            return parent.style(context);
-        }
-        unsafe { self.dangerous_flat_tree_parent() }
+        unsafe { self.dangerous_flat_tree_parent_considering_pseudos() }
             .unwrap()
             .style(context)
     }
@@ -256,6 +263,10 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
         self.node.text_node_paints_caret()
     }
 
+    fn text_node_needs_caret_placeholder(&self) -> bool {
+        self.node.text_node_needs_caret_placeholder()
+    }
+
     fn replaced_is_selected(&self) -> bool {
         self.node.replaced_is_selected()
     }
@@ -274,6 +285,10 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
 
     fn image_data(&self) -> Option<(Option<Image>, Option<ImageMetadata>)> {
         self.node.image_data()
+    }
+
+    fn load_time(&self) -> Option<CrossProcessInstant> {
+        self.node.load_time()
     }
 
     fn canvas_data(&self) -> Option<HTMLCanvasData> {

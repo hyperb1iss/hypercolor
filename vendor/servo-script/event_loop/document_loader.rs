@@ -6,10 +6,9 @@
 //!
 //! <https://html.spec.whatwg.org/multipage/#the-end>
 
-#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
-
 use std::collections::HashMap;
 
+use js::context::JSContext;
 use net_traits::ResourceThreads;
 use script_bindings::cell::DomRefCell;
 use script_bindings::script_runtime::{during_gc_collection, runtime_is_alive};
@@ -50,10 +49,7 @@ impl LoadBlocker {
     }
 
     /// Remove this load from the associated document's list of blocking loads.
-    pub(crate) fn terminate(
-        blocker: &DomRefCell<Option<LoadBlocker>>,
-        cx: &mut js::context::JSContext,
-    ) {
+    pub(crate) fn terminate(cx: &mut JSContext, blocker: &DomRefCell<Option<LoadBlocker>>) {
         let Some(load) = blocker
             .safe_borrow_mut(cx.no_gc())
             .as_mut()
@@ -98,6 +94,8 @@ pub(crate) struct DocumentLoader {
     /// reaches zero, it is removed from the map and no longer blocks the load.
     blocking_loads: HashMap<LoadType, u32>,
     events_inhibited: bool,
+    /// Whether or not the load was aborted via [`Document::abort`].
+    aborted: bool,
 }
 
 impl DocumentLoader {
@@ -120,6 +118,7 @@ impl DocumentLoader {
             resource_threads,
             blocking_loads: initial_loads,
             events_inhibited: false,
+            aborted: false,
         }
     }
 
@@ -172,6 +171,15 @@ impl DocumentLoader {
 
     pub(crate) fn events_inhibited(&self) -> bool {
         self.events_inhibited
+    }
+
+    pub(crate) fn abort(&mut self) {
+        self.aborted = true;
+        self.events_inhibited = true;
+    }
+
+    pub(crate) fn aborted(&self) -> bool {
+        self.aborted
     }
 
     pub(crate) fn resource_threads(&self) -> &ResourceThreads {

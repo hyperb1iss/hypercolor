@@ -10,6 +10,7 @@ use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
+use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::request::RequestId;
 use net_traits::{FetchMetadata, NetworkError, ResourceFetchTiming};
 use script_bindings::cell::DomRefCell;
@@ -45,9 +46,7 @@ use crate::dom::virtualmethods::VirtualMethods;
 use crate::dom::webvtt::vttcue::VTTCue;
 use crate::dom::{AttributeMutation, cors_setting_for_element};
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::{
-    FetchCanceller, RequestWithGlobalScope, create_a_potential_cors_request,
-};
+use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
 use crate::runtime::job_queue::MicrotaskRunnable;
@@ -89,7 +88,8 @@ pub(crate) struct HTMLTrackElement {
     /// whether the algorithm has at least once progressed past step 5.
     has_started_tracking_processing_model: Cell<bool>,
     /// Used to cancel previous fetch request if a new one has been scheduled.
-    canceller: DomRefCell<Option<FetchCanceller>>,
+    #[no_trace]
+    controller: DomRefCell<Option<FetchController>>,
 }
 
 impl HTMLTrackElement {
@@ -107,7 +107,7 @@ impl HTMLTrackElement {
             last_successful_load: Default::default(),
             is_running_processing_model_algorithm: Default::default(),
             has_started_tracking_processing_model: Default::default(),
-            canceller: Default::default(),
+            controller: Default::default(),
         }
     }
 
@@ -211,7 +211,7 @@ impl HTMLTrackElement {
 
     /// Step 10.4 of <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
     fn cancel_ongoing_request(&self) {
-        if let Some(mut canceller) = self.canceller.take() {
+        if let Some(mut controller) = self.controller.take() {
             // > If, while fetching is ongoing, either:
             //     > the track URL changes so that it is no longer equal to URL,
             //       > while the text track mode is set to hidden or showing; or
@@ -224,7 +224,7 @@ impl HTMLTrackElement {
             // > and then queue an element task on the DOM manipulation task source
             // > given the track element that first changes the text track readiness state
             // > to failed to load and then fires an event named error at the track element.
-            canceller.abort();
+            controller.abort();
             self.fire_error_event_during_fetching();
         }
     }
@@ -409,9 +409,8 @@ impl VirtualMethods for HTMLTrackElement {
             super_type.moving_steps(cx, context);
         }
 
-        if let Some(parent) = context
-            .old_parent
-            .and_then(|node| node.downcast::<HTMLMediaElement>())
+        if context.is_subtree_root &&
+            let Some(parent) = context.old_ancestor.downcast::<HTMLMediaElement>()
         {
             // https://html.spec.whatwg.org/multipage/#sourcing-out-of-band-text-tracks
             // > When a track element's parent element changes and the old parent was a media element,
@@ -524,7 +523,7 @@ impl MicrotaskRunnable for TrackElementMicrotask {
                         payload: vec![],
                     };
                     element.cancel_ongoing_request();
-                    *element.canceller.borrow_mut() = Some(FetchCanceller::new(
+                    *element.controller.borrow_mut() = Some(FetchController::new(
                         request.id,
                         false,
                         global.core_resource_thread(),
@@ -538,7 +537,7 @@ impl MicrotaskRunnable for TrackElementMicrotask {
                     //
                     // This is the "URL is the empty string" case
                     element.is_running_processing_model_algorithm.set(false);
-                    *element.canceller.borrow_mut() = None;
+                    *element.controller.borrow_mut() = None;
                     element.fire_error_event_during_fetching();
                 }
                 // Step 11. Wait until the text track readiness state is no longer set to loading.
@@ -589,18 +588,25 @@ impl HTMLTrackElementFetchListener {
 }
 
 impl FetchResponseListener for HTMLTrackElementFetchListener {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut JSContext,
+        _: &GlobalScope,
         _: RequestId,
         _: Result<FetchMetadata, NetworkError>,
     ) {
     }
 
     /// Step 10.4 of <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, payload: Bytes) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut JSContext,
+        _: &GlobalScope,
+        _: RequestId,
+        payload: Bytes,
+    ) {
         // > If, while fetching is ongoing, either:
         //     > the track URL changes so that it is no longer equal to URL,
         //       > while the text track mode is set to hidden or showing; or
@@ -628,6 +634,7 @@ impl FetchResponseListener for HTMLTrackElementFetchListener {
     fn process_response_eof(
         self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _: RequestId,
         status: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -685,18 +692,18 @@ impl FetchResponseListener for HTMLTrackElementFetchListener {
                 element.fire_error_event_during_fetching();
             }
         }
-        *element.canceller.borrow_mut() = None;
+        *element.controller.borrow_mut() = None;
         element.is_running_processing_model_algorithm.set(false);
-        network_listener::submit_timing(cx, &self, &status, &timing);
+        network_listener::submit_timing(cx, global, &self, &status, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -709,9 +716,5 @@ impl ResourceTimingListener for HTMLTrackElementFetchListener {
     /// Step 10.3. of <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Track, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.element.root().owner_document().global()
     }
 }

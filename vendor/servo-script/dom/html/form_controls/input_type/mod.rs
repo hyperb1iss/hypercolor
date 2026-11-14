@@ -1,6 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+use bitflags::bitflags;
 use embedder_traits::InputMethodType;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
@@ -58,7 +59,7 @@ use crate::dom::html::form_controls::input_type::url_input_type::UrlInputType;
 use crate::dom::html::form_controls::input_type::week_input_type::WeekInputType;
 use crate::dom::htmlformelement::HTMLFormElement;
 use crate::dom::input_type::text_input_widget::TextInputWidget;
-use crate::dom::node::{BindContext, UnbindContext};
+use crate::dom::node::UnbindContext;
 
 pub(crate) mod button_input_type;
 pub(crate) mod checkbox_input_type;
@@ -361,6 +362,20 @@ impl TryFrom<&InputType> for InputMethodType {
     }
 }
 
+/// The events that a specific InputType asks its HTMLInputElement to fire after a
+/// user interaction changed the element's value.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct ValueChangeEvents(u8);
+
+bitflags! {
+    impl ValueChangeEvents: u8 {
+        /// <https://html.spec.whatwg.org/multipage/#event-input-input>
+        const Input = 1 << 0;
+        /// <https://html.spec.whatwg.org/multipage/#event-input-change>
+        const Change = 1 << 1;
+    }
+}
+
 pub(crate) trait SpecificInputType {
     fn sanitize_value(&self, _input: &HTMLInputElement, _value: &mut DOMString) {}
 
@@ -427,9 +442,15 @@ pub(crate) trait SpecificInputType {
     ) {
     }
 
-    fn show_the_picker_if_applicable(&self, _input: &HTMLInputElement) {}
+    fn show_the_picker_if_applicable(&self, _cx: &mut JSContext, _input: &HTMLInputElement) {}
 
-    fn select_files(&self, _input: &HTMLInputElement, _test_paths: Option<Vec<DOMString>>) {}
+    fn select_files(
+        &self,
+        _cx: &mut JSContext,
+        _input: &HTMLInputElement,
+        _test_paths: Option<Vec<DOMString>>,
+    ) {
+    }
 
     fn get_files(&self) -> Option<DomRoot<FileList>> {
         None
@@ -438,6 +459,17 @@ pub(crate) trait SpecificInputType {
     fn set_files(&self, _filelist: &FileList) {}
 
     fn update_shadow_tree(&self, _cx: &mut JSContext, _input: &HTMLInputElement) {}
+
+    /// Called on the input element that `event` was dispatched at, once the dispatch is
+    /// over and only if the event's default action was not prevented.
+    fn handle_event(
+        &self,
+        _cx: &mut JSContext,
+        _input: &HTMLInputElement,
+        _event: &Event,
+    ) -> ValueChangeEvents {
+        ValueChangeEvents::empty()
+    }
 
     fn update_placeholder_contents(&self, _cx: &mut JSContext, _input: &HTMLInputElement) {}
 
@@ -450,7 +482,11 @@ pub(crate) trait SpecificInputType {
     ) {
     }
 
-    fn bind_to_tree(&self, _cx: &mut JSContext, _input: &HTMLInputElement, _context: &BindContext) {
+    fn run_shared_bind_to_tree_or_moving_steps(
+        &self,
+        _cx: &mut JSContext,
+        _input: &HTMLInputElement,
+    ) {
     }
 
     fn unbind_from_tree(
@@ -459,6 +495,17 @@ pub(crate) trait SpecificInputType {
         _input: &HTMLInputElement,
         _form_owner: Option<DomRoot<HTMLFormElement>>,
         _context: &UnbindContext,
+    ) {
+    }
+
+    fn form_owner_changed(&self, _cx: &mut JSContext, _input: &HTMLInputElement) {}
+
+    fn update_checkedness(
+        &self,
+        _cx: &mut JSContext,
+        _input: &HTMLInputElement,
+        _checked: bool,
+        _previously_checked: bool,
     ) {
     }
 }

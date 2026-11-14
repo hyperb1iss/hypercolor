@@ -3,9 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use layout_api::LCPCandidate;
 use paint_api::display_list::PaintTimingInfo;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use time::Duration;
@@ -30,7 +31,7 @@ pub(crate) struct LargestContentfulPaint {
     #[no_trace]
     render_time: CrossProcessInstant,
     size: usize,
-    url: DOMString,
+    url: TracedDOMString,
     element: Option<Dom<Element>>,
     /// <https://www.w3.org/TR/paint-timing/#paint-timing-info>
     #[no_trace]
@@ -51,7 +52,7 @@ impl LargestContentfulPaint {
         let render_time = paint_timing_info.default_paint_timestamp();
         LargestContentfulPaint {
             entry: PerformanceEntry::new_inherited(
-                DOMString::new(),
+                DOMString::new().into(),
                 EntryType::LargestContentfulPaint,
                 Some(render_time),
                 Duration::ZERO,
@@ -63,7 +64,8 @@ impl LargestContentfulPaint {
                 .url
                 .as_ref()
                 .map(|url| DOMString::from(url.as_str()))
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .traced(),
             element: element.map(Dom::from_ref),
             paint_timing_info,
         }
@@ -112,24 +114,24 @@ impl LargestContentfulPaintMethods<crate::DomTypeHolder> for LargestContentfulPa
 
     /// <https://www.w3.org/TR/largest-contentful-paint/#dom-largestcontentfulpaint-url>
     fn Url(&self) -> DOMString {
-        self.url.clone()
+        self.url.clone().root()
     }
 
     /// <https://www.w3.org/TR/largest-contentful-paint/#dom-largestcontentfulpaint-id>
-    fn Id(&self) -> DOMString {
-        self.GetElement()
+    fn Id(&self, no_gc: &NoGC) -> DOMString {
+        self.GetElement(no_gc)
             .map(|element| element.Id())
             .unwrap_or_default()
     }
 
     /// <https://www.w3.org/TR/largest-contentful-paint/#dom-largestcontentfulpaint-element>
-    fn GetElement(&self) -> Option<DomRoot<Element>> {
+    fn GetElement(&self, no_gc: &NoGC) -> Option<DomRoot<Element>> {
         self.element
             .as_ref()
             .filter(|element| {
                 element
                     .upcast::<Node>()
-                    .is_connected_with_browsing_context()
+                    .is_connected_with_browsing_context(no_gc)
             })
             .map(|element| element.as_rooted())
     }

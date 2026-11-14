@@ -15,10 +15,11 @@ use js::jsapi::{
 use js::jsval::{DoubleValue, ObjectValue, UndefinedValue};
 use js::rust::wrappers2::{
     GetArrayLength, IsArrayObject, JS_HasOwnPropertyById, JS_IndexToId, JS_IsIdentifier,
-    JS_NewObject, NewDateObject, ObjectIsDate, SameValue,
+    NewDateObject, ObjectIsDate, SameValue,
 };
 use js::rust::{HandleValue, MutableHandleValue};
 use js::typedarray::{ArrayBuffer, ArrayBufferU8, ArrayBufferView};
+use script_bindings::js::{JS_GetPropertyById, JS_NewObject};
 use storage_traits::indexeddb::{BackendError, IndexedDBKeyRange, IndexedDBKeyType};
 
 use crate::dom::bindings::buffer_source::create_buffer_source;
@@ -350,12 +351,7 @@ pub fn convert_value_to_key(
                     }
                     // 3.5.3. Let entry be ? Get(input, index).
                     rooted!(&in(cx) let mut entry = UndefinedValue());
-                    if !js::rust::wrappers2::JS_GetPropertyById(
-                        cx,
-                        object.handle(),
-                        id.handle(),
-                        entry.handle_mut(),
-                    ) {
+                    if !JS_GetPropertyById(cx, object.handle(), id.handle(), entry.handle_mut()) {
                         return Err(Error::JSFailed);
                     }
 
@@ -453,7 +449,7 @@ pub(crate) fn evaluate_key_path_on_value(
         // Step 1. If keyPath is a list of strings, then:
         KeyPath::StringSequence(key_path) => {
             // Step 1.1. Let result be a new Array object created as if by the expression [].
-            rooted!(&in(cx) let mut result = unsafe { JS_NewObject(cx, ptr::null()) });
+            rooted!(&in(cx) let mut result = JS_NewObject(cx, None));
 
             // Step 1.2. Let i be 0.
             // Step 1.3. For each item in keyPath:
@@ -556,7 +552,10 @@ pub(crate) fn evaluate_key_path_on_value(
                     let Ok(file) = root_from_handlevalue::<File>(cx, current_value.handle())
                 {
                     // Let value be a String equal to value’s name.
-                    file.name().to_jsval(cx, current_value.handle_mut());
+                    file.name()
+                        .clone()
+                        .root()
+                        .to_jsval(cx, current_value.handle_mut());
 
                     continue;
                 }
@@ -692,7 +691,6 @@ pub(crate) fn can_inject_key_into_value(
 }
 
 /// <https://w3c.github.io/IndexedDB/#inject-a-key-into-a-value-using-a-key-path>
-#[expect(unsafe_code)]
 pub(crate) fn inject_key_into_value(
     cx: &mut JSContext,
     value: HandleValue,
@@ -731,7 +729,7 @@ pub(crate) fn inject_key_into_value(
         // Step 4.3 If hop is false, then:
         if !hop {
             // Step 4.3.1 Let o be a new Object created as if by the expression ({}).
-            rooted!(&in(cx) let o = unsafe { JS_NewObject(cx, ptr::null()) });
+            rooted!(&in(cx) let o = JS_NewObject(cx, None));
             rooted!(&in(cx) let mut o_value = UndefinedValue());
             o.to_jsval(cx, o_value.handle_mut());
 

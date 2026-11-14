@@ -55,9 +55,9 @@ use crate::dom::workletglobalscope::{
     WorkletGlobalScope, WorkletGlobalScopeInit, WorkletGlobalScopeType,
 };
 use crate::messaging::{CommonScriptMsg, MainThreadScriptMsg, ScriptEventLoopSender};
-use crate::modules::script_module::fetch_a_module_script_graph;
 use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::{IntroductionType, Runtime, ScriptThreadEventCategory};
+use crate::scripting::script_module::fetch_a_module_script_graph;
 use crate::tasks::task_source::TaskSourceName;
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
@@ -262,7 +262,7 @@ pub trait WorkletThreadPool: JSTraceable {
         origin: ImmutableOrigin,
         base_url: ServoUrl,
         script_url: ServoUrl,
-        policy_container: PolicyContainer,
+        policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
         promise: &RootedPromise,
@@ -395,7 +395,7 @@ impl WorkletThreadPool for StatelessWorkletThreadPool {
         origin: ImmutableOrigin,
         base_url: ServoUrl,
         script_url: ServoUrl,
-        policy_container: PolicyContainer,
+        policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
         promise: &RootedPromise,
@@ -471,13 +471,13 @@ pub(crate) enum WorkletControl {
         origin: ImmutableOrigin,
         base_url: ServoUrl,
         script_url: ServoUrl,
-        policy_container: PolicyContainer,
+        policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
         promise: TrustedPromise,
         inherited_secure_context: Option<bool>,
     },
-    Common(CommonScriptMsg),
+    Common(WorkletId, CommonScriptMsg),
 }
 
 /// A role that a worklet thread can be playing.
@@ -755,7 +755,7 @@ impl WorkletThread {
         pipeline_id: PipelineId,
         origin: ImmutableOrigin,
         script_url: ServoUrl,
-        policy_container: PolicyContainer,
+        policy_container: Arc<PolicyContainer>,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
         promise: TrustedPromise,
@@ -776,6 +776,7 @@ impl WorkletThread {
             is_nested_browsing_context: global.is_nested_browsing_context(),
             insecure_requests_policy: global.insecure_requests_policy(),
             has_trustworthy_ancestor_origin: global.has_trustworthy_ancestor_origin(),
+            network_partition_key: None,
         };
 
         // Step 2. If moduleResponsesMap[requestURL] is "fetching", wait in parallel until that entry's value changes, then queue a task on the networking task source to proceed with running the following steps.
@@ -822,9 +823,9 @@ impl WorkletThread {
 
                         // Step 6.4.2. If script's error to rethrow is not null:
                         // NOTE: The `AddModule` specification in the Step 6.4.2.1.1.2. requires the promise to be rejected with the script's "rethrow error".
-                        // However, the `JSVal` from `get_rethrow_error` cannot be used with the `promise_task` here because they are from different runtimes.
+                        // However, the `JSVal` from `rethrow_error` cannot be used with the `promise_task` here because they are from different runtimes.
                         // So we throw an AbortError instead.
-                        if script.get_rethrow_error().take().is_some() {
+                        if script.has_rethrow_error() {
                             // Step 6.4.2.1. and its substeps are handled by `reject_promise` function
                             reject_promise(
                                 &pending_tasks_struct,
@@ -837,7 +838,8 @@ impl WorkletThread {
                         }
 
                         // Step 6.4.4. Run a module script given script.
-                        rooted_global.run_a_module_script(cx, script, false);
+                        let module = RootedTraceableBox::new(script);
+                        rooted_global.run_a_module_script(cx, module, false);
 
                         // NOTE: we are treating all negative values as -1
                         // Step 6.4.5.1. If pendingTasks is not −1:
@@ -894,7 +896,13 @@ impl WorkletThread {
     fn process_control(&mut self, control: WorkletControl, cx: &mut js::context::JSContext) {
         match control {
             WorkletControl::ExitWorklet(worklet_id) => {
-                self.global_scopes.remove(&worklet_id);
+                if let Some(global_scope) = self
+                    .global_scopes
+                    .remove(&worklet_id)
+                    .map(|global_scope| global_scope.as_rooted())
+                {
+                    global_scope.upcast::<GlobalScope>().tear_down();
+                }
             },
             WorkletControl::FetchAndInvokeAWorkletScript {
                 pipeline_id,
@@ -932,8 +940,12 @@ impl WorkletThread {
                     cx,
                 )
             },
-            WorkletControl::Common(script_msg) => {
-                if let CommonScriptMsg::Task(_, task, _, _) = script_msg {
+            WorkletControl::Common(worklet_id, script_msg) => {
+                if let CommonScriptMsg::Task(_, task, _, _) = script_msg &&
+                    let Some(global) = self.global_scopes.get(&worklet_id)
+                {
+                    let mut realm = enter_auto_realm(cx, global.upcast::<GlobalScope>());
+                    let cx = &mut realm;
                     task.run_box(cx);
                 }
             },
@@ -1009,12 +1021,13 @@ impl WorkletExecutor {
             .send(WorkletData::Task(self.worklet_id, task));
     }
 
-    pub(crate) fn send_control_message(
+    /// Send a [`CommonScriptMsg`] to be send to the worklet thread pool.
+    pub(crate) fn send_common_message(
         &self,
-        control_message: WorkletControl,
+        common_message: CommonScriptMsg,
     ) -> Result<(), SendError<()>> {
         self.control_sender
-            .send(control_message)
+            .send(WorkletControl::Common(self.worklet_id, common_message))
             .map_err(|_| SendError(()))?;
         self.wake_threads()
     }

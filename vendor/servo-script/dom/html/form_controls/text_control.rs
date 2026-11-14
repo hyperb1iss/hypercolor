@@ -11,6 +11,8 @@ use std::cell::{Ref, RefMut};
 
 use embedder_traits::EditingAction;
 use js::context::JSContext;
+use layout_api::QueryMsg;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::inheritance::Castable;
 use script_bindings::refcounted::Trusted;
 use servo_base::text::Utf16CodeUnits;
@@ -19,13 +21,15 @@ use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMo
 use crate::dom::bindings::error::{Error, ErrorResult};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::DOMString;
-use crate::dom::event::{EventBubbles, EventCancelable};
+use crate::dom::event::inputevent::{InputEvent, InputEventFlags};
+use crate::dom::event::{EventBubbles, EventCancelable, EventFlags};
 use crate::dom::eventtarget::EventTarget;
-use crate::dom::html::form_controls::text_input::{SelectionDirection, SelectionState, TextInput};
+use crate::dom::html::form_controls::text_input::{
+    Lines, SelectionDirection, SelectionState, TextInput,
+};
 use crate::dom::node::focus::FocusTrigger;
 use crate::dom::node::{Node, NodeTraits};
-use crate::dom::text_input::{EmbedderClipboardProvider, InputEventType, IsComposing, KeyReaction};
-use crate::dom::types::InputEvent;
+use crate::dom::text_input::{EmbedderClipboardProvider, InputEventType, KeyReaction};
 use crate::dom::{Element, Event};
 
 pub(crate) trait TextControlElement {
@@ -41,7 +45,7 @@ pub(crate) trait TextControlElement {
     fn is_password_field(&self) -> bool {
         false
     }
-    fn placeholder_text<'a>(&'a self) -> Ref<'a, DOMString>;
+    fn placeholder_text<'a>(&'a self) -> Ref<'a, TracedDOMString>;
     fn value_text(&self) -> DOMString;
     fn read_only_or_disabled(&self) -> bool;
     fn handle_text_content_changed(&self, cx: &mut JSContext);
@@ -58,6 +62,11 @@ pub(crate) trait TextControlElement {
     }
 
     fn perform_editing_action(&self, cx: &mut JSContext, action: EditingAction) -> bool {
+        let canceled = self.maybe_fire_beforeinput_event_for_editing_action(cx, &action);
+        if canceled {
+            return false;
+        }
+
         let key_reaction = self.text_input_mut().perform_editing_action(action);
         if key_reaction == KeyReaction::Nothing {
             return false;
@@ -67,13 +76,73 @@ pub(crate) trait TextControlElement {
         true // TODO: Return true if the action can have any effect.
     }
 
-    /// <https://w3c.github.io/uievents/#event-type-input>
-    fn queue_input_event(
+    /// Returns true if and only if the editing action should be canceled.
+    fn maybe_fire_beforeinput_event_for_editing_action(
         &self,
-        data: Option<String>,
-        is_composing: IsComposing,
+        cx: &mut JSContext,
+        action: &EditingAction,
+    ) -> bool {
+        let (data, event_type) = match action {
+            EditingAction::InsertText(text) => (Some(text.as_str()), InputEventType::InsertText),
+            EditingAction::InsertCompositionText(text) => {
+                (Some(text.as_str()), InputEventType::InsertCompositionText)
+            },
+            EditingAction::Backspace(_) => (None, InputEventType::DeleteContentBackward),
+            EditingAction::Delete => (None, InputEventType::DeleteContentForward),
+            EditingAction::InsertNewline | EditingAction::InsertParagraph
+                if self.text_input().mode() == Lines::Multiple =>
+            {
+                (None, InputEventType::InsertLineBreak)
+            },
+            _ => return false,
+        };
+        self.fire_beforeinput_event(cx, data, event_type)
+    }
+
+    /// <https://w3c.github.io/uievents/#event-type-beforeinput>
+    /// Returns true if and only if the beforeinput event flags indicate cancelation or the text
+    /// control was hidden in the event listener.
+    fn fire_beforeinput_event(
+        &self,
+        cx: &mut JSContext,
+        data: Option<&str>,
         input_type: InputEventType,
-    ) {
+    ) -> bool {
+        let target = self.as_element().upcast::<EventTarget>();
+        let global = target.global();
+        let window = global.as_window();
+        let mut flags = InputEventFlags::BUBBLES;
+        if input_type.is_beforeinput_cancelable() {
+            flags |= InputEventFlags::CANCELABLE;
+        }
+        if input_type.is_composing() {
+            flags |= InputEventFlags::COMPOSING;
+        }
+        let event = InputEvent::new(
+            cx,
+            window,
+            None,
+            atom!("beforeinput"),
+            flags,
+            Some(window),
+            0,
+            data.map(DOMString::from),
+            input_type.as_str().into(),
+        );
+        let event = event.upcast::<Event>();
+        event.set_composed(true);
+        event.fire(cx, target);
+        let flags = event.flags();
+        // We need to check if the event listener hid the text control during execution, so we
+        // do a layout reflow.
+        window.layout_reflow(cx, QueryMsg::StyleQuery);
+        let node = self.as_element().upcast::<Node>();
+        flags.intersects(EventFlags::Canceled) ||
+            !node.is_being_rendered_or_delegates_rendering(None)
+    }
+
+    /// <https://w3c.github.io/uievents/#event-type-input>
+    fn queue_input_event(&self, data: Option<String>, input_type: InputEventType) {
         let element = self.as_element();
         let target = Trusted::new(element.upcast::<EventTarget>());
         element
@@ -84,17 +153,19 @@ pub(crate) trait TextControlElement {
                 let target = target.root();
                 let global = target.global();
                 let window = global.as_window();
+                let mut flags = InputEventFlags::BUBBLES;
+                if input_type.is_composing() {
+                    flags |= InputEventFlags::COMPOSING;
+                }
                 let event = InputEvent::new(
                     cx,
                     window,
                     None,
                     atom!("input"),
-                    true,
-                    false,
+                    flags,
                     Some(window),
                     0,
                     data.map(DOMString::from),
-                    is_composing.into(),
                     input_type.as_str().into(),
                 );
                 let event = event.upcast::<Event>();
@@ -116,7 +187,7 @@ pub(crate) trait TextControlElement {
         // when you perform a programmatic text selection in that element.
         self.as_element()
             .upcast::<Node>()
-            .run_the_focusing_steps(cx, None, FocusTrigger::Other);
+            .run_the_focusing_steps(cx, None, FocusTrigger::Script);
 
         // Step 2 : Set the selection range with 0 and infinity.
         self.set_range(
@@ -251,6 +322,7 @@ pub(crate) trait TextControlElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
     fn set_dom_range_text(
         &self,
+        cx: &mut JSContext,
         replacement: DOMString,
         start: Option<Utf16CodeUnits>,
         end: Option<Utf16CodeUnits>,
@@ -396,6 +468,7 @@ pub(crate) trait TextControlElement {
             None,
             Some(original_selection_state),
         );
+        self.handle_text_content_changed(cx);
         Ok(())
     }
 
