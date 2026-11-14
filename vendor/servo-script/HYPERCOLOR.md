@@ -71,23 +71,24 @@ File: `event_loop/script_thread.rs` (`EvaluationGc`,
 Each `evaluate_javascript` call compiles a new classic script. After it
 runs, most of what it leaves (the `ScriptSource` and its text, bytecode,
 and for sources of 256 characters or more an entry in the runtime's pending
-source compression list, which only a major GC drains outside SpiderMonkey's
-own tests) is malloc memory
-that SpiderMonkey does not count toward any GC trigger. What it does count
-is small: the `JSScript` and `ScriptSourceObject` cells toward the zone's GC
-heap trigger, which starts at 27 MB times the heap growth factor, and the
-script's `PrivateScriptData` toward the malloc trigger. Gecko
-covers this kind of garbage with its own idle and timer-driven GC
-scheduling; Servo 0.7 has none and never calls `JS_MaybeGC`. A page driven
-by one evaluation per frame and little other allocation therefore runs for
-a long time without a major GC while its garbage grows. SpiderMonkey's
-public accounting hook, `JS::AddAssociatedMemory`, needs the owning object,
-and the owners here (`ScriptSourceObject` and `JSScript`) are engine
-internals with no public accessor, so this crate cannot hand the memory to
-the engine's own heuristics.
+source compression list, which only a major GC drains outside
+SpiderMonkey's own tests) is malloc memory that SpiderMonkey does not count
+toward any GC trigger. What it does count is small: the `JSScript` and
+`ScriptSourceObject` cells toward the zone's GC heap trigger, which starts
+at 27 MB times the heap growth factor, and the script's `PrivateScriptData`
+toward the malloc trigger. Gecko covers this kind of garbage with its own
+idle and timer-driven GC scheduling; Servo 0.8 has none, and its one
+`JS_MaybeGC` call runs on window suspension, which an actively evaluated
+page never reaches. A page driven by one evaluation per frame and little
+other allocation therefore runs for a long time without a major GC while
+its garbage grows. SpiderMonkey's public accounting hook,
+`JS::AddAssociatedMemory`, needs the owning object, and the owners here
+(`ScriptSourceObject` and `JSScript`) are engine internals with no public
+accessor, so this crate cannot hand the memory to the engine's own
+heuristics.
 
 The patch counts embedder evaluations and the source bytes they compile.
-At the end of each `handle_msgs` batch, after the rendering update, the
+At the end of each `handle_messages` batch, after the rendering update, the
 script thread runs `JS_GC` once that traffic has gone on for 60 seconds or
 compiled 16 MiB of source without a major GC in between. Any major GC,
 including one SpiderMonkey starts on its own, restarts the window, and a
@@ -96,16 +97,21 @@ from page script. A script thread whose pages receive no embedder
 evaluations behaves exactly as upstream; on one that does, `JS_GC` collects
 the whole runtime, including any same-origin page that shares the thread.
 
-Upstream status: servo-script 0.7.0 has no idle, periodic, or
-evaluation-driven collection and never calls `JS_MaybeGC`. Its explicit
-`JS_GC` calls are `ScriptThreadMessage::TriggerGarbageCollection` (which
-page script reaches through `servointernals` when an embedder exposes it),
-window suspension, `TestUtils.gc()`, and the worklet threads' own
-heap-size check. Servo `main` at `2b94d76a6971` (2026-11-01) has the same
-gap, except that window suspension now calls `JS_MaybeGC` instead of
-forcing a collection (servo/servo#49425). servo/servo#48283 proposes an
-idle collection after page load, which would not cover a page that keeps
-receiving evaluations.
+Upstream status: servo-script 0.8.0 has no idle, periodic, or
+evaluation-driven collection. Its explicit `JS_GC` calls are
+`ScriptThreadMessage::TriggerGarbageCollection` (which page script reaches
+through `servointernals` when an embedder exposes it), the `TestBinding`
+and `TestUtils.gc()` testing hooks, and the worklet threads' own
+collections (a cold backup collects after each batch of control messages,
+and a backup past its heap-size threshold collects too). Window suspension
+calls `JS_MaybeGC` (servo/servo#49425), which can collect early at
+SpiderMonkey's eager allocation thresholds (85 or 90 percent of the normal
+trigger) but still only counts memory the engine tracks. Suspension happens
+only when a document stops being fully active, on navigation for instance;
+hiding or throttling a webview, which is how Hypercolor parks one, does not
+suspend it. Servo `main` at `c32ccc1a4edc` (2026-11-14) has the same gap.
+servo/servo#48283, still open, proposes an idle collection after page load,
+which would not cover a page that keeps receiving evaluations.
 
 A forced collection discards the page's JIT code. Outside its testing
 hooks, SpiderMonkey keeps JIT code across a GC only when its compartment
@@ -121,7 +127,7 @@ Drop this directory and the `[patch.crates-io]` entry once a Servo release
 carries equivalent fixes. Until then, bumping Servo means re-vendoring
 `servo-script` at the new version and reapplying each patch above (or
 confirming upstream made it unnecessary) in the same change. A patch entry
-for 0.7.0 does nothing for any other `servo-script` version: Cargo only
+for 0.8.0 does nothing for any other `servo-script` version: Cargo only
 warns that the patch went unused and builds the unpatched crate from
 crates.io. `servo` pins its script crate exactly, so even a patch release
 of `servo` would bypass the vendored copy. Dependabot ignores `servo-script`
