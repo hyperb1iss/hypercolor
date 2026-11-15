@@ -85,7 +85,7 @@ serde_ignored = "0.1.14"
 serde_path_to_error = "0.1"
 # jsonschema (0.58 through 0.60) enables serde_json/float_roundtrip globally.
 # That feature changes f32 REST decoding before domain validation.
-jsonschema = { version = "=0.60.2", default-features = false }
+jsonschema = { version = "=0.61.1", default-features = false }
 toml = "1.1"
 base64 = "0.23"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde", "clock"] }
@@ -220,7 +220,7 @@ zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
 
 # Screen capture
 ash = "0.38"
-ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "screencast"] }
+ashpd = { version = "0.14.0", default-features = false, features = ["tokio", "screencast"] }
 glow = "0.17"
 libc = "0.2"
 pipewire = "0.10.1"
