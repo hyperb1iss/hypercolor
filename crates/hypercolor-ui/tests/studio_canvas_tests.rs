@@ -3,7 +3,7 @@
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, Winding};
 use hypercolor_ui::components::layout_canvas::labels::{
-    LabelBox, LabelMode, LabelRoom, Visibility, callout_below, detail_line, label_extent,
+    LabelBox, LabelMode, LabelRoom, Visibility, callout_offset, detail_line, label_extent,
     label_mode, label_rooms, visibility_class,
 };
 use hypercolor_ui::components::layout_canvas::picking::{HitBox, hit_stack, pick_hit};
@@ -243,43 +243,49 @@ fn a_display_box_names_its_resolution_and_a_light_its_led_count() {
     assert_eq!(detail_line(1, None), "1 LED");
 }
 
-fn fan_at(position: (f32, f32), rotation: f32) -> Output {
-    let mut fan = ring_output("fan");
-    fan.shape = Some(hypercolor_types::spatial::ZoneShape::Rectangle);
-    fan.position = NormalizedPosition::new(position.0, position.1);
-    fan.size = NormalizedPosition::new(0.25105, 0.08493);
-    fan.rotation = rotation;
-    fan
+/// A 640 by 480 canvas, in pixels.
+const CANVAS: (f32, f32) = (640.0, 480.0);
+
+fn close(actual: (f32, f32), expected: (f32, f32)) -> bool {
+    (actual.0 - expected.0).abs() < 0.01 && (actual.1 - expected.1).abs() < 0.01
 }
 
 #[test]
-fn an_upright_box_hangs_its_callout_above_unless_it_hugs_the_top() {
-    let aspect = 640.0 / 630.0;
-    assert!(!callout_below(&fan_at((0.5, 0.5), 0.0), aspect));
-    assert!(callout_below(&fan_at((0.5, 0.07), 0.0), aspect));
+fn a_callout_sits_centered_over_the_bounds_it_names() {
+    // Half the bounds, a 5 px gap, and half the callout's own 18 px.
+    let offset = callout_offset((320.0, 240.0), (20.0, 12.0), 18, CANVAS);
+    assert!(close(offset, (0.0, -26.0)), "{offset:?}");
 }
 
 #[test]
-fn a_box_turned_over_hangs_its_callout_from_the_edge_that_faces_up() {
-    let aspect = 640.0 / 630.0;
-    let half_turn = std::f32::consts::PI;
-    // Turned over, the box's own bottom faces up on screen: a bottom fan
-    // captions itself from there, above the box, not off the canvas.
-    assert!(callout_below(&fan_at((0.5, 0.915), half_turn), aspect));
-    // A top fan has no room above, so it hangs from its own top, which
-    // now faces down.
-    assert!(!callout_below(&fan_at((0.5, 0.074), half_turn), aspect));
+fn a_callout_the_canvas_clips_above_sits_below() {
+    let offset = callout_offset((320.0, 14.0), (20.0, 12.0), 18, CANVAS);
+    assert!(close(offset, (0.0, 26.0)), "{offset:?}");
 }
 
 #[test]
-fn a_quarter_turned_box_at_the_right_edge_hangs_its_callout_inward() {
-    let aspect = 640.0 / 630.0;
-    // At 270 degrees the box's own bottom faces right, past the edge it
-    // sits by, so the callout hangs from its own top, facing left.
-    assert!(!callout_below(
-        &fan_at((0.92887, 0.66454), 4.712_389),
-        aspect
-    ));
+fn a_callout_with_no_room_either_way_stays_inside_the_top_edge() {
+    // Bounds as tall as the canvas: the callout keeps its margin from the
+    // top edge instead of leaving the canvas.
+    let offset = callout_offset((320.0, 240.0), (40.0, 240.0), 18, CANVAS);
+    assert!(close(offset, (0.0, 13.0 - 240.0)), "{offset:?}");
+}
+
+#[test]
+fn a_callout_slides_sideways_to_keep_its_width_on_the_canvas() {
+    // 20 characters draw 124 px wide, so the center stays 66 px in.
+    let left = callout_offset((10.0, 240.0), (8.0, 8.0), 20, CANVAS);
+    assert!(close(left, (56.0, -22.0)), "{left:?}");
+    let right = callout_offset((630.0, 240.0), (8.0, 8.0), 20, CANVAS);
+    assert!(close(right, (-56.0, -22.0)), "{right:?}");
+    let inside = callout_offset((300.0, 240.0), (8.0, 8.0), 20, CANVAS);
+    assert!(close(inside, (0.0, -22.0)), "{inside:?}");
+}
+
+#[test]
+fn a_callout_wider_than_the_canvas_centers_on_it() {
+    let offset = callout_offset((100.0, 240.0), (8.0, 8.0), 200, CANVAS);
+    assert!(close(offset, (220.0, -22.0)), "{offset:?}");
 }
 
 #[test]

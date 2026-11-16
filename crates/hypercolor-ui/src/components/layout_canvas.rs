@@ -54,8 +54,8 @@ use labels::{LabelBox, LabelRoom, visibility_class};
 use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
 use picking::HitBox;
 use render::{
-    ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_position_style,
-    zone_shape_style,
+    ZoneRenderData, level_callout_transform, ring_inner_style, rotated_cursor, upright_label_style,
+    zone_position_style, zone_shape_style,
 };
 
 /// A box's place in paint order: its area rank lifted by selection, and
@@ -75,6 +75,10 @@ fn paint_order(
     )
 }
 
+/// The dark pill a name wears beside the box it names.
+const CALLOUT_CLASS: &str = "absolute text-[9px] font-mono whitespace-nowrap pointer-events-none \
+                             px-2 py-0.5 rounded bg-black/80";
+
 /// What a box shows: its geometry style, accent, and identity.
 fn zone_render_data(
     zone: &Output,
@@ -85,19 +89,25 @@ fn zone_render_data(
     let rotation = zone.rotation.to_degrees();
     let (primary, secondary) = device_accent_colors(&zone.device_id);
     let display = layout_utils::effective_zone_display(zone, devices, attachment_profiles);
+    let drawn = layout_geometry::DrawnBox::of(zone, canvas_aspect);
+    let detail = labels::detail_line(
+        zone.topology.led_count(),
+        layout_utils::display_resolution(zone, devices),
+    );
+    let callout_name = layout_utils::rail_output_name(zone, devices)
+        .map_or_else(|| display.label.clone(), |rail| rail.name);
     ZoneRenderData {
         position_style: zone_position_style(zone),
         label_style: upright_label_style(rotation),
-        label_below: labels::callout_below(zone, canvas_aspect),
+        center: drawn.center,
+        reach: drawn.reach(),
+        rotation_deg: rotation,
+        scale: zone.scale,
         primary_rgb: primary,
         secondary_rgb: secondary,
-        callout_name: layout_utils::rail_output_name(zone, devices)
-            .map_or_else(|| display.label.clone(), |rail| rail.name),
+        callout: format!("{callout_name} · {detail}"),
         name: display.label,
-        detail: labels::detail_line(
-            zone.topology.led_count(),
-            layout_utils::display_resolution(zone, devices),
-        ),
+        detail,
         shape: zone.shape.clone(),
         polygon_points: polygons::svg_points(zone.shape.as_ref()),
     }
@@ -391,6 +401,12 @@ pub fn LayoutCanvas() -> impl IntoView {
         })
     });
     let selection_size = Memo::new(move |_| selected_zone_ids.with(std::collections::HashSet::len));
+
+    let viewport_px = Memo::new(move |_| {
+        #[allow(clippy::cast_possible_truncation, reason = "viewport pixels")]
+        let size = (viewport_width.get() as f32, viewport_height.get() as f32);
+        size
+    });
 
     // The box a press at `point` means: the smallest drawn box under it,
     // whichever element caught the press. A cycling press steps from the
@@ -1231,28 +1247,36 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     }}
 
                                     // Callout for a box too small to hold its name: on hover,
-                                    // or pinned while the selection or the pane points at it.
-                                    // One class binding: a reactive `class` replaces the whole
-                                    // attribute, so the edge it hangs from rides in it too.
+                                    // or pinned while the selection or the pane points at
+                                    // it. It reads level over the
+                                    // box's bounds however the box is turned or scaled.
                                     // Dark in both themes, like the canvas under it: the
                                     // name wears the device's color, which is picked to
                                     // read on black and washes out on a light surface.
                                     <div
                                         class=move || format!(
-                                            "absolute left-0 text-[9px] font-mono whitespace-nowrap transition-opacity \
-                                             pointer-events-none px-2 py-0.5 rounded bg-black/80 {} {}",
-                                            if zone_style.get().is_some_and(|zd| zd.label_below) { "-bottom-6" } else { "-top-6" },
+                                            "{CALLOUT_CLASS} left-1/2 top-1/2 transition-opacity {}",
                                             visibility_class(label_mode.get().callout),
                                         )
-                                        // Turned past a quarter, the box would hang its callout
-                                        // upside down; the callout flips upright in place.
                                         style=move || {
-                                            zone_style.get()
-                                                .map(|zd| format!("color: rgba({}, 0.9); {}", zd.primary_rgb, zd.label_style))
-                                                .unwrap_or_default()
+                                            let Some(zd) = zone_style.get() else {
+                                                return String::new();
+                                            };
+                                            let (width, height) = viewport_px.get();
+                                            let offset = labels::callout_offset(
+                                                (zd.center.0 * height, zd.center.1 * height),
+                                                (zd.reach.0 * height, zd.reach.1 * height),
+                                                zd.callout.chars().count(),
+                                                (width, height),
+                                            );
+                                            format!(
+                                                "color: rgba({}, 0.9); {}",
+                                                zd.primary_rgb,
+                                                level_callout_transform(zd.rotation_deg, zd.scale, offset),
+                                            )
                                         }
                                     >
-                                        {move || zone_style.get().map(|zd| format!("{} · {}", zd.callout_name, zd.detail)).unwrap_or_default()}
+                                        {move || zone_style.get().map(|zd| zd.callout).unwrap_or_default()}
                                     </div>
 
                                     // Resize handles (selected only) — small circles with accent glow.

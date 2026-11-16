@@ -178,13 +178,6 @@ impl DrawnBox {
     }
 }
 
-/// Half the width and height of the box `output` draws, in its own frame;
-/// see [`DrawnBox::half`].
-#[must_use]
-pub fn drawn_half_size(output: &Output, aspect: f32) -> (f32, f32) {
-    DrawnBox::of(output, aspect).half
-}
-
 /// Width and height of the axis-aligned bounds of the box `output` draws
 /// on a canvas of pixel aspect `aspect`, in normalized canvas units; see
 /// [`DrawnBox::reach`].

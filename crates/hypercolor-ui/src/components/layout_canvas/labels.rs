@@ -5,12 +5,12 @@
 //! painted above covers the name. Otherwise the name waits for hover or
 //! selection, and a box too small to hold it names itself in a callout
 //! beside the box instead.
+//!
+//! A callout reads level whatever way its box is turned: it sits over the
+//! box's bounds on screen, under them when the canvas clips above, and
+//! slides sideways to stay inside the canvas.
 
 use std::collections::HashMap;
-
-use hypercolor_types::spatial::Output;
-
-use crate::layout_geometry;
 
 /// Estimated advance of one character of a box name, in pixels.
 const NAME_CHAR_WIDTH: f32 = 6.4;
@@ -22,9 +22,16 @@ const DETAIL_HEIGHT: f32 = 15.0;
 const LABEL_INSET: f32 = 4.0;
 /// A name wraps onto at most this many lines.
 const MAX_NAME_LINES: f32 = 2.0;
-/// Room a name callout needs past the box edge it hangs from, as a share
-/// of the canvas height.
-const CALLOUT_ROOM: f32 = 0.06;
+/// Estimated advance of one character of a callout, in pixels.
+const CALLOUT_CHAR_WIDTH: f32 = 5.4;
+/// A callout's side padding, both sides together, in pixels.
+const CALLOUT_PADDING: f32 = 16.0;
+/// A callout's height, in pixels.
+const CALLOUT_HEIGHT: f32 = 18.0;
+/// Gap between the bounds a callout names and the callout, in pixels.
+const CALLOUT_GAP: f32 = 5.0;
+/// Margin a callout keeps from the canvas edge, in pixels.
+const CALLOUT_MARGIN: f32 = 4.0;
 
 /// One drawn box, in viewport pixels.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,33 +74,43 @@ pub struct LabelMode {
     pub callout: Visibility,
 }
 
-/// Whether a box's name callout hangs from the box's own bottom edge
-/// rather than its top, on a canvas of pixel aspect `aspect`.
+/// Where a level callout of `chars` characters sits for bounds centered
+/// at `center` that reach `reach` each way, on a `viewport` of that many
+/// pixels: the offset from `center` to the callout's own center.
 ///
-/// The callout turns with the box, so it hangs from whichever of those
-/// two edges faces up on screen, where it reads as a caption above the
-/// box. When the canvas clips that side, it takes the other edge.
+/// The callout sits centered above the bounds. When the canvas clips it
+/// there, it sits below; when neither side has room, it stays inside the
+/// canvas edge nearest to above. Sideways it slides only as far as it
+/// must to keep its whole width on the canvas.
 #[must_use]
-pub fn callout_below(output: &Output, aspect: f32) -> bool {
-    let (_, half_height) = layout_geometry::drawn_half_size(output, aspect);
-    let (sin, cos) = output.rotation.sin_cos();
-    let center = (output.position.x * aspect, output.position.y);
-    let reach = half_height + CALLOUT_ROOM;
-    let fits = |direction: (f32, f32)| {
-        let x = center.0 + direction.0 * reach;
-        let y = center.1 + direction.1 * reach;
-        (0.0..=aspect).contains(&x) && (0.0..=1.0).contains(&y)
-    };
-    // Where the box's own top and bottom edges face on screen.
-    let top = (sin, -cos);
-    let bottom = (-sin, cos);
-    let prefer_bottom = cos < 0.0;
-    let preferred = if prefer_bottom { bottom } else { top };
-    if fits(preferred) {
-        prefer_bottom
+pub fn callout_offset(
+    center: (f32, f32),
+    reach: (f32, f32),
+    chars: usize,
+    viewport: (f32, f32),
+) -> (f32, f32) {
+    #[allow(clippy::cast_precision_loss, reason = "names are short")]
+    let half_width = (chars as f32 * CALLOUT_CHAR_WIDTH + CALLOUT_PADDING) * 0.5;
+    let half_height = CALLOUT_HEIGHT * 0.5;
+    let rise = reach.1 + CALLOUT_GAP + half_height;
+    let top = CALLOUT_MARGIN + half_height;
+    let bottom = viewport.1 - CALLOUT_MARGIN - half_height;
+    let above = center.1 - rise;
+    let below = center.1 + rise;
+    let y = if above >= top || below > bottom {
+        // `max` last: a canvas shorter than a callout keeps the top edge.
+        above.min(bottom).max(top)
     } else {
-        !prefer_bottom
-    }
+        below
+    };
+    let left = CALLOUT_MARGIN + half_width;
+    let right = viewport.0 - CALLOUT_MARGIN - half_width;
+    let x = if left <= right {
+        center.0.clamp(left, right)
+    } else {
+        viewport.0 * 0.5
+    };
+    (x - center.0, y - center.1)
 }
 
 /// The line under a box's name: a display's resolution, since its pixels

@@ -26,16 +26,20 @@ pub(super) fn zone_position_style(zone: &Output) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ZoneRenderData {
     pub(super) position_style: String,
-    /// Counter-rotation for the identity readout and the name callout so
-    /// both stay upright.
+    /// Counter-rotation that keeps the identity readout upright.
     pub(super) label_style: String,
-    /// The name callout hangs from the box's own bottom edge, not its top.
-    pub(super) label_below: bool,
+    /// Center of the drawn box and the reach of its bounds each way, in
+    /// units of the canvas height.
+    pub(super) center: (f32, f32),
+    pub(super) reach: (f32, f32),
+    pub(super) rotation_deg: f32,
+    pub(super) scale: f32,
     pub(super) primary_rgb: String,
     pub(super) secondary_rgb: String,
     pub(super) name: String,
-    /// The name the callout shows: the rail's short one when it has one.
-    pub(super) callout_name: String,
+    /// What the callout says: the rail's short name when it has one, then
+    /// the detail line.
+    pub(super) callout: String,
     /// The line under the name: LED count, or resolution for a display.
     pub(super) detail: String,
     pub(super) shape: Option<ZoneShape>,
@@ -53,6 +57,22 @@ pub(super) fn upright_label_style(rotation_deg: f32) -> String {
     } else {
         String::new()
     }
+}
+
+/// Holds a callout level over the center of a box turned `rotation_deg`
+/// and scaled by `scale`, then moves it `offset` pixels on screen. The
+/// callout is a child of the box, so it undoes the box's turn and scale
+/// before it moves.
+pub(super) fn level_callout_transform(rotation_deg: f32, scale: f32, offset: (f32, f32)) -> String {
+    let unscale = if scale > f32::EPSILON {
+        scale.recip()
+    } else {
+        1.0
+    };
+    format!(
+        "transform: translate(-50%, -50%) rotate({:.1}deg) scale({unscale:.4}) translate({:.1}px, {:.1}px)",
+        -rotation_deg, offset.0, offset.1
+    )
 }
 
 pub(super) fn zone_shape_style(shape: &Option<ZoneShape>) -> String {
@@ -105,7 +125,20 @@ pub(super) fn rotated_cursor(handle: ResizeHandle, rotation_deg: f32) -> &'stati
 
 #[cfg(test)]
 mod tests {
-    use super::upright_label_style;
+    use super::{level_callout_transform, upright_label_style};
+
+    #[test]
+    fn a_callout_undoes_its_box_before_it_moves() {
+        assert_eq!(
+            level_callout_transform(90.0, 2.0, (12.0, -30.5)),
+            "transform: translate(-50%, -50%) rotate(-90.0deg) scale(0.5000) translate(12.0px, -30.5px)"
+        );
+    }
+
+    #[test]
+    fn a_box_scaled_to_nothing_leaves_the_callout_its_size() {
+        assert!(level_callout_transform(0.0, 0.0, (0.0, 0.0)).contains("scale(1.0000)"));
+    }
 
     #[test]
     fn upright_boxes_leave_the_label_alone() {
