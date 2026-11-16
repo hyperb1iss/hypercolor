@@ -1353,6 +1353,18 @@ impl RecordingBackend {
             .map(|(_, colors)| colors.clone())
             .collect()
     }
+
+    /// The last frame `device_id` was sent among the first `count` writes.
+    fn last_write_to_within(&self, device_id: DeviceId, count: usize) -> Option<Vec<[u8; 3]>> {
+        self.writes
+            .lock()
+            .expect("recorded writes lock should not be poisoned")
+            .iter()
+            .take(count)
+            .rev()
+            .find(|(written, _)| *written == device_id)
+            .map(|(_, colors)| colors.clone())
+    }
 }
 
 #[async_trait::async_trait]
@@ -1475,6 +1487,8 @@ struct ShapeChangeRun {
     frames: Vec<FrameData>,
     /// Every frame each output's device was sent since the change.
     device_writes: HashMap<String, Vec<Vec<[u8; 3]>>>,
+    /// The frame each output's device was last sent before the change.
+    shown_before: HashMap<String, Option<Vec<[u8; 3]>>>,
 }
 
 impl ShapeChangeRun {
@@ -1489,10 +1503,18 @@ impl ShapeChangeRun {
     /// sent and on the published frames. `None` when it never strayed.
     fn strays(&self, case: &str, output: &str, allowed: &[&[[u8; 3]]]) -> Option<String> {
         let sent = &self.device_writes[output];
+        let shown_before = &self.shown_before[output];
         let published = self.published(output);
-        let strayed = sent
-            .iter()
-            .any(|colors| !allowed.contains(&colors.as_slice()))
+        // A device sent nothing since the change still shows the frame it
+        // was last sent before it.
+        let kept_showing_a_stray = sent.is_empty()
+            && !shown_before
+                .as_deref()
+                .is_some_and(|colors| allowed.contains(&colors));
+        let strayed = kept_showing_a_stray
+            || sent
+                .iter()
+                .any(|colors| !allowed.contains(&colors.as_slice()))
             || published.iter().any(|colors| {
                 !colors
                     .as_deref()
@@ -1501,7 +1523,8 @@ impl ShapeChangeRun {
         strayed.then(|| {
             format!(
                 "{case}: the {output} output should only show {allowed:?}; \
-                 its device was sent {sent:?} and the frames published {published:?}"
+                 its device was last sent {shown_before:?} before the change and \
+                 {sent:?} since, and the frames published {published:?}"
             )
         })
     }
@@ -1584,9 +1607,19 @@ async fn run_shape_change(
             )
         })
         .collect();
+    let shown_before = devices
+        .iter()
+        .map(|(output, device_id)| {
+            (
+                output.clone(),
+                backend.last_write_to_within(*device_id, writes_before),
+            )
+        })
+        .collect();
     Some(ShapeChangeRun {
         frames,
         device_writes,
+        shown_before,
     })
 }
 
