@@ -487,10 +487,11 @@ enum CpuSamplingCanvasStatus {
 const CPU_SAMPLING_CANVAS_WARN_INTERVAL: u64 = 300;
 
 /// Rate-limits the no-resident-canvas fallback warning. This state is
-/// expected on a stream's first frame and on the frames after the LED shape
-/// changes, until the first GPU sample of the new shape lands. Steady-state
-/// repetition indicates a real regression, and the limit reports it without
-/// spamming a warn per frame.
+/// expected on a stream's first frame and on the first frame after the LED
+/// shape changes; the frames that follow reuse what that one published until
+/// a GPU sample of the new shape lands. Steady-state repetition indicates a
+/// real regression, and the limit reports it without spamming a warn per
+/// frame.
 fn warn_cpu_sampling_canvas_unavailable(message: &str) {
     static OCCURRENCES: AtomicU64 = AtomicU64::new(0);
     let occurrence = OCCURRENCES.fetch_add(1, Ordering::Relaxed);
