@@ -443,18 +443,26 @@ impl LayoutContext {
     ///
     /// Scene activations, layout publications, effect applies, and the
     /// startup restore rebuild such a zone from the active layout, so an
-    /// output assigned or unassigned in the zone alone is undone at the
-    /// next rebuild. Only the edit travels, on the published layout and on
-    /// the stored entry alike: each output in `left` leaves by id, and
-    /// each output in `placed` arrived in the zone or moved there. Where a
-    /// layout already holds it, the placement is copied onto that copy and
-    /// nothing else, as a layout Save does; where it does not, the output
-    /// is put at its index in the zone. Whatever else either holds stays as
-    /// it was: a stored edit that was never applied stays stored and
-    /// unapplied, an output the zone holds that neither layout knows is
-    /// not adopted by an edit that does not name it, and auto-layout
-    /// exclusions are left alone. An active layout with no stored entry
-    /// is only published.
+    /// output placed in the zone alone is gone at the next rebuild. Only
+    /// the edit travels, on the published layout and on the stored entry
+    /// alike:
+    ///
+    /// - Each output in `placed` arrived in the zone or moved there. Where
+    ///   a layout already holds it, the placement is copied onto that copy
+    ///   and nothing else, as a layout Save does. Where it does not, the
+    ///   output is put at its index in the zone.
+    /// - Each output in `left` leaves by id when it is a screen. A light
+    ///   stays: the layout is the rig, and taking a light out of a zone
+    ///   does not take its device out of the rig, where an untargeted
+    ///   device would be disconnected. Nothing yet records "in the rig,
+    ///   not in this scene's zone", so the next rebuild brings such a
+    ///   light back to the zone.
+    ///
+    /// Whatever else either layout holds stays as it was: a stored edit
+    /// that was never applied stays stored and unapplied, an output the
+    /// zone holds that neither layout knows is not adopted by an edit
+    /// that does not name it, and auto-layout exclusions are left alone.
+    /// An active layout with no stored entry is only published.
     ///
     /// The stored entry is persisted first. The published layout is then
     /// replaced inside the scene commit, so the zone and the layout it
@@ -870,12 +878,15 @@ impl LayoutContext {
     }
 }
 
-/// Apply a membership edit to one layout: the outputs that left go, and
-/// each output that arrived or moved has its placement copied onto the
-/// copy the layout holds, or is put at its index in the zone, lowest
-/// first, when the layout holds none.
+/// Apply a membership edit to one layout. A screen that left its zone
+/// leaves the layout; a light that left stays in the rig. Each output that
+/// arrived or moved has its placement copied onto the copy the layout
+/// holds, or is put at its index in the zone, lowest first, when the
+/// layout holds none.
 fn apply_member_edit(layout: &mut SpatialLayout, left: &[String], placed: &[(usize, Output)]) {
-    layout.zones.retain(|output| !left.contains(&output.id));
+    layout.zones.retain(|output| {
+        !(left.contains(&output.id) && hypercolor_core::spatial::is_display_zone(output))
+    });
     let mut placed = placed.iter().collect::<Vec<_>>();
     placed.sort_by_key(|(index, _)| *index);
     for (index, output) in placed {
@@ -1001,7 +1012,7 @@ mod tests {
             .expect("a bystander commit lands first");
 
         let refused = context
-            .commit_member_edit_under_guard(&guard, stale, &["b".to_owned()], &[])
+            .commit_member_edit_under_guard(&guard, stale, &[], &[(2, strip("c"))])
             .await;
 
         assert!(

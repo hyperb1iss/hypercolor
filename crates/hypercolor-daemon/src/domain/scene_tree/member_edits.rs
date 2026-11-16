@@ -19,15 +19,18 @@ use super::{
     AssignMembersRequest, DomainError, DomainErrorDetails, Output, OutputPlacement, ResourceKind,
     Scene, SceneTreeContext, ZoneId, ZoneRole, active_scene, check_scene_fence,
     ensure_live_zone_mutable, followed_primary_zone, live_scene_document, member_placement,
-    mint_missing_outputs, reconcile_member_exclusions, zone_layout_error,
+    mint_missing_outputs, reconcile_member_exclusions, rig_outputs, zone_layout_error,
 };
 
 /// Commit only the named memberships, preserving all unrelated scene data.
 ///
-/// An edit to a primary zone that follows the active layout is written to
-/// that layout in the same commit, stored and published, so the next
-/// rebuild of the zone from the layout keeps it. Replaying a receipt
-/// reversed takes it back out of both the same way.
+/// An output that arrives in, or moves within, a primary zone that follows
+/// the active layout is written to that layout in the same commit, stored
+/// and published, so the next rebuild of the zone from the layout keeps
+/// it. A screen that leaves such a zone leaves the layout the same way. A
+/// light that leaves stays in the layout, forward or replayed: the layout
+/// is the rig, and an undo of an assignment is the same request as an
+/// unassignment, so neither takes a light out of it.
 ///
 /// # Errors
 /// Rejects stale revisions, another active scene, mismatched preconditions,
@@ -92,6 +95,11 @@ async fn edit_members_workflow(
     let previous = active_scene(&mutation)?;
     if let Some(assignment) = request.assignment {
         ensure_live_zone_mutable(&mutation, assignment.zone_id)?;
+        let minted = if followed_primary_zone(&previous) == Some(assignment.zone_id) {
+            rig_outputs(&ctx.layout.current(), &assignment.device_id, minted)
+        } else {
+            minted
+        };
         request.changes = assignment_changes(&previous, &assignment, minted)?;
         if request.changes.is_empty() {
             return Ok(EditMembersResponse {

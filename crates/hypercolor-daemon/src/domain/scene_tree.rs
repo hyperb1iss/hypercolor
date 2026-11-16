@@ -732,6 +732,12 @@ async fn assign_members_workflow(
     if !scene.zones.iter().any(|zone| zone.id == command.zone_id) {
         return Err(DomainError::not_found(ResourceKind::Zone, command.zone_id));
     }
+    let follows_active_layout = followed_primary_zone(&scene) == Some(command.zone_id);
+    let minted = if follows_active_layout {
+        rig_outputs(&ctx.layout.current(), &command.request.device_id, minted)
+    } else {
+        minted
+    };
     let outputs = resolve_members(&scene, &command.request, minted)?;
     // The outputs this write brings into the zone. One the zone already
     // holds stays where it is, which is no change.
@@ -846,11 +852,12 @@ async fn membership_workflow(
 /// the zone.
 ///
 /// When `zone` is the primary zone of a scene that follows the active
-/// layout, the outputs that `left` it and the ones `placed` in it, each at
-/// its index, are written to that layout in the same commit (see
-/// [`LayoutContext::commit_member_edit_under_guard`]). Any other zone keeps
-/// its members itself. `previous` is the scene as the write found it, and
-/// the guard was taken before that read.
+/// layout, the outputs `placed` in it, each at its index, are written to
+/// that layout in the same commit, and a screen that `left` it leaves the
+/// layout (see [`LayoutContext::commit_member_edit_under_guard`], which
+/// keeps a light that left in the rig). Any other zone keeps its members
+/// itself. `previous` is the scene as the write found it, and the guard
+/// was taken before that read.
 ///
 /// # Errors
 ///
@@ -1391,6 +1398,33 @@ fn resolve_members(
                 })
         })
         .collect()
+}
+
+/// The outputs to offer for a device a zone that follows the active layout
+/// does not hold: the ones that layout already holds for the device, then
+/// the minted ones for segments it holds nothing for.
+///
+/// A light that left such a zone is still in the layout, under whatever id
+/// that layout gave it. Assigning the device again means that output, so
+/// the zone and the layout go on naming the segment once instead of
+/// gaining a second, freshly minted output beside the first.
+fn rig_outputs(layout: &SpatialLayout, device_id: &str, minted: Vec<Output>) -> Vec<Output> {
+    let mut outputs: Vec<Output> = layout
+        .zones
+        .iter()
+        .filter(|output| output.device_id == device_id)
+        .cloned()
+        .collect();
+    let held: Vec<Option<String>> = outputs
+        .iter()
+        .map(|output| output.zone_name.clone())
+        .collect();
+    outputs.extend(
+        minted
+            .into_iter()
+            .filter(|output| !held.contains(&output.zone_name)),
+    );
+    outputs
 }
 
 /// Build the outputs a connected device would contribute, its screens
