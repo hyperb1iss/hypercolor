@@ -596,7 +596,9 @@ impl Screens {
                     } else {
                         toasts::toast_error(&words);
                     }
-                    self.refresh_face.run(());
+                    // Studio can be left while a failed add reads the scene
+                    // again, and the refresh is disposed with it.
+                    self.refresh_face.try_run(());
                 }),
             );
         });
