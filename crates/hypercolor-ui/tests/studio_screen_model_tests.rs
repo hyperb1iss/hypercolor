@@ -14,10 +14,9 @@ use hypercolor_types::layer::{
 use hypercolor_types::scene::{DisplayFaceTarget, SceneMutationMode, ZoneId, ZoneRole};
 use hypercolor_ui::pages::studio::screen_model::unplaced_screen_lines;
 use hypercolor_ui::pages::studio::screen_model::{
-    Composition, FaceReport, FollowedLayoutStep, KEPT_CHIP, KEPT_NOTICE, KeptFaceRow,
-    KeptSelection, PlacedScreen, ScreenMove, ScreenRef, StackHome, UnplacedDisplay,
-    add_outcome_words, card_face, copy_layer_to_scene, copy_prompt, faceless_displays,
-    followed_layout_step, is_screen_layer, kept_face_row, kept_selection, placed_screens,
+    Composition, FaceReport, KEPT_CHIP, KEPT_NOTICE, KeptFaceRow, KeptSelection, PlacedScreen,
+    ScreenRef, StackHome, UnplacedDisplay, add_outcome_words, card_face, copy_layer_to_scene,
+    copy_prompt, faceless_displays, is_screen_layer, kept_face_row, kept_selection, placed_screens,
     plan_add_to_all_screens, plan_screen_adds, reorder_within, screen_chip, screen_panel,
     screens_label, selected_screens, takes_copies, unplaced_face, unplaced_screen,
     unplaced_screens, zone_screen_lines,
@@ -742,67 +741,6 @@ fn the_saved_face_is_asked_about_only_where_the_scene_shows_nothing() {
             spare.to_string(),
         ]
     );
-}
-
-#[test]
-fn a_screen_placed_where_the_rig_layout_decides_is_carried_into_that_layout() {
-    let primary = zone("Main", ZoneRole::Primary, Vec::new());
-    let display = display_zone(DeviceId::new(), Some((&primary, "lcd")));
-    let zones = vec![primary.clone(), display];
-    let arrived = ScreenMove {
-        output_id: "lcd".to_owned(),
-        from: None,
-        to: Some(primary.id),
-    };
-    assert_eq!(
-        followed_layout_step(&zones, std::slice::from_ref(&arrived)),
-        FollowedLayoutStep {
-            save: Some(primary.id),
-            forget: Vec::new(),
-        }
-    );
-
-    // Taking it out again is forgotten there, or the layout hands it back.
-    let left = ScreenMove {
-        output_id: "lcd".to_owned(),
-        from: Some(primary.id),
-        to: None,
-    };
-    assert_eq!(
-        followed_layout_step(&zones, &[left]),
-        FollowedLayoutStep {
-            save: None,
-            forget: vec!["lcd".to_owned()],
-        }
-    );
-
-    // A box that only moved within the zone asks nothing.
-    let stayed = ScreenMove {
-        output_id: "lcd".to_owned(),
-        from: Some(primary.id),
-        to: Some(primary.id),
-    };
-    assert!(followed_layout_step(&zones, &[stayed]).is_empty());
-}
-
-#[test]
-fn a_scene_with_zones_of_its_own_keeps_its_screens_itself() {
-    let primary = zone("Main", ZoneRole::Primary, Vec::new());
-    let desk = zone("Desk", ZoneRole::Custom, Vec::new());
-    let zones = vec![primary.clone(), desk.clone()];
-    let moves = [
-        ScreenMove {
-            output_id: "lcd".to_owned(),
-            from: None,
-            to: Some(primary.id),
-        },
-        ScreenMove {
-            output_id: "pump".to_owned(),
-            from: Some(desk.id),
-            to: None,
-        },
-    ];
-    assert!(followed_layout_step(&zones, &moves).is_empty());
 }
 
 fn report(scope: DisplayFaceScope, rendering: Option<DisplayFaceRendering>) -> FaceReport {

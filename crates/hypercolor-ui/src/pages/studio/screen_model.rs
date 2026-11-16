@@ -19,7 +19,7 @@ use hypercolor_types::api::displays::{
 };
 use hypercolor_types::api::scene::{ZoneMember, ZoneResource};
 use hypercolor_types::layer::{LayerScope, LayerSource, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{SceneMutationMode, ZoneId, ZoneRole};
+use hypercolor_types::scene::{SceneMutationMode, ZoneRole};
 
 use crate::components::layer_panel::scope::is_screen_member;
 pub use crate::components::layer_panel::scope::{is_screen_layer, reorder_within};
@@ -766,64 +766,6 @@ pub fn kept_selection(reports: &[(&str, Option<FaceReport>)]) -> KeptSelection {
         name: first.name.clone(),
         effect_id: first.effect_id.clone(),
     })
-}
-
-/// One screen output a membership write touched: the zone that held it
-/// before, and the zone that holds it now.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScreenMove {
-    pub output_id: String,
-    pub from: Option<ZoneId>,
-    pub to: Option<ZoneId>,
-}
-
-/// What a membership write leaves for the rig's layout to learn.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct FollowedLayoutStep {
-    /// The zone to save, so the layout gains the screens that arrived.
-    pub save: Option<ZoneId>,
-    /// Screen outputs that left, for the layout to forget.
-    pub forget: Vec<String>,
-}
-
-impl FollowedLayoutStep {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.save.is_none() && self.forget.is_empty()
-    }
-}
-
-/// What the rig's layout has to learn after `moves` landed in a scene
-/// that now holds `zones`.
-///
-/// A scene with one zone of lights takes that zone's outputs from the
-/// rig's layout every time it is rebuilt: on a scene switch, an effect
-/// change, a restart. Lights reach that layout as they are discovered, but
-/// a screen's box exists only once someone places it, so a screen placed
-/// in such a zone is lost at the next rebuild unless the layout is told,
-/// and one taken out comes back unless the layout forgets it. A scene
-/// with zones of its own keeps its placements itself and asks nothing.
-#[must_use]
-pub fn followed_layout_step(zones: &[ZoneResource], moves: &[ScreenMove]) -> FollowedLayoutStep {
-    let mut lights = zones.iter().filter(|zone| zone.role != ZoneRole::Display);
-    let (Some(only), None) = (lights.next(), lights.next()) else {
-        return FollowedLayoutStep::default();
-    };
-    if only.role != ZoneRole::Primary {
-        return FollowedLayoutStep::default();
-    }
-    let arrived = moves
-        .iter()
-        .any(|moved| moved.to == Some(only.id) && moved.from != Some(only.id));
-    let forget = moves
-        .iter()
-        .filter(|moved| moved.from == Some(only.id) && moved.to != Some(only.id))
-        .map(|moved| moved.output_id.clone())
-        .collect();
-    FollowedLayoutStep {
-        save: arrived.then_some(only.id),
-        forget,
-    }
 }
 
 /// The displays whose stack the scene leaves empty, each once: the ones

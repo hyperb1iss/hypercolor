@@ -366,9 +366,9 @@ test("a screen in Unassigned is placed with its face, and stays where it was put
     if (!member) return null;
     return zone.layers.filter((layer) => layer.scope?.outputs.includes(member.id)).length;
   };
-  // Whether the rig's layout holds a box for the panel. Studio tells the
-  // layout after the membership write lands, so the layout is what says
-  // a placement or its undo is finished.
+  // Whether the rig's layout holds a box for the panel. The daemon writes
+  // a membership edit on a zone that follows the layout into it in the
+  // same commit, so the layout says a placement or its undo will last.
   const inLayout = async () => {
     const active = await readEnvelope(await api.get("/api/v1/layouts/active"));
     return active.zones.some((output) => output.device_id === panel.layout);
@@ -389,8 +389,8 @@ test("a screen in Unassigned is placed with its face, and stays where it was put
     ).toBeVisible();
 
     // Placing it brings the face along as its layer. Taking that back
-    // has to reach the rig's layout too, or the layout that just learned
-    // of the box hands it back on the next scene switch.
+    // reaches the rig's layout too, or the layout that just learned of
+    // the box would hand it back on the next scene switch.
     await add.click();
     await expect.poll(faces).toBe(1);
     await expect.poll(inLayout).toBe(true);
