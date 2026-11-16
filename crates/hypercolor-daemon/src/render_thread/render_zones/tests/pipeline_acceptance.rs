@@ -126,6 +126,19 @@ impl SteppedPipeline {
             .expect("scene activation should commit");
     }
 
+    /// Replace a stored scene's definition, the live scene's included.
+    async fn update_scene(&self, scene: Scene) {
+        let mut mutation = self.state.scene_manager.begin_mutation().await;
+        mutation
+            .update_scene(scene)
+            .expect("test scene should update");
+        self.state
+            .scene_manager
+            .commit_mutation(mutation)
+            .await
+            .expect("scene update should commit");
+    }
+
     fn zone_runtime(&mut self) -> &mut ZoneRuntime {
         &mut self.runtime.render.render_zone_runtime
     }
@@ -1313,4 +1326,433 @@ async fn slow_gpu_readbacks_keep_multi_zone_leds_following_the_scene() {
             )
             .await;
     }
+}
+
+/// A backend that keeps every color frame each device was sent, in order.
+#[derive(Default)]
+struct RecordingBackend {
+    writes: std::sync::Mutex<Vec<(DeviceId, Vec<[u8; 3]>)>>,
+}
+
+impl RecordingBackend {
+    fn write_count(&self) -> usize {
+        self.writes
+            .lock()
+            .expect("recorded writes lock should not be poisoned")
+            .len()
+    }
+
+    /// The frames `device_id` was sent after the first `skip` writes.
+    fn writes_to_since(&self, device_id: DeviceId, skip: usize) -> Vec<Vec<[u8; 3]>> {
+        self.writes
+            .lock()
+            .expect("recorded writes lock should not be poisoned")
+            .iter()
+            .skip(skip)
+            .filter(|(written, _)| *written == device_id)
+            .map(|(_, colors)| colors.clone())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for RecordingBackend {
+    fn info(&self) -> hypercolor_driver_api::BackendInfo {
+        hypercolor_driver_api::BackendInfo {
+            id: "mock".to_owned(),
+            name: "Recording Backend".to_owned(),
+            description: "Keeps every frame each device was sent".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(
+        &self,
+        _id: &DeviceId,
+    ) -> Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> Result<(), hypercolor_types::device::DeviceError> {
+        self.writes
+            .lock()
+            .expect("recorded writes lock should not be poisoned")
+            .push((*id, colors.to_vec()));
+        Ok(())
+    }
+}
+
+/// Keeps the first polls of every LED readback not ready, the way a GPU
+/// that has not finished the sample yet does, until dropped.
+struct WithheldReadbackPolls;
+
+impl WithheldReadbackPolls {
+    fn hold(polls: u32) -> Self {
+        crate::render_thread::sparkleflinger::SAMPLE_READBACK_WITHHELD_POLLS
+            .store(polls, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for WithheldReadbackPolls {
+    fn drop(&mut self) {
+        crate::render_thread::sparkleflinger::SAMPLE_READBACK_WITHHELD_POLLS
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// An LED output on its own recorded device.
+fn led_output(id: &str, leds: u32) -> Output {
+    let mut output = point_zone(id);
+    output.device_id = format!("mock:{id}");
+    output.topology = LedTopology::Strip {
+        count: leds,
+        direction: StripDirection::LeftToRight,
+    };
+    output
+}
+
+/// A recording backend with one device per `(output id, LED count)`.
+fn recorded_rig(
+    outputs: &[(&str, u32)],
+) -> (
+    Arc<RecordingBackend>,
+    HashMap<String, DeviceId>,
+    BackendManager,
+) {
+    let backend = Arc::new(RecordingBackend::default());
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(backend.clone());
+    let mut devices = HashMap::new();
+    for (output, leds) in outputs {
+        let device_id = DeviceId::new();
+        backend_manager.map_device_with_segment(
+            format!("mock:{output}"),
+            "mock",
+            device_id,
+            Some(SegmentRange::new(
+                0,
+                usize::try_from(*leds).expect("LED count fits usize"),
+            )),
+        );
+        devices.insert((*output).to_owned(), device_id);
+    }
+    (backend, devices, backend_manager)
+}
+
+/// How a shape change is stepped.
+#[derive(Clone, Copy)]
+struct ShapeChangeConditions {
+    /// Polls each LED readback stays not ready for once the change is made.
+    withheld_polls: u32,
+    /// Hold the scene canvas the way a canvas consumer does, which keeps a
+    /// canvas-sized CPU surface resident on every frame.
+    scene_canvas_consumer: bool,
+}
+
+/// What a rig showed from the frame a scene changed its LED shape until the
+/// new shape's own colors settled.
+struct ShapeChangeRun {
+    /// Every frame published since the change, oldest first.
+    frames: Vec<FrameData>,
+    /// Every frame each output's device was sent since the change.
+    device_writes: HashMap<String, Vec<Vec<[u8; 3]>>>,
+}
+
+impl ShapeChangeRun {
+    fn published(&self, output: &str) -> Vec<Option<Vec<[u8; 3]>>> {
+        self.frames
+            .iter()
+            .map(|frame| zone_leds(frame, output))
+            .collect()
+    }
+
+    /// What `output` showed outside `allowed`, on the frames its device was
+    /// sent and on the published frames. `None` when it never strayed.
+    fn strays(&self, case: &str, output: &str, allowed: &[&[[u8; 3]]]) -> Option<String> {
+        let sent = &self.device_writes[output];
+        let published = self.published(output);
+        let strayed = sent
+            .iter()
+            .any(|colors| !allowed.contains(&colors.as_slice()))
+            || published.iter().any(|colors| {
+                !colors
+                    .as_deref()
+                    .is_some_and(|colors| allowed.contains(&colors))
+            });
+        strayed.then(|| {
+            format!(
+                "{case}: the {output} output should only show {allowed:?}; \
+                 its device was sent {sent:?} and the frames published {published:?}"
+            )
+        })
+    }
+}
+
+/// Fail a shape-change test with everything its cases found.
+fn assert_no_strays(strays: &[String]) {
+    assert!(
+        strays.is_empty(),
+        "outputs lost their colors across an LED shape change:\n{}",
+        strays.join("\n")
+    );
+}
+
+/// Light `before`, change to `after`, and step until `settled` holds. An
+/// `after` with `before`'s id is an edit of the live scene; any other scene
+/// is switched to.
+async fn run_shape_change(
+    before: Scene,
+    after: Scene,
+    rig: &[(&str, u32)],
+    conditions: ShapeChangeConditions,
+    lit: impl Fn(&FrameData) -> bool,
+    settled: impl Fn(&FrameData) -> bool,
+) -> Option<ShapeChangeRun> {
+    const SETTLE_FRAMES: u32 = 4;
+    let (backend, devices, backend_manager) = recorded_rig(rig);
+    let edits_live_scene = after.id == before.id;
+    let mut scenes = vec![before.clone()];
+    if !edits_live_scene {
+        scenes.push(after.clone());
+    }
+    let mut pipeline = SteppedPipeline::start(
+        RenderAccelerationMode::Gpu,
+        scenes,
+        before.id,
+        backend_manager,
+    )
+    .await?;
+    let _scene_canvas = conditions
+        .scene_canvas_consumer
+        .then(|| pipeline.state.preview_runtime.scene_canvas_receiver());
+    pipeline
+        .frame_where("the scene lit before the change", lit)
+        .await;
+    for _ in 0..SETTLE_FRAMES {
+        let _ = pipeline.frame().await;
+    }
+    let writes_before = backend.write_count();
+
+    let _withheld = WithheldReadbackPolls::hold(conditions.withheld_polls);
+    if edits_live_scene {
+        pipeline.update_scene(after).await;
+    } else {
+        pipeline.activate(after.id).await;
+    }
+    let mut frames = Vec::new();
+    let mut settled_frames = 0;
+    for _ in 0..MAX_WAIT_FRAMES {
+        let frame = pipeline.frame().await;
+        if settled(&frame) {
+            settled_frames += 1;
+        }
+        frames.push(frame);
+        if settled_frames > SETTLE_FRAMES {
+            break;
+        }
+    }
+    assert!(
+        settled_frames > SETTLE_FRAMES,
+        "the new shape never settled; last: {}",
+        frames.last().map_or_else(String::new, frame_summary)
+    );
+    let device_writes = devices
+        .iter()
+        .map(|(output, device_id)| {
+            (
+                output.clone(),
+                backend.writes_to_since(*device_id, writes_before),
+            )
+        })
+        .collect();
+    Some(ShapeChangeRun {
+        frames,
+        device_writes,
+    })
+}
+
+const RED: [u8; 3] = [255, 0, 0];
+const BLUE: [u8; 3] = [0, 0, 255];
+const BLACK: [u8; 3] = [0, 0, 0];
+
+/// How a scene comes to light a different set of LEDs.
+#[derive(Clone, Copy, Debug)]
+enum ShapeChangeTrigger {
+    /// Another scene is activated.
+    SceneSwitch,
+    /// The live scene's own zone layout is edited.
+    LiveEdit,
+}
+
+/// A single-zone scene before and after it gains a second output. Both show
+/// the same red, so the kept output never has a reason to change.
+fn single_zone_gaining_an_output(trigger: ShapeChangeTrigger) -> (Scene, Scene) {
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let scene = |name: &str, outputs: Vec<Output>| {
+        let mut scene = make_scene(name);
+        scene.transition.duration_ms = 0;
+        scene.zones = vec![solid_zone("Whole Rig", solid_id, RED, outputs)];
+        scene.unassigned_behavior = UnassignedBehavior::Off;
+        scene
+    };
+    let before = scene("One Output", vec![led_output("kept", 1)]);
+    let after = match trigger {
+        ShapeChangeTrigger::SceneSwitch => scene(
+            "Two Outputs",
+            vec![led_output("kept", 1), led_output("added", 1)],
+        ),
+        ShapeChangeTrigger::LiveEdit => {
+            let mut edited = before.clone();
+            edited.zones[0].layout.zones.push(led_output("added", 1));
+            edited
+        }
+    };
+    (before, after)
+}
+
+/// A single-zone scene that gains an output changes the shape of the LED
+/// frame, so the first GPU sample for the new shape is in flight with no
+/// published frame of that shape to hold. With nothing consuming the canvas
+/// there is no CPU copy of it to sample either. The output the change did
+/// not touch must keep its color on every published frame and on every frame
+/// its device is sent, however late the sample lands and whether the change
+/// was a scene switch or an edit of the live scene. The added output has no
+/// color of its own until then: it is black, never another output's pixels.
+#[tokio::test]
+async fn single_zone_shape_change_keeps_untouched_leds_lit() {
+    let cases = [
+        (ShapeChangeTrigger::SceneSwitch, 0),
+        (ShapeChangeTrigger::SceneSwitch, 3),
+        (ShapeChangeTrigger::LiveEdit, 0),
+        (ShapeChangeTrigger::LiveEdit, 3),
+    ];
+    let mut strays = Vec::new();
+    for (trigger, withheld_polls) in cases {
+        let (before, after) = single_zone_gaining_an_output(trigger);
+        let Some(run) = run_shape_change(
+            before,
+            after,
+            &[("kept", 1), ("added", 1)],
+            ShapeChangeConditions {
+                withheld_polls,
+                scene_canvas_consumer: false,
+            },
+            |frame| zone_leds(frame, "kept") == Some(vec![RED]),
+            |frame| zone_leds(frame, "added") == Some(vec![RED]),
+        )
+        .await
+        else {
+            return;
+        };
+        let case = format!("{trigger:?} with {withheld_polls} withheld readback polls");
+        strays.extend(run.strays(&case, "kept", &[&[RED]]));
+        strays.extend(run.strays(&case, "added", &[&[BLACK], &[RED]]));
+        if withheld_polls > 0 && zone_leds(&run.frames[0], "added") != Some(vec![BLACK]) {
+            strays.push(format!(
+                "{case}: the added output has no sample on the frame of the change, \
+                 but published {:?}",
+                zone_leds(&run.frames[0], "added")
+            ));
+        }
+    }
+    assert_no_strays(&strays);
+}
+
+/// A canvas consumer keeps a canvas-sized CPU surface resident, so the frame
+/// of a shape change samples it on the CPU while the GPU sample is in flight:
+/// every output, the added one included, shows its real color at once.
+#[tokio::test]
+async fn single_zone_shape_change_samples_a_resident_canvas_at_once() {
+    let (before, after) = single_zone_gaining_an_output(ShapeChangeTrigger::SceneSwitch);
+    let Some(run) = run_shape_change(
+        before,
+        after,
+        &[("kept", 1), ("added", 1)],
+        ShapeChangeConditions {
+            withheld_polls: 3,
+            scene_canvas_consumer: true,
+        },
+        |frame| zone_leds(frame, "kept") == Some(vec![RED]),
+        |frame| zone_leds(frame, "added") == Some(vec![RED]),
+    )
+    .await
+    else {
+        return;
+    };
+    let case = "with a resident canvas";
+    let strays = [
+        run.strays(case, "kept", &[&[RED]]),
+        run.strays(case, "added", &[&[RED]]),
+    ];
+    assert_no_strays(&strays.into_iter().flatten().collect::<Vec<_>>());
+}
+
+/// A multi-zone scene samples each zone's own texture, which never reaches
+/// the CPU. When one zone's output is reshaped, the other zone's output must
+/// keep its color while the first sample for the new shape is in flight. The
+/// reshaped output has no colors in its new shape until then, so it is black.
+#[tokio::test]
+async fn multi_zone_shape_change_keeps_untouched_leds_lit() {
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut strays = Vec::new();
+    for withheld_polls in [0, 3] {
+        let scene = |name: &str, reshaped_leds: u32| {
+            let mut scene = make_scene(name);
+            scene.transition.duration_ms = 0;
+            scene.zones = vec![
+                solid_zone("Kept", solid_id, RED, vec![led_output("kept", 1)]),
+                solid_zone(
+                    "Reshaped",
+                    solid_id,
+                    BLUE,
+                    vec![led_output("reshaped", reshaped_leds)],
+                ),
+            ];
+            scene.unassigned_behavior = UnassignedBehavior::Off;
+            scene
+        };
+        let Some(run) = run_shape_change(
+            scene("One LED", 1),
+            scene("Four LEDs", 4),
+            &[("kept", 1), ("reshaped", 4)],
+            ShapeChangeConditions {
+                withheld_polls,
+                scene_canvas_consumer: false,
+            },
+            |frame| {
+                zone_leds(frame, "kept") == Some(vec![RED])
+                    && zone_leds(frame, "reshaped") == Some(vec![BLUE])
+            },
+            |frame| zone_leds(frame, "reshaped") == Some(vec![BLUE; 4]),
+        )
+        .await
+        else {
+            return;
+        };
+        let case = format!("with {withheld_polls} withheld readback polls");
+        strays.extend(run.strays(&case, "kept", &[&[RED]]));
+        strays.extend(run.strays(&case, "reshaped", &[&[BLACK; 4], &[BLUE; 4]]));
+    }
+    assert_no_strays(&strays);
 }

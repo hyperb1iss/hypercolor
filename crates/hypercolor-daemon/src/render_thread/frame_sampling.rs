@@ -131,38 +131,58 @@ impl ZoneSamplingSet {
                 }
                 ZoneSampleSource::Cpu(colors) => zones.extend(colors.iter().cloned()),
                 ZoneSampleSource::Held => {
-                    zones.extend(zone.prepared_zones.iter().map(|plan| {
-                        published
+                    zones.extend(
+                        zone.prepared_zones
                             .iter()
-                            .find(|published| {
-                                published.zone_id == plan.zone_id
-                                    && published.colors.len() == plan.sample_positions.len()
-                            })
-                            .cloned()
-                            .unwrap_or_else(|| ZoneColors {
-                                zone_id: plan.zone_id.clone(),
-                                colors: vec![[0, 0, 0]; plan.sample_positions.len()],
-                            })
-                    }));
+                            .map(|plan| held_or_black(plan, published)),
+                    );
                 }
             }
         }
     }
 
-    /// Black output in the published shape, for frames whose GPU sample is
-    /// unavailable and whose published frame cannot be held.
-    fn black_into(&self, zones: &mut Vec<ZoneColors>) {
-        zones.clear();
-        zones.extend(
+    /// Every output held or black, for frames with no GPU sample whose
+    /// published frame has another shape.
+    fn hold_into(&self, zones: &mut Vec<ZoneColors>, published: &[ZoneColors]) {
+        hold_published_outputs(
             self.zones
                 .iter()
-                .flat_map(|zone| zone.prepared_zones.iter())
-                .map(|plan| ZoneColors {
-                    zone_id: plan.zone_id.clone(),
-                    colors: vec![[0, 0, 0]; plan.sample_positions.len()],
-                }),
+                .flat_map(|zone| zone.prepared_zones.iter()),
+            published,
+            zones,
         );
     }
+}
+
+/// The colors of an output with nothing to sample this frame: the colors the
+/// published frame carries for it when they have the same shape, and black
+/// otherwise. An output the published frame never held, or held at another
+/// LED count, has no colors of its own to keep.
+fn held_or_black(plan: &PreparedZonePlan, published: &[ZoneColors]) -> ZoneColors {
+    published
+        .iter()
+        .find(|published| {
+            published.zone_id == plan.zone_id
+                && published.colors.len() == plan.sample_positions.len()
+        })
+        .cloned()
+        .unwrap_or_else(|| ZoneColors {
+            zone_id: plan.zone_id.clone(),
+            colors: vec![[0, 0, 0]; plan.sample_positions.len()],
+        })
+}
+
+/// Fill `zones` in the shape of `plans` for a frame with nothing to sample,
+/// each output held or black by itself. The LED shape changed, so the
+/// published frame cannot be held whole, but the outputs the change left
+/// alone keep their colors until a sample of the new shape lands.
+fn hold_published_outputs<'a>(
+    plans: impl IntoIterator<Item = &'a PreparedZonePlan>,
+    published: &[ZoneColors],
+    zones: &mut Vec<ZoneColors>,
+) {
+    zones.clear();
+    zones.extend(plans.into_iter().map(|plan| held_or_black(plan, published)));
 }
 
 /// Unassigned outputs sampled from the fallback zone's texture in the same
@@ -466,11 +486,11 @@ enum CpuSamplingCanvasStatus {
 
 const CPU_SAMPLING_CANVAS_WARN_INTERVAL: u64 = 300;
 
-/// Rate-limits the no-resident-canvas fallback warning. With the GPU
-/// compositor's one-frame sampling readback latch this state is expected at
-/// most once at stream start (the latch primes on the first composed frame),
-/// so steady-state repetition indicates a real regression without spamming a
-/// warn per frame.
+/// Rate-limits the no-resident-canvas fallback warning. This state is
+/// expected on a stream's first frame and on the frames after the LED shape
+/// changes, until the first GPU sample of the new shape lands. Steady-state
+/// repetition indicates a real regression, and the limit reports it without
+/// spamming a warn per frame.
 fn warn_cpu_sampling_canvas_unavailable(message: &str) {
     static OCCURRENCES: AtomicU64 = AtomicU64::new(0);
     let occurrence = OCCURRENCES.fetch_add(1, Ordering::Relaxed);
@@ -1150,7 +1170,11 @@ pub(crate) fn resolve_led_sampling(
             .as_ref()
             .expect("CPU spatial sampling requires a SparkleFlinger-owned sampling target")
         {
-            GpuSampleTarget::Output { engine, .. } => Some(engine),
+            GpuSampleTarget::Output {
+                engine,
+                prepared_zones,
+                ..
+            } => Some((engine, prepared_zones)),
             // A set sampled wholly on the CPU has its colors in hand, on
             // either compositor backend.
             #[cfg(feature = "wgpu")]
@@ -1166,7 +1190,8 @@ pub(crate) fn resolve_led_sampling(
                 None
             }
             // Zone snapshots never reach the CPU (Spec 48 §4.1): without a GPU
-            // sample, a zone set holds its published frame or goes black.
+            // sample, a zone set holds its published frame, or each output
+            // by itself when the frame's shape changed.
             #[cfg(feature = "wgpu")]
             GpuSampleTarget::Zones { set, .. } => {
                 if can_hold_published_frame {
@@ -1174,12 +1199,16 @@ pub(crate) fn resolve_led_sampling(
                         LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
                     refresh_reused_frame_metadata = true;
                 } else {
-                    set.black_into(sampling.output_artifacts.zones_mut());
+                    let published_frame = state.event_bus.frame_lane().borrow();
+                    set.hold_into(
+                        sampling.output_artifacts.zones_mut(),
+                        &published_frame.zones,
+                    );
                 }
                 None
             }
         };
-        if let Some(sampling_engine) = sampling_engine {
+        if let Some((sampling_engine, prepared_zones)) = sampling_engine {
             let canvas_status = ensure_cpu_sampling_canvas(state, sampling, render_stage);
             match canvas_status {
                 CpuSamplingCanvasStatus::Ready => {
@@ -1203,33 +1232,18 @@ pub(crate) fn resolve_led_sampling(
                         LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
                     refresh_reused_frame_metadata = true;
                 }
+                // No canvas exists to sample, and sampling an invented black
+                // one would blank outputs the shape change never touched.
                 CpuSamplingCanvasStatus::Unavailable => {
                     warn_cpu_sampling_canvas_unavailable(
-                        "CPU spatial sampling fallback has no resident canvas; sampling a black fallback frame",
+                        "CPU spatial sampling fallback has no resident canvas; holding each output's published colors",
                     );
-                    let sampling_succeeded = match Canvas::try_new(
-                        state.canvas_dims.width(),
-                        state.canvas_dims.height(),
-                    ) {
-                        Ok(black_canvas) => match sampling_engine
-                            .try_sample_into(&black_canvas, sampling.output_artifacts.zones_mut())
-                        {
-                            Ok(()) => true,
-                            Err(error) => {
-                                warn!(%error, "Black CPU spatial sampling fallback failed; preserving published output");
-                                false
-                            }
-                        },
-                        Err(error) => {
-                            warn!(%error, "Black CPU fallback canvas allocation failed; preserving published output");
-                            false
-                        }
-                    };
-                    if !sampling_succeeded && can_hold_published_frame {
-                        render_stage.led_sampling_strategy =
-                            LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
-                        refresh_reused_frame_metadata = render_stage.screen_retained;
-                    }
+                    let published_frame = state.event_bus.frame_lane().borrow();
+                    hold_published_outputs(
+                        prepared_zones.iter(),
+                        &published_frame.zones,
+                        sampling.output_artifacts.zones_mut(),
+                    );
                 }
             }
         }

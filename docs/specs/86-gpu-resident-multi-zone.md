@@ -672,7 +672,11 @@ Lightpad and the LUMI keys raised ripples over the bubbles on both blocks.
   GPU and samples from its snapshot, whatever its layers' frames started as.
   The §6 rules for refused plans and CPU-backed uploads are superseded. A
   plan past device limits still fails admission for the whole dispatch, and
-  the frame then holds its published colors or goes black.
+  the frame then holds its published colors. A frame whose LED shape differs
+  from the published one cannot be held whole, so each output takes the §2.2
+  rule by itself: it holds its published colors when the published frame
+  carries them with a matching shape, and is black otherwise. The same holds
+  while the first sample of a new shape is in flight.
 - **Retained zone sets hold the published frame (§4.2).** A zone set's colors
   resolve on the GPU after the scene renders, so retention stores no colors
   and resumes as `ReusePublished`. The conditional conversion rev 4 asked for
