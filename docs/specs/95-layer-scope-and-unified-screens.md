@@ -2154,26 +2154,65 @@ an edit and apply of the stored layout to remove one. A scene switch between
 the writes could lose or return the screen, the apply brought any other
 stored edit to that layout live, and lights had no patch at all.
 
-The daemon now does this in the membership write itself, for lights and
-screens alike, on all three routes that change a zone's outputs:
-`POST /scene/members/edit`, which Studio uses, and the per-zone
-`POST /scene/zones/{zone}/members` and
-`DELETE /scene/zones/{zone}/members/{member}`. When the edited
-zone is the primary zone of a scene with no other LED zone, each output that
-left the zone is removed from the active layout and each output the zone
-holds after the edit is put at its index there, on the layout as published
-and as stored. The stored layout is persisted first, and the published one
-is replaced inside the scene commit, so the zone and the layout it follows
-change at one revision and the conversion of §6.6 still shares that commit.
-A refused commit puts the stored layout back. Only the outputs the edit
-names travel: an output the zone holds that the layout does not know is not
-adopted by an edit about something else, and a stored edit that was never
-applied stays stored and unapplied. The edit holds the layout guard an
-activation takes, so no scene switch lands between the read of the layout
-and the commit. Replaying a receipt reversed takes the edit back out of the
-layout the same way, so undo and redo are each one write. Studio sends the
-membership edit and nothing after it. A scene with zones of its own keeps
-its members itself, and its edits leave the layout alone.
+The daemon now does this in the membership write itself, on all three routes
+that change a zone's outputs: `POST /scene/members/edit`, which Studio uses,
+and the per-zone `POST /scene/zones/{zone}/members` and
+`DELETE /scene/zones/{zone}/members/{member}`. When the edited zone is the
+primary zone of a scene with no other LED zone, the write reaches the active
+layout as published and as stored:
+
+- An output that arrives in the zone, light or screen, is put at its index
+  in the layout. When the layout already holds it, the placement is copied
+  onto that copy and nothing else, as a layout Save does, so a stored field
+  the zone never showed (a brightness, an unapplied edit) is not
+  overwritten. An output that moves within the zone is carried the same way.
+- A screen that leaves the zone leaves the layout.
+- A light that leaves the zone stays in the layout.
+
+The stored layout is persisted first, and the published one is replaced
+inside the scene commit, so the zone and the layout it follows change at one
+revision and the conversion of §6.6 still shares that commit. A refused
+commit puts the stored layout back. Only the outputs the write names travel:
+an output the zone holds that the layout does not know is not adopted by a
+write about something else, and a stored edit that was never applied stays
+stored and unapplied. The write holds the layout guard an activation takes,
+so no scene switch lands between the read of the layout and the commit.
+Studio sends the membership edit and nothing after it. A scene with zones of
+its own keeps its members itself, and its writes leave the layout alone.
+
+**A light stays in the rig. This gap is open.** The layout is the rig, and
+connectivity follows it: a device with lights that neither the layout nor a
+zone targets is disconnected and unmapped, which also stops the face on its
+screen. Taking a light out of a zone is not taking its device out of the
+rig, so a light that leaves a followed zone stays in the layout, its device
+stays connected, and the scene's `unassigned_behavior` applies to it, as it
+does in a scene with zones of its own. The cost is the gap this section
+started from, for lights only: the next rebuild of the zone from the layout
+brings the light back. Saying "in the rig, not in this scene's zone" needs a
+per-scene record the scene schema does not have, and is not built.
+
+A replay follows the same rule. Undoing an assignment and unassigning are
+the same request, so the daemon cannot tell "take back what this receipt put
+in the layout" from "take this light out of the rig" without a mark on the
+receipt, which the wire contract does not carry. Undoing a light's
+assignment therefore empties the zone and leaves the light in the layout,
+and the next rebuild returns it. A screen's undo takes its box back out.
+
+Because a light that left its zone is still in the layout, under whatever id
+that layout gave it, assigning its device again takes that output and mints
+no second one beside it: for a followed zone, the outputs the layout holds
+for a device come before generated ones.
+
+**Startup adopts only from a Default scene that was live.** Releases through
+0.9.0 wrote a member assigned in Studio to the zone alone and relied on the
+next start to adopt, into the active layout, whatever the saved Default
+scene's zone held that the layout lacked. That zone is saved with every
+session and realigned only when the Default scene is activated, so under a
+named scene it is a stale copy, and adopting from it brought back a screen
+taken out, or a deleted display's box, at the next restart. The adoption now
+runs only when the saved session had the Default scene active, which is the
+only time its zone says what the rig held. A session saved by an older
+release with the Default scene active is still adopted once.
 
 The renderer keeps its own copy of the published layout until the next
 layout publication, as it did after a membership edit before this. The zone

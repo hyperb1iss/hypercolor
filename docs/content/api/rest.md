@@ -2942,10 +2942,19 @@ committed revision is available in `document.revision` and the response `ETag`.
 
 The primary zone of a scene with no other LED zone follows the active layout:
 activations, layout applies, effect applies, and a restart rebuild it from
-that layout. An edit to such a zone is written to the layout in the same
-commit, as published and as stored: outputs that left the zone leave the
-layout, and outputs the zone holds after the edit are placed at their `index`
-there. Reversed `changes` take the edit back out of the layout the same way.
+that layout. An output that arrives in such a zone, or moves within it, is
+written to the layout in the same commit, as published and as stored: a new
+output is placed at its `index`, and one the layout already holds takes the
+new placement and keeps the rest of its stored copy. A screen that leaves the
+zone leaves the layout too.
+
+A light that leaves the zone stays in the layout, so its device stays in the
+rig, connected, under the scene's `unassigned_behavior`. The next rebuild of
+the zone brings the light back. That holds for a replay as well: undoing an
+assignment is the same request as an unassignment, so the undo empties the
+zone and leaves the light in the layout. Keeping a light out of one
+single-zone scene for good is not supported yet.
+
 A scene with a second LED zone keeps its members itself, and its edits leave
 the layout alone. The two per-zone member routes above write through the same
 way.
@@ -3268,7 +3277,9 @@ member ids, which are the resource identities for later removal.
 When the zone is the primary zone of a scene with no other LED zone, the
 assigned outputs are also written to the active layout that zone follows, in
 the same commit, so they are still there after the next activation, layout
-apply, or restart. See [`POST /scene/members/edit`](#edit_live_scene_members).
+apply, or restart. A device that layout already holds outputs for is assigned
+as those outputs, under the ids the layout gave them. See
+[`POST /scene/members/edit`](#edit_live_scene_members).
 
 **Parameters**
 
@@ -3324,9 +3335,16 @@ Removes one membership by the member id returned in the live zone document. A
 layer whose `scope` names the member keeps the id and stops rendering on it;
 assigning the same output again revives the layer.
 
-When the zone is the primary zone of a scene with no other LED zone, the
-output also leaves the active layout that zone follows, in the same commit,
-so no later rebuild of the zone brings it back.
+When the zone is the primary zone of a scene with no other LED zone, what
+happens to the active layout that zone follows depends on the output:
+
+- **A screen's output** leaves the layout in the same commit, so no later
+  rebuild of the zone brings it back.
+- **A light's output** stays in the layout. The layout is the rig: the device
+  stays connected, and the scene's `unassigned_behavior` applies to it. The
+  next rebuild of the zone from the layout (an activation, a layout apply, an
+  effect apply, a restart) puts the light back in the zone. Keeping a light
+  out of one single-zone scene for good is not supported yet.
 
 **Parameters**
 
