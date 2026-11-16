@@ -25,7 +25,6 @@ pub(super) enum DisplayFinalizeRoute {
 }
 
 impl DisplayFinalizeRoute {
-    #[cfg(test)]
     pub(super) const fn surfaces(&self) -> Option<&GpuDisplayFinalizeSurfaceSet> {
         match self {
             Self::Admitted(surfaces) => Some(surfaces),

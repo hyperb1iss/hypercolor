@@ -13,7 +13,9 @@ use super::super::super::{
 };
 use super::super::admission::AdmissionRetry;
 use super::super::readback::copy_mapped_range_into_surface;
-use super::super::source::{GpuSourceFrame, gpu_source_frame, prepare_display_source_texture};
+use super::super::source::{
+    GpuSourceFrame, cached_source_upload, gpu_source_frame, prepare_display_source_texture,
+};
 #[cfg(test)]
 use super::super::telemetry::record_gpu_display_finalize_blocking_wait;
 use super::super::telemetry::{
@@ -178,6 +180,9 @@ impl GpuSparkleFlinger {
                 ))
             }
         });
+        // Resolved before this route's surfaces are borrowed, like a fade
+        // base: the backdrop may already sit in another route's texture.
+        let shared_scene = self.shared_display_backdrop(scene, params.cache_key);
         let admission_clock = self.admission_clock;
         let device = &self.device;
         let queue = &self.queue;
@@ -198,22 +203,26 @@ impl GpuSparkleFlinger {
 
         let scene_gpu = gpu_source_frame(scene);
         let mut native_screen_leases = Vec::new();
-        let scene_prepared = prepare_display_source_texture(
-            device,
-            queue,
-            pipeline,
-            &mut encoder,
-            &mut surfaces.scene_source,
-            &mut surfaces.scene_source_retry,
-            admission_clock,
-            &mut surfaces.pending_upload_buffers,
-            scene,
-            scene_gpu.as_ref(),
-            "SparkleFlinger Display Scene Source",
-            &mut native_screen_leases,
-            #[cfg(test)]
-            &mut surfaces.scene_upload_count,
-        );
+        let scene_prepared = if shared_scene.is_some() {
+            Ok(true)
+        } else {
+            prepare_display_source_texture(
+                device,
+                queue,
+                pipeline,
+                &mut encoder,
+                &mut surfaces.scene_source,
+                &mut surfaces.scene_source_retry,
+                admission_clock,
+                &mut surfaces.pending_upload_buffers,
+                scene,
+                scene_gpu.as_ref(),
+                "SparkleFlinger Display Scene Source",
+                &mut native_screen_leases,
+                #[cfg(test)]
+                &mut surfaces.scene_upload_count,
+            )
+        };
         match scene_prepared {
             Ok(true) => {}
             Ok(false) => {
@@ -268,10 +277,14 @@ impl GpuSparkleFlinger {
             }
         }
 
-        let scene_view = scene_gpu
+        let scene_view = shared_scene
             .as_ref()
-            .filter(|frame| !frame.needs_display_source_copy())
-            .map(GpuSourceFrame::view)
+            .or_else(|| {
+                scene_gpu
+                    .as_ref()
+                    .filter(|frame| !frame.needs_display_source_copy())
+                    .map(GpuSourceFrame::view)
+            })
             .unwrap_or_else(|| {
                 &surfaces
                     .scene_source
@@ -573,6 +586,37 @@ impl GpuSparkleFlinger {
                 finish_yuv420_display_readback(pending).map(GpuDisplayFinalizeFrame::Yuv420)
             }
         }
+    }
+
+    /// The texture another route already uploaded `backdrop` into, for
+    /// `route` to read instead of uploading the same pixels again.
+    ///
+    /// Screens placed by one zone share that zone's frame while each route
+    /// keeps a source texture of its own, and they tend to come due on the
+    /// same tick. One upload of the frame then serves all of them. `None`
+    /// for a frame with no upload identity, for one no other route holds,
+    /// and for one this route's own texture holds already.
+    fn shared_display_backdrop(
+        &self,
+        backdrop: &ProducerFrame,
+        route: DisplayFinalizeCacheKey,
+    ) -> Option<wgpu::TextureView> {
+        let upload = cached_source_upload(backdrop)?;
+        let mut shared = None;
+        for (key, entry) in &self.display_finalize_surfaces {
+            let Some(source) = entry
+                .surfaces()
+                .and_then(|surfaces| surfaces.scene_source.as_ref())
+                .filter(|source| source.cached_upload == Some(upload))
+            else {
+                continue;
+            };
+            if *key == route {
+                return None;
+            }
+            shared.get_or_insert_with(|| source.texture.view.clone());
+        }
+        shared
     }
 
     /// Allocate the route's surfaces unless they already exist, and report
