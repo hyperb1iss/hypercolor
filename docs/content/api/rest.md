@@ -2947,7 +2947,8 @@ commit, as published and as stored: outputs that left the zone leave the
 layout, and outputs the zone holds after the edit are placed at their `index`
 there. Reversed `changes` take the edit back out of the layout the same way.
 A scene with a second LED zone keeps its members itself, and its edits leave
-the layout alone.
+the layout alone. The two per-zone member routes above write through the same
+way.
 
 Scoped layers follow their outputs. When an edit moves every live output of a
 layer's `scope` to one other zone, the layer moves to the top of that zone's
@@ -3264,6 +3265,11 @@ member ids, which are the resource identities for later removal.
 }
 ```
 
+When the zone is the primary zone of a scene with no other LED zone, the
+assigned outputs are also written to the active layout that zone follows, in
+the same commit, so they are still there after the next activation, layout
+apply, or restart. See [`POST /scene/members/edit`](#edit_live_scene_members).
+
 **Parameters**
 
 | Name | In | Type | Required | Description |
@@ -3317,6 +3323,10 @@ Unknown fields are rejected.
 Removes one membership by the member id returned in the live zone document. A
 layer whose `scope` names the member keeps the id and stops rendering on it;
 assigning the same output again revives the layer.
+
+When the zone is the primary zone of a scene with no other LED zone, the
+output also leaves the active layout that zone follows, in the same commit,
+so no later rebuild of the zone brings it back.
 
 **Parameters**
 

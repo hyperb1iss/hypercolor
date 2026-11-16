@@ -2154,8 +2154,11 @@ an edit and apply of the stored layout to remove one. A scene switch between
 the writes could lose or return the screen, the apply brought any other
 stored edit to that layout live, and lights had no patch at all.
 
-The daemon now does this in the membership edit itself
-(`POST /scene/members/edit`), for lights and screens alike. When the edited
+The daemon now does this in the membership write itself, for lights and
+screens alike, on all three routes that change a zone's outputs:
+`POST /scene/members/edit`, which Studio uses, and the per-zone
+`POST /scene/zones/{zone}/members` and
+`DELETE /scene/zones/{zone}/members/{member}`. When the edited
 zone is the primary zone of a scene with no other LED zone, each output that
 left the zone is removed from the active layout and each output the zone
 holds after the edit is put at its index there, on the layout as published
