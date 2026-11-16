@@ -26,6 +26,10 @@
 //!   show them, passes a [`LayerTargetHost`]. Rows then say what each
 //!   layer applies to, and a new layer takes the host's target. Without
 //!   one the panel shows no target at all.
+//! - **History:** a host that keeps an undo history passes a
+//!   [`LayerHistoryHost`]. It then takes every add, removal, and reorder
+//!   in place of the panel's own write, so each is a step it can undo.
+//!   Without one the panel writes for itself.
 //! - **Screens:** a layer limited to screens is a screen's own: it draws
 //!   on the panel, above everything the zone's canvas puts behind it. The
 //!   zone's list leaves such layers out and names each on one line that
@@ -111,6 +115,27 @@ pub struct LayerTargetHost {
     pub fixed: bool,
 }
 
+/// Hears, once, whether an add landed. A boxed closure, not a `Callback`:
+/// one made in the picker's click is disposed with the picker, before the
+/// write lands.
+pub type LayerAddDone = Box<dyn FnOnce(bool)>;
+
+/// What a host that keeps an undo history lends the panel. It takes each
+/// add, removal, and reorder in place of the panel's own write, as one
+/// step it can undo; it reports the outcome and refreshes the stack
+/// itself.
+#[derive(Clone, Copy)]
+pub struct LayerHistoryHost {
+    /// Add a layer: its zone, the request, what it lands on in words, and
+    /// what hears whether it landed.
+    pub add: Callback<(String, api::CreateLayerRequest, String, LayerAddDone)>,
+    /// Remove a layer: its zone, id, and name.
+    pub remove: Callback<(String, SceneLayerId, String)>,
+    /// Trade a layer's place with its neighbor: its zone, the layers it
+    /// is ordered among, its id, 1 for up or -1 for down, and its name.
+    pub reorder: Callback<(String, Vec<SceneLayerId>, SceneLayerId, isize, String)>,
+}
+
 /// How a row's writes report back.
 #[derive(Clone, Copy)]
 pub struct LayerWrites {
@@ -124,6 +149,8 @@ pub struct LayerWrites {
     /// The daemon's capabilities, which decide whether a replace names the
     /// layer's scope. A mount with none sends what every daemon takes.
     pub capabilities: Option<CapabilitiesContext>,
+    /// The host's undo history, when it keeps one.
+    pub history: Option<LayerHistoryHost>,
 }
 
 impl LayerWrites {
@@ -262,6 +289,9 @@ pub fn LayerPanel(
     /// The host's screens, when it shows them.
     #[prop(optional)]
     screens: Option<ScreenHost>,
+    /// The host's undo history, when it keeps one.
+    #[prop(optional)]
+    history: Option<LayerHistoryHost>,
 ) -> impl IntoView {
     let effect_cache = LayerEffectCache::new(HashMap::new());
     // Disclosure preference belongs to a visible stack slot, independently of
@@ -639,6 +669,26 @@ pub fn LayerPanel(
                 }
             }
         }
+        let lands_on = added_to.clone().unwrap_or_else(|| WHOLE_ZONE.to_owned());
+        let report = move |applied: bool| {
+            if !applied {
+                toasts::toast_error("Layer add failed");
+                return;
+            }
+            if let Some(host) = host {
+                host.added.run(added_target.clone());
+            }
+            toasts::toast_success(&match &added_to {
+                Some(target) => format!("Layer added to {target}"),
+                None => "Layer added".to_owned(),
+            });
+        };
+        if let Some(history) = history {
+            history
+                .add
+                .run((zone_id, request, lands_on, Box::new(report)));
+            return;
+        }
         leptos::task::spawn_local(async move {
             let fence = expected_revision.map(|revision| api::Fence { revision, run });
             let applied = matches!(
@@ -646,17 +696,7 @@ pub fn LayerPanel(
                 Ok(api::LayerStackOutcome::Applied(_))
             );
             on_layers_mutated.run(());
-            if !applied {
-                toasts::toast_error("Layer add failed");
-                return;
-            }
-            if let Some(host) = host {
-                host.added.run(added_target);
-            }
-            toasts::toast_success(&match added_to {
-                Some(target) => format!("Layer added to {target}"),
-                None => "Layer added".to_owned(),
-            });
+            report(applied);
         });
     });
 
@@ -928,6 +968,7 @@ pub fn LayerPanel(
                             stack,
                             replaced,
                             capabilities,
+                            history,
                         };
                         let copies = on_screen
                             && view_row.with_untracked(|row| row.as_ref().is_some_and(|row| row.copies));
@@ -1148,13 +1189,21 @@ fn update_layer(zone_id: String, layer: SceneLayer, fence: api::Fence, writes: L
     });
 }
 
-/// Remove a layer, guarded by the `If-Match` precondition.
+/// Remove a layer: as a step of the host's history when it keeps one,
+/// else with a write guarded by the `If-Match` precondition.
 fn delete_layer(
     zone_id: String,
-    layer_id: String,
+    layer_id: SceneLayerId,
+    name: String,
     fence: api::Fence,
-    on_layers_mutated: Callback<()>,
+    writes: LayerWrites,
 ) {
+    if let Some(history) = writes.history {
+        history.remove.run((zone_id, layer_id, name));
+        return;
+    }
+    let on_layers_mutated = writes.mutated;
+    let layer_id = layer_id.to_string();
     leptos::task::spawn_local(async move {
         match api::delete_layer(&zone_id, &layer_id, Some(&fence)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => {
@@ -1170,19 +1219,27 @@ fn delete_layer(
     });
 }
 
-/// Trade a layer's place with its neighbor in `group`, guarded by the
+/// Trade a layer's place with its neighbor in `group`: as a step of the
+/// host's history when it keeps one, else with a write guarded by the
 /// `If-Match` precondition. Layers outside the group keep their slots.
 fn reorder_layer(
     zone_id: String,
-    stack: &[SceneLayer],
-    group: &[SceneLayerId],
+    group: Vec<SceneLayerId>,
     layer_id: SceneLayerId,
     delta: isize,
+    name: String,
     fence: api::Fence,
-    on_layers_mutated: Callback<()>,
+    writes: LayerWrites,
 ) {
-    let order: Vec<SceneLayerId> = stack.iter().map(|layer| layer.id).collect();
-    let Some(layer_ids) = reorder_within(&order, group, layer_id, delta) else {
+    if let Some(history) = writes.history {
+        history.reorder.run((zone_id, group, layer_id, delta, name));
+        return;
+    }
+    let on_layers_mutated = writes.mutated;
+    let order: Vec<SceneLayerId> = writes
+        .stack
+        .with_untracked(|stack| stack.iter().map(|layer| layer.id).collect());
+    let Some(layer_ids) = reorder_within(&order, &group, layer_id, delta) else {
         return;
     };
     leptos::task::spawn_local(async move {
