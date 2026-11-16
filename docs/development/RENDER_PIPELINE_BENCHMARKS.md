@@ -43,6 +43,36 @@ The gate covers six benchmark ids. Five come from `bench-daemon`
 Run both suites, or `just bench`, before reading the gate as complete; the gate
 silently skips ids with no Criterion output.
 
+## Whole-Daemon A/B
+
+Criterion measures one function. A change that moves work between the render
+thread, the GPU queue, and the display workers needs two daemons side by side:
+
+```bash
+scripts/rig-ab/ab.sh target/rig-ab/run1 8 40 \
+  base=/path/to/base/target/preview/hypercolor-daemon=/path/to/base/e2e/harness/browser-config.toml \
+  head=target/preview/hypercolor-daemon
+scripts/rig-ab/report.py target/rig-ab/run1 base head
+```
+
+Each pair starts one daemon per label at the same moment, each in its own
+network namespace with private state, and samples every rendered frame of both
+over the same window. The rig is simulated: one zone running an animated native
+effect, DDP strips that end in sockets on loopback, and simulated LCD panels
+with no face. No driver but the pixel driver is enabled, so nothing touches real
+hardware or a daemon already running on the machine. The report gives
+`total_ms`, `composition_ms`, and `wake_late_ms` at p50/p95/p99 per run, the
+spread across runs, and paired differences against the first label.
+
+Run pairs concurrently, never one build after the other: on a machine doing
+anything else, the gap between two sequential runs is larger than most changes.
+Read `wake_late_ms` with care. It follows the sub-millisecond phase at which the
+previous frame ended, so it shifts whenever frame time changes, in either
+direction, with no change in work.
+
+`RIG_AB_DRIVER=parity.py` swaps the sampler for a capture of each panel's
+encoded frame under a still effect, to compare two builds byte for byte.
+
 ## SparkleFlinger Scenarios
 
 `daemon_sparkleflinger` covers the compositor decision surface:
