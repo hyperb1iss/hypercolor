@@ -589,7 +589,7 @@ impl Screens {
             studio.history.add_layers(
                 name.clone(),
                 adds,
-                Callback::new(move |outcome: AddOutcome| {
+                Box::new(move |outcome: AddOutcome| {
                     let words = add_outcome_words(&name, &outcome.landed, &outcome.failed);
                     if outcome.failed.is_empty() {
                         toasts::toast_success(&words);

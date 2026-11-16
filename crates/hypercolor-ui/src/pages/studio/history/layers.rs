@@ -41,6 +41,11 @@ pub struct AddOutcome {
     pub outputs: Vec<String>,
 }
 
+/// Hears how an add came out, once. A boxed closure, not a `Callback`: an
+/// add is asked for from the picker's click, and a `Callback` made there
+/// is disposed with the picker, before the write lands.
+pub type AddDone = Box<dyn FnOnce(AddOutcome)>;
+
 /// The request that makes `layer` again, limited to the outputs of its
 /// scope `zone` still holds. `None` when it named outputs and none is
 /// left: the layer would have nothing to draw on.
@@ -99,16 +104,11 @@ impl StudioHistory {
     /// `done` how it came out. A failure stops the rest, which are
     /// reported with it; what landed before stays, and is what the step
     /// undoes.
-    pub fn add_layers(self, name: String, adds: Vec<LayerAdd>, done: Callback<AddOutcome>) {
+    pub fn add_layers(self, name: String, adds: Vec<LayerAdd>, done: AddDone) {
         self.when_free(Waiting::AddLayers { name, adds, done });
     }
 
-    pub(super) fn add_layers_now(
-        self,
-        name: String,
-        adds: Vec<LayerAdd>,
-        done: Callback<AddOutcome>,
-    ) {
+    pub(super) fn add_layers_now(self, name: String, adds: Vec<LayerAdd>, done: AddDone) {
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -160,7 +160,7 @@ impl StudioHistory {
             if !outcome.failed.is_empty() {
                 self.resync(generation).await;
             }
-            let _ = done.try_run(outcome);
+            done(outcome);
             self.refresh.run(());
             self.finish(generation);
         });

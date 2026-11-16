@@ -41,7 +41,7 @@ mod zones;
 pub use announce::{DeviceLookup, ZoneLookup, carried_announcement, replay_announcement};
 
 pub use held::{members_landed, resolve_deletion, settles_by_key};
-pub use layers::{AddOutcome, AddedLayer, LayerAdd, recreate_request};
+pub use layers::{AddDone, AddOutcome, AddedLayer, LayerAdd, recreate_request};
 pub use zones::{
     DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
 };
@@ -572,7 +572,7 @@ enum Waiting {
     AddLayers {
         name: String,
         adds: Vec<LayerAdd>,
-        done: Callback<layers::AddOutcome>,
+        done: layers::AddDone,
     },
     /// The rest of the undo or redo `item` held, now its first write is
     /// known to have landed: `did` is the entry that undoes what that
