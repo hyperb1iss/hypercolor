@@ -2940,6 +2940,15 @@ unchanged. The response contains the committed `document` and canonical
 `changes` receipts with complete output snapshots for undo and redo. The
 committed revision is available in `document.revision` and the response `ETag`.
 
+The primary zone of a scene with no other LED zone follows the active layout:
+activations, layout applies, effect applies, and a restart rebuild it from
+that layout. An edit to such a zone is written to the layout in the same
+commit, as published and as stored: outputs that left the zone leave the
+layout, and outputs the zone holds after the edit are placed at their `index`
+there. Reversed `changes` take the edit back out of the layout the same way.
+A scene with a second LED zone keeps its members itself, and its edits leave
+the layout alone.
+
 Scoped layers follow their outputs. When an edit moves every live output of a
 layer's `scope` to one other zone, the layer moves to the top of that zone's
 stack with its id and scope intact. When it moves only some of them, the layer

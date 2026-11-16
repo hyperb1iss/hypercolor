@@ -51,6 +51,8 @@ A card in the open zone carries exactly two trailing icons:
 
 **Identify** flashes the device's LEDs through the daemon so you can match the card to a physical light, and a toast confirms the flash. **Move to** opens the move menu described below, hanging from the card's **⋯**. **Remove from this zone** sends the device's outputs in this zone to Unassigned.
 
+In a single-zone scene the Main zone is your rig's layout, so a device or screen you add there or remove from it joins or leaves that layout, and stays that way through scene switches and restarts. Every single-zone scene on the same layout follows. See [Where a canvas edit lands](@/studio/layouts.md#where-a-canvas-edit-lands).
+
 **Hide** is a Studio view convenience, not a render change. A hidden output's box fades to a faint gray ghost that ignores clicks, which declutters a busy canvas; the output keeps rendering on your hardware. Hidden state is client-side, kept per scene and per zone in your browser, and it is not the daemon's discovery memory. Use a channel row's eye to hide one output, or the card's eye to hide them all.
 
 Cards in the **Unassigned** section look different. They carry a lightning **Identify** button and a **+** that adds the device to the open tab's zone; hover the **+** to see which zone that is. Their channels fold behind a `N channels` toggle until the device is in a zone.

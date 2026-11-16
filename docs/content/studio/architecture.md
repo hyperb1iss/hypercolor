@@ -257,6 +257,8 @@ Live control editing is separate. `patch_layer_controls` sends `PatchControlsReq
 
 Device adds, moves, unassigns, and their undo and redo all go through `POST /scene/members/edit`. An add from Unassigned sends the `assignment` form with `placements` the UI computed from the rig (`placement::assignment_hints`); a move sends explicit `changes` whose `after` states already carry the arrival geometry from `placement.rs`. Zone create posts to `/scene/zones`, and rename, color, pause, and reorder `PATCH /scene/zones/{zone}`, reordering through `index` against the scene's full zone order (`tab_model::zone_move_index`). A delete's restore also recreates the zone's layers through the layer routes. While Studio is open it lends `ZonesContext::studio_zone_patch` its history's `patch_zone`, so the sidebar's per-zone pause is an undo step there; on other pages the sidebar writes directly. The Unassigned policy waits in the same queue but records no undo step.
 
+A single-zone scene's Main zone is rebuilt from the active named layout on every scene switch, layout apply, effect apply, and restart. The daemon writes a membership edit on such a zone into that layout in the same commit, so Studio sends the edit and nothing after it, and an undo, which replays the receipt reversed, takes it back out of the layout the same way.
+
 ## Capability gating
 
 Multi-zone affordances do not probe. They gate on named capabilities the daemon advertises in `GET /api/v1/system` under `status.capabilities`, exposed through `CapabilitiesContext` (`app.rs`). An absent advertisement means the affordance stays hidden, with no fallback.

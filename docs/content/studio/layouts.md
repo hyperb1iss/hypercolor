@@ -53,7 +53,7 @@ Fit is the fix for a zone whose devices sit small in a corner while the effect p
 
 Which layout an edit changes depends on how many LED zones the scene has:
 
-- **In a single-zone scene**, the Main zone's canvas is your rig. Moving a device there updates the active named layout, which every single-zone scene reads and which seeds the placement of devices joining zones later.
+- **In a single-zone scene**, the Main zone's canvas is your rig. Moving a device there updates the active named layout, which every single-zone scene reads and which seeds the placement of devices joining zones later. Adding a device or a screen to the zone, or removing one, updates that layout too, so the change is still there after a scene switch or a restart, and every single-zone scene on that layout gains or loses the device with it.
 - **In a multi-zone scene**, every zone's canvas belongs to that zone in that scene. Moving a fan in the Keyboard zone changes the Keyboard zone of this scene only; other zones and other scenes keep their own placements.
 
 {% <callout type="tip"> %}
