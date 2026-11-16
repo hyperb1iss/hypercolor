@@ -836,9 +836,7 @@ async fn set_zone_layout_workflow(
         .iter()
         .find(|zone| zone.id == zone_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
-    let follows_active_layout = stored_zone.role == ZoneRole::Primary
-        && stored_zone.display_target.is_none()
-        && primary_zone_follows_active_layout(&scene);
+    let follows_active_layout = followed_primary_zone(&scene) == Some(zone_id);
     let previous_layout = stored_zone.layout.clone();
     let layout = layout_from_placements(&previous_layout, placements)?;
     let zone = mutation
@@ -1004,6 +1002,18 @@ async fn finish_view_mutation(
         revision: commit.revision(),
         commit,
     })
+}
+
+/// The scene's primary zone, when it follows the active layout: the zone
+/// every realign rebuilds from that layout, so a write that should last
+/// there has to reach the layout too.
+fn followed_primary_zone(scene: &Scene) -> Option<ZoneId> {
+    scene
+        .zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary && zone.display_target.is_none())
+        .filter(|_| primary_zone_follows_active_layout(scene))
+        .map(|zone| zone.id)
 }
 
 fn active_scene(mutation: &SceneMutation) -> Result<Scene, DomainError> {

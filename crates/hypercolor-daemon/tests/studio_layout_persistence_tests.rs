@@ -1007,3 +1007,464 @@ async fn a_save_adopts_members_neither_layout_holds_yet() {
         "the adopted member survives the next apply"
     );
 }
+
+// ── Membership edits ─────────────────────────────────────────────────────
+//
+// A device or screen assigned to, or taken out of, a primary zone that
+// follows the active layout is a change to that layout too. The daemon
+// writes it there in the commit that changes the zone.
+
+/// The outputs the live primary zone holds, in order.
+async fn live_members(rig: &Rig) -> Vec<Output> {
+    rig.state
+        .scene_manager
+        .snapshot()
+        .await
+        .active_scene()
+        .and_then(|scene| scene.primary_zone())
+        .map(|zone| zone.layout.zones.clone())
+        .expect("the live scene has a primary zone")
+}
+
+fn ids(outputs: &[Output]) -> Vec<&str> {
+    outputs.iter().map(|output| output.id.as_str()).collect()
+}
+
+/// Outputs as the layout store keeps them: LED positions are generated
+/// from the topology at load, never stored.
+fn as_stored(outputs: &[Output]) -> Vec<Output> {
+    outputs
+        .iter()
+        .cloned()
+        .map(|mut output| {
+            output.led_positions.clear();
+            output
+        })
+        .collect()
+}
+
+/// Send membership changes through the member edit route, fenced by the
+/// revision the editor last saw. Returns the receipt and how many layouts
+/// the edit published through the renderer.
+async fn edit_members(rig: &Rig, changes: serde_json::Value) -> (serde_json::Value, usize) {
+    let response = rig
+        .app
+        .clone()
+        .oneshot(empty_request("GET", "/api/v1/scene".into()))
+        .await
+        .expect("request should succeed");
+    let revision = etag_revision(&response);
+    let scene_id = body_json(response).await["data"]["id"].clone();
+    let mut request = json_request(
+        "POST",
+        "/api/v1/scene/members/edit".into(),
+        json!({ "scene_id": scene_id, "changes": changes }),
+    );
+    request.headers_mut().insert(
+        header::IF_MATCH,
+        format!("\"{revision}\"").parse().expect("valid If-Match"),
+    );
+    let (edited, published) = send(&rig.state, &rig.app, request).await;
+    let status = edited.status();
+    let body = body_json(edited).await;
+    assert_eq!(status, StatusCode::OK, "the member edit answered {body}");
+    (body["data"].clone(), published)
+}
+
+/// Assign `output` to the live primary zone at `index`, the write Studio's
+/// "+" ends in.
+async fn assign(rig: &Rig, output: &Output, index: usize) -> serde_json::Value {
+    let zone = primary_zone(&rig.app).await;
+    let changes = json!([{
+        "before": null,
+        "after": { "zone_id": zone["id"], "index": index, "output": output },
+    }]);
+    edit_members(rig, changes).await.0
+}
+
+/// Take the output `id` out of the live primary zone.
+async fn unassign(rig: &Rig, id: &str) -> serde_json::Value {
+    let zone = primary_zone(&rig.app).await;
+    let members = live_members(rig).await;
+    let index = members
+        .iter()
+        .position(|output| output.id == id)
+        .unwrap_or_else(|| panic!("{id} is a member"));
+    let changes = json!([{
+        "before": { "zone_id": zone["id"], "index": index, "output": members[index] },
+        "after": null,
+    }]);
+    edit_members(rig, changes).await.0
+}
+
+/// Undo a member edit the way Studio's journal does: replay its receipt
+/// reversed, layer moves included.
+async fn undo(rig: &Rig, receipt: &serde_json::Value) -> serde_json::Value {
+    let changes = receipt["changes"]
+        .as_array()
+        .expect("a receipt lists its changes")
+        .iter()
+        .map(|change| json!({ "before": change["after"], "after": change["before"] }))
+        .collect::<Vec<_>>();
+    edit_members(rig, json!(changes)).await.0
+}
+
+async fn reapply_active_layout(rig: &Rig) {
+    let (applied, _) = send(
+        &rig.state,
+        &rig.app,
+        empty_request("POST", format!("/api/v1/layouts/{ACTIVE_LAYOUT_ID}/apply")),
+    )
+    .await;
+    assert_eq!(applied.status(), StatusCode::OK);
+}
+
+/// Switch to `other` and back to the Default scene.
+async fn leave_and_return(rig: &Rig, other: &str) {
+    activate(rig, other).await;
+    let (deactivated, _) = send(
+        &rig.state,
+        &rig.app,
+        empty_request("POST", "/api/v1/scene/deactivate".into()),
+    )
+    .await;
+    assert_eq!(deactivated.status(), StatusCode::OK);
+}
+
+/// Every path that rebuilds a following primary zone from the active
+/// layout, each checked against the members the zone should still hold.
+async fn assert_members_survive_every_realign(rig: &Rig, other_scene: &str, expected: &[&str]) {
+    reapply_active_layout(rig).await;
+    assert_eq!(
+        ids(&live_members(rig).await),
+        expected,
+        "after the active layout is applied again"
+    );
+    leave_and_return(rig, other_scene).await;
+    assert_eq!(
+        ids(&live_members(rig).await),
+        expected,
+        "after leaving for another scene and coming back"
+    );
+    apply_preset(rig).await;
+    assert_eq!(
+        ids(&live_members(rig).await),
+        expected,
+        "after a preset is applied"
+    );
+}
+
+#[tokio::test]
+async fn a_light_assigned_to_a_followed_zone_survives_every_realign() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+
+    assign(&rig, &strip_c_on_another_device(), 2).await;
+    assert_eq!(
+        ids(&live_members(&rig).await),
+        ["strip-a", "strip-b", "strip-c"]
+    );
+
+    assert_members_survive_every_realign(&rig, &gaming, &["strip-a", "strip-b", "strip-c"]).await;
+    activate(&rig, &gaming).await;
+    assert_eq!(
+        ids(&live_members(&rig).await),
+        ["strip-a", "strip-b", "strip-c"],
+        "another scene that follows the layout holds the light too"
+    );
+}
+
+#[tokio::test]
+async fn a_light_unassigned_from_a_followed_zone_stays_out_through_every_realign() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+
+    unassign(&rig, "strip-b").await;
+    assert_eq!(ids(&live_members(&rig).await), ["strip-a"]);
+
+    assert_members_survive_every_realign(&rig, &gaming, &["strip-a"]).await;
+}
+
+#[tokio::test]
+async fn a_member_edit_lands_in_the_active_layout_and_its_store_in_one_commit() {
+    let rig = rig_with_running_effect().await;
+    let revision = scene_revision(&rig.app).await;
+    let zone = primary_zone(&rig.app).await;
+    let mut strip_c = strip_c_on_another_device();
+    strip_c.position = NormalizedPosition::new(0.6, 0.4);
+
+    let (receipt, published) = edit_members(
+        &rig,
+        json!([{
+            "before": null,
+            "after": { "zone_id": zone["id"], "index": 1, "output": strip_c },
+        }]),
+    )
+    .await;
+
+    assert_eq!(
+        published, 0,
+        "the layout changes in the scene commit, not in a publication of its own"
+    );
+    assert_eq!(
+        scene_revision(&rig.app).await,
+        revision + 1,
+        "the zone and the layout it follows change in one commit"
+    );
+    assert_eq!(receipt["document"]["revision"], revision + 1);
+    let live = live_members(&rig).await;
+    assert_eq!(ids(&live), ["strip-a", "strip-c", "strip-b"]);
+    let layout = rig.state.domains.layout.current();
+    let stored = stored_active_layout(&rig);
+    assert_eq!(
+        layout.zones, live,
+        "the layout holds the zone's outputs, in the zone's order"
+    );
+    assert_eq!(stored.zones, as_stored(&live), "and so does its store");
+    for held in [&layout, &stored] {
+        assert_eq!(output_in_layout(held, "strip-c"), (0.6, 0.4));
+        assert_eq!(held.name, "Active");
+        assert_eq!(held.version, 3);
+    }
+}
+
+#[tokio::test]
+async fn undoing_an_assignment_takes_it_back_out_of_the_layout() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    let before = live_members(&rig).await;
+    let layout_before = rig.state.domains.layout.current();
+
+    let receipt = assign(&rig, &strip_c_on_another_device(), 1).await;
+    assert_eq!(
+        ids(&rig.state.domains.layout.current().zones),
+        ["strip-a", "strip-c", "strip-b"]
+    );
+    assert_eq!(
+        ids(&stored_active_layout(&rig).zones),
+        ["strip-a", "strip-c", "strip-b"]
+    );
+    undo(&rig, &receipt).await;
+
+    assert_eq!(live_members(&rig).await, before);
+    assert_eq!(rig.state.domains.layout.current(), layout_before);
+    assert_eq!(stored_active_layout(&rig).zones, as_stored(&before));
+    assert_members_survive_every_realign(&rig, &gaming, &["strip-a", "strip-b"]).await;
+}
+
+#[tokio::test]
+async fn undoing_an_unassignment_puts_it_back_in_the_layout_where_it_was() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    let before = live_members(&rig).await;
+    let layout_before = rig.state.domains.layout.current();
+
+    let receipt = unassign(&rig, "strip-a").await;
+    assert_eq!(ids(&rig.state.domains.layout.current().zones), ["strip-b"]);
+    assert_eq!(ids(&stored_active_layout(&rig).zones), ["strip-b"]);
+    undo(&rig, &receipt).await;
+
+    assert_eq!(live_members(&rig).await, before);
+    assert_eq!(rig.state.domains.layout.current(), layout_before);
+    assert_eq!(stored_active_layout(&rig).zones, as_stored(&before));
+    assert_members_survive_every_realign(&rig, &gaming, &["strip-a", "strip-b"]).await;
+}
+
+#[tokio::test]
+async fn a_member_edit_keeps_stored_layout_edits_that_were_never_applied() {
+    let rig = rig_with_running_effect().await;
+    let mut held_back = strip("strip-x", "ch7");
+    "mock:held-back".clone_into(&mut held_back.device_id);
+    let mut zones = active_layout().zones;
+    zones.push(held_back);
+    store_layout_edit(&rig, json!({ "name": "Renamed", "zones": zones })).await;
+
+    assign(&rig, &strip_c_on_another_device(), 2).await;
+    unassign(&rig, "strip-a").await;
+
+    let stored = stored_active_layout(&rig);
+    assert_eq!(stored.name, "Renamed");
+    assert_eq!(
+        output_ids(&stored),
+        vec!["strip-b", "strip-c", "strip-x"],
+        "the stored layout learns the two edits and keeps its own"
+    );
+    let published = rig.state.domains.layout.current();
+    assert_eq!(published.name, "Active", "the stored edit stays unapplied");
+    assert_eq!(output_ids(&published), vec!["strip-b", "strip-c"]);
+}
+
+#[tokio::test]
+async fn a_member_edit_in_a_scene_with_a_custom_led_zone_leaves_the_layout_alone() {
+    let rig = rig_with_running_effect().await;
+    let (created, _) = send(
+        &rig.state,
+        &rig.app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({ "name": "Desk" }),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let layout_before = rig.state.domains.layout.current();
+    let stored_before = stored_active_layout(&rig);
+
+    assign(&rig, &strip_c_on_another_device(), 2).await;
+    unassign(&rig, "strip-a").await;
+
+    assert_eq!(ids(&live_members(&rig).await), ["strip-b", "strip-c"]);
+    assert_eq!(
+        rig.state.domains.layout.current(),
+        layout_before,
+        "a scene with zones of its own keeps its members itself"
+    );
+    assert_eq!(stored_active_layout(&rig), stored_before);
+    apply_preset(&rig).await;
+    assert_eq!(
+        ids(&live_members(&rig).await),
+        ["strip-b", "strip-c"],
+        "and they survive an apply on their own"
+    );
+}
+
+/// Register a device with a ring of lights and a round panel, the shape
+/// of an AIO pump. Returns its id and the id its outputs carry.
+async fn connect_pump(rig: &Rig) -> (hypercolor_types::device::DeviceId, String) {
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+        DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    };
+    let segment = |name: &str, led_count: u32, topology: DeviceTopologyHint| SegmentInfo {
+        name: name.into(),
+        led_count,
+        topology,
+        color_format: DeviceColorFormat::Rgb,
+        layout_hint: None,
+    };
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Pump".into(),
+        vendor: "TestVendor".into(),
+        family: DeviceFamily::named("test"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
+        segments: vec![
+            segment("Ring", 12, DeviceTopologyHint::Strip),
+            segment(
+                "Display",
+                1,
+                DeviceTopologyHint::Display {
+                    width: 480,
+                    height: 480,
+                    circular: true,
+                    format: hypercolor_types::device::DisplayFrameFormat::default(),
+                },
+            ),
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 12,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: true,
+            display_resolution: Some((480, 480)),
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let layout_device_id =
+        hypercolor_core::device::DeviceLifecycleManager::canonical_layout_device_id(&info, None);
+    let device_id = info.id;
+    let _ = rig.state.device_registry.add(info).await;
+    (device_id, layout_device_id)
+}
+
+/// Assign a device, or the named segments of it, to the live primary zone
+/// the way Studio's "+" does.
+async fn assign_device(rig: &Rig, device_id: &str, segments: &[&str]) {
+    let response = rig
+        .app
+        .clone()
+        .oneshot(empty_request("GET", "/api/v1/scene".into()))
+        .await
+        .expect("request should succeed");
+    let revision = etag_revision(&response);
+    let document = body_json(response).await;
+    let zone = primary_zone(&rig.app).await;
+    let mut request = json_request(
+        "POST",
+        "/api/v1/scene/members/edit".into(),
+        json!({
+            "scene_id": document["data"]["id"],
+            "assignment": {
+                "zone_id": zone["id"],
+                "device_id": device_id,
+                "segments": segments,
+            },
+        }),
+    );
+    request.headers_mut().insert(
+        header::IF_MATCH,
+        format!("\"{revision}\"").parse().expect("valid If-Match"),
+    );
+    let (assigned, _) = send(&rig.state, &rig.app, request).await;
+    let status = assigned.status();
+    let body = body_json(assigned).await;
+    assert_eq!(status, StatusCode::OK, "the assignment answered {body}");
+}
+
+#[tokio::test]
+async fn a_screen_assigned_beside_its_devices_lights_stays_through_layout_repair() {
+    // A placed screen is in the layout its zone follows, under an
+    // automatic id like its device's lights. The pass that repairs the
+    // active layout's automatic outputs against what each connected device
+    // reports, which every device connect and rescan runs, must leave it.
+    use hypercolor_types::device::DeviceState;
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    let (device, pump) = connect_pump(&rig).await;
+    let of_pump = |outputs: &[Output]| {
+        outputs
+            .iter()
+            .filter(|output| output.device_id == pump)
+            .filter_map(|output| output.zone_name.clone())
+            .collect::<Vec<_>>()
+    };
+    assign_device(&rig, &pump, &[]).await;
+    assert_eq!(of_pump(&live_members(&rig).await), ["Ring"]);
+    assign_device(&rig, &pump, &["Display"]).await;
+    assert_eq!(of_pump(&live_members(&rig).await), ["Ring", "Display"]);
+    assert_eq!(
+        of_pump(&rig.state.domains.layout.current().zones),
+        ["Ring", "Display"]
+    );
+
+    assert!(
+        rig.state
+            .device_registry
+            .set_state(&device, DeviceState::Connected)
+            .await
+    );
+    let workflows = rig.state.domains.layout.test_workflows();
+    drive(
+        &rig.state,
+        workflows.sync_active_layout_for_renderable_devices(
+            rig.state.driver_host().discovery_runtime(),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        of_pump(&rig.state.domains.layout.current().zones),
+        ["Ring", "Display"],
+        "the repair leaves a placed screen in the layout"
+    );
+    reapply_active_layout(&rig).await;
+    leave_and_return(&rig, &gaming).await;
+    assert_eq!(of_pump(&live_members(&rig).await), ["Ring", "Display"]);
+}

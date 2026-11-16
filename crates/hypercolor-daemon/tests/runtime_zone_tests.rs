@@ -92,7 +92,8 @@ async fn fixture() -> (AppState, tempfile::TempDir, Scene, RuntimeZoneTarget) {
     mutation
         .activate(scene.id, None, SceneChangeReason::UserActivate)
         .expect("activate fixture");
-    let commit = commit_scene(&state.domains.scene, mutation)
+    // Boxed so the fixture's own future stays under the size clippy allows.
+    let commit = Box::pin(commit_scene(&state.domains.scene, mutation))
         .await
         .expect("seed commit");
     let target = RuntimeZoneTarget {

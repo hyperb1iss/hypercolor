@@ -10,6 +10,8 @@ use hypercolor_types::identity::LayoutId;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 
 use crate::domain::DomainError;
+use crate::domain::commit::SceneCommit;
+use crate::domain::scene::SceneMutation;
 use crate::scene_transactions::LayoutUpdateGuard;
 
 use super::{
@@ -436,6 +438,101 @@ impl LayoutContext {
         })
     }
 
+    /// Commit a membership edit on a primary zone that follows the active
+    /// layout, carrying the edit into that layout in the same commit.
+    ///
+    /// Scene activations, layout publications, effect applies, and the
+    /// startup restore rebuild such a zone from the active layout, so an
+    /// output assigned or unassigned in the zone alone is undone at the
+    /// next rebuild. Only the edit travels: each output in `left` leaves
+    /// by id, and each output in `placed` is put at its index in the zone,
+    /// replacing the copy a layout already holds, on the published layout
+    /// and on the stored entry alike. Whatever else either holds stays as
+    /// it was: a stored edit that was never applied stays stored and
+    /// unapplied, an output the zone holds that neither layout knows is
+    /// not adopted by an edit that does not name it, and auto-layout
+    /// exclusions are left alone. An active layout with no stored entry
+    /// is only published.
+    ///
+    /// The stored entry is persisted first. The published layout is then
+    /// replaced inside the scene commit, so the zone and the layout it
+    /// follows change at one revision and no rebuild reads one without
+    /// the other. The renderer keeps its own copy of the published layout
+    /// until the next layout publication, as it does after any membership
+    /// edit: the zone it renders carries its own outputs.
+    ///
+    /// # Errors
+    ///
+    /// A layout the edit leaves invalid, a layout store that will not
+    /// persist, or the refusal of the scene commit, each after the stored
+    /// entry has been put back, or naming the rollback failure as well
+    /// when it could not be.
+    pub(crate) async fn commit_member_edit_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        mut mutation: SceneMutation,
+        left: &[String],
+        placed: &[(usize, Output)],
+    ) -> Result<SceneCommit, DomainError> {
+        let current = self.current();
+        let layout_id = current.id.clone();
+        let stored = self.catalog.entries().read().await.get(&layout_id).cloned();
+
+        let mut published = current.clone();
+        apply_member_edit(&mut published, left, placed);
+        let mut stored_next = stored.clone();
+        if let Some(layout) = stored_next.as_mut() {
+            apply_member_edit(layout, left, placed);
+        }
+
+        let stored_changed = stored_next != stored;
+        let published_changed = published != current;
+        if published_changed {
+            let engine = SpatialEngine::try_new(published)
+                .map_err(|error| DomainError::validation(error.to_string()))?;
+            mutation.replace_layout_at_commit(guard, self.publication.spatial.clone(), engine);
+        }
+        if stored_changed && let Some(layout) = stored_next {
+            self.catalog
+                .entries()
+                .write()
+                .await
+                .insert(layout_id.clone(), layout);
+            if let Err(error) = self.catalog.persist().await {
+                let rollback = self
+                    .restore_catalog_entry(&layout_id, stored.clone())
+                    .await
+                    .err()
+                    .map(|error| format!("layout store rollback failed: {error}"));
+                return Err(layout_store_persistence_error(
+                    "membership edit",
+                    error,
+                    rollback,
+                ));
+            }
+        }
+
+        match self.publication.scenes().commit_mutation(mutation).await {
+            Ok(commit) => {
+                if stored_changed || published_changed {
+                    self.publish_layout_changed(None, layout_id);
+                }
+                Ok(commit)
+            }
+            Err(error) => {
+                if stored_changed
+                    && let Err(rollback_error) =
+                        self.restore_catalog_entry(&layout_id, stored).await
+                {
+                    return Err(DomainError::Internal(anyhow::anyhow!(
+                        "{error}; layout store rollback failed: {rollback_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn restore_catalog_entry(
         &self,
         layout_id: &str,
@@ -771,6 +868,21 @@ impl LayoutContext {
     }
 }
 
+/// Apply a membership edit to one layout: the outputs that left go, and
+/// each output the zone now holds is put at its index in the zone, lowest
+/// first, as the zone itself was rebuilt.
+fn apply_member_edit(layout: &mut SpatialLayout, left: &[String], placed: &[(usize, Output)]) {
+    layout.zones.retain(|output| {
+        !left.contains(&output.id) && !placed.iter().any(|(_, held)| held.id == output.id)
+    });
+    let mut placed = placed.iter().collect::<Vec<_>>();
+    placed.sort_by_key(|(index, _)| *index);
+    for (index, output) in placed {
+        let index = (*index).min(layout.zones.len());
+        layout.zones.insert(index, output.clone());
+    }
+}
+
 /// Whether the fields a zone layout save carries differ between two copies
 /// of one output.
 fn placement_differs(before: &Output, after: &Output) -> bool {
@@ -795,4 +907,119 @@ fn copy_placement_if_held(layout: &mut SpatialLayout, saved: &Output, moved: boo
         output.orientation = saved.orientation;
     }
     true
+}
+
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use hypercolor_core::bus::HypercolorBus;
+    use hypercolor_core::scene::SceneManager;
+    use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_types::spatial::{
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+        StripDirection,
+    };
+
+    use crate::domain::DomainError;
+    use crate::domain::layout::LayoutContext;
+    use crate::domain::scene::SceneService;
+    use crate::domain::spatial::SpatialService;
+    use crate::scene_transactions::SceneTransactionQueue;
+
+    fn strip(id: &str) -> Output {
+        Output {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            device_id: "mock:controller".to_owned(),
+            zone_name: Some(id.to_owned()),
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(0.5, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 4,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        }
+    }
+
+    /// A scene commit refused after the layout store took a membership
+    /// edit puts the stored layout back, and the published layout, which
+    /// only the commit replaces, never moves.
+    #[tokio::test]
+    async fn a_refused_commit_takes_a_member_edit_back_out_of_the_layout_store() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let layouts_path = tmp.path().join("layouts.json");
+        let layout = SpatialLayout {
+            id: "rig".to_owned(),
+            name: "Rig".to_owned(),
+            description: None,
+            canvas_width: 640,
+            canvas_height: 480,
+            zones: vec![strip("a"), strip("b")],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            version: 1,
+        };
+        let scenes = SceneService::in_memory(
+            SceneManager::with_default_layout(layout.clone()),
+            Arc::new(HypercolorBus::new()),
+        );
+        let spatial = SpatialService::new(SpatialEngine::new(layout.clone()));
+        let context = LayoutContext::new_test_context(
+            HashMap::from([(layout.id.clone(), layout.clone())]),
+            layouts_path.clone(),
+            HashMap::new(),
+            tmp.path().join("layout-auto-exclusions.json"),
+            spatial.clone(),
+            scenes.clone(),
+            SceneTransactionQueue::default(),
+            tmp.path().join("runtime-state.json"),
+        );
+        let published = spatial.layout();
+        let guard = context.acquire_update_guard().await;
+        let stale = scenes.begin_mutation().await;
+        let bystander = scenes.begin_mutation().await;
+        scenes
+            .commit_mutation(bystander)
+            .await
+            .expect("a bystander commit lands first");
+
+        let refused = context
+            .commit_member_edit_under_guard(&guard, stale, &["b".to_owned()], &[])
+            .await;
+
+        assert!(
+            matches!(refused, Err(DomainError::Conflict { .. })),
+            "a commit behind the live revision is refused: {refused:?}"
+        );
+        assert_eq!(spatial.layout(), published);
+        assert_eq!(
+            context.catalog.entries().read().await.get("rig"),
+            Some(&layout)
+        );
+        let on_disk = crate::layout_store::load(&layouts_path).expect("layout store should load");
+        let stored = on_disk.get("rig").expect("the layout stays stored");
+        assert_eq!(
+            stored
+                .zones
+                .iter()
+                .map(|output| output.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"],
+            "the store on disk holds the layout as it was"
+        );
+    }
 }

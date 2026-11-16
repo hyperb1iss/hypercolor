@@ -17,18 +17,42 @@ use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use super::{
     AssignMembersRequest, DomainError, DomainErrorDetails, Output, OutputPlacement, ResourceKind,
-    Scene, SceneTreeContext, ZoneRole, active_scene, check_scene_fence, ensure_live_zone_mutable,
-    live_scene_document, member_placement, mint_missing_outputs, reconcile_member_exclusions,
-    zone_layout_error,
+    Scene, SceneTreeContext, ZoneId, ZoneRole, active_scene, check_scene_fence,
+    ensure_live_zone_mutable, followed_primary_zone, live_scene_document, member_placement,
+    mint_missing_outputs, reconcile_member_exclusions, zone_layout_error,
 };
 
 /// Commit only the named memberships, preserving all unrelated scene data.
 ///
+/// An edit to a primary zone that follows the active layout is written to
+/// that layout in the same commit, stored and published, so the next
+/// rebuild of the zone from the layout keeps it. Replaying a receipt
+/// reversed takes it back out of both the same way.
+///
 /// # Errors
 /// Rejects stale revisions, another active scene, mismatched preconditions,
 /// duplicate output identities, display zones, invalid geometry, and layer
-/// moves that no longer match the stacks, before committing.
+/// moves that no longer match the stacks, before committing. On a zone that
+/// follows the active layout, also a layout the edit leaves invalid and a
+/// layout store that will not persist, with nothing committed.
 pub async fn edit_members(
+    ctx: &SceneTreeContext,
+    request: EditMembersRequest,
+    fence: SceneFence,
+) -> Result<EditMembersResponse, DomainError> {
+    // The layout store write and the scene commit it belongs to finish
+    // together even when the caller goes away between them.
+    let ctx = ctx.clone();
+    crate::audit_log::spawn_attributed(
+        async move { edit_members_workflow(&ctx, request, fence).await },
+    )
+    .await
+    .map_err(|error| {
+        DomainError::Internal(anyhow::anyhow!("membership edit workflow failed: {error}"))
+    })?
+}
+
+async fn edit_members_workflow(
     ctx: &SceneTreeContext,
     mut request: EditMembersRequest,
     fence: SceneFence,
@@ -55,6 +79,10 @@ pub async fn edit_members(
     } else {
         Vec::new()
     };
+    // Taken before the scene is read, so the active layout a following
+    // primary zone is written through to cannot be replaced, and no scene
+    // can be activated against it, between that read and the commit.
+    let layout_guard = ctx.layout.acquire_update_guard().await;
     let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_fence(&mutation, Some(&fence))?;
     let scene_id = mutation.active_scene_for_runtime_mutation("editing zone memberships")?;
@@ -245,7 +273,17 @@ pub async fn edit_members(
         }
     }
     let views = mutation.scenes().screen_views(&committed.id);
-    let commit = ctx.scene.commit(mutation).await?;
+    let commit = match followed_primary_zone(&previous) {
+        Some(zone_id) => {
+            let (left, placed) = layout_edit(&changes, zone_id);
+            ctx.layout
+                .commit_member_edit_under_guard(&layout_guard, mutation, &left, &placed)
+                .await?
+        }
+        None => ctx.scene.commit(mutation).await?,
+    };
+    // Connectivity convergence takes the guard itself.
+    drop(layout_guard);
     ctx.scene.save_runtime_session().await;
     ctx.layout
         .sync_runtime_connectivity(ctx.scene.layout_runtime())
@@ -256,6 +294,28 @@ pub async fn edit_members(
         changes,
         layer_moves,
     })
+}
+
+/// What an edit changes in the layout `zone_id` follows: the ids of the
+/// outputs that left the zone, and each output the zone holds after the
+/// edit with its index there.
+fn layout_edit(changes: &[MemberEdit], zone_id: ZoneId) -> (Vec<String>, Vec<(usize, Output)>) {
+    let held = |state: &Option<MemberState>| {
+        state
+            .as_ref()
+            .filter(|state| state.zone_id == zone_id)
+            .cloned()
+    };
+    let mut left = Vec::new();
+    let mut placed = Vec::new();
+    for change in changes {
+        match (held(&change.before), held(&change.after)) {
+            (_, Some(after)) => placed.push((after.index, after.output)),
+            (Some(before), None) => left.push(before.output.id),
+            (None, None) => {}
+        }
+    }
+    (left, placed)
 }
 
 /// The outputs an edit moves from one zone to another. An output that only
