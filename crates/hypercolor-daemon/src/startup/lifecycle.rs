@@ -752,10 +752,16 @@ impl DaemonState {
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
 
-        // A member assigned in Studio was minted into the scene's primary
-        // zone only; adopt those outputs into the active layout before the
-        // zone is re-aligned to it, or every restart drops them.
-        if restore_last_selection {
+        // Releases through 0.9.0 minted a member assigned in Studio into the
+        // scene's primary zone only; adopt those outputs into the active
+        // layout before the zone is re-aligned to it, or the first start
+        // after such a session drops them. The Default scene's zone is
+        // saved with every session and re-aligned only when the scene is
+        // activated, so it says what the rig held only when it was the live
+        // scene. Under any other scene it is a stale copy, and an output it
+        // still holds may be one the layout has dropped since.
+        let default_scene_was_live = requested_active_scene_id.is_none_or(|id| id.is_default());
+        if restore_last_selection && default_scene_was_live {
             let mut active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
             let adopted = self
                 .domains

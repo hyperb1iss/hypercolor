@@ -438,6 +438,7 @@ impl SceneService {
             persists_scene_content: false,
             preview_scenes_to_clear: HashSet::new(),
             preview_zones_to_clear: HashSet::new(),
+            layout_at_commit: None,
         }
     }
 
@@ -693,6 +694,7 @@ impl SceneService {
             persists_scene_content,
             preview_scenes_to_clear,
             preview_zones_to_clear,
+            layout_at_commit,
         } = mutation;
 
         // Whether this commit changes the named scenes the store holds, and
@@ -766,6 +768,9 @@ impl SceneService {
                 .await;
             announce_display_zones(listed_display_zones(&manager), &candidate, &mut events);
             *manager = candidate;
+            if let Some(layout) = layout_at_commit {
+                layout.spatial.replace(layout.engine);
+            }
             if store_changes {
                 self.move_store_projection(ticket.generation());
             }
@@ -1273,9 +1278,43 @@ pub struct SceneMutation {
     persists_scene_content: bool,
     preview_scenes_to_clear: HashSet<SceneId>,
     preview_zones_to_clear: HashSet<(SceneId, ZoneId)>,
+    /// Boxed so a mutation, which many futures hold across an await, stays
+    /// the size it was.
+    layout_at_commit: Option<Box<LayoutAtCommit>>,
+}
+
+/// The active layout a mutation replaces in its own commit.
+struct LayoutAtCommit {
+    spatial: SpatialService,
+    engine: SpatialEngine,
+}
+
+impl std::fmt::Debug for LayoutAtCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LayoutAtCommit")
+            .field("layout_id", &self.engine.layout().id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SceneMutation {
+    /// Replace the active layout in this mutation's commit.
+    ///
+    /// A primary zone that follows the active layout is rebuilt from it, so
+    /// a write that changes which outputs such a zone holds changes the
+    /// layout too. Both land under the lock that admits the commit, at one
+    /// revision, and neither lands when the commit is refused. The guard is
+    /// the caller's proof that no layout publication can land between its
+    /// read of the layout and the commit.
+    pub(crate) fn replace_layout_at_commit(
+        &mut self,
+        _guard: &LayoutUpdateGuard,
+        spatial: SpatialService,
+        engine: SpatialEngine,
+    ) {
+        self.layout_at_commit = Some(Box::new(LayoutAtCommit { spatial, engine }));
+    }
+
     fn record_zone_change(&mut self, scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) {
         self.events.retain(|event| {
             !matches!(

@@ -35,7 +35,7 @@ The Main zone is the scene's **primary** zone, and it is permanent. You can rena
 New scenes name it **Main**. A primary zone with a blank name, or with a name older versions seeded ("Primary" or "Default zone"), shows as **Main** too. Rename it and your name takes over immediately.
 
 {% <callout type="tip"> %}
-In a single-zone scene, the Main zone's canvas is your rig's layout: moving a device there updates the active named layout that every single-zone scene reads. Once a scene has a second LED zone, every zone's canvas belongs to that scene alone. See [Layouts](@/studio/layouts.md#where-a-canvas-edit-lands).
+In a single-zone scene, the Main zone's canvas is your rig's layout: moving a device there, adding one, or removing a screen updates the active named layout that every single-zone scene reads. A light you remove stays in that layout and returns at the next scene switch. Once a scene has a second LED zone, every zone's canvas belongs to that scene alone. See [Layouts](@/studio/layouts.md#where-a-canvas-edit-lands).
 {% </callout> %}
 
 ## Adding a zone

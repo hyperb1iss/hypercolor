@@ -9,7 +9,7 @@
 > breaking the base effect underneath, and then makes a screen's face nothing
 > more than a layer scoped to that screen.
 
-**Status:** Draft rev 2. W1 (per-screen backdrops, section 5.10) is implemented on the `nova/screen-backdrops` branch and is not merged; nothing else in this spec is built. Rev 2 folds in two independent reviews (engine and rendering; compatibility, migration, and UX). Section 13 records every finding and what became of it.
+**Status:** Built. All six waves are merged: W1 in #568, W2 and W3 in #571, W4 in #572, W5 in #573, W6 in #574. Sections 5.11, 6.8, and 7.7 record where each build differs from the text. Rev 2 folded in two independent reviews (engine and rendering; compatibility, migration, and UX), and section 13 records every finding and what became of it.
 **Crates:** `hypercolor-types` (layer and scene types, API contracts), `hypercolor-core` (scene manager, spatial, effect pool), `hypercolor-daemon` (scene domain, render zones, SparkleFlinger, display lane and output, REST, MCP, stores), `hypercolor-ui` (Studio)
 **Supersedes:** Design 73 §6.2 "Screens" and the Screens rows of §6.3 and §9; Spec 65 §4 (the Screen row), §6.6, §6.7, §8; Spec 60 §5.2.1 "Per-layer canvas dimensions"; Spec 69 §8 W4.2. Section 3 lists each one with its reason.
 **Amends:** Spec 60 §5.1 and §8.2; Spec 64 §6.1 and §9.6; Spec 69 §3.6; Spec 86 §3.1, §3.2, §5.1, §5.2
@@ -2144,16 +2144,96 @@ undoable change of target. The layer is deleted only when every screen it is
 on is selected. Removing a face saved with the screen asks first, since it
 goes from every scene and cannot be undone.
 
-**A zone that follows the rig's layout tells that layout about its screens.**
+**A zone that follows the rig's layout writes its members through to it.**
 A scene with one zone of lights rebuilds that zone from the active layout on
-every scene switch, effect change, and restart, so a screen placed only in
-the zone was gone at the next one. After a membership write lands a screen in
-such a zone Studio saves the zone's layout (`PUT /scene/zones/{id}/layout`),
-which carries an output neither layout knows into both. After one takes a
-screen out, Studio removes the output from the stored layout and applies it,
-since the followed layout never loses an output on its own. Both run inside
-the journal's operation, for undo and redo too. Applying brings any other
-stored edit to that layout live with it.
+every scene switch, layout apply, effect change, and restart, so an output
+placed only in the zone was gone at the next one and an output taken out came
+back. W6 shipped a patch for screens alone, as two more writes from Studio
+after the membership edit: a save of the zone's layout to add a screen, and
+an edit and apply of the stored layout to remove one. A scene switch between
+the writes could lose or return the screen, the apply brought any other
+stored edit to that layout live, and lights had no patch at all.
+
+The daemon now does this in the membership write itself, on all three routes
+that change a zone's outputs: `POST /scene/members/edit`, which Studio uses,
+and the per-zone `POST /scene/zones/{zone}/members` and
+`DELETE /scene/zones/{zone}/members/{member}`. When the edited zone is the
+primary zone of a scene with no other LED zone, the write reaches the active
+layout as published and as stored:
+
+- An output that arrives in the zone, light or screen, is put at its index
+  in the layout. When the layout already holds it, the placement is copied
+  onto that copy and nothing else, as a layout Save does, so a stored field
+  the zone never showed (a brightness, an unapplied edit) is not
+  overwritten. An output that moves within the zone is carried the same way.
+- A screen that leaves the zone leaves the layout.
+- A light that leaves the zone stays in the layout.
+
+The stored layout is persisted first, and the published one is replaced
+inside the scene commit, so the zone and the layout it follows change at one
+revision and the conversion of §6.6 still shares that commit. A refused
+commit puts the stored layout back. Only the outputs the write names travel:
+an output the zone holds that the layout does not know is not adopted by a
+write about something else, and a stored edit that was never applied stays
+stored and unapplied. The write holds the layout guard an activation takes,
+so no scene switch lands between the read of the layout and the commit.
+Studio sends the membership edit and nothing after it. A scene with zones of
+its own keeps its members itself, and its writes leave the layout alone.
+
+**A light stays in the rig. This gap is open.** The layout is the rig, and
+connectivity follows it: a device with lights that neither the layout nor a
+zone targets is disconnected and unmapped, which also stops the face on its
+screen. Taking a light out of a zone is not taking its device out of the
+rig, so a light that leaves a followed zone stays in the layout, its device
+stays connected, and the scene's `unassigned_behavior` applies to it, as it
+does in a scene with zones of its own. The cost is the gap this section
+started from, for lights only: the next rebuild of the zone from the layout
+brings the light back. Saying "in the rig, not in this scene's zone" needs a
+per-scene record the scene schema does not have, and is not built.
+
+A replay follows the same rule. Undoing an assignment and unassigning are
+the same request, so the daemon cannot tell "take back what this receipt put
+in the layout" from "take this light out of the rig" without a mark on the
+receipt, which the wire contract does not carry. Undoing a light's
+assignment therefore empties the zone and leaves the light in the layout,
+and the next rebuild returns it. A screen's undo takes its box back out.
+
+Because a light that left its zone is still in the layout, under whatever id
+that layout gave it, assigning its device again takes that output and mints
+no second one beside it: for a followed zone, the outputs the layout holds
+for a device come before generated ones.
+
+**Startup adopts only from a Default scene that was live.** Releases through
+0.9.0 wrote a member assigned in Studio to the zone alone and relied on the
+next start to adopt, into the active layout, whatever the saved Default
+scene's zone held that the layout lacked. That zone is saved with every
+session and realigned only when the Default scene is activated, so under a
+named scene it is a stale copy, and adopting from it brought back a screen
+taken out, or a deleted display's box, at the next restart. The adoption now
+runs only when the saved session had the Default scene active, which is the
+only time its zone says what the rig held. A session saved by an older
+release with the Default scene active is still adopted once.
+
+The renderer keeps its own copy of the published layout until the next
+layout publication, as it did after a membership edit before this. The zone
+it renders carries its own outputs, so only idle and sleep frames, which
+are sampled through that copy, wait for the publication.
+
+A screen's box now reaches the active layout whenever it is placed in such a
+zone, where the repair of automatic outputs reads it
+(`reconcile_auto_layout_zones_for_device`, run on every device connect,
+rescan, and membership edit). The box carries an automatic id, and the
+repair pruned automatic outputs of a connected device whose segment was not
+one of its lights, so a placed screen of a device with lights was taken back
+out of the layout at the next repair. The repair now keeps a screen's box
+while its device reports that screen.
+
+Deleting a display follows from this. Its box in a zone that follows the
+layout is now in the layout, the deletion prunes the layout, and the zone
+loses the box while the display is still known. The face returns to a
+stored zone and is removed with the display, as the stored face of a screen
+no zone places is. In a scene with zones of its own no layout holds the
+box, so it stays in its zone and the layers wait as §6.8 describes.
 
 **A screen's row leads with the face's settings.** How the layer blends
 (mode, amount, and the looks) sits under them in a disclosure that starts

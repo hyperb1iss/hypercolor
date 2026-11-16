@@ -861,53 +861,6 @@ impl Rig {
             .collect()
     }
 
-    /// Save the primary zone's layout as it stands, the write Studio makes
-    /// when a gesture on the canvas ends.
-    async fn save_primary_layout(&self) {
-        let document = self.ok(Method::GET, "/api/v1/scene", None).await;
-        let primary = document["zones"]
-            .as_array()
-            .expect("zones")
-            .iter()
-            .find(|zone| zone["role"] == "primary")
-            .expect("the scene has a primary zone");
-        self.ok(
-            Method::PUT,
-            &format!(
-                "/api/v1/scene/zones/{}/layout",
-                primary["id"].as_str().expect("zone id")
-            ),
-            Some(json!({ "placements": primary["layout"]["placements"] })),
-        )
-        .await;
-    }
-
-    /// Take one output out of the active layout, as Studio does for a
-    /// screen that left a zone following that layout: the stored layout
-    /// loses the output, and applying it makes that live.
-    async fn forget_in_active_layout(&self, output_id: &str) {
-        let active = self.ok(Method::GET, "/api/v1/layouts/active", None).await;
-        let id = active["id"].as_str().expect("layout id");
-        let stored = self
-            .ok(Method::GET, &format!("/api/v1/layouts/{id}"), None)
-            .await;
-        let kept = stored["zones"]
-            .as_array()
-            .expect("the layout lists its outputs")
-            .iter()
-            .filter(|output| output["id"] != output_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        self.ok(
-            Method::PUT,
-            &format!("/api/v1/layouts/{id}"),
-            Some(json!({ "zones": kept })),
-        )
-        .await;
-        self.ok(Method::POST, &format!("/api/v1/layouts/{id}/apply"), None)
-            .await;
-    }
-
     async fn put_scene_face(&self, screen: &Screen, face: EffectId) -> Vec<String> {
         let written = self
             .ok(
@@ -1023,14 +976,16 @@ async fn a_screen_placed_in_a_zone_that_follows_a_layout_stays_placed_across_sce
     );
     let placed = rig.placed_screens(&screen).await;
     assert_eq!(placed.len(), 1);
-    // Studio saves the zone's layout once the screen has landed, which is
-    // what carries an output the layout has never held into it.
-    rig.save_primary_layout().await;
 
-    for _ in 0..2 {
+    // The member edit is the only write: it carries an output the layout
+    // has never held into it, stored and live.
+    for round in 0..2 {
         activate(ids[1]).await;
         assert_eq!(rig.scene().await.id, ids[1]);
         activate(ids[0]).await;
+        if round == 1 {
+            rig.apply_layout(&bare).await;
+        }
         let scene = rig.scene().await;
         assert_eq!(scene.id, ids[0]);
         let back = rig.placed_screens(&screen).await;
@@ -1058,18 +1013,20 @@ async fn a_screen_placed_in_a_zone_that_follows_a_layout_stays_placed_across_sce
         );
     }
 
-    // Taking the screen out of the zone lasts once the layout that
-    // learned of the box forgets it too, which is the second write Studio
-    // sends: a followed layout only ever gains outputs from the zone.
+    // Taking the screen out of the zone takes it out of the layout in
+    // the same write, so no rebuild of the zone brings it back.
     rig.reverse(&answer["data"]).await;
     assert!(rig.placed_screens(&screen).await.is_empty());
-    rig.forget_in_active_layout(&placed[0].id).await;
-    assert!(rig.placed_screens(&screen).await.is_empty());
+    rig.apply_layout(&bare).await;
+    assert!(
+        rig.placed_screens(&screen).await.is_empty(),
+        "a screen taken out of the zone stays out when its layout is applied again"
+    );
     activate(ids[1]).await;
     activate(ids[0]).await;
     assert!(
         rig.placed_screens(&screen).await.is_empty(),
-        "a screen taken out of the zone stays out after coming back"
+        "and after leaving for another scene and coming back"
     );
     let scene = rig.scene().await;
     assert!(
@@ -1829,6 +1786,14 @@ async fn a_layer_write_that_makes_a_stored_zone_convertible_answers_with_the_vie
 async fn deleting_a_display_removes_its_view_and_leaves_its_layers_waiting() {
     let rig = rig();
     let face = rig.face("clock").await;
+    // A scene with a zone of its own keeps its placements itself, so no
+    // layout holds the screen's box and nothing takes it out of the zone.
+    rig.ok(
+        Method::POST,
+        "/api/v1/scene/zones",
+        Some(json!({ "name": "Desk" })),
+    )
+    .await;
     let screen = rig.screen("Pump", true).await;
     let other = rig.screen("Fan", true).await;
     rig.put_face(&screen, face, "scene").await;
@@ -1879,6 +1844,94 @@ async fn deleting_a_display_removes_its_view_and_leaves_its_layers_waiting() {
             .as_ref()
             .is_none_or(|target| target.device_id != screen.device)),
         "and nothing renders for the deleted device"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_display_placed_in_a_followed_zone_takes_its_box_out_for_good() {
+    // The zone follows the active layout, so placing the screen wrote its
+    // box there too. Deleting the display prunes the layout, the zone
+    // follows, and nothing is left to bring the display back.
+    let rig = rig();
+    let face = rig.face("clock").await;
+    let screen = rig.screen("Pump", true).await;
+    let other = rig.screen("Fan", true).await;
+    rig.put_face(&screen, face, "scene").await;
+    let layout_id = rig.ok(Method::GET, "/api/v1/layouts/active", None).await["id"]
+        .as_str()
+        .expect("layout id")
+        .to_owned();
+    assert!(
+        rig.state
+            .domains
+            .layout
+            .current()
+            .zones
+            .iter()
+            .any(|output| output.id == screen.output),
+        "the layout the zone follows holds the placed screen"
+    );
+    let mut events = rig.state.event_bus.subscribe_all();
+
+    rig.ok(
+        Method::DELETE,
+        &format!("/api/v1/simulators/displays/{}", screen.device),
+        None,
+    )
+    .await;
+
+    assert!(
+        removed_display_zones(&mut events).contains(&screen.view),
+        "the view's removal is published under its id"
+    );
+    for realign in 0..3 {
+        if realign == 1 {
+            rig.apply_layout(&layout_id).await;
+        }
+        if realign == 2 {
+            rig.ok(Method::POST, "/api/v1/scene/deactivate", Some(json!({})))
+                .await;
+        }
+        let document = rig.ok(Method::GET, "/api/v1/scene", None).await;
+        assert_eq!(
+            display_zone_ids(&document),
+            vec![other.view.clone()],
+            "a deleted display is not listed, and no rebuild of the zone lists it again"
+        );
+        assert!(rig.placed_screens(&screen).await.is_empty());
+        assert_eq!(rig.placed_screens(&other).await.len(), 1);
+        assert!(
+            rig.state
+                .domains
+                .layout
+                .current()
+                .zones
+                .iter()
+                .all(|output| output.device_id != screen.layout_id),
+            "the layout no longer holds its box"
+        );
+    }
+    let manager = rig.state.scene_manager.snapshot().await;
+    let scene = manager.active_scene().expect("a scene is active");
+    assert!(
+        scene.display_zone_for(screen.device).is_none(),
+        "no zone is stored for a display that is gone"
+    );
+    assert!(
+        scene
+            .zones
+            .iter()
+            .flat_map(|zone| zone.layers.iter())
+            .filter_map(|layer| layer.scope.as_ref())
+            .all(|scope| !scope.contains(&screen.output)),
+        "and its face went with it, as the face of an unplaced display does"
+    );
+    assert!(
+        manager.resolved_zones().iter().all(|zone| zone
+            .display_target
+            .as_ref()
+            .is_none_or(|target| target.device_id != screen.device)),
+        "nothing renders for the deleted device"
     );
 }
 

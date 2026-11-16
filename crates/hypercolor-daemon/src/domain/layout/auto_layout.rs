@@ -235,8 +235,16 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
     if eligible_segments.is_empty() {
         return 0;
     }
-    let expected_segment_names = eligible_segments
+    // A screen someone placed carries an automatic id like the lights do,
+    // so the prune below reads it too. It stays while its device reports
+    // that screen: nothing here repairs a screen's box, and nothing but an
+    // assignment adds one.
+    let expected_segment_names = device_info
+        .segments
         .iter()
+        .filter(|segment| {
+            segment.led_count > 0 || matches!(segment.topology, DeviceTopologyHint::Display { .. })
+        })
         .map(|segment| segment.name.as_str())
         .collect::<HashSet<_>>();
     let before_len = layout.zones.len();
@@ -686,6 +694,36 @@ mod tests {
         );
         assert_eq!(empty.zones[0].name, lone.name);
         assert_eq!(empty.zones[0].position, NormalizedPosition::new(0.5, 0.5));
+    }
+
+    #[test]
+    fn reconcile_keeps_a_placed_screen_beside_its_devices_lights() {
+        // A screen someone placed carries an automatic id like the lights
+        // of its device. The repair that prunes automatic outputs whose
+        // segment is gone must not read a screen as one of those.
+        let info = device(vec![
+            segment("Ring", 12, DeviceTopologyHint::Ring { count: 12 }),
+            segment(
+                "Display",
+                0,
+                DeviceTopologyHint::Display {
+                    width: 480,
+                    height: 480,
+                    circular: true,
+                    format: DisplayFrameFormat::Jpeg,
+                },
+            ),
+        ]);
+        let mut layout = layout();
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:pump", &info);
+        let _ = append_screen_outputs_for_device(&mut layout, "usb:pump", &info);
+        let placed = layout.zones.clone();
+
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:pump", &info),
+            0
+        );
+        assert_eq!(layout.zones, placed);
     }
 
     #[test]
