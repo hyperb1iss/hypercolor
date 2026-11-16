@@ -310,14 +310,25 @@ test -f "$second_trunk_cargo_path"
 
 # The terminal tests below type into a shell and wait for what each
 # keystroke causes. Every wait is a condition with a generous ceiling, so a
-# slow runner makes them slower and never makes them fail.
+# slow runner makes them slower and never makes them fail. A wait that
+# does give up says which one, because the keystrokes after it still go
+# out and the first condition that failed is the one that explains the
+# rest.
 wait_until() {
   local _
   for _ in {1..3000}; do
     "$@" 2>/dev/null && return 0
     sleep 0.01
   done
+  echo "cargo-cache-build-tests.sh: gave up waiting for: $*" >&2
   return 1
+}
+# What a terminal session printed, when it ended some way the test does
+# not accept. The sandbox is removed on exit, so this is the only record.
+report_terminal_session() {
+  local name="$1" status="$2" output="$3"
+  echo "cargo-cache-build-tests.sh: $name session ended with status $status; it printed:" >&2
+  cat -v "$output" >&2 || true
 }
 process_gone() { ! kill -0 "$1" 2>/dev/null; }
 process_stopped() { [ "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" = T ]; }
@@ -346,6 +357,9 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
     printf 'exit\n'
   } | timeout 120 script -qec 'bash --noprofile --norc -i' /dev/null \
     >"$SANDBOX/redirected-pty-output" || redirected_status=$?
+  if [ "$redirected_status" -ne 0 ] && [ "$redirected_status" -ne 130 ]; then
+    report_terminal_session redirected "$redirected_status" "$SANDBOX/redirected-pty-output"
+  fi
   test "$redirected_status" -eq 0 || test "$redirected_status" -eq 130
   grep -Fq '^C' "$SANDBOX/redirected-pty-output"
   redirected_child_pid="$(<"$SANDBOX/redirected-child.pid")"
@@ -372,6 +386,9 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
     printf 'exit\n'
   } | timeout 120 script -qec 'bash --noprofile --norc -i' /dev/null \
     >"$SANDBOX/job-output" || pty_status=$?
+  if [ "$pty_status" -ne 0 ] && [ "$pty_status" -ne 130 ]; then
+    report_terminal_session job-control "$pty_status" "$SANDBOX/job-output"
+  fi
   test "$pty_status" -eq 0 || test "$pty_status" -eq 130
   grep -Fq 'Stopped' "$SANDBOX/job-output"
   grep -Fq 'loop:resumed' "$SANDBOX/job-output"
