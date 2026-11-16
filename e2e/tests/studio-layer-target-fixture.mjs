@@ -43,8 +43,9 @@ const layer = (body) => ({
 });
 
 // A Studio page over one zone holding a keyboard and a mouse, with a daemon
-// stand-in that keeps the zone's layer stack: creates, replaces (which mint
-// a new id and read `scope` as missing, null, or a value), and reorders.
+// stand-in that keeps the zone's layer stack: creates (on top, under a new
+// id), replaces (which mint a new id and read `scope` as missing, null, or
+// a value), removals, and reorders.
 // Reads other than the scene, the devices, and the layouts reach the real
 // harness daemon, which lists the effects and advertises layer-scope.
 // `olderDaemon` takes that advertisement out of its status, as a daemon
@@ -122,7 +123,24 @@ export async function openLayerTargets(page, { effectId, olderDaemon = false }) 
       zone.layers.push(layer(body));
       return settle(route);
     }
+    if (path === `/api/v1/scene/zones/${ZONE}/layers/order` && request.method() === "PATCH") {
+      // An order names every layer of the stack exactly once.
+      const held = zone.layers.map((stored) => stored.id);
+      if ([...body.order].sort().join() !== [...held].sort().join()) {
+        return route.fulfill(daemonError(scene, 422, "validation_error", "order must name every layer exactly once"));
+      }
+      zone.layers = body.order.map((id) => zone.layers.find((stored) => stored.id === id));
+      return settle(route);
+    }
     const replaced = path.match(new RegExp(`^/api/v1/scene/zones/${ZONE}/layers/([^/]+)$`));
+    if (replaced && request.method() === "DELETE") {
+      const index = zone.layers.findIndex((stored) => stored.id === replaced[1]);
+      if (index < 0) {
+        return route.fulfill(daemonError(scene, 404, "not_found", `layer ${replaced[1]} not found`));
+      }
+      zone.layers.splice(index, 1);
+      return settle(route);
+    }
     if (replaced && request.method() === "PUT") {
       const index = zone.layers.findIndex((stored) => stored.id === replaced[1]);
       expect(index, `the replaced layer ${replaced[1]} is in the stack`).toBeGreaterThanOrEqual(0);
@@ -140,6 +158,12 @@ export async function openLayerTargets(page, { effectId, olderDaemon = false }) 
   return {
     scene, zone, writes, unexpected,
     layerWrites: () => writes.filter((write) => write.path.includes("/layers")),
+    // Another client takes a layer out of the zone's stack.
+    removeLayer: (id) => {
+      zone.layers = zone.layers.filter((stored) => stored.id !== id);
+      scene.revision += 1;
+      notify();
+    },
     // Another client takes an output out of the zone.
     removeOutput: (id) => {
       zone.members = zone.members.filter((member) => member.id !== id);
