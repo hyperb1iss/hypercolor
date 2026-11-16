@@ -3862,3 +3862,346 @@ async fn unavailable_offline_default_face_survives_real_restart() {
     }
     shutdown.expect("final shutdown");
 }
+
+// ── What a restart restores into the active layout ───────────────────────
+
+/// A daemon that restores its last session and reaches nothing.
+fn last_session_config() -> HypercolorConfig {
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    config
+}
+
+/// One request against a running daemon's API, fenced when a revision is
+/// given. Answers the status and the response's `data`.
+async fn api_call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    revision: Option<u64>,
+    body: Option<Value>,
+) -> (http::StatusCode, Value) {
+    use tower::ServiceExt;
+
+    let mut request = http::Request::builder().method(method).uri(uri);
+    if let Some(revision) = revision {
+        request = request.header(http::header::IF_MATCH, format!("\"{revision}\""));
+    }
+    let request = match body {
+        Some(body) => request
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body.to_string())),
+        None => request.body(axum::body::Body::empty()),
+    }
+    .expect("request should build");
+    let response = tokio::time::timeout(Duration::from_secs(10), app.clone().oneshot(request))
+        .await
+        .expect("the daemon should answer")
+        .expect("request should run");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body should read");
+    let value: Value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).expect("response body should be JSON")
+    };
+    assert!(
+        status.is_success(),
+        "{method} {uri} answered {status}: {value}"
+    );
+    (status, value["data"].clone())
+}
+
+/// The live scene's id, revision, and primary zone.
+async fn live_primary(app: &Router) -> (Value, u64, Value) {
+    let (_, document) = api_call(app, "GET", "/api/v1/scene", None, None).await;
+    let primary = document["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .find(|zone| zone["role"] == "primary")
+        .cloned()
+        .expect("the live scene has a primary zone");
+    (
+        document["id"].clone(),
+        document["revision"].as_u64().expect("revision"),
+        primary,
+    )
+}
+
+/// A simulated display whose screen the live primary zone places, the way
+/// Studio's "+" places it.
+struct PlacedPanel {
+    device: String,
+    layout_device: String,
+    output: String,
+}
+
+async fn place_simulated_panel(state: &AppState, app: &Router) -> PlacedPanel {
+    let (_, created) = api_call(
+        app,
+        "POST",
+        "/api/v1/simulators/displays",
+        None,
+        Some(serde_json::json!({
+            "name": "Panel", "width": 480, "height": 480, "circular": true, "enabled": true
+        })),
+    )
+    .await;
+    let device_id = created["id"].as_str().expect("simulator id").to_owned();
+    // What the daemon does when a display connects.
+    state.domains.display.sync_connected_surfaces().await;
+    let layout_device_id = state
+        .scene_manager
+        .snapshot()
+        .await
+        .screen_surfaces()
+        .iter()
+        .find(|(_, surface)| surface.device_id.to_string() == device_id)
+        .map(|(layout_id, _)| layout_id.clone())
+        .expect("a created display is a known screen");
+    let (scene_id, revision, primary) = live_primary(app).await;
+    let (_, receipt) = api_call(
+        app,
+        "POST",
+        "/api/v1/scene/members/edit",
+        Some(revision),
+        Some(serde_json::json!({
+            "scene_id": scene_id,
+            "assignment": {
+                "zone_id": primary["id"],
+                "device_id": layout_device_id,
+                "segments": ["Display"],
+            },
+        })),
+    )
+    .await;
+    let output_id = receipt["changes"][0]["after"]["output"]["id"]
+        .as_str()
+        .expect("the screen was placed")
+        .to_owned();
+    PlacedPanel {
+        device: device_id,
+        layout_device: layout_device_id,
+        output: output_id,
+    }
+}
+
+/// Create a named scene with one zone of lights and switch to it.
+async fn activate_named_scene(app: &Router) -> String {
+    let (_, created) = api_call(
+        app,
+        "POST",
+        "/api/v1/scenes",
+        None,
+        Some(serde_json::json!({ "name": "Gaming" })),
+    )
+    .await;
+    let scene_id = created["id"].as_str().expect("scene id").to_owned();
+    api_call(
+        app,
+        "POST",
+        &format!("/api/v1/scenes/{scene_id}/activate"),
+        None,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    scene_id
+}
+
+/// Every place a restart could bring `panel`'s box back from.
+async fn assert_panel_is_gone_everywhere(
+    state: &DaemonState,
+    guard: &TestDataDirGuard,
+    panel: &PlacedPanel,
+    scene_id: &str,
+    when: &str,
+) {
+    let scenes = state.scene_manager.snapshot().await;
+    let active = scenes.active_scene().expect("a scene is active");
+    assert_eq!(
+        active.id.to_string(),
+        scene_id,
+        "the last session is restored"
+    );
+    let holds_panel = |outputs: &[Output]| {
+        outputs
+            .iter()
+            .any(|output| output.device_id == panel.layout_device)
+    };
+    assert!(
+        !holds_panel(&active.primary_zone().expect("primary zone").layout.zones),
+        "{when}, the live scene's zone does not hold the box"
+    );
+    assert!(
+        !holds_panel(&state.spatial_engine.snapshot().layout().zones),
+        "{when}, the active layout does not hold the box"
+    );
+    for (id, stored) in layout_store::load(&guard.layouts_path()).expect("layout store loads") {
+        assert!(
+            !holds_panel(&stored.zones),
+            "{when}, stored layout {id} does not hold the box"
+        );
+    }
+}
+
+/// The Default scene's zone is persisted with the session whichever scene
+/// is active, and it is realigned only when it is activated. While a named
+/// scene is active it is a stale copy, and nothing it still holds may be
+/// read as an output the layout should have.
+#[tokio::test]
+async fn a_screen_taken_out_under_a_named_scene_stays_out_across_a_restart() {
+    let guard = TestDataDirGuard::new();
+    let config = last_session_config();
+    let temp = temp_config_file().into_temp_path();
+    let manager = config_manager_for(&config, &temp);
+    let mut first =
+        DaemonState::initialize(boot_config(&config), Arc::clone(&manager), guard.host())
+            .expect("first initialization");
+    first.start().await.expect("first startup");
+    let app_state = Arc::new(AppState::from_daemon_state(&first));
+    let app = hypercolor_daemon::api::build_router(Arc::clone(&app_state), None);
+    let panel = place_simulated_panel(&app_state, &app).await;
+    let scene_id = activate_named_scene(&app).await;
+    let (_, revision, primary) = live_primary(&app).await;
+    assert!(
+        primary["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .any(|member| member["id"] == panel.output.as_str()),
+        "the named scene follows the layout the screen was placed in"
+    );
+
+    api_call(
+        &app,
+        "DELETE",
+        &format!(
+            "/api/v1/scene/zones/{}/members/{}",
+            primary["id"].as_str().expect("zone id"),
+            panel.output
+        ),
+        Some(revision),
+        None,
+    )
+    .await;
+    assert_panel_is_gone_everywhere(&first, &guard, &panel, &scene_id, "before the restart").await;
+
+    drop(app);
+    drop(app_state);
+    first.shutdown().await.expect("graceful shutdown");
+    drop(first);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager, guard.host())
+        .expect("restart initialization");
+    restarted.start().await.expect("restart");
+
+    assert_panel_is_gone_everywhere(&restarted, &guard, &panel, &scene_id, "after the restart")
+        .await;
+    restarted.shutdown().await.expect("final shutdown");
+}
+
+#[tokio::test]
+async fn a_display_deleted_under_a_named_scene_stays_deleted_across_a_restart() {
+    let guard = TestDataDirGuard::new();
+    let config = last_session_config();
+    let temp = temp_config_file().into_temp_path();
+    let manager = config_manager_for(&config, &temp);
+    let mut first =
+        DaemonState::initialize(boot_config(&config), Arc::clone(&manager), guard.host())
+            .expect("first initialization");
+    first.start().await.expect("first startup");
+    let app_state = Arc::new(AppState::from_daemon_state(&first));
+    let app = hypercolor_daemon::api::build_router(Arc::clone(&app_state), None);
+    let panel = place_simulated_panel(&app_state, &app).await;
+    let scene_id = activate_named_scene(&app).await;
+
+    api_call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/simulators/displays/{}", panel.device),
+        None,
+        None,
+    )
+    .await;
+    assert_panel_is_gone_everywhere(&first, &guard, &panel, &scene_id, "before the restart").await;
+
+    drop(app);
+    drop(app_state);
+    first.shutdown().await.expect("graceful shutdown");
+    drop(first);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager, guard.host())
+        .expect("restart initialization");
+    restarted.start().await.expect("restart");
+
+    assert_panel_is_gone_everywhere(&restarted, &guard, &panel, &scene_id, "after the restart")
+        .await;
+    restarted.shutdown().await.expect("final shutdown");
+}
+
+/// Releases through 0.9.0 wrote a member assigned in Studio to the scene's
+/// zone alone, and counted on the next start to carry it into the layout.
+/// A session they saved with the Default scene active still gets that.
+#[tokio::test]
+async fn startup_adopts_members_the_default_scene_held_while_it_was_active() {
+    let guard = TestDataDirGuard::new();
+    let config = last_session_config();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+        guard.host(),
+    )
+    .expect("initialization should succeed");
+    let mut zone = hypercolor_core::scene::default_primary_zone(
+        state.spatial_engine.snapshot().layout().as_ref().clone(),
+    );
+    zone.layout.zones.push(test_zone("fan-ring", "usb:radio"));
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_zones: vec![zone],
+            active_layout_id: None,
+            manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
+        },
+    )
+    .expect("runtime state should save");
+
+    state.start().await.expect("start should succeed");
+
+    let holds_ring = |outputs: &[Output]| outputs.iter().any(|output| output.id == "fan-ring");
+    let layout = state.spatial_engine.snapshot().layout();
+    assert!(
+        holds_ring(&layout.zones),
+        "the active layout adopts the member the zone held"
+    );
+    let stored = layout_store::load(&guard.layouts_path()).expect("layout store loads");
+    assert!(
+        holds_ring(&stored.get(&layout.id).expect("the layout is stored").zones),
+        "and stores it, so the next start needs no adoption"
+    );
+    let scenes = state.scene_manager.snapshot().await;
+    assert!(holds_ring(
+        &scenes
+            .active_scene()
+            .and_then(|scene| scene.primary_zone())
+            .expect("the default scene's primary zone")
+            .layout
+            .zones
+    ));
+    drop(scenes);
+    state.shutdown().await.expect("shutdown should succeed");
+}
