@@ -604,3 +604,196 @@ fn display_source_admission_backs_off_while_allocation_keeps_failing() {
     let surface = finalize_display_face_blocking(&mut compositor, &scene, &large_face, params);
     assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
 }
+
+/// Three faceless screens one zone places: each shows a different part of
+/// the zone's frame, on a panel of its own shape, brightness and format.
+fn zone_screen_routes() -> [DisplayFinalizeParams; 3] {
+    let mut left =
+        display_finalize_params_for_format(16, 16, BlendMode::Alpha, DisplayFrameFormat::Jpeg);
+    left.viewport_position = NormalizedPosition::new(0.2, 0.4);
+    left.viewport_size = NormalizedPosition::new(0.3, 0.5);
+
+    let mut middle =
+        display_finalize_params_for_format(12, 20, BlendMode::Alpha, DisplayFrameFormat::Rgb);
+    middle.viewport_position = NormalizedPosition::new(0.5, 0.5);
+    middle.viewport_size = NormalizedPosition::new(0.25, 0.6);
+    middle.viewport_rotation = 0.4;
+    middle.brightness = 0.6;
+
+    let mut right =
+        display_finalize_params_for_format(20, 20, BlendMode::Alpha, DisplayFrameFormat::Jpeg);
+    right.cache_key.circular = true;
+    right.circular = true;
+    right.viewport_position = NormalizedPosition::new(0.8, 0.6);
+    right.viewport_size = NormalizedPosition::new(0.3, 0.4);
+    right.viewport_scale = 1.5;
+    right.brightness = 0.85;
+
+    [left, middle, right].map(|mut route| {
+        // A backdrop lane lays nothing over its backdrop.
+        route.opacity = 0.0;
+        route
+    })
+}
+
+/// The bytes a faceless screen's panel is handed for `backdrop`, in the
+/// route's own frame format.
+fn finalized_backdrop_bytes(
+    compositor: &mut GpuSparkleFlinger,
+    backdrop: &ProducerFrame,
+    route: DisplayFinalizeParams,
+) -> Vec<u8> {
+    for _ in 0..16 {
+        let dispatch = if route.cache_key.frame_format == DisplayFrameFormat::Jpeg {
+            compositor.begin_finalize_display_backdrop_yuv420(backdrop, route)
+        } else {
+            compositor.begin_finalize_display_backdrop(backdrop, route)
+        };
+        let GpuDisplayFinalizeDispatch::Pending(pending) =
+            dispatch.expect("backdrop finalize should not fail")
+        else {
+            panic!("the route should accept a backdrop finalization");
+        };
+        match compositor
+            .finish_pending_display_finalization_blocking(pending)
+            .expect("backdrop finalize should read back")
+        {
+            Some(GpuDisplayFinalizeFrame::Rgba(surface)) => return surface.rgba_bytes().to_vec(),
+            Some(GpuDisplayFinalizeFrame::Yuv420(frame)) => {
+                return [frame.y_plane(), frame.u_plane(), frame.v_plane()].concat();
+            }
+            None => {}
+        }
+    }
+    panic!("backdrop finalize should produce a frame");
+}
+
+/// How many times each route uploaded a backdrop into a texture of its own.
+fn backdrop_uploads(
+    compositor: &GpuSparkleFlinger,
+    routes: &[DisplayFinalizeParams; 3],
+) -> [usize; 3] {
+    (*routes).map(|route| {
+        compositor
+            .display_finalize_surfaces
+            .get(&route.cache_key)
+            .and_then(DisplayFinalizeRoute::surfaces)
+            .map_or(0, |surfaces| surfaces.scene_upload_count)
+    })
+}
+
+/// What every route's panel is handed when each route uploads the backdrop
+/// for itself. A canvas nothing else holds has no upload identity, so no
+/// route can read another's copy of it.
+fn separately_uploaded_backdrops(
+    pixels: &Canvas,
+    routes: &[DisplayFinalizeParams; 3],
+) -> Option<[Vec<u8>; 3]> {
+    let mut compositor = super::gpu_test_compositor()?;
+    let backdrop = ProducerFrame::Canvas(Canvas::from_rgba(
+        pixels.as_rgba_bytes(),
+        pixels.width(),
+        pixels.height(),
+    ));
+    let panels = (*routes).map(|route| finalized_backdrop_bytes(&mut compositor, &backdrop, route));
+    assert!(
+        backdrop_uploads(&compositor, routes)
+            .iter()
+            .all(|uploads| *uploads >= 1),
+        "every route should upload a backdrop that has no upload identity"
+    );
+    Some(panels)
+}
+
+/// Screens one zone places read one upload of the zone's frame, and each
+/// panel gets the bytes it got when every screen uploaded the frame itself.
+#[test]
+fn screens_of_one_zone_share_one_backdrop_upload_and_keep_their_bytes() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let routes = zone_screen_routes();
+    let first_pixels = patterned_canvas_with_size(64, 48, 3);
+    let second_pixels = patterned_canvas_with_size(64, 48, 151);
+    let Some(first_expected) = separately_uploaded_backdrops(&first_pixels, &routes) else {
+        return;
+    };
+    let Some(second_expected) = separately_uploaded_backdrops(&second_pixels, &routes) else {
+        return;
+    };
+    assert_ne!(first_expected, second_expected);
+
+    let first = ProducerFrame::Surface(PublishedSurface::from_owned_canvas(first_pixels, 1, 0));
+    let panels = routes.map(|route| finalized_backdrop_bytes(&mut compositor, &first, route));
+    assert_eq!(panels, first_expected);
+    assert_eq!(backdrop_uploads(&compositor, &routes), [1, 0, 0]);
+
+    // The zone's next frame replaces the shared upload for every screen.
+    let second = ProducerFrame::Surface(PublishedSurface::from_owned_canvas(second_pixels, 2, 0));
+    let panels = routes.map(|route| finalized_backdrop_bytes(&mut compositor, &second, route));
+    assert_eq!(panels, second_expected);
+    assert_eq!(backdrop_uploads(&compositor, &routes), [2, 0, 0]);
+
+    // A frame that has not changed is uploaded by nobody.
+    let panels = routes.map(|route| finalized_backdrop_bytes(&mut compositor, &second, route));
+    assert_eq!(panels, second_expected);
+    assert_eq!(backdrop_uploads(&compositor, &routes), [2, 0, 0]);
+}
+
+/// A screen that comes due without the route holding its zone's frame
+/// uploads the frame itself, and the screens after it read that upload.
+#[test]
+fn a_screen_uploads_its_backdrop_when_no_other_route_holds_it() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let routes = zone_screen_routes();
+    let first_pixels = patterned_canvas_with_size(64, 48, 3);
+    let second_pixels = patterned_canvas_with_size(64, 48, 151);
+    let third_pixels = patterned_canvas_with_size(64, 48, 77);
+    let (Some(second_expected), Some(third_expected)) = (
+        separately_uploaded_backdrops(&second_pixels, &routes),
+        separately_uploaded_backdrops(&third_pixels, &routes),
+    ) else {
+        return;
+    };
+
+    let first = ProducerFrame::Surface(PublishedSurface::from_owned_canvas(first_pixels, 1, 0));
+    for route in routes {
+        finalized_backdrop_bytes(&mut compositor, &first, route);
+    }
+    assert_eq!(backdrop_uploads(&compositor, &routes), [1, 0, 0]);
+
+    // The last screen comes due alone: the first route still holds the
+    // frame before this one, which is not this screen's backdrop.
+    let second = ProducerFrame::Surface(PublishedSurface::from_owned_canvas(second_pixels, 2, 0));
+    assert_eq!(
+        finalized_backdrop_bytes(&mut compositor, &second, routes[2]),
+        second_expected[2]
+    );
+    assert_eq!(backdrop_uploads(&compositor, &routes), [1, 0, 1]);
+    // The others catch up to the same frame and read the upload it made.
+    assert_eq!(
+        finalized_backdrop_bytes(&mut compositor, &second, routes[0]),
+        second_expected[0]
+    );
+    assert_eq!(
+        finalized_backdrop_bytes(&mut compositor, &second, routes[1]),
+        second_expected[1]
+    );
+    assert_eq!(backdrop_uploads(&compositor, &routes), [1, 0, 1]);
+
+    // The route that held the upload goes away with its screen.
+    compositor
+        .retain_display_finalize_zones(&[routes[0].cache_key.zone_id, routes[1].cache_key.zone_id]);
+    let third = ProducerFrame::Surface(PublishedSurface::from_owned_canvas(third_pixels, 3, 0));
+    assert_eq!(
+        finalized_backdrop_bytes(&mut compositor, &third, routes[1]),
+        third_expected[1]
+    );
+    assert_eq!(
+        finalized_backdrop_bytes(&mut compositor, &third, routes[0]),
+        third_expected[0]
+    );
+    assert_eq!(backdrop_uploads(&compositor, &routes), [1, 1, 0]);
+}
