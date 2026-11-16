@@ -143,7 +143,7 @@ const CONTROLS = {
         weights: [500],
     }),
     hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
-    metaSize: num('Meta Size', [8, 24], 12, { group: 'Typography' }),
+    metaSize: num('Meta Size', [8, 40], 16, { group: 'Typography' }),
     secondaryAccent: color('Secondary', palette.electricPurple, { group: 'Style' }),
     showAmPm: toggle('Show AM/PM', true, { group: 'Elements' }),
     showDate: toggle('Show Date', true, { group: 'Elements' }),

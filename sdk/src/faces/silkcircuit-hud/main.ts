@@ -163,6 +163,7 @@ const STYLES = `
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
+    white-space: nowrap;
     color: var(--ui-ink);
 }
 
@@ -287,7 +288,7 @@ export default face(
         clockSize: num('Clock Size', [48, 128], 84, { group: 'Typography' }),
         cpuLoadSensor: sensor('CPU Load Sensor', 'cpu_load', { group: 'Sensors' }),
         cpuTempSensor: sensor('CPU Temp Sensor', 'cpu_temp', { group: 'Sensors' }),
-        detailSize: num('Detail Size', [9, 20], 11, { group: 'Typography' }),
+        detailSize: num('Detail Size', [9, 20], 13, { group: 'Typography' }),
         gpuTempSensor: sensor('GPU Temp Sensor', 'gpu_temp', { group: 'Sensors' }),
         heroFont: font('Hero Font', 'Rajdhani', {
             families: [...DISPLAY_FONT_FAMILIES],
@@ -571,7 +572,7 @@ function buildHud(ctx: FaceContext, wide: boolean) {
             root.style.setProperty('--metric-size', `${(controls.metricSize as number) * sizeScale}`)
             root.style.setProperty(
                 '--detail-size',
-                `${Math.max(9, (controls.detailSize as number) * (wide ? 0.9 : 1))}`,
+                `${Math.max(9, (controls.detailSize as number) * (wide ? 0.78 : 1))}`,
             )
 
             const now = new Date()

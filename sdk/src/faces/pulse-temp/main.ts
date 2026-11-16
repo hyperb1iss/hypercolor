@@ -144,7 +144,7 @@ export default face(
     {
         colorScheme: combo('Color Scheme', ['Temperature', 'Load', 'Memory', 'Custom'], { group: 'Style' }),
         customColor: color('Custom Color', palette.neonCyan, { group: 'Style' }),
-        detailSize: num('Detail Size', [9, 24], 12, { group: 'Typography' }),
+        detailSize: num('Detail Size', [9, 40], 16, { group: 'Typography' }),
         glowIntensity: num('Glow', [0, 100], 54, { group: 'Style' }),
         heroFont: font('Hero Font', 'Rajdhani', {
             families: [...DISPLAY_FONT_FAMILIES],
@@ -294,7 +294,9 @@ function buildPulseTemp(ctx: FaceContext, wide: boolean) {
         const heroSize = (controls.heroSize as number) * scaleBasis
         valueEl.style.fontSize = `${heroSize}px`
         unitEl.style.fontSize = `${heroSize * 0.34}px`
-        labelEl.style.fontSize = `${Math.max(9, (controls.detailSize as number) * Math.max(scaleBasis, 0.8))}px`
+        const detailSize = Math.max(9, (controls.detailSize as number) * Math.max(scaleBasis, 0.8))
+        // The strip's label shares a row with the scale beside it.
+        labelEl.style.fontSize = `${wide ? Math.min(detailSize, ctx.height * 0.13) : detailSize}px`
 
         const shown = displayValue.update(reading?.value ?? 0, dt)
         digitsEl.textContent = reading ? `${Math.round(shown)}` : '--'
