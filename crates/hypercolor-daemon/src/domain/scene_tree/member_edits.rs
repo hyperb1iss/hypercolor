@@ -297,8 +297,9 @@ async fn edit_members_workflow(
 }
 
 /// What an edit changes in the layout `zone_id` follows: the ids of the
-/// outputs that left the zone, and each output the zone holds after the
-/// edit with its index there.
+/// outputs that left the zone, and each output that arrived in it or moved
+/// within it, with its index there. An output the edit names and leaves
+/// where it was is no change.
 fn layout_edit(changes: &[MemberEdit], zone_id: ZoneId) -> (Vec<String>, Vec<(usize, Output)>) {
     let held = |state: &Option<MemberState>| {
         state
@@ -310,6 +311,8 @@ fn layout_edit(changes: &[MemberEdit], zone_id: ZoneId) -> (Vec<String>, Vec<(us
     let mut placed = Vec::new();
     for change in changes {
         match (held(&change.before), held(&change.after)) {
+            (Some(before), Some(after))
+                if member_placement(&before.output) == member_placement(&after.output) => {}
             (_, Some(after)) => placed.push((after.index, after.output)),
             (Some(before), None) => left.push(before.output.id),
             (None, None) => {}

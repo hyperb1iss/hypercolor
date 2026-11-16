@@ -733,7 +733,18 @@ async fn assign_members_workflow(
         return Err(DomainError::not_found(ResourceKind::Zone, command.zone_id));
     }
     let outputs = resolve_members(&scene, &command.request, minted)?;
-    let assigned: Vec<String> = outputs.iter().map(|output| output.id.clone()).collect();
+    // The outputs this write brings into the zone. One the zone already
+    // holds stays where it is, which is no change.
+    let arriving: Vec<String> = outputs
+        .iter()
+        .filter(|output| {
+            !scene.zones.iter().any(|zone| {
+                zone.id == command.zone_id
+                    && zone.layout.zones.iter().any(|held| held.id == output.id)
+            })
+        })
+        .map(|output| output.id.clone())
+        .collect();
 
     mutation
         .assign_outputs(
@@ -745,13 +756,13 @@ async fn assign_members_workflow(
         .map_err(|_| DomainError::not_found(ResourceKind::Zone, command.zone_id))?;
 
     let zone = zone_in_candidate(&mutation, command.zone_id)?;
-    // The assigned outputs as the zone now holds them, each at its index.
+    // The arrivals as the zone now holds them, each at its index.
     let placed = zone
         .layout
         .zones
         .iter()
         .enumerate()
-        .filter(|(_, output)| assigned.contains(&output.id))
+        .filter(|(_, output)| arriving.contains(&output.id))
         .map(|(index, output)| (index, output.clone()))
         .collect();
     commit_membership(

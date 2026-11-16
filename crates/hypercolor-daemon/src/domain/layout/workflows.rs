@@ -444,10 +444,12 @@ impl LayoutContext {
     /// Scene activations, layout publications, effect applies, and the
     /// startup restore rebuild such a zone from the active layout, so an
     /// output assigned or unassigned in the zone alone is undone at the
-    /// next rebuild. Only the edit travels: each output in `left` leaves
-    /// by id, and each output in `placed` is put at its index in the zone,
-    /// replacing the copy a layout already holds, on the published layout
-    /// and on the stored entry alike. Whatever else either holds stays as
+    /// next rebuild. Only the edit travels, on the published layout and on
+    /// the stored entry alike: each output in `left` leaves by id, and
+    /// each output in `placed` arrived in the zone or moved there. Where a
+    /// layout already holds it, the placement is copied onto that copy and
+    /// nothing else, as a layout Save does; where it does not, the output
+    /// is put at its index in the zone. Whatever else either holds stays as
     /// it was: a stored edit that was never applied stays stored and
     /// unapplied, an output the zone holds that neither layout knows is
     /// not adopted by an edit that does not name it, and auto-layout
@@ -869,17 +871,18 @@ impl LayoutContext {
 }
 
 /// Apply a membership edit to one layout: the outputs that left go, and
-/// each output the zone now holds is put at its index in the zone, lowest
-/// first, as the zone itself was rebuilt.
+/// each output that arrived or moved has its placement copied onto the
+/// copy the layout holds, or is put at its index in the zone, lowest
+/// first, when the layout holds none.
 fn apply_member_edit(layout: &mut SpatialLayout, left: &[String], placed: &[(usize, Output)]) {
-    layout.zones.retain(|output| {
-        !left.contains(&output.id) && !placed.iter().any(|(_, held)| held.id == output.id)
-    });
+    layout.zones.retain(|output| !left.contains(&output.id));
     let mut placed = placed.iter().collect::<Vec<_>>();
     placed.sort_by_key(|(index, _)| *index);
     for (index, output) in placed {
-        let index = (*index).min(layout.zones.len());
-        layout.zones.insert(index, output.clone());
+        if !copy_placement_if_held(layout, output, true) {
+            let index = (*index).min(layout.zones.len());
+            layout.zones.insert(index, output.clone());
+        }
     }
 }
 

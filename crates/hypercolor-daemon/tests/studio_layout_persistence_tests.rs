@@ -1294,6 +1294,87 @@ async fn a_member_edit_keeps_stored_layout_edits_that_were_never_applied() {
     assert_eq!(output_ids(&published), vec!["strip-b", "strip-c"]);
 }
 
+/// The live primary zone's state for one member, as a member edit names it.
+async fn member_state(rig: &Rig, id: &str) -> serde_json::Value {
+    let zone = primary_zone(&rig.app).await;
+    let members = live_members(rig).await;
+    let index = members
+        .iter()
+        .position(|output| output.id == id)
+        .unwrap_or_else(|| panic!("{id} is a member"));
+    json!({ "zone_id": zone["id"], "index": index, "output": members[index] })
+}
+
+#[tokio::test]
+async fn a_member_edit_copies_placement_onto_a_stored_output_and_keeps_what_only_the_store_holds() {
+    let rig = rig_with_running_effect().await;
+    // A stored edit that was never applied: strip-b moved and dimmed, and
+    // an output only the store holds.
+    let mut zones = active_layout().zones;
+    zones[1].position = NormalizedPosition::new(0.9, 0.9);
+    zones[1].brightness = Some(0.5);
+    let mut held_back = strip("strip-x", "ch7");
+    "mock:held-back".clone_into(&mut held_back.device_id);
+    held_back.brightness = Some(0.25);
+    zones.push(held_back.clone());
+    store_layout_edit(&rig, json!({ "zones": zones })).await;
+    let stored_output = |id: &str| {
+        stored_active_layout(&rig)
+            .zones
+            .into_iter()
+            .find(|output| output.id == id)
+            .unwrap_or_else(|| panic!("{id} is stored"))
+    };
+
+    // An edit that names strip-b and changes nothing about it leaves the
+    // stored copy alone.
+    let state = member_state(&rig, "strip-b").await;
+    edit_members(&rig, json!([{ "before": state, "after": state }])).await;
+    assert_eq!(
+        output_in_layout(&stored_active_layout(&rig), "strip-b"),
+        (0.9, 0.9)
+    );
+    assert_eq!(stored_output("strip-b").brightness, Some(0.5));
+
+    // An edit that moves it carries the placement and nothing else.
+    let before = member_state(&rig, "strip-b").await;
+    let mut after = before.clone();
+    after["output"]["position"] = json!({ "x": 0.3, "y": 0.3 });
+    edit_members(&rig, json!([{ "before": before, "after": after }])).await;
+    assert_eq!(
+        output_in_layout(&stored_active_layout(&rig), "strip-b"),
+        (0.3, 0.3)
+    );
+    assert_eq!(
+        stored_output("strip-b").brightness,
+        Some(0.5),
+        "the stored brightness is not the zone's to overwrite"
+    );
+    assert_eq!(
+        output_in_layout(&rig.state.domains.layout.current(), "strip-b"),
+        (0.3, 0.3)
+    );
+
+    // An output the store already holds arrives in the zone: the store
+    // takes where it landed and keeps the rest of its own copy.
+    held_back.brightness = None;
+    held_back.position = NormalizedPosition::new(0.6, 0.6);
+    assign(&rig, &held_back, 2).await;
+    assert_eq!(
+        output_ids(&stored_active_layout(&rig)),
+        vec!["strip-a", "strip-b", "strip-x"]
+    );
+    assert_eq!(
+        output_in_layout(&stored_active_layout(&rig), "strip-x"),
+        (0.6, 0.6)
+    );
+    assert_eq!(stored_output("strip-x").brightness, Some(0.25));
+    assert_eq!(
+        output_ids(&rig.state.domains.layout.current()),
+        vec!["strip-a", "strip-b", "strip-x"]
+    );
+}
+
 #[tokio::test]
 async fn a_member_edit_in_a_scene_with_a_custom_led_zone_leaves_the_layout_alone() {
     let rig = rig_with_running_effect().await;
