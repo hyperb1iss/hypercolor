@@ -75,9 +75,22 @@ fn paint_order(
     )
 }
 
-/// The dark pill a name wears beside the box it names.
+/// The dark pill a name wears beside the box or the group it names.
 const CALLOUT_CLASS: &str = "absolute text-[9px] font-mono whitespace-nowrap pointer-events-none \
                              px-2 py-0.5 rounded bg-black/80";
+
+/// The group caption paints over every box, the pressed one included.
+const GROUP_CAPTION_Z: usize = 40_000;
+
+/// The one caption over the boxes the device pane points at together.
+#[derive(Clone, Debug, PartialEq)]
+struct GroupCaption {
+    text: String,
+    /// The caption's center on the viewport, in pixels.
+    position: (f32, f32),
+    /// The owning device's accent, when one device owns the whole group.
+    rgb: Option<String>,
+}
 
 /// What a box shows: its geometry style, accent, and identity.
 fn zone_render_data(
@@ -402,10 +415,92 @@ pub fn LayoutCanvas() -> impl IntoView {
     });
     let selection_size = Memo::new(move |_| selected_zone_ids.with(std::collections::HashSet::len));
 
+    // How many drawn boxes the device pane points at, and how many a layer
+    // row or a pick does. One box pointed at names itself; several would
+    // bury the canvas in callouts, so the pane's group shares one caption
+    // when it has boxes too small to name themselves, and a layer's goes
+    // by the row that points at it.
+    let pane_pointed = Memo::new(move |_| {
+        render_map.with(|drawn| {
+            hovered_zone_ids.with(|ids| ids.iter().filter(|id| drawn.contains_key(*id)).count())
+        })
+    });
+    let accent_pointed = Memo::new(move |_| {
+        render_map.with(|drawn| {
+            let count = |ids: &std::collections::HashSet<String>| {
+                ids.iter().filter(|id| drawn.contains_key(*id)).count()
+            };
+            picking.with(|picked| match picked {
+                Some(picked) => count(picked),
+                None => layer_focus.with(count),
+            })
+        })
+    });
     let viewport_px = Memo::new(move |_| {
         #[allow(clippy::cast_possible_truncation, reason = "viewport pixels")]
         let size = (viewport_width.get() as f32, viewport_height.get() as f32);
         size
+    });
+    let group_caption: Memo<Option<GroupCaption>> = Memo::new(move |_| {
+        if pane_pointed.get() < 2 {
+            return None;
+        }
+        let (width, height) = viewport_px.get();
+        if width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let pointed = hovered_zone_ids.get();
+        // The caption stands in for callouts. A group whose boxes all hold
+        // their own names has nothing left to say.
+        let unnamed = label_rooms.with(|rooms| {
+            screen_tiles.with(|tiles| {
+                pointed
+                    .iter()
+                    .any(|id| tiles.contains_key(id) || rooms.get(id) == Some(&LabelRoom::TooSmall))
+            })
+        });
+        if !unnamed {
+            return None;
+        }
+        let (bounds, outputs) = render_map.with(|drawn| {
+            let boxes: Vec<_> = pointed
+                .iter()
+                .filter_map(|id| drawn.get(id))
+                .map(|data| (data.center, data.reach))
+                .collect();
+            (labels::union_bounds(boxes.iter().copied()), boxes.len())
+        });
+        let (center, reach) = bounds?;
+        // One device owns the group when every box pointed at is its own.
+        let device_id = layout.with(|current| {
+            let mut owners = current
+                .as_ref()?
+                .zones
+                .iter()
+                .filter(|zone| pointed.contains(&zone.id))
+                .map(|zone| zone.device_id.as_str());
+            let first = owners.next()?;
+            owners.all(|owner| owner == first).then(|| first.to_owned())
+        });
+        let device_name = device_id.as_deref().and_then(|device_id| {
+            devices_ctx.devices_resource.with(|devices| {
+                let devices = devices.as_ref()?.as_ref().ok()?;
+                layout_utils::effective_device_name(device_id, devices)
+            })
+        });
+        let text = labels::group_caption(device_name.as_deref(), outputs);
+        let center = (center.0 * height, center.1 * height);
+        let offset = labels::callout_offset(
+            center,
+            (reach.0 * height, reach.1 * height),
+            text.chars().count(),
+            (width, height),
+        );
+        Some(GroupCaption {
+            text,
+            position: (center.0 + offset.0, center.1 + offset.1),
+            rgb: device_id.as_deref().map(|id| device_accent_colors(id).0),
+        })
     });
 
     // The box a press at `point` means: the smallest drawn box under it,
@@ -858,7 +953,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     };
                                     let selected = is_selected.get() && !pick_mode.get();
                                     let hovered = is_hovered.get() || is_accented.get();
-                                    let pinned = hovered
+                                    // Pointed at alone, the box names itself;
+                                    // one of a group leaves that to the group.
+                                    let pointed = (is_hovered.get() && pane_pointed.get() == 1)
+                                        || (is_accented.get() && accent_pointed.get() == 1);
+                                    let pinned = pointed
                                         || (selected && (is_primary.get() || selection_size.get() == 1));
                                     labels::label_mode(room, selected || hovered, pinned)
                                 })
@@ -1247,8 +1346,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     }}
 
                                     // Callout for a box too small to hold its name: on hover,
-                                    // or pinned while the selection or the pane points at
-                                    // it. It reads level over the
+                                    // or pinned while it is the one box the selection, the
+                                    // pane, or a layer points at. It reads level over the
                                     // box's bounds however the box is turned or scaled.
                                     // Dark in both themes, like the canvas under it: the
                                     // name wears the device's color, which is picked to
@@ -1503,6 +1602,28 @@ pub fn LayoutCanvas() -> impl IntoView {
                             }
                         }
                     />
+
+                    // One caption for the group the device pane points at, in
+                    // place of a callout on every box of it.
+                    {move || group_caption.get().map(|caption| {
+                        let color = caption.rgb.map_or_else(
+                            || "rgba(255, 255, 255, 0.82)".to_owned(),
+                            |rgb| format!("rgba({rgb}, 0.9)"),
+                        );
+                        view! {
+                            <div
+                                class=CALLOUT_CLASS
+                                data-group-caption=""
+                                style=format!(
+                                    "left: {:.1}px; top: {:.1}px; transform: translate(-50%, -50%); \
+                                     z-index: {GROUP_CAPTION_Z}; color: {color}",
+                                    caption.position.0, caption.position.1,
+                                )
+                            >
+                                {caption.text}
+                            </div>
+                        }
+                    })}
 
                     <CompoundBoundingBoxOutline
                         layout=layout

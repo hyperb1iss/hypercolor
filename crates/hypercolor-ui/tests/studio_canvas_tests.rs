@@ -3,8 +3,8 @@
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, Winding};
 use hypercolor_ui::components::layout_canvas::labels::{
-    LabelBox, LabelMode, LabelRoom, Visibility, callout_offset, detail_line, label_extent,
-    label_mode, label_rooms, visibility_class,
+    LabelBox, LabelMode, LabelRoom, Visibility, callout_offset, detail_line, group_caption,
+    label_extent, label_mode, label_rooms, union_bounds, visibility_class,
 };
 use hypercolor_ui::components::layout_canvas::picking::{HitBox, hit_stack, pick_hit};
 
@@ -286,6 +286,28 @@ fn a_callout_slides_sideways_to_keep_its_width_on_the_canvas() {
 fn a_callout_wider_than_the_canvas_centers_on_it() {
     let offset = callout_offset((100.0, 240.0), (8.0, 8.0), 200, CANVAS);
     assert!(close(offset, (220.0, -22.0)), "{offset:?}");
+}
+
+#[test]
+fn a_group_is_bounded_by_the_boxes_at_its_edges() {
+    let bounds = union_bounds([
+        ((100.0, 100.0), (10.0, 20.0)),
+        ((200.0, 160.0), (30.0, 10.0)),
+        ((150.0, 120.0), (5.0, 5.0)),
+    ]);
+    let (center, reach) = bounds.expect("three boxes have bounds");
+    assert!(close(center, (160.0, 125.0)), "{center:?}");
+    assert!(close(reach, (70.0, 45.0)), "{reach:?}");
+    assert_eq!(union_bounds([]), None);
+}
+
+#[test]
+fn a_group_caption_names_its_device_and_counts_its_outputs() {
+    assert_eq!(
+        group_caption(Some("Canvas 449E"), 21),
+        "Canvas 449E \u{b7} 21 outputs"
+    );
+    assert_eq!(group_caption(None, 7), "7 outputs");
 }
 
 #[test]

@@ -8,7 +8,10 @@
 //!
 //! A callout reads level whatever way its box is turned: it sits over the
 //! box's bounds on screen, under them when the canvas clips above, and
-//! slides sideways to stay inside the canvas.
+//! slides sideways to stay inside the canvas. Only the one box something
+//! points at pins its callout. When the device pane points at several
+//! boxes at once and some cannot hold their names, a single caption over
+//! all of them names the group.
 
 use std::collections::HashMap;
 
@@ -113,6 +116,42 @@ pub fn callout_offset(
     (x - center.0, y - center.1)
 }
 
+/// The bounds that hold every one of `boxes`, each given as a center and
+/// its reach each way: the center and reach of their union. `None` when
+/// there are no boxes.
+#[must_use]
+pub fn union_bounds(
+    boxes: impl IntoIterator<Item = ((f32, f32), (f32, f32))>,
+) -> Option<((f32, f32), (f32, f32))> {
+    boxes
+        .into_iter()
+        .map(|(center, reach)| {
+            (
+                center.0 - reach.0,
+                center.1 - reach.1,
+                center.0 + reach.0,
+                center.1 + reach.1,
+            )
+        })
+        .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+        .map(|(min_x, min_y, max_x, max_y)| {
+            (
+                ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5),
+                ((max_x - min_x) * 0.5, (max_y - min_y) * 0.5),
+            )
+        })
+}
+
+/// The caption over a group of `outputs` boxes the device pane points at:
+/// the device's name when one device owns them all, then how many.
+#[must_use]
+pub fn group_caption(device: Option<&str>, outputs: usize) -> String {
+    match device {
+        Some(device) => format!("{device} · {outputs} outputs"),
+        None => format!("{outputs} outputs"),
+    }
+}
+
 /// The line under a box's name: a display's resolution, since its pixels
 /// are not LEDs, or the output's LED count.
 #[must_use]
@@ -198,9 +237,9 @@ pub fn label_rooms(boxes: &[LabelBox]) -> HashMap<String, LabelRoom> {
 }
 
 /// Where a box shows its name. `emphasized` means the box is selected or
-/// the device pane is pointing at it; `pinned` means it should name itself
-/// even when too small to hold the name (the pane points at it, or it is
-/// the box the selection is about).
+/// something points at it; `pinned` means it should name itself even when
+/// too small to hold the name (it is the one box pointed at, or the box
+/// the selection is about).
 #[must_use]
 pub fn label_mode(room: LabelRoom, emphasized: bool, pinned: bool) -> LabelMode {
     match room {

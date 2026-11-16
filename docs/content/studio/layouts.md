@@ -85,7 +85,7 @@ Drag a box off the canvas and onto another zone's tab to move that output to the
 
 Real rigs overlap. A press on the canvas picks the **smallest** box under the pointer, so a small device under a long strip stays clickable without any reordering. **Alt**-click steps down through the boxes stacked beneath it.
 
-Labels declutter the same way. A box's label is its name and LED count, or its resolution for a screen. A box shows its label when the label fits inside it and nothing above covers it. Otherwise the label waits for hover or selection, and a box too small to hold it shows it in a callout beside the box.
+Labels declutter the same way. A box's label is its name and LED count, or its resolution for a screen. A box shows its label when the label fits inside it and nothing above covers it. Otherwise the label waits for hover or selection, and a box too small to hold it shows it in a callout beside the box. A callout reads level however its box is turned. Pointing at a device in the pane lights all of its boxes, and when some are too small to name themselves, one caption over the group names the device and counts its outputs.
 
 ## The properties panel
 
