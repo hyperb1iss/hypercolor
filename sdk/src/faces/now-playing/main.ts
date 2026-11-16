@@ -1,5 +1,5 @@
 import type { FaceContext, FaceDataSources, MediaInfo } from 'hypercolor'
-import { arcGauge, clamp, color, face, font, lerpColor, palette, Smoothed, toggle, withAlpha } from 'hypercolor'
+import { arcGauge, clamp, color, face, font, lerpColor, num, palette, Smoothed, toggle, withAlpha } from 'hypercolor'
 import { atmosphereVisible, drawNebulaField, transparentBackgroundControl } from '../shared/atmosphere'
 import {
     clamp01,
@@ -10,10 +10,12 @@ import {
     SmoothedColor,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
+import { layoutStack, layoutStrip, type NowPlayingSizes } from './layout'
 
 const STYLE_ID = 'hc-face-now-playing'
 const ART_FADE_SECS = 0.6
-const MARQUEE_SPEED_PX = 36
+/** Marquee travel per second, in title heights. */
+const MARQUEE_SPEED_EMS = 1.2
 const MARQUEE_DWELL_SECS = 1.6
 
 const STYLES = `
@@ -39,8 +41,7 @@ const STYLES = `
     flex-direction: column;
     align-items: center;
     text-align: center;
-    gap: 14px;
-    width: 86%;
+    width: 100%;
 }
 
 .hc-now__art-wrap {
@@ -75,25 +76,35 @@ const STYLES = `
     color: var(--dim-ink);
 }
 
+.hc-now__marquee {
+    overflow: hidden;
+    flex: 0 0 auto;
+    text-align: center;
+}
+
+.hc-now__marquee--running {
+    text-align: left;
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+    mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+}
+
 .hc-now__title {
+    display: inline-block;
     font-family: var(--hero-font);
     font-weight: 600;
-    line-height: 1.1;
     color: var(--hero-ink);
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
+    will-change: transform;
     text-shadow: 0 0 22px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .hc-now__artist {
     font-family: var(--ui-font);
     font-weight: 600;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--ui-ink);
-    max-width: 100%;
+    flex: 0 0 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -113,8 +124,9 @@ const STYLES = `
 
 .hc-now__times--round {
     justify-content: center;
-    gap: 8px;
+    gap: 0.4em;
     width: auto;
+    flex: 0 0 auto;
 }
 
 .hc-now__times-sep {
@@ -128,14 +140,12 @@ const STYLES = `
     align-items: center;
     text-align: left;
     width: 94%;
-    height: 78%;
     gap: 0;
 }
 
 .hc-now--wide .hc-now__art-wrap {
     border-radius: 14px;
-    height: 100%;
-    aspect-ratio: 1;
+    margin-right: 4%;
 }
 
 .hc-now--wide .hc-now__body {
@@ -144,20 +154,14 @@ const STYLES = `
     justify-content: center;
     flex: 1 1 auto;
     min-width: 0;
-    gap: 8px;
-    margin-left: 4%;
 }
 
 .hc-now--wide .hc-now__marquee {
-    overflow: hidden;
     width: 100%;
+    text-align: left;
 }
 
-.hc-now--wide .hc-now__title {
-    display: inline-block;
-    text-overflow: clip;
-    will-change: transform;
-}
+.hc-now--wide .hc-now__artist { max-width: 100%; }
 
 .hc-now__hidden { display: none !important; }
 `
@@ -197,7 +201,7 @@ function createArtCrossfade(front: HTMLImageElement, back: HTMLImageElement): Ar
     }
 }
 
-/** Average the bright pixels of loaded album art into a usable accent. */
+/** Average the lit pixels of loaded album art into an accent bright enough to read. */
 function createArtAccentSampler(image: HTMLImageElement) {
     let sampledUrl = ''
     let artAccent: string | null = null
@@ -226,8 +230,11 @@ function createArtAccentSampler(image: HTMLImageElement) {
                 count += 1
             }
             if (count === 0) return
+            // Keep the art's hue and lift it to full brightness: a dark
+            // cover would otherwise ink the title in mud.
+            const lift = (255 * count) / Math.max(r, g, b, 1)
             const hex = (value: number) =>
-                Math.round(clamp(value / count, 0, 255))
+                Math.round(clamp((value / count) * lift, 0, 255))
                     .toString(16)
                     .padStart(2, '0')
             artAccent = `#${hex(r)}${hex(g)}${hex(b)}`
@@ -260,9 +267,9 @@ function formatTrackTime(ms: number): string {
 }
 
 /** Triangle-wave marquee offset with dwell at both ends. */
-function marqueeOffset(time: number, overflowPx: number): number {
+function marqueeOffset(time: number, overflowPx: number, speedPx: number): number {
     if (overflowPx <= 0) return 0
-    const travelSecs = overflowPx / MARQUEE_SPEED_PX
+    const travelSecs = overflowPx / speedPx
     const period = 2 * (travelSecs + MARQUEE_DWELL_SECS)
     const phase = time % period
     const half = period / 2
@@ -275,16 +282,24 @@ export default face(
     'Now Playing',
     {
         accent: color('Accent', palette.electricPurple, { group: 'Style' }),
+        artSize: num('Art Size', [20, 70], 44, { group: 'Layout', step: 1 }),
+        detailSize: num('Detail Size', [10, 48], 24, { group: 'Typography', step: 1 }),
         heroFont: font('Title Font', 'Sora', {
-            families: [...DISPLAY_FONT_FAMILIES],
+            families: [...UI_FONT_FAMILIES, ...DISPLAY_FONT_FAMILIES.filter((family) => family !== 'Exo 2')],
             group: 'Typography',
             weights: [600],
         }),
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
+        showArt: toggle('Show Art', true, { group: 'Elements' }),
         showProgress: toggle('Show Progress', true, { group: 'Elements' }),
         showTimes: toggle('Show Times', true, { group: 'Elements' }),
+        titleSize: num('Title Size', [20, 96], 44, { group: 'Typography', step: 1 }),
         transparentBackground: transparentBackgroundControl(),
-        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography', weights: [600] }),
+        uiFont: font('Detail Font', 'Inter', {
+            families: [...UI_FONT_FAMILIES],
+            group: 'Typography',
+            weights: [600],
+        }),
         useArtAccent: toggle('Accent From Art', true, { group: 'Style' }),
     },
     {
@@ -313,6 +328,16 @@ export default face(
                 description: 'Warm minimal: art, title, progress.',
                 name: 'Ember',
             },
+            {
+                controls: {
+                    detailSize: 34,
+                    showArt: false,
+                    showTimes: false,
+                    titleSize: 72,
+                },
+                description: 'Type only, sized to read from across the room.',
+                name: 'Marquee',
+            },
         ],
         variants: {
             wide: (ctx: FaceContext) => buildNowPlaying(ctx, true),
@@ -321,40 +346,43 @@ export default face(
     (ctx) => buildNowPlaying(ctx, false),
 )
 
+function readSizes(controls: Record<string, unknown>, timesShown: boolean): NowPlayingSizes {
+    return {
+        artSize: controls.artSize as number,
+        detailSize: controls.detailSize as number,
+        showArt: controls.showArt === true,
+        showProgress: controls.showProgress === true,
+        showTimes: timesShown,
+        titleSize: controls.titleSize as number,
+    }
+}
+
 function buildNowPlaying(ctx: FaceContext, wide: boolean) {
     ensureFaceStyles(STYLE_ID, STYLES)
     const root = createFaceRoot(ctx, 'hc-now')
     root.classList.toggle('hc-now--wide', wide)
 
-    const safe = ctx.display.safeArea
-    const artSize = wide ? ctx.height * 0.78 : Math.min(safe.width, safe.height) * 0.46
-    // Round text lives inside the inscribed square so long titles ellipsize
-    // instead of clipping against the physical circle.
-    const roundStackWidth = Math.min(safe.width, safe.height)
-
-    root.innerHTML = wide
-        ? `
-        <div class="hc-now__stack">
+    const art = `
             <div class="hc-now__art-wrap">
                 <img class="hc-now__art hc-now__art--back hc-now__hidden" alt="" />
                 <img class="hc-now__art hc-now__art--front hc-now__hidden" alt="" />
                 <div class="hc-now__glyph">&#9835;</div>
-            </div>
+            </div>`
+    const title = `<div class="hc-now__marquee"><div class="hc-now__title">Nothing Playing</div></div>`
+    const artist = `<div class="hc-now__artist">waiting for a player</div>`
+    root.innerHTML = wide
+        ? `
+        <div class="hc-now__stack">${art}
             <div class="hc-now__body">
-                <div class="hc-now__marquee"><div class="hc-now__title">Nothing Playing</div></div>
-                <div class="hc-now__artist">waiting for a player</div>
+                ${title}
+                ${artist}
                 <div class="hc-now__times"><span class="hc-now__elapsed">0:00</span><span class="hc-now__total">0:00</span></div>
             </div>
         </div>`
         : `
-        <div class="hc-now__stack">
-            <div class="hc-now__art-wrap">
-                <img class="hc-now__art hc-now__art--back hc-now__hidden" alt="" />
-                <img class="hc-now__art hc-now__art--front hc-now__hidden" alt="" />
-                <div class="hc-now__glyph">&#9835;</div>
-            </div>
-            <div class="hc-now__title">Nothing Playing</div>
-            <div class="hc-now__artist">waiting for a player</div>
+        <div class="hc-now__stack">${art}
+            ${title}
+            ${artist}
             <div class="hc-now__times hc-now__times--round"><span class="hc-now__elapsed">0:00</span><span class="hc-now__times-sep">/</span><span class="hc-now__total">0:00</span></div>
         </div>`
 
@@ -365,21 +393,74 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
     const titleEl = root.querySelector<HTMLDivElement>('.hc-now__title')
     const artistEl = root.querySelector<HTMLDivElement>('.hc-now__artist')
     const marqueeEl = root.querySelector<HTMLDivElement>('.hc-now__marquee')
+    const timesEl = root.querySelector<HTMLDivElement>('.hc-now__times')
     const elapsedEl = root.querySelector<HTMLSpanElement>('.hc-now__elapsed')
     const totalEl = root.querySelector<HTMLSpanElement>('.hc-now__total')
-    if (!artWrap || !artFront || !artBack || !glyphEl || !titleEl || !artistEl) {
+    const stackEl = root.querySelector<HTMLDivElement>('.hc-now__stack')
+    if (
+        !artWrap ||
+        !artFront ||
+        !artBack ||
+        !glyphEl ||
+        !titleEl ||
+        !artistEl ||
+        !marqueeEl ||
+        !timesEl ||
+        !elapsedEl ||
+        !totalEl ||
+        !stackEl
+    ) {
         throw new Error('Now Playing face failed to build its DOM')
     }
 
-    const stackEl = root.querySelector<HTMLDivElement>('.hc-now__stack')
-    if (stackEl && !wide) stackEl.style.width = `${roundStackWidth}px`
-    artWrap.style.width = `${artSize}px`
-    artWrap.style.height = `${artSize}px`
-    glyphEl.style.fontSize = `${artSize * 0.42}px`
-    titleEl.style.fontSize = `${Math.max(16, artSize * (wide ? 0.24 : 0.17))}px`
-    artistEl.style.fontSize = `${Math.max(10, artSize * (wide ? 0.105 : 0.08))}px`
-    if (elapsedEl?.parentElement) {
-        elapsedEl.parentElement.style.fontSize = `${Math.max(10, artSize * 0.09)}px`
+    const sizeLine = (element: HTMLElement, fontSize: number, lineHeight: number): void => {
+        element.style.fontSize = `${fontSize}px`
+        element.style.lineHeight = `${lineHeight}px`
+        element.style.height = `${lineHeight}px`
+    }
+    const sizeArt = (size: number): void => {
+        artWrap.classList.toggle('hc-now__hidden', size <= 0)
+        artWrap.style.width = `${size}px`
+        artWrap.style.height = `${size}px`
+        glyphEl.style.fontSize = `${size * 0.42}px`
+    }
+
+    /** The art's size, the progress ring or rail, and the title's travel speed. */
+    interface Applied {
+        art: number
+        ring: ReturnType<typeof layoutStack>['ring'] | null
+        marqueeSpeed: number
+    }
+
+    const applyStack = (sizes: NowPlayingSizes): Applied => {
+        const layout = layoutStack(ctx, sizes)
+        stackEl.style.gap = `${layout.gap}px`
+        sizeArt(layout.art)
+        artWrap.style.margin = `${layout.artOutset}px 0`
+        sizeLine(marqueeEl, layout.title.fontSize, layout.title.height)
+        marqueeEl.style.width = `${layout.title.width}px`
+        sizeLine(artistEl, layout.artist.fontSize, layout.artist.height)
+        artistEl.style.maxWidth = `${layout.artist.width}px`
+        sizeLine(timesEl, layout.times.fontSize, layout.times.height)
+        return {
+            art: layout.art,
+            marqueeSpeed: layout.title.fontSize * MARQUEE_SPEED_EMS,
+            ring: layout.ring,
+        }
+    }
+
+    const applyStrip = (sizes: NowPlayingSizes): Applied => {
+        const layout = layoutStrip(ctx, sizes)
+        sizeArt(layout.art)
+        marqueeEl.style.fontSize = `${layout.titleSize}px`
+        marqueeEl.style.lineHeight = '1.16'
+        artistEl.style.fontSize = `${layout.artistSize}px`
+        artistEl.style.lineHeight = '1.3'
+        artistEl.style.marginTop = `${layout.gap}px`
+        timesEl.style.fontSize = `${layout.timesSize}px`
+        timesEl.style.lineHeight = '1.3'
+        timesEl.style.marginTop = `${layout.gap}px`
+        return { art: layout.art, marqueeSpeed: layout.titleSize * MARQUEE_SPEED_EMS, ring: null }
     }
 
     const crossfade = createArtCrossfade(artFront, artBack)
@@ -391,6 +472,8 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
     const secondaryGlide = new SmoothedColor(palette.coral)
     let lastTime = Number.NaN
     let lastTrackKey = ''
+    let layoutKey = ''
+    let applied: Applied = { art: 0, marqueeSpeed: 0, ring: null }
 
     return (
         time: number,
@@ -418,6 +501,15 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
         root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
 
+        const showTimes = controls.showTimes === true && media.available
+        const sizes = readSizes(controls, showTimes)
+        const nextKey = JSON.stringify(sizes)
+        if (nextKey !== layoutKey) {
+            layoutKey = nextKey
+            timesEl.classList.toggle('hc-now__hidden', !showTimes)
+            applied = wide ? applyStrip(sizes) : applyStack(sizes)
+        }
+
         if (media.available) {
             const trackKey = `${media.player}\u{1f}${media.artist}\u{1f}${media.track}`
             if (trackKey !== lastTrackKey) {
@@ -436,19 +528,14 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         glyphEl.classList.toggle('hc-now__hidden', Boolean(media.available && media.artDataUrl))
         artWrap.style.opacity = media.available && !playing ? '0.6' : '1'
 
-        if (marqueeEl && wide) {
-            const overflow = titleEl.scrollWidth - marqueeEl.clientWidth
-            titleEl.style.transform = `translateX(${marqueeOffset(time, overflow).toFixed(1)}px)`
-        }
+        // A title wider than its line travels end to end instead of clipping.
+        const overflow = titleEl.scrollWidth - marqueeEl.clientWidth
+        marqueeEl.classList.toggle('hc-now__marquee--running', overflow > 0)
+        titleEl.style.transform = `translateX(${marqueeOffset(time, overflow, applied.marqueeSpeed).toFixed(1)}px)`
 
-        const positionMs = data.media.positionMs()
-        if (elapsedEl && totalEl) {
-            const showTimes = controls.showTimes === true && media.available
-            elapsedEl.parentElement?.classList.toggle('hc-now__hidden', !showTimes)
-            if (showTimes) {
-                elapsedEl.textContent = formatTrackTime(positionMs)
-                totalEl.textContent = formatTrackTime(media.durationMs)
-            }
+        if (showTimes) {
+            elapsedEl.textContent = formatTrackTime(data.media.positionMs())
+            totalEl.textContent = formatTrackTime(media.durationMs)
         }
 
         const c = ctx.ctx
@@ -461,50 +548,46 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         const breathe = idlePulse.update(media.available ? 0 : 1, dt)
 
         if (controls.showProgress === true) {
-            if (wide) {
-                const railHeight = Math.max(3, ctx.height * 0.035)
-                const railY = ctx.height - railHeight * 2.4
-                const bodyLeft = artSize + ctx.width * 0.03 + (ctx.width - ctx.width * 0.94) / 2
-                const railWidth = ctx.width * 0.97 - bodyLeft - (ctx.width - ctx.width * 0.94) / 2
-                c.fillStyle = withAlpha(ink.dim, 0.18)
-                c.fillRect(bodyLeft, railY, railWidth, railHeight)
-                if (media.available) {
-                    const fillGradient = c.createLinearGradient(bodyLeft, 0, bodyLeft + railWidth, 0)
-                    fillGradient.addColorStop(0, accent)
-                    fillGradient.addColorStop(1, secondary)
-                    c.fillStyle = fillGradient
-                    c.fillRect(bodyLeft, railY, railWidth * clamp01(progress), railHeight)
-                }
-            } else {
-                // The overlay canvas spans the viewport, so element viewport
-                // coordinates are canvas coordinates.
-                const wrapRect = artWrap.getBoundingClientRect()
-                const cx = wrapRect.left + wrapRect.width / 2
-                const cy = wrapRect.top + wrapRect.height / 2
-                const ringRadius = artSize / 2 + Math.max(8, artSize * 0.07)
-                const orbitCx = Number.isFinite(cx) && cx > 0 ? cx : ctx.width / 2
-                const orbitCy = Number.isFinite(cy) && cy > 0 ? cy : ctx.height / 2
+            if (applied.ring) {
                 arcGauge(c, {
-                    cx: orbitCx,
-                    cy: orbitCy,
+                    cx: applied.ring.cx,
+                    cy: applied.ring.cy,
                     fillColor: [accent, secondary],
                     glow: playing ? 0.55 : 0.18,
-                    radius: ringRadius,
+                    radius: applied.ring.radius,
                     startAngle: -Math.PI / 2,
                     sweep: Math.PI * 2,
-                    thickness: Math.max(3.5, artSize * 0.035),
+                    thickness: applied.ring.thickness,
                     trackColor: withAlpha(ink.dim, 0.14),
                     value: media.available ? clamp01(progress) : 0,
                 })
+            } else {
+                // The rail runs under the text column, which starts where
+                // the layout put it.
+                const bodyRect = marqueeEl.getBoundingClientRect()
+                const railHeight = Math.max(3, ctx.height * 0.035)
+                const railY = ctx.height - railHeight * 2.4
+                const railLeft = bodyRect.left
+                const railWidth = bodyRect.width
+                c.fillStyle = withAlpha(ink.dim, 0.18)
+                c.fillRect(railLeft, railY, railWidth, railHeight)
+                if (media.available) {
+                    const fillGradient = c.createLinearGradient(railLeft, 0, railLeft + railWidth, 0)
+                    fillGradient.addColorStop(0, accent)
+                    fillGradient.addColorStop(1, secondary)
+                    c.fillStyle = fillGradient
+                    c.fillRect(railLeft, railY, railWidth * clamp01(progress), railHeight)
+                }
             }
         }
 
-        if (!media.available && atmosphereVisible(controls)) {
+        if (!media.available && atmosphereVisible(controls) && applied.art > 0) {
             const pulse = 0.5 + 0.5 * Math.sin(time * 1.4)
-            const glowRadius = artSize * (0.62 + 0.05 * pulse) * breathe
+            const glowRadius = applied.art * (0.62 + 0.05 * pulse) * breathe
             if (glowRadius > 1) {
-                const cx = ctx.width / 2
-                const cy = wide ? ctx.height / 2 : ctx.height * 0.42
+                const artRect = artWrap.getBoundingClientRect()
+                const cx = artRect.left + artRect.width / 2
+                const cy = artRect.top + artRect.height / 2
                 const gradient = c.createRadialGradient(cx, cy, 0, cx, cy, glowRadius)
                 gradient.addColorStop(0, withAlpha(accent, 0.1 + 0.08 * pulse))
                 gradient.addColorStop(1, withAlpha(accent, 0))

@@ -126,7 +126,7 @@ export default face(
             group: 'Typography',
             weights: [400, 500],
         }),
-        labelSize: num('Label Size', [9, 20], 11, { group: 'Typography' }),
+        labelSize: num('Label Size', [9, 20], 13, { group: 'Typography' }),
         sensor1: sensor('Top Left', 'cpu_temp', { group: 'Sensors' }),
         sensor2: sensor('Top Right', 'gpu_temp', { group: 'Sensors' }),
         sensor3: sensor('Bottom Left', 'cpu_load', { group: 'Sensors' }),
