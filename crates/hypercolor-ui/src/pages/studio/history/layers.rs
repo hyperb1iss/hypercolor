@@ -1,16 +1,27 @@
-//! Layers added as one step.
+//! A zone's layer stack in the journal: layers added, removed, and put
+//! in another order, each as one step.
 //!
 //! One face on the screens of several zones is one layer per zone, written
 //! in sequence because each write is fenced by the scene revision the one
 //! before it left. They are still one thing somebody did, so they are one
 //! journal entry: Undo removes every layer it made and Redo makes them
 //! again, each as it stood when it was removed.
+//!
+//! A removed layer is kept whole, with the place it held in its stack, so
+//! Undo makes it again there. The daemon makes every layer on top of its
+//! stack and under a new id, so the undo is a create and then a reorder,
+//! and every step that names the layer follows it to the new id.
+//!
+//! A reorder keeps the stack's order before and after. It replays only
+//! onto a stack that still holds exactly those layers; onto any other
+//! there is no order of it to go back to, and the step is dropped.
 
 use hypercolor_types::api::scene::CreateLayerRequest;
 use hypercolor_types::layer::{LayerScope, SceneLayer, SceneLayerId};
 use leptos::prelude::*;
 
 use super::{EntryId, Fence, Settled, StudioEdit, StudioHistory, Waiting, refuses_step};
+use crate::components::layer_panel::scope::reorder_within;
 use crate::{api, toasts};
 
 /// One layer to create: where, what, and the names of what it lands on,
@@ -30,6 +41,21 @@ pub struct AddedLayer {
     /// The layer as created, or as it stood when an undo removed it.
     pub layer: SceneLayer,
     pub lands_on: Vec<String>,
+}
+
+/// A layer a removal took out of its zone's stack, as the journal keeps
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemovedLayer {
+    /// The zone whose stack held it.
+    pub zone_id: String,
+    /// What it went by, for the announcement.
+    pub name: String,
+    /// Where it sat in the stack, bottom first.
+    pub index: usize,
+    /// The layer as it stood when it was removed, or as an undo made it
+    /// again.
+    pub layer: SceneLayer,
 }
 
 /// How an add came out, for whoever asked: the names it landed on and the
@@ -80,6 +106,67 @@ pub fn recreate_request(
         enabled: Some(layer.enabled),
         scope,
     })
+}
+
+/// The order that puts `restored`, which a create just left on top of
+/// `stack`, back at `index`. Both count from the bottom, and a stack now
+/// too short for `index` keeps the layer on top. `None` when the layer
+/// already sits there, or the stack does not hold it.
+#[must_use]
+pub fn restored_order(
+    stack: &[SceneLayerId],
+    restored: SceneLayerId,
+    index: usize,
+) -> Option<Vec<SceneLayerId>> {
+    let from = stack.iter().position(|id| *id == restored)?;
+    let to = index.min(stack.len().saturating_sub(1));
+    if from == to {
+        return None;
+    }
+    let mut order = stack.to_vec();
+    let layer = order.remove(from);
+    order.insert(to, layer);
+    Some(order)
+}
+
+/// The order an undo or redo of a reorder sends: `wanted`, while `live`
+/// holds exactly the layers it names. `None` once a layer has joined or
+/// left the stack since, when no order of the recorded layers describes
+/// the stack any longer.
+#[must_use]
+pub fn replayable_order(
+    live: &[SceneLayerId],
+    wanted: &[SceneLayerId],
+) -> Option<Vec<SceneLayerId>> {
+    let same = live.len() == wanted.len()
+        && live.iter().all(|id| wanted.contains(id))
+        && wanted.iter().all(|id| live.contains(id));
+    same.then(|| wanted.to_vec())
+}
+
+/// The order `stack` takes when `moving` trades places with its neighbor
+/// among the layers `group` names: `delta` of 1 moves it up, -1 down. The
+/// group is read in the stack's own order, so a reorder asked for against
+/// an older view of the stack still moves the layer one place from where
+/// it sits now. `None` when there is no such neighbor.
+#[must_use]
+pub fn reorder_step(
+    stack: &[SceneLayerId],
+    group: &[SceneLayerId],
+    moving: SceneLayerId,
+    delta: isize,
+) -> Option<Vec<SceneLayerId>> {
+    let group: Vec<SceneLayerId> = stack
+        .iter()
+        .filter(|id| group.contains(id))
+        .copied()
+        .collect();
+    reorder_within(stack, &group, moving, delta)
+}
+
+/// The ids of a stack, bottom first.
+fn order_of(stack: &[SceneLayer]) -> Vec<SceneLayerId> {
+    stack.iter().map(|layer| layer.id).collect()
 }
 
 /// Where the layer `layer_id` sits in `scene`: the zone it was created
@@ -321,11 +408,368 @@ impl StudioHistory {
                     self.replay_words.try_set_value(None);
                     toasts::toast_info(&super::dropped_step_notice(
                         redo,
-                        &format!("{name} and the screens it was on are gone"),
+                        &format!("{name} and what it was on are gone"),
                     ));
                 } else if finished {
                     self.announce_replay();
                 }
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+
+    /// Take the layer `layer_id` out of the zone `zone_id` as one undo
+    /// step. `name` is what the layer goes by, for the announcement.
+    pub fn remove_layer(self, zone_id: String, layer_id: SceneLayerId, name: String) {
+        self.when_free(Waiting::RemoveLayer {
+            zone_id,
+            layer_id,
+            name,
+        });
+    }
+
+    pub(super) fn remove_layer_now(self, zone_id: String, layer_id: SceneLayerId, name: String) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let found = super::find_layer(&scene, &zone_id, layer_id).and_then(|(zone, layer)| {
+            let index = zone.layers.iter().position(|held| held.id == layer_id)?;
+            Some((index, layer.clone()))
+        });
+        // Already gone, as after a second press on its button: what was
+        // asked for holds, and there is nothing to take back.
+        let Some((index, layer)) = found else {
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let fence = Fence::of(&scene);
+            let result = api::delete_layer(&zone_id, &layer_id.to_string(), Some(&fence)).await;
+            if !self.is_current(generation) {
+                return;
+            }
+            match result {
+                Ok(api::LayerStackOutcome::Applied(stack)) => {
+                    self.journal.update(|journal| {
+                        journal.record(StudioEdit::LayerRemoved(Box::new(RemovedLayer {
+                            zone_id: zone_id.clone(),
+                            name,
+                            index,
+                            layer,
+                        })));
+                    });
+                    self.adopt_written(&zone_id, stack);
+                    toasts::toast_success("Layer removed");
+                }
+                Ok(api::LayerStackOutcome::Stale { .. }) => {
+                    toasts::toast_error("Layer stack changed elsewhere, so it was reloaded");
+                    self.resync(generation).await;
+                }
+                Err(error) => toasts::toast_error(&format!("Layer delete failed: {error}")),
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+
+    /// Trade the layer `layer_id` of the zone `zone_id` with its neighbor
+    /// among the layers `group` names, as one undo step: `delta` of 1
+    /// moves it up, -1 down. `name` is what the layer goes by.
+    pub fn reorder_layer(
+        self,
+        zone_id: String,
+        group: Vec<SceneLayerId>,
+        layer_id: SceneLayerId,
+        delta: isize,
+        name: String,
+    ) {
+        self.when_free(Waiting::ReorderLayer {
+            zone_id,
+            group,
+            layer_id,
+            delta,
+            name,
+        });
+    }
+
+    pub(super) fn reorder_layer_now(
+        self,
+        zone_id: String,
+        group: &[SceneLayerId],
+        layer_id: SceneLayerId,
+        delta: isize,
+        name: String,
+    ) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(before) = scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)
+            .map(|zone| order_of(&zone.layers))
+        else {
+            return;
+        };
+        // Already at the edge of its group: there is nowhere to move it.
+        let Some(order) = reorder_step(&before, group, layer_id, delta) else {
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let fence = Fence::of(&scene);
+            let result = api::reorder_layers(&zone_id, order, Some(&fence)).await;
+            if !self.is_current(generation) {
+                return;
+            }
+            match result {
+                Ok(api::LayerStackOutcome::Applied(stack)) => {
+                    let after = order_of(&stack.items);
+                    self.journal.update(|journal| {
+                        journal.record(StudioEdit::LayersReordered {
+                            zone_id: zone_id.clone(),
+                            name,
+                            before,
+                            after,
+                        });
+                    });
+                    self.adopt_written(&zone_id, stack);
+                }
+                Ok(api::LayerStackOutcome::Stale { .. }) => {
+                    toasts::toast_error("Layer stack changed elsewhere, so it was reloaded");
+                    self.resync(generation).await;
+                }
+                Err(error) => toasts::toast_error(&format!("Layer reorder failed: {error}")),
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+
+    /// The stack a replayed layer write left, or `None` once what stopped
+    /// it is dealt with: a stale fence reads the scene again and keeps the
+    /// step, a refusal drops the step (see [`refuses_step`]), and anything
+    /// else keeps it for another try.
+    async fn replayed_stack(
+        self,
+        generation: u64,
+        id: EntryId,
+        redo: bool,
+        result: api::ApiResult<api::LayerStackOutcome>,
+    ) -> Option<api::LayerStackResponse> {
+        match result {
+            Ok(api::LayerStackOutcome::Applied(stack)) => Some(stack),
+            Ok(api::LayerStackOutcome::Stale { .. }) => {
+                toasts::toast_error("Scene changed elsewhere; history was not applied. Try again.");
+                self.resync(generation).await;
+                None
+            }
+            Err(error) if refuses_step(&error) => {
+                self.drop_step(id, redo, &error.to_string());
+                None
+            }
+            Err(error) => {
+                toasts::toast_error(&format!("History could not be applied: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Undo or redo the removal at the journal place `id`: an undo makes
+    /// the layer again where it sat, a redo takes it out again.
+    pub(super) fn replay_layer_removed(self, id: EntryId, redo: bool, removed: RemovedLayer) {
+        if redo {
+            self.remove_again(id, removed);
+        } else {
+            self.restore_removed(id, removed);
+        }
+    }
+
+    fn restore_removed(self, id: EntryId, removed: RemovedLayer) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let RemovedLayer {
+            zone_id,
+            name,
+            index,
+            layer,
+        } = removed;
+        let Some(zone) = scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)
+        else {
+            self.drop_step(
+                id,
+                false,
+                &format!("the zone {name} was in is no longer in this scene"),
+            );
+            return;
+        };
+        let Some(request) = recreate_request(&layer, zone) else {
+            self.drop_step(
+                id,
+                false,
+                &format!("the outputs {name} was on have left this zone"),
+            );
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let fence = Fence::of(&scene);
+            let result = api::create_layer(&zone_id, &request, Some(&fence)).await;
+            if !self.is_current(generation) {
+                return;
+            }
+            if let Some(mut stack) = self.replayed_stack(generation, id, false, result).await {
+                let made = stack.items.last().cloned().unwrap_or_else(|| layer.clone());
+                if let Some(order) = restored_order(&order_of(&stack.items), made.id, index) {
+                    let placed =
+                        api::reorder_layers(&zone_id, order, Some(&fence.at(stack.revision))).await;
+                    if !self.is_current(generation) {
+                        return;
+                    }
+                    if let Ok(api::LayerStackOutcome::Applied(placed)) = placed {
+                        stack = placed;
+                    } else {
+                        // The layer is back either way, and the step is
+                        // undone: only its place is off.
+                        toasts::toast_info(&format!(
+                            "{name} is back, but on top of its stack: it could not be put where it was"
+                        ));
+                        self.resync(generation).await;
+                        if !self.is_current(generation) {
+                            return;
+                        }
+                    }
+                }
+                self.journal.update(|journal| {
+                    journal.remap_layer(&zone_id, layer.id, made.id);
+                    journal.settle(
+                        id,
+                        Settled::Unapplied(StudioEdit::LayerRemoved(Box::new(RemovedLayer {
+                            zone_id: zone_id.clone(),
+                            name,
+                            index,
+                            layer: made,
+                        }))),
+                    );
+                });
+                self.announce_replay();
+                self.adopt_written(&zone_id, stack);
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+
+    fn remove_again(self, id: EntryId, removed: RemovedLayer) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let found = locate(&scene, &removed.zone_id, removed.layer.id).and_then(|(zone, layer)| {
+            let index = zone.layers.iter().position(|held| held.id == layer.id)?;
+            Some((zone.id.to_string(), index, layer))
+        });
+        let Some((zone_id, index, layer)) = found else {
+            self.drop_step(
+                id,
+                true,
+                &format!("{} is no longer in this scene", removed.name),
+            );
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let fence = Fence::of(&scene);
+            let result = api::delete_layer(&zone_id, &layer.id.to_string(), Some(&fence)).await;
+            if !self.is_current(generation) {
+                return;
+            }
+            if let Some(stack) = self.replayed_stack(generation, id, true, result).await {
+                self.journal.update(|journal| {
+                    journal.settle(
+                        id,
+                        Settled::Applied(StudioEdit::LayerRemoved(Box::new(RemovedLayer {
+                            zone_id: zone_id.clone(),
+                            name: removed.name,
+                            index,
+                            layer,
+                        }))),
+                    );
+                });
+                self.announce_replay();
+                self.adopt_written(&zone_id, stack);
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+
+    /// Undo or redo the reorder at the journal place `id`, onto a stack
+    /// that still holds the layers it put in order (see
+    /// [`replayable_order`]).
+    pub(super) fn replay_layers_reordered(
+        self,
+        id: EntryId,
+        redo: bool,
+        zone_id: String,
+        name: String,
+        before: Vec<SceneLayerId>,
+        after: Vec<SceneLayerId>,
+    ) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let order = scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)
+            .and_then(|zone| {
+                replayable_order(&order_of(&zone.layers), if redo { &after } else { &before })
+            });
+        let Some(order) = order else {
+            self.drop_step(
+                id,
+                redo,
+                "the layers it put in order are no longer the ones in this zone",
+            );
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let fence = Fence::of(&scene);
+            let result = api::reorder_layers(&zone_id, order, Some(&fence)).await;
+            if !self.is_current(generation) {
+                return;
+            }
+            if let Some(stack) = self.replayed_stack(generation, id, redo, result).await {
+                let entry = StudioEdit::LayersReordered {
+                    zone_id: zone_id.clone(),
+                    name,
+                    before,
+                    after,
+                };
+                let settled = if redo {
+                    Settled::Applied(entry)
+                } else {
+                    Settled::Unapplied(entry)
+                };
+                self.journal.update(|journal| journal.settle(id, settled));
+                self.announce_replay();
+                self.adopt_written(&zone_id, stack);
             }
             self.refresh.run(());
             self.finish(generation);

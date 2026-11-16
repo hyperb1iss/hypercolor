@@ -13,11 +13,12 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::api;
-use crate::components::layer_panel::LayerPanel;
+use crate::components::layer_panel::{LayerAddDone, LayerHistoryHost, LayerPanel};
 use crate::components::zone_tabs::ZoneDot;
 use crate::icons::*;
 
 use super::StudioContext;
+use super::history::{AddOutcome, LayerAdd};
 use super::layer_target::ShowingStrip;
 
 pub(super) const COMPOSITION_PANEL_ID: &str = "studio-composition-panel";
@@ -101,6 +102,37 @@ pub fn CompositionPanel(
     });
     let layer_targets = studio.targets.host(studio);
     let screen_host = studio.screens.host(studio);
+    // Adding, removing, and reordering a layer are steps of Studio's
+    // history, as a change of what a layer applies to already is.
+    let history = studio.history;
+    let layer_history = LayerHistoryHost {
+        add: Callback::new(
+            move |(zone_id, request, lands_on, done): (
+                String,
+                api::CreateLayerRequest,
+                String,
+                LayerAddDone,
+            )| {
+                let name = request.name.clone().unwrap_or_else(|| "Layer".to_owned());
+                let add = LayerAdd {
+                    zone_id,
+                    request,
+                    lands_on: vec![lands_on],
+                };
+                history.add_layers(
+                    name,
+                    vec![add],
+                    Box::new(move |outcome: AddOutcome| done(!outcome.landed.is_empty())),
+                );
+            },
+        ),
+        remove: Callback::new(move |(zone_id, layer_id, name)| {
+            history.remove_layer(zone_id, layer_id, name);
+        }),
+        reorder: Callback::new(move |(zone_id, group, layer_id, delta, name)| {
+            history.reorder_layer(zone_id, group, layer_id, delta, name);
+        }),
+    };
 
     // Escape closes the panel while it is open, unless a text field owns
     // the key (a rename in the rail cancels with Escape too) or a target
@@ -193,6 +225,7 @@ pub fn CompositionPanel(
                     on_layers_mutated=on_layers_mutated
                     targets=layer_targets
                     screens=screen_host
+                    history=layer_history
                 />
             </div>
         </aside>

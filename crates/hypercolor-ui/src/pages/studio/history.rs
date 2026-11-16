@@ -41,7 +41,10 @@ mod zones;
 pub use announce::{DeviceLookup, ZoneLookup, carried_announcement, replay_announcement};
 
 pub use held::{members_landed, resolve_deletion, settles_by_key};
-pub use layers::{AddDone, AddOutcome, AddedLayer, LayerAdd, recreate_request};
+pub use layers::{
+    AddDone, AddOutcome, AddedLayer, LayerAdd, RemovedLayer, recreate_request, reorder_step,
+    replayable_order, restored_order,
+};
 pub use zones::{
     DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
 };
@@ -96,6 +99,19 @@ pub enum StudioEdit {
         name: String,
         layers: Vec<AddedLayer>,
     },
+    /// A layer taken out of a zone's stack: the layer as it stood, and
+    /// where it sat.
+    LayerRemoved(Box<RemovedLayer>),
+    /// A zone's stack put in another order. `before` and `after` each
+    /// name every layer of the stack, bottom first, as the layers stand
+    /// now: a replace mints a new id, and both orders follow it. `name`
+    /// is what the layer that moved was called, for the announcement.
+    LayersReordered {
+        zone_id: String,
+        name: String,
+        before: Vec<SceneLayerId>,
+        after: Vec<SceneLayerId>,
+    },
     /// A zone Studio made, with the move that filled it as it was made:
     /// the outputs that went in, and the scoped layers the daemon carried
     /// with them or narrowed, as the move's receipt recorded both.
@@ -145,6 +161,8 @@ fn carried_layers(edit: &StudioEdit) -> &[LayerMove] {
         StudioEdit::Layout { .. }
         | StudioEdit::LayerScope { .. }
         | StudioEdit::LayersAdded { .. }
+        | StudioEdit::LayerRemoved(_)
+        | StudioEdit::LayersReordered { .. }
         | StudioEdit::ZonePatched { .. }
         | StudioEdit::ZoneDeleted(_)
         | StudioEdit::Unresolved { .. } => &[],
@@ -285,7 +303,8 @@ impl StudioJournal {
             match &mut entry.edit {
                 StudioEdit::Layout { zone_id, .. }
                 | StudioEdit::ZonePatched { zone_id, .. }
-                | StudioEdit::LayerScope { zone_id, .. } => {
+                | StudioEdit::LayerScope { zone_id, .. }
+                | StudioEdit::LayersReordered { zone_id, .. } => {
                     if zone_id == old {
                         zone_id.clone_from(&new_key);
                     }
@@ -317,6 +336,11 @@ impl StudioJournal {
                 StudioEdit::LayersAdded { layers, .. } => {
                     for added in layers.iter_mut().filter(|added| added.zone_id == old) {
                         added.zone_id.clone_from(&new_key);
+                    }
+                }
+                StudioEdit::LayerRemoved(removed) => {
+                    if removed.zone_id == old {
+                        removed.zone_id.clone_from(&new_key);
                     }
                 }
                 StudioEdit::Unresolved { .. } => {}
@@ -360,6 +384,27 @@ impl StudioJournal {
                         }
                     }
                 }
+                // A removed layer is only there to rename while its step
+                // waits to be redone.
+                StudioEdit::LayerRemoved(removed) if index >= self.cursor => {
+                    if removed.layer.id == old
+                        && self.zone_now(index, removed.zone_id.clone(), old) == zone_id
+                    {
+                        named.push((index, None));
+                    }
+                }
+                StudioEdit::LayersReordered {
+                    zone_id: zone,
+                    before,
+                    after,
+                    ..
+                } => {
+                    if before.iter().chain(after).any(|id| *id == old)
+                        && self.zone_now(index, zone.clone(), old) == zone_id
+                    {
+                        named.push((index, None));
+                    }
+                }
                 edit => {
                     for (place, moved) in carried_layers(edit).iter().enumerate() {
                         // An applied move left its layer where it ends;
@@ -382,6 +427,14 @@ impl StudioJournal {
         for (index, place) in named {
             match (&mut self.entries[index].edit, place) {
                 (StudioEdit::LayerScope { layer_id, .. }, None) => *layer_id = new,
+                (StudioEdit::LayerRemoved(removed), None) => removed.layer.id = new,
+                (StudioEdit::LayersReordered { before, after, .. }, None) => {
+                    for id in before.iter_mut().chain(after.iter_mut()) {
+                        if *id == old {
+                            *id = new;
+                        }
+                    }
+                }
                 (StudioEdit::LayersAdded { layers, .. }, Some(place)) => {
                     if let Some(added) = layers.get_mut(place) {
                         added.layer.id = new;
@@ -574,6 +627,21 @@ enum Waiting {
         adds: Vec<LayerAdd>,
         done: layers::AddDone,
     },
+    /// A layer to take out of a zone's stack; `name` is what it goes by.
+    RemoveLayer {
+        zone_id: String,
+        layer_id: SceneLayerId,
+        name: String,
+    },
+    /// A layer to trade places with its neighbor among `group`: `delta`
+    /// of 1 moves it up, -1 down.
+    ReorderLayer {
+        zone_id: String,
+        group: Vec<SceneLayerId>,
+        layer_id: SceneLayerId,
+        delta: isize,
+        name: String,
+    },
     /// The rest of the undo or redo `item` held, now its first write is
     /// known to have landed: `did` is the entry that undoes what that
     /// write did.
@@ -595,6 +663,8 @@ impl Waiting {
                 | Self::DeleteZone { .. }
                 | Self::LayerScope { .. }
                 | Self::AddLayers { .. }
+                | Self::RemoveLayer { .. }
+                | Self::ReorderLayer { .. }
         )
     }
 
@@ -610,6 +680,8 @@ impl Waiting {
             | Self::UnassignedBehavior(_)
             | Self::LayerScope { .. }
             | Self::AddLayers { .. }
+            | Self::RemoveLayer { .. }
+            | Self::ReorderLayer { .. }
             | Self::Resume { .. } => {}
         }
     }
@@ -1081,6 +1153,18 @@ impl StudioHistory {
                 scope,
             } => self.set_layer_scope_now(zone_id, layer_id, name, scope),
             Waiting::AddLayers { name, adds, done } => self.add_layers_now(name, adds, done),
+            Waiting::RemoveLayer {
+                zone_id,
+                layer_id,
+                name,
+            } => self.remove_layer_now(zone_id, layer_id, name),
+            Waiting::ReorderLayer {
+                zone_id,
+                group,
+                layer_id,
+                delta,
+                name,
+            } => self.reorder_layer_now(zone_id, &group, layer_id, delta, name),
             Waiting::Resume { item, did } => self.resume_now(*item, did),
         }
     }
@@ -1943,6 +2027,13 @@ impl StudioHistory {
             StudioEdit::LayersAdded { name, layers } => {
                 self.replay_layers_added(id, redo, name, layers);
             }
+            StudioEdit::LayerRemoved(removed) => self.replay_layer_removed(id, redo, *removed),
+            StudioEdit::LayersReordered {
+                zone_id,
+                name,
+                before,
+                after,
+            } => self.replay_layers_reordered(id, redo, zone_id, name, before, after),
             StudioEdit::ZoneCreated {
                 zone_id,
                 name,

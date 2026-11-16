@@ -165,7 +165,6 @@ pub fn LayerRow(
     #[prop(optional_no_strip)] on_blend_disclosure: Option<Callback<bool>>,
 ) -> impl IntoView {
     let initial = layer.get_untracked();
-    let stack = writes.stack;
     let on_layers_mutated = writes.mutated;
     let (icon, accent_rgb, kind_word) = source_meta(&initial.source);
     let is_face = on_screen && matches!(initial.source, LayerSource::Effect { .. });
@@ -316,7 +315,6 @@ pub fn LayerRow(
     });
 
     let dormant_zone_id = zone_id.clone();
-    let dormant_layer_id = layer_id.clone();
 
     // The source's own controls: an effect's parameters, a clip's playback.
     let controls_zone = zone_id.clone();
@@ -608,7 +606,6 @@ pub fn LayerRow(
                                 }
                                 TargetWords::Dormant => {
                                     let zone_id = dormant_zone_id.clone();
-                                    let layer_id = dormant_layer_id.clone();
                                     view! {
                                         <button
                                             type="button"
@@ -630,9 +627,10 @@ pub fn LayerRow(
                                             aria-label=move || format!("Remove {}", title.get())
                                             on:click=move |_| delete_layer(
                                                 zone_id.clone(),
-                                                layer_id.clone(),
+                                                layer.get_untracked().id,
+                                                title.get_untracked(),
                                                 fence.get_untracked(),
-                                                on_layers_mutated,
+                                                writes,
                                             )
                                         >
                                             "Remove"
@@ -659,8 +657,6 @@ pub fn LayerRow(
                         .then(|| {
                             let zone_up = zone_id.clone();
                             let zone_down = zone_id.clone();
-                            let up_stack = stack;
-                            let down_stack = stack;
                             view! {
                                 <button
                                     type="button"
@@ -669,12 +665,12 @@ pub fn LayerRow(
                                     title="Move layer up"
                                     on:click=move |_| reorder_layer(
                                         zone_up.clone(),
-                                        &up_stack.get_untracked(),
-                                        &group.get_untracked(),
+                                        group.get_untracked(),
                                         layer.get_untracked().id,
                                         1,
+                                        title.get_untracked(),
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     )
                                 >
                                     <Icon icon=LuChevronUp width="14px" height="14px" />
@@ -686,12 +682,12 @@ pub fn LayerRow(
                                     title="Move layer down"
                                     on:click=move |_| reorder_layer(
                                         zone_down.clone(),
-                                        &down_stack.get_untracked(),
-                                        &group.get_untracked(),
+                                        group.get_untracked(),
                                         layer.get_untracked().id,
                                         -1,
+                                        title.get_untracked(),
                                         fence.get_untracked(),
-                                        on_layers_mutated,
+                                        writes,
                                     )
                                 >
                                     <Icon icon=LuChevronDown width="14px" height="14px" />
@@ -709,16 +705,16 @@ pub fn LayerRow(
                         data-layer-remove=""
                         on:click={
                             let zone_id = zone_id.clone();
-                            let layer_id = layer_id.clone();
                             move |_| {
                                 if on_remove.is_some_and(|ask| ask.run(title.get_untracked())) {
                                     return;
                                 }
                                 delete_layer(
                                     zone_id.clone(),
-                                    layer_id.clone(),
+                                    layer.get_untracked().id,
+                                    title.get_untracked(),
                                     fence.get_untracked(),
-                                    on_layers_mutated,
+                                    writes,
                                 );
                             }
                         }
