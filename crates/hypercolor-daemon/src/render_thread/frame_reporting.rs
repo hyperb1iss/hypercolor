@@ -6,7 +6,6 @@ use tracing::{trace, warn};
 use crate::performance::LatestFrameMetrics;
 
 const SLOW_FRAME_WARNING_MIN_INTERVAL: Duration = Duration::from_secs(2);
-const FRAME_STAGE_SPIKE_US: u32 = 2_000;
 
 static SLOW_FRAME_WARNING_STATE: LazyLock<Mutex<SlowFrameWarningState>> =
     LazyLock::new(Mutex::default);
@@ -187,12 +186,6 @@ fn frame_completion_warning_reason(report: &FrameCompletionReport) -> Option<&'s
     if frame_budget_us > 0 && metrics.total_us > frame_budget_us {
         return Some("over_budget");
     }
-    if metrics.sample_us > FRAME_STAGE_SPIKE_US {
-        return Some("sampling_spike");
-    }
-    if metrics.push_us > FRAME_STAGE_SPIKE_US {
-        return Some("device_output_spike");
-    }
     if metrics.gpu_sample_wait_blocked {
         return Some("gpu_sample_wait_blocked");
     }
@@ -290,6 +283,85 @@ mod tests {
             frame_completion_warning_reason(&report),
             Some("over_budget")
         );
+    }
+
+    #[test]
+    fn within_budget_stage_spikes_remain_telemetry() {
+        let mut metrics = LatestFrameMetrics {
+            sample_us: 3_000,
+            push_us: 2_459,
+            total_us: 7_170,
+            ..LatestFrameMetrics::default()
+        };
+        metrics.timeline.budget_us = 16_666;
+        let report = FrameCompletionReport::new(16_666, &metrics, &FrameWriteStats::default());
+
+        assert_eq!(frame_completion_warning_reason(&report), None);
+        assert_eq!(report.metrics.sample_us, 3_000);
+        assert_eq!(report.metrics.push_us, 2_459);
+
+        metrics.total_us = 16_666;
+        let report = FrameCompletionReport::new(16_666, &metrics, &FrameWriteStats::default());
+        assert_eq!(frame_completion_warning_reason(&report), None);
+
+        metrics.total_us += 1;
+        let report = FrameCompletionReport::new(16_666, &metrics, &FrameWriteStats::default());
+        assert_eq!(
+            frame_completion_warning_reason(&report),
+            Some("over_budget")
+        );
+    }
+
+    #[test]
+    fn within_budget_stage_spikes_do_not_mask_faults() {
+        let normal = LatestFrameMetrics {
+            sample_us: 3_000,
+            push_us: 2_459,
+            total_us: 7_170,
+            ..LatestFrameMetrics::default()
+        };
+        let cases = [
+            (
+                LatestFrameMetrics {
+                    gpu_sample_wait_blocked: true,
+                    ..normal
+                },
+                "gpu_sample_wait_blocked",
+            ),
+            (
+                LatestFrameMetrics {
+                    gpu_sample_queue_saturated: true,
+                    ..normal
+                },
+                "gpu_sample_queue_saturated",
+            ),
+            (
+                LatestFrameMetrics {
+                    gpu_sample_cpu_fallback: true,
+                    ..normal
+                },
+                "gpu_sample_cpu_fallback",
+            ),
+            (
+                LatestFrameMetrics {
+                    gpu_readback_failed: true,
+                    ..normal
+                },
+                "gpu_readback_failed",
+            ),
+            (
+                LatestFrameMetrics {
+                    output_errors: 1,
+                    ..normal
+                },
+                "device_output_error",
+            ),
+        ];
+
+        for (metrics, reason) in cases {
+            let report = FrameCompletionReport::new(16_666, &metrics, &FrameWriteStats::default());
+            assert_eq!(frame_completion_warning_reason(&report), Some(reason));
+        }
     }
 
     #[test]
