@@ -1468,3 +1468,151 @@ async fn a_screen_assigned_beside_its_devices_lights_stays_through_layout_repair
     leave_and_return(&rig, &gaming).await;
     assert_eq!(of_pump(&live_members(&rig).await), ["Ring", "Display"]);
 }
+
+// ── The per-zone member routes ───────────────────────────────────────────
+//
+// `POST /scene/zones/{zone}/members` and `DELETE
+// /scene/zones/{zone}/members/{member}` change the same memberships as the
+// member edit route, so they reach the followed layout the same way.
+
+/// Assign segments of a device through the zone's own member route.
+/// Returns how many layouts the write published through the renderer.
+async fn assign_through_zone_route(rig: &Rig, device_id: &str, segments: &[&str]) -> usize {
+    let zone = primary_zone(&rig.app).await;
+    let (assigned, published) = send(
+        &rig.state,
+        &rig.app,
+        json_request(
+            "POST",
+            format!(
+                "/api/v1/scene/zones/{}/members",
+                zone["id"].as_str().expect("zone id")
+            ),
+            json!({ "device_id": device_id, "segments": segments }),
+        ),
+    )
+    .await;
+    let status = assigned.status();
+    let body = body_json(assigned).await;
+    assert!(status.is_success(), "the assignment answered {body}");
+    published
+}
+
+/// Take one member out through the zone's own member route.
+async fn unassign_through_zone_route(rig: &Rig, member: &str) -> usize {
+    let zone = primary_zone(&rig.app).await;
+    let (unassigned, published) = send(
+        &rig.state,
+        &rig.app,
+        empty_request(
+            "DELETE",
+            format!(
+                "/api/v1/scene/zones/{}/members/{member}",
+                zone["id"].as_str().expect("zone id")
+            ),
+        ),
+    )
+    .await;
+    let status = unassigned.status();
+    let body = body_json(unassigned).await;
+    assert!(status.is_success(), "the unassignment answered {body}");
+    published
+}
+
+#[tokio::test]
+async fn a_device_assigned_through_the_zone_route_survives_every_realign() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    let (_, pump) = connect_pump(&rig).await;
+    let revision = scene_revision(&rig.app).await;
+
+    let published = assign_through_zone_route(&rig, &pump, &["Ring", "Display"]).await;
+
+    assert_eq!(
+        published, 0,
+        "the layout changes in the scene commit, not in a publication of its own"
+    );
+    assert_eq!(
+        scene_revision(&rig.app).await,
+        revision + 1,
+        "the zone and the layout it follows change in one commit"
+    );
+    let live = live_members(&rig).await;
+    assert_eq!(
+        live.iter()
+            .map(|output| output.zone_name.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("ch1"), Some("ch2"), Some("Ring"), Some("Display")],
+        "the device's lights and its screen joined the zone"
+    );
+    // The published layout generates LED positions for the screen's one
+    // cell, which this route leaves empty in the zone, so the two are
+    // compared the way the store keeps them.
+    assert_eq!(
+        as_stored(&rig.state.domains.layout.current().zones),
+        as_stored(&live),
+        "the layout the zone follows holds them where the zone does"
+    );
+    assert_eq!(stored_active_layout(&rig).zones, as_stored(&live));
+    let expected = ids(&live);
+    assert_members_survive_every_realign(&rig, &gaming, &expected).await;
+}
+
+#[tokio::test]
+async fn a_member_unassigned_through_the_zone_route_stays_out_through_every_realign() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    let revision = scene_revision(&rig.app).await;
+
+    let published = unassign_through_zone_route(&rig, "strip-b").await;
+
+    assert_eq!(published, 0);
+    assert_eq!(scene_revision(&rig.app).await, revision + 1);
+    assert_eq!(ids(&live_members(&rig).await), ["strip-a"]);
+    assert_eq!(ids(&rig.state.domains.layout.current().zones), ["strip-a"]);
+    assert_eq!(ids(&stored_active_layout(&rig).zones), ["strip-a"]);
+    assert_members_survive_every_realign(&rig, &gaming, &["strip-a"]).await;
+}
+
+#[tokio::test]
+async fn the_zone_routes_leave_the_layout_alone_in_a_scene_with_a_custom_led_zone() {
+    let rig = rig_with_running_effect().await;
+    let (created, _) = send(
+        &rig.state,
+        &rig.app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({ "name": "Desk" }),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let (_, pump) = connect_pump(&rig).await;
+    let layout_before = rig.state.domains.layout.current();
+    let stored_before = stored_active_layout(&rig);
+
+    assign_through_zone_route(&rig, &pump, &["Ring"]).await;
+    unassign_through_zone_route(&rig, "strip-a").await;
+
+    let live = live_members(&rig).await;
+    assert_eq!(
+        live.iter()
+            .map(|output| output.zone_name.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("ch2"), Some("Ring")]
+    );
+    assert_eq!(
+        rig.state.domains.layout.current(),
+        layout_before,
+        "a scene with zones of its own keeps its members itself"
+    );
+    assert_eq!(stored_active_layout(&rig), stored_before);
+    let expected = ids(&live);
+    apply_preset(&rig).await;
+    assert_eq!(
+        ids(&live_members(&rig).await),
+        expected,
+        "and they survive an apply on their own"
+    );
+}

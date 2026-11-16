@@ -41,6 +41,7 @@ use crate::domain::output::OutputContext;
 use crate::domain::scene::{LayoutSceneReceipt, SceneMutation};
 use crate::domain::screen;
 use crate::domain::{DomainError, DomainErrorDetails, MutationContext, ResourceKind};
+use crate::scene_transactions::LayoutUpdateGuard;
 
 mod member_edits;
 pub use member_edits::edit_members;
@@ -704,13 +705,24 @@ pub async fn patch_layer_controls(
 ///
 /// [`DomainError::NotFound`] for an unknown zone, an unknown device, or
 /// a segment neither the scene nor the device knows;
-/// [`DomainError::PreconditionFailed`] for a stale revision.
+/// [`DomainError::PreconditionFailed`] for a stale revision. On a primary
+/// zone that follows the active layout, also what
+/// [`commit_membership`] refuses, with nothing committed.
 pub async fn assign_members(
+    ctx: &SceneTreeContext,
+    command: AssignMembers,
+) -> Result<ZoneWritten, DomainError> {
+    let ctx = ctx.clone();
+    membership_workflow(async move { assign_members_workflow(&ctx, command).await }).await
+}
+
+async fn assign_members_workflow(
     ctx: &SceneTreeContext,
     command: AssignMembers,
 ) -> Result<ZoneWritten, DomainError> {
     let minted = mint_missing_outputs(ctx, &command.request).await?;
 
+    let layout_guard = ctx.layout.acquire_update_guard().await;
     let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_fence(&mutation, command.fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning zone members")?;
@@ -720,8 +732,8 @@ pub async fn assign_members(
     if !scene.zones.iter().any(|zone| zone.id == command.zone_id) {
         return Err(DomainError::not_found(ResourceKind::Zone, command.zone_id));
     }
-    let previous_zones = scene.zones.clone();
     let outputs = resolve_members(&scene, &command.request, minted)?;
+    let assigned: Vec<String> = outputs.iter().map(|output| output.id.clone()).collect();
 
     mutation
         .assign_outputs(
@@ -733,12 +745,25 @@ pub async fn assign_members(
         .map_err(|_| DomainError::not_found(ResourceKind::Zone, command.zone_id))?;
 
     let zone = zone_in_candidate(&mutation, command.zone_id)?;
-    let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
-    ctx.layout
-        .sync_runtime_connectivity(ctx.scene.layout_runtime())
-        .await;
-    reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
-    Ok(written)
+    // The assigned outputs as the zone now holds them, each at its index.
+    let placed = zone
+        .layout
+        .zones
+        .iter()
+        .enumerate()
+        .filter(|(_, output)| assigned.contains(&output.id))
+        .map(|(index, output)| (index, output.clone()))
+        .collect();
+    commit_membership(
+        ctx,
+        layout_guard,
+        mutation,
+        &scene,
+        zone,
+        Vec::new(),
+        placed,
+    )
+    .await
 }
 
 /// Drop one membership out of the zone that holds it.
@@ -747,13 +772,29 @@ pub async fn assign_members(
 ///
 /// [`DomainError::NotFound`] for an unknown zone or a membership that
 /// zone does not hold, [`DomainError::PreconditionFailed`] for a stale
-/// revision.
+/// revision. On a primary zone that follows the active layout, also what
+/// [`commit_membership`] refuses, with nothing committed.
 pub async fn unassign_member(
     ctx: &SceneTreeContext,
     zone_id: ZoneId,
     member: &ZoneMemberId,
     fence: Option<SceneFence>,
 ) -> Result<ZoneWritten, DomainError> {
+    let ctx = ctx.clone();
+    let member = member.clone();
+    membership_workflow(
+        async move { unassign_member_workflow(&ctx, zone_id, &member, fence).await },
+    )
+    .await
+}
+
+async fn unassign_member_workflow(
+    ctx: &SceneTreeContext,
+    zone_id: ZoneId,
+    member: &ZoneMemberId,
+    fence: Option<SceneFence>,
+) -> Result<ZoneWritten, DomainError> {
+    let layout_guard = ctx.layout.acquire_update_guard().await;
     let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_fence(&mutation, fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("unassigning a zone member")?;
@@ -768,19 +809,74 @@ pub async fn unassign_member(
     if !zone.layout.zones.iter().any(|output| output.id == member.0) {
         return Err(DomainError::not_found(ResourceKind::Device, &member.0));
     }
-    let previous_zones = scene.zones.clone();
-
     mutation
         .unassign_output(scene_id, &member.0)
         .map_err(|_| DomainError::not_found(ResourceKind::Device, &member.0))?;
 
     let zone = zone_in_candidate(&mutation, zone_id)?;
-    let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
+    let left = vec![member.0.clone()];
+    commit_membership(ctx, layout_guard, mutation, &scene, zone, left, Vec::new()).await
+}
+
+/// Run a membership write to completion even when its caller goes away:
+/// the layout store write and the scene commit it belongs to finish
+/// together.
+async fn membership_workflow(
+    workflow: impl Future<Output = Result<ZoneWritten, DomainError>> + Send + 'static,
+) -> Result<ZoneWritten, DomainError> {
+    crate::audit_log::spawn_attributed(workflow)
+        .await
+        .map_err(|error| {
+            DomainError::Internal(anyhow::anyhow!("membership workflow failed: {error}"))
+        })?
+}
+
+/// Commit a write that changed which outputs `zone` holds, and answer with
+/// the zone.
+///
+/// When `zone` is the primary zone of a scene that follows the active
+/// layout, the outputs that `left` it and the ones `placed` in it, each at
+/// its index, are written to that layout in the same commit (see
+/// [`LayoutContext::commit_member_edit_under_guard`]). Any other zone keeps
+/// its members itself. `previous` is the scene as the write found it, and
+/// the guard was taken before that read.
+///
+/// # Errors
+///
+/// The refusal of the scene commit, and on a zone that follows the active
+/// layout a layout the write leaves invalid or a layout store that will
+/// not persist, each with nothing committed.
+async fn commit_membership(
+    ctx: &SceneTreeContext,
+    layout_guard: LayoutUpdateGuard,
+    mut mutation: SceneMutation,
+    previous: &Scene,
+    zone: Zone,
+    left: Vec<String>,
+    placed: Vec<(usize, Output)>,
+) -> Result<ZoneWritten, DomainError> {
+    let scene_id = previous.id;
+    let follows_active_layout = followed_primary_zone(previous) == Some(zone.id);
+    let (zone, owner) = mutation.settled_zone(zone);
+    let commit = if follows_active_layout {
+        ctx.layout
+            .commit_member_edit_under_guard(&layout_guard, mutation, &left, &placed)
+            .await?
+    } else {
+        ctx.scene.commit(mutation).await?
+    };
+    // Connectivity convergence takes the guard itself.
+    drop(layout_guard);
+    ctx.scene.save_runtime_session().await;
     ctx.layout
         .sync_runtime_connectivity(ctx.scene.layout_runtime())
         .await;
-    reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
-    Ok(written)
+    reconcile_member_exclusions(ctx, scene_id, &previous.zones).await;
+    Ok(ZoneWritten {
+        zone: screen_zone_resource(&zone, owner.as_ref()),
+        revision: commit.revision(),
+        commit,
+    })
 }
 
 /// Reposition a zone's members from the compact placement contract.
