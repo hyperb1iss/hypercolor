@@ -2,7 +2,9 @@ use hypercolor_types::canvas::{PublishedSurface, RenderSurfacePool};
 
 use super::super::PreviewSurfaceRequest;
 use super::readback::CachedReadbackKey;
-use super::{GpuSparkleFlinger, MAX_CACHED_PREVIEW_SURFACES, PREVIEW_SCALE_PARAM_BYTES};
+use super::{
+    GpuSparkleFlinger, MAX_CACHED_PREVIEW_SURFACES, PREVIEW_SCALE_PARAM_BYTES, UniformRingSlot,
+};
 
 mod preparation;
 mod readback_runtime;
@@ -37,7 +39,7 @@ pub(super) struct GpuPreviewSurfaceSet {
     pub(super) readback_surfaces: RenderSurfacePool,
     cached_readback_surfaces: Vec<CachedPreviewReadbackSurfaces>,
     pub(super) cached_scale_params: Option<[u8; PREVIEW_SCALE_PARAM_BYTES]>,
-    cached_scale_params_offset: Option<u32>,
+    cached_scale_params_slot: Option<UniformRingSlot>,
     #[cfg(test)]
     pub(super) scale_param_write_count: usize,
     #[cfg(test)]

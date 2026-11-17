@@ -47,11 +47,22 @@ pub(super) struct UniformParamsRing {
     pub(super) fallback_write_count: usize,
 }
 
+/// A ring slot one write filled, kept so a later dispatch with byte-identical
+/// params can bind it again through [`UniformParamsRing::rebind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct UniformRingSlot {
+    offset: u32,
+    /// The ring cursor the write took. Every surface set writes to the one
+    /// ring, so the slot holds this write only until the others wrap onto it.
+    write: u64,
+}
+
 /// Result of a params upload: the dynamic offset to bind for the dispatch,
-/// and whether the offset may be reused by a later byte-identical dispatch.
+/// and the slot a later byte-identical dispatch may bind again. An overflow
+/// write has no slot of its own.
 pub(super) struct UniformParamsWrite {
     pub(super) offset: u32,
-    pub(super) reusable: bool,
+    pub(super) slot: Option<UniformRingSlot>,
 }
 
 impl UniformParamsRing {
@@ -137,10 +148,14 @@ impl UniformParamsRing {
             }
             return Ok(UniformParamsWrite {
                 offset: self.overflow_offset,
-                reusable: false,
+                slot: None,
             });
         }
-        let offset = self.slot_offset(self.cursor);
+        let slot = UniformRingSlot {
+            offset: self.slot_offset(self.cursor),
+            write: self.cursor,
+        };
+        let offset = slot.offset;
         queue.write_buffer(&self.buffer, u64::from(offset), params);
         self.cursor += 1;
         #[cfg(test)]
@@ -149,18 +164,29 @@ impl UniformParamsRing {
         }
         Ok(UniformParamsWrite {
             offset,
-            reusable: true,
+            slot: Some(slot),
         })
     }
 
-    /// Pins the most recent ring write so its slot cannot be reused while a
-    /// dispatch that re-binds it (params dedup) is still unsubmitted. Without
-    /// this, a retired slot re-bound by a fresh dispatch could be rewritten
-    /// before that dispatch's encoder is submitted.
-    pub(super) fn pin_last_slot(&mut self) {
-        if let Some(last) = self.cursor.checked_sub(1) {
-            self.watermark = self.watermark.min(last);
+    /// The offset of `slot` for a dispatch whose params are the ones it was
+    /// written with, or `None` when the caller must write them again.
+    ///
+    /// A bound slot is pinned until the next release, so no write reaches it
+    /// while the dispatch that binds it is unsubmitted. The ring is shared by
+    /// every surface set: one that binds the same slot frame after frame is
+    /// passed by the others' writes, which would wrap onto it and hand its
+    /// dispatch their params. A slot more than half the ring behind the
+    /// cursor is therefore given up while it is still intact, and its params
+    /// take a fresh slot. That keeps half the ring free ahead of every pin,
+    /// where pinning an old slot would push the writes behind it down the
+    /// overflow path for as long as it stayed bound.
+    pub(super) fn rebind(&mut self, slot: UniformRingSlot) -> Option<u32> {
+        let writes_since = self.cursor.saturating_sub(slot.write);
+        if writes_since > (self.slot_count / 2).max(1) {
+            return None;
         }
+        self.watermark = self.watermark.min(slot.write);
+        Some(slot.offset)
     }
 
     /// Marks every written slot as reusable. Callers must guarantee that no

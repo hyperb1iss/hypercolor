@@ -67,7 +67,7 @@ use media_upload::{MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MEDIA_UPLOAD_TEXTURE_R
 use media_upload::{MediaUploadTextureKey, MediaUploadTexturePool};
 use native_screen::NativeScreenBridge;
 pub(crate) use native_screen::NativeScreenCopyOutcome;
-use pipeline::GpuCompositorPipeline;
+use pipeline::{GpuCompositorPipeline, UniformRingSlot};
 #[cfg(test)]
 use preview::PendingPreviewReadback;
 use preview::{CachedPreviewSurface, GpuPreviewSurfaceSet, PendingPreviewMap};
@@ -327,7 +327,7 @@ pub(crate) struct GpuCompositorSurfaceSet {
     compose_source_bind_groups: ComposeSourceBindGroupCache,
     source_copy_bind_groups: SourceCopyBindGroupCache,
     cached_compose_params: Option<[u8; COMPOSE_PARAM_BYTES]>,
-    cached_compose_params_offset: Option<u32>,
+    cached_compose_params_slot: Option<UniformRingSlot>,
     pending_upload_buffers: PendingUploadBuffers,
     screen_upload_pool: ScreenPublicationUploadPool,
     uploaded_screen_frame_scratch: Vec<Option<GpuTextureFrame>>,
@@ -519,7 +519,7 @@ impl GpuCompositorSurfaceSet {
             back,
             source,
             cached_compose_params: None,
-            cached_compose_params_offset: None,
+            cached_compose_params_slot: None,
             pending_upload_buffers: PendingUploadBuffers::default(),
             screen_upload_pool: ScreenPublicationUploadPool::new(
                 ScreenUploadResidencyPolicy::compositor_pipeline(),

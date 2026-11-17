@@ -75,7 +75,7 @@ impl GpuPreviewSurfaceSet {
             readback_surfaces,
             cached_readback_surfaces,
             cached_scale_params: None,
-            cached_scale_params_offset: None,
+            cached_scale_params_slot: None,
             #[cfg(test)]
             scale_param_write_count: 0,
             #[cfg(test)]
