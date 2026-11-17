@@ -133,9 +133,9 @@ impl GpuSparkleFlinger {
                 request.height,
             );
             let params_offset = if preview_surfaces.cached_scale_params == Some(params)
-                && let Some(offset) = preview_surfaces.cached_scale_params_offset
+                && let Some(slot) = preview_surfaces.cached_scale_params_slot
+                && let Some(offset) = self.pipeline.preview_scale_params.rebind(slot)
             {
-                self.pipeline.preview_scale_params.pin_last_slot();
                 offset
             } else {
                 let pending_upload_buffers = &mut self
@@ -164,8 +164,7 @@ impl GpuSparkleFlinger {
                     }
                 };
                 preview_surfaces.cached_scale_params = Some(params);
-                preview_surfaces.cached_scale_params_offset =
-                    write.reusable.then_some(write.offset);
+                preview_surfaces.cached_scale_params_slot = write.slot;
                 #[cfg(test)]
                 {
                     preview_surfaces.scale_param_write_count =

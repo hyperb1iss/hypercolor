@@ -382,8 +382,8 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn create_compose_bind_group(
 }
 
 /// Uploads compose params into the uniform ring and returns the dynamic
-/// offset the dispatch must bind. Byte-identical params re-bind the previous
-/// slot without writing, as long as that slot came from a ring write.
+/// offset the dispatch must bind. Byte-identical params bind the surface
+/// set's previous slot again without writing, while the ring still holds it.
 pub(super) fn encode_compose_params_upload(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -393,9 +393,9 @@ pub(super) fn encode_compose_params_upload(
     params: &[u8; COMPOSE_PARAM_BYTES],
 ) -> Result<u32> {
     if surfaces.cached_compose_params.as_ref() == Some(params)
-        && let Some(offset) = surfaces.cached_compose_params_offset
+        && let Some(slot) = surfaces.cached_compose_params_slot
+        && let Some(offset) = pipeline.compose_params.rebind(slot)
     {
-        pipeline.compose_params.pin_last_slot();
         return Ok(offset);
     }
     let write = pipeline.compose_params.write(
@@ -406,7 +406,7 @@ pub(super) fn encode_compose_params_upload(
         params,
     )?;
     surfaces.cached_compose_params = Some(*params);
-    surfaces.cached_compose_params_offset = write.reusable.then_some(write.offset);
+    surfaces.cached_compose_params_slot = write.slot;
     #[cfg(test)]
     {
         surfaces.compose_param_write_count = surfaces.compose_param_write_count.saturating_add(1);

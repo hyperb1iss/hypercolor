@@ -2610,6 +2610,67 @@ fn gpu_compose_params_ring_wrap_falls_back_to_staging_uploads() {
     assert_eq!(compositor.pipeline.compose_params.fallback_write_count, 1);
 }
 
+/// A composition that dispatches the same params every frame binds one ring
+/// slot again and again, while a surface set of another size keeps writing.
+/// A screen's face with an adjustment is that composition: its slot must
+/// never hand it the params of the zones composing around it.
+#[test]
+fn gpu_compose_params_stay_a_surface_sets_own_when_another_set_wraps_the_ring() {
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
+    };
+    compositor
+        .pipeline
+        .compose_params
+        .set_slot_count_for_test(8);
+
+    let steady = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                220, 28, 16, 255,
+            )))),
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(24, 180, 64, 255))),
+                0.45,
+            ),
+        ],
+    );
+    let busy = CompositionPlan::with_layers(
+        8,
+        8,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                8,
+                8,
+                Rgba::new(10, 20, 30, 255),
+            ))),
+            CompositionLayer::add(
+                ProducerFrame::Canvas(solid_canvas_with_size(8, 8, Rgba::new(32, 48, 240, 255))),
+                0.9,
+            ),
+            CompositionLayer::screen(
+                ProducerFrame::Canvas(solid_canvas_with_size(8, 8, Rgba::new(200, 100, 50, 255))),
+                0.2,
+            ),
+        ],
+    );
+
+    // Two writes a frame from the other set pass the steady set's slot every
+    // four frames of an eight-slot ring.
+    for _ in 0..12 {
+        assert_gpu_samples_match_cpu(&mut compositor, &steady, 1);
+        compositor
+            .compose(&busy, false, None)
+            .expect("the busy composition should succeed");
+    }
+    assert_gpu_samples_match_cpu(&mut compositor, &steady, 1);
+
+    // Giving a slot up early keeps every write in the ring.
+    assert_eq!(compositor.pipeline.compose_params.fallback_write_count, 0);
+}
+
 #[test]
 fn gpu_compositor_latches_sampling_canvas_for_animated_gpu_plans() {
     let Some(mut compositor) = gpu_test_compositor() else {
