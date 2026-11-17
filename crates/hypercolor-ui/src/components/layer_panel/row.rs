@@ -18,9 +18,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::event::LayerHealth;
-use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -34,6 +35,7 @@ use super::{
     LayerTargetHost, LayerWrites, TargetSubject, delete_layer, reorder_layer, update_layer,
 };
 use crate::components::silk_select::SilkSelect;
+use crate::components::value_slider::{ValueFormat, ValueRange, ValueSlider};
 use crate::face_blend::{
     FACE_BLEND_PRESETS, face_blend_option, face_blend_select_options, face_blend_value,
     parse_face_blend,
@@ -117,6 +119,24 @@ pub fn layer_title(
         LayerSource::WebViewport { url, .. } => url.clone(),
         LayerSource::ScreenRegion { .. } | LayerSource::ColorFill { .. } => kind_word.to_owned(),
     }
+}
+
+/// The label beside one of a layer's own sliders.
+pub(super) const SLIDER_LABEL: &str =
+    "min-w-[64px] shrink-0 select-none truncate text-xs font-medium text-fg-secondary";
+
+/// `layer` with everything its Transform & Color disclosure shows back at
+/// its default: fit, brightness, saturation, tint and scale. What the
+/// disclosure does not show is left as it is.
+#[must_use]
+pub fn unshaped(mut layer: SceneLayer) -> SceneLayer {
+    let (adjust, transform) = (LayerAdjust::default(), LayerTransform::default());
+    layer.adjust.brightness = adjust.brightness;
+    layer.adjust.saturation = adjust.saturation;
+    layer.adjust.tint_strength = adjust.tint_strength;
+    layer.transform.fit = transform.fit;
+    layer.transform.scale = transform.scale;
+    layer
 }
 
 /// One layer in the stack: identity, ordering controls, blend/opacity,
@@ -404,36 +424,21 @@ pub fn LayerRow(
                     </Show>
                 </div>
 
-                // ── Opacity — same slider chrome as the Effects controls ──
+                // ── Opacity: the same slider as an effect's own controls ──
                 <Show when=move || !meets_backdrop.get() || blend_mode.get().blends_with_base()>
-                    <div
-                        class="flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-surface-hover/20"
-                        style="--glow-rgb: 225, 53, 255"
-                    >
-                        <span class="min-w-[64px] shrink-0 truncate text-xs font-medium text-fg-secondary">
-                            {move || if meets_backdrop.get() { "Amount" } else { "Opacity" }}
-                        </span>
-                        <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            class="slider-silk min-w-0 flex-1 cursor-pointer"
-                            aria-label=move || if meets_backdrop.get() { "Blend amount" } else { "Opacity" }
-                            prop:value=move || format!("{:.2}", amount.get())
-                            on:change=move |event| {
-                                if let Some(value) = Change::from_event(event).value::<f32>() {
-                                    set_composition.run((blend_mode.get_untracked(), value));
-                                }
-                            }
-                        />
-                        <span
-                            class="w-[40px] shrink-0 rounded px-1.5 py-0.5 text-right font-mono text-[10px] tabular-nums"
-                            style="color: rgba(225, 53, 255, 0.85); background: rgba(225, 53, 255, 0.1)"
-                        >
-                            {move || format!("{:.0}%", amount.get() * 100.0)}
-                        </span>
-                    </div>
+                    <ValueSlider
+                        label=Signal::derive(move || {
+                            if meets_backdrop.get() { "Amount" } else { "Opacity" }.to_owned()
+                        })
+                        value=amount
+                        range=ValueRange { min: 0.0, max: 1.0, step: 0.01 }
+                        format=ValueFormat::percent()
+                        default=Some(1.0)
+                        on_commit=Some(Callback::new(move |value: f32| {
+                            set_composition.run((blend_mode.get_untracked(), value));
+                        }))
+                        label_class=SLIDER_LABEL
+                    />
                 </Show>
 
                 // One-tap looks for how a face sits on what is behind it.
@@ -469,6 +474,10 @@ pub fn LayerRow(
                 </Show>
         }
     };
+
+    // Whether anything the disclosure shows is away from its default.
+    let shaped = Memo::new(move |_| layer.with(|layer| *layer != unshaped(layer.clone())));
+    let reset_zone = StoredValue::new(zone_id.clone());
 
     let chip_style = format!("background: rgba({accent_rgb}, 0.14)");
     let icon_style = format!("color: rgb({accent_rgb})");
@@ -804,6 +813,28 @@ pub fn LayerRow(
                             <Icon icon=LuChevronRight width="12px" height="12px" />
                         </span>
                         "Transform & Color"
+                        <Show when=move || shaped.get()>
+                            <button
+                                type="button"
+                                class="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary btn-press"
+                                title="Reset fit, brightness, saturation, tint and scale"
+                                data-layer-reset=""
+                                on:click=move |event| {
+                                    // The button sits in the summary and
+                                    // must not fold the disclosure.
+                                    event.prevent_default();
+                                    event.stop_propagation();
+                                    update_layer(
+                                        reset_zone.get_value(),
+                                        unshaped(layer.get_untracked()),
+                                        fence.get_untracked(),
+                                        writes,
+                                    );
+                                }
+                            >
+                                "Reset"
+                            </button>
+                        </Show>
                     </summary>
                     <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
                         <SilkSelect
@@ -827,106 +858,113 @@ pub fn LayerRow(
                             class="border border-edge-subtle bg-surface-sunken/55 px-2.5 py-1.5 text-[11px] text-fg-primary"
                             label_class="font-mono"
                         />
-                        <LayerSlider
-                            label="Brightness"
-                            value=Signal::derive(move || layer.get().adjust.brightness)
-                            min=0.0
-                            max=4.0
-                            step=0.05
-                            on_change=Callback::new({
-                                let zone_id = zone_id.clone();
-                                move |value: f32| {
-                                    let mut next = layer.get_untracked();
-                                    next.adjust.brightness = value.clamp(0.0, 4.0);
-                                    update_layer(
-                                        zone_id.clone(),
-                                        next,
-                                        fence.get_untracked(),
-                                        writes,
-                                    );
-                                }
-                            })
-                        />
-                        <LayerSlider
-                            label="Saturation"
-                            value=Signal::derive(move || layer.get().adjust.saturation)
-                            min=0.0
-                            max=4.0
-                            step=0.05
-                            on_change=Callback::new({
-                                let zone_id = zone_id.clone();
-                                move |value: f32| {
-                                    let mut next = layer.get_untracked();
-                                    next.adjust.saturation = value.clamp(0.0, 4.0);
-                                    update_layer(
-                                        zone_id.clone(),
-                                        next,
-                                        fence.get_untracked(),
-                                        writes,
-                                    );
-                                }
-                            })
-                        />
-                        <LayerSlider
-                            label="Tint"
-                            value=Signal::derive(move || layer.get().adjust.tint_strength)
-                            min=0.0
-                            max=1.0
-                            step=0.01
-                            on_change=Callback::new({
-                                let zone_id = zone_id.clone();
-                                move |value: f32| {
-                                    let mut next = layer.get_untracked();
-                                    next.adjust.tint_strength = value.clamp(0.0, 1.0);
-                                    update_layer(
-                                        zone_id.clone(),
-                                        next,
-                                        fence.get_untracked(),
-                                        writes,
-                                    );
-                                }
-                            })
-                        />
-                        <LayerSlider
-                            label="Scale X"
-                            value=Signal::derive(move || layer.get().transform.scale[0])
-                            min=0.1
-                            max=4.0
-                            step=0.05
-                            on_change=Callback::new({
-                                let zone_id = zone_id.clone();
-                                move |value: f32| {
-                                    let mut next = layer.get_untracked();
-                                    next.transform.scale[0] = value.clamp(0.1, 4.0);
-                                    update_layer(
-                                        zone_id.clone(),
-                                        next,
-                                        fence.get_untracked(),
-                                        writes,
-                                    );
-                                }
-                            })
-                        />
-                        <LayerSlider
-                            label="Scale Y"
-                            value=Signal::derive(move || layer.get().transform.scale[1])
-                            min=0.1
-                            max=4.0
-                            step=0.05
-                            on_change=Callback::new({
-                                let zone_id = zone_id.clone();
-                                move |value: f32| {
-                                    let mut next = layer.get_untracked();
-                                    next.transform.scale[1] = value.clamp(0.1, 4.0);
-                                    update_layer(
-                                        zone_id.clone(),
-                                        next,
-                                        fence.get_untracked(),
-                                        writes,
-                                    );
-                                }
-                            })
-                        />
+                        <div class="space-y-0.5">
+                            <LayerSlider
+                                label="Brightness"
+                                value=Signal::derive(move || layer.get().adjust.brightness)
+                                min=0.0
+                                max=4.0
+                                step=0.05
+                                default=LayerAdjust::default().brightness
+                                on_change=Callback::new({
+                                    let zone_id = zone_id.clone();
+                                    move |value: f32| {
+                                        let mut next = layer.get_untracked();
+                                        next.adjust.brightness = value.clamp(0.0, 4.0);
+                                        update_layer(
+                                            zone_id.clone(),
+                                            next,
+                                            fence.get_untracked(),
+                                            writes,
+                                        );
+                                    }
+                                })
+                            />
+                            <LayerSlider
+                                label="Saturation"
+                                value=Signal::derive(move || layer.get().adjust.saturation)
+                                min=0.0
+                                max=4.0
+                                step=0.05
+                                default=LayerAdjust::default().saturation
+                                on_change=Callback::new({
+                                    let zone_id = zone_id.clone();
+                                    move |value: f32| {
+                                        let mut next = layer.get_untracked();
+                                        next.adjust.saturation = value.clamp(0.0, 4.0);
+                                        update_layer(
+                                            zone_id.clone(),
+                                            next,
+                                            fence.get_untracked(),
+                                            writes,
+                                        );
+                                    }
+                                })
+                            />
+                            <LayerSlider
+                                label="Tint"
+                                value=Signal::derive(move || layer.get().adjust.tint_strength)
+                                min=0.0
+                                max=1.0
+                                step=0.01
+                                default=LayerAdjust::default().tint_strength
+                                on_change=Callback::new({
+                                    let zone_id = zone_id.clone();
+                                    move |value: f32| {
+                                        let mut next = layer.get_untracked();
+                                        next.adjust.tint_strength = value.clamp(0.0, 1.0);
+                                        update_layer(
+                                            zone_id.clone(),
+                                            next,
+                                            fence.get_untracked(),
+                                            writes,
+                                        );
+                                    }
+                                })
+                            />
+                            <LayerSlider
+                                label="Scale X"
+                                value=Signal::derive(move || layer.get().transform.scale[0])
+                                min=0.1
+                                max=4.0
+                                step=0.05
+                                default=LayerTransform::default().scale[0]
+                                on_change=Callback::new({
+                                    let zone_id = zone_id.clone();
+                                    move |value: f32| {
+                                        let mut next = layer.get_untracked();
+                                        next.transform.scale[0] = value.clamp(0.1, 4.0);
+                                        update_layer(
+                                            zone_id.clone(),
+                                            next,
+                                            fence.get_untracked(),
+                                            writes,
+                                        );
+                                    }
+                                })
+                            />
+                            <LayerSlider
+                                label="Scale Y"
+                                value=Signal::derive(move || layer.get().transform.scale[1])
+                                min=0.1
+                                max=4.0
+                                step=0.05
+                                default=LayerTransform::default().scale[1]
+                                on_change=Callback::new({
+                                    let zone_id = zone_id.clone();
+                                    move |value: f32| {
+                                        let mut next = layer.get_untracked();
+                                        next.transform.scale[1] = value.clamp(0.1, 4.0);
+                                        update_layer(
+                                            zone_id.clone(),
+                                            next,
+                                            fence.get_untracked(),
+                                            writes,
+                                        );
+                                    }
+                                })
+                            />
+                        </div>
                     </div>
                 </details>
             </div>
@@ -934,6 +972,8 @@ pub fn LayerRow(
     }
 }
 
+/// One of a layer's own values, written when the slider comes to rest: a
+/// layer write replaces the layer, which is too heavy to follow a drag.
 #[component]
 fn LayerSlider(
     label: &'static str,
@@ -941,26 +981,19 @@ fn LayerSlider(
     min: f32,
     max: f32,
     step: f32,
+    default: f32,
     on_change: Callback<f32>,
 ) -> impl IntoView {
     view! {
-        <label class="grid grid-cols-[64px_1fr_44px] items-center gap-2 text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/75">
-            <span>{label}</span>
-            <input
-                type="range"
-                min=min.to_string()
-                max=max.to_string()
-                step=step.to_string()
-                class="w-full accent-accent"
-                prop:value=move || format!("{:.2}", value.get())
-                on:change=move |event| {
-                    if let Some(value) = Change::from_event(event).value::<f32>() {
-                        on_change.run(value);
-                    }
-                }
-            />
-            <span class="text-right tabular-nums">{move || format!("{:.2}", value.get())}</span>
-        </label>
+        <ValueSlider
+            label=label
+            value=value
+            range=ValueRange { min, max, step }
+            format=ValueFormat::plain(2)
+            default=Some(default)
+            on_commit=Some(on_change)
+            label_class=SLIDER_LABEL
+        />
     }
 }
 

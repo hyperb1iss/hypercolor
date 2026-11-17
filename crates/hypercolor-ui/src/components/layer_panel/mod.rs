@@ -1210,13 +1210,15 @@ fn update_layer(zone_id: String, layer: SceneLayer, fence: api::Fence, writes: L
                     .filter(|_| before.len() == stack.items.len())
                     .and_then(|index| stack.items.get(index))
                     .map(|replaced| replaced.id);
+                // The panel may be gone by the time the write answers: a
+                // slider leaving writes what it still held on its way out.
                 if let Some(minted) = minted {
-                    writes.replaced.run((zone_id, layer.id, minted));
+                    let _ = writes.replaced.try_run((zone_id, layer.id, minted));
                 }
-                writes.mutated.run(());
+                let _ = writes.mutated.try_run(());
             }
             Ok(api::LayerStackOutcome::Stale { .. }) => {
-                writes.mutated.run(());
+                let _ = writes.mutated.try_run(());
                 toasts::toast_error("Layer stack changed elsewhere, so it was reloaded");
             }
             Err(error) => toasts::toast_error(&format!("Layer update failed: {error}")),

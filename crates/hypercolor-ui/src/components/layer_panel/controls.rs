@@ -9,19 +9,20 @@
 
 use std::sync::Arc;
 
-use hypercolor_leptos_ext::events::Change;
-use hypercolor_types::layer::{LayerSource, LoopMode, SceneLayer};
+use hypercolor_types::layer::{LayerSource, LoopMode, MediaPlayback, SceneLayer};
 use leptos::prelude::*;
 
 use crate::api;
 use crate::components::control_panel::ControlPanel;
 use crate::components::control_panel::capture_group::CaptureSharedControls;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
+use crate::components::value_slider::{ValueFormat, ValueRange, ValueSlider};
 use crate::control_session::{
     ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
 };
 use crate::toasts;
 
+use super::row::SLIDER_LABEL;
 use super::update_layer;
 
 /// Accent RGB for an effect layer's control groups — the app accent.
@@ -237,23 +238,17 @@ pub fn MediaPlaybackSection(
     view! {
         <div class="space-y-3">
             <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Playback"</span>
-            <label class="grid grid-cols-[64px_1fr_44px] items-center gap-2 text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/75">
-                <span>"Speed"</span>
-                <input
-                    type="range"
-                    min="0.1"
-                    max="4"
-                    step="0.05"
-                    class="w-full accent-accent"
-                    prop:value=move || format!("{:.2}", playback.get().speed)
-                    on:change=move |event| {
-                        if let Some(value) = Change::from_event(event).value::<f32>() {
-                            push_speed(&|playback| playback.speed = value.clamp(0.1, 4.0));
-                        }
-                    }
-                />
-                <span class="text-right tabular-nums">{move || format!("{:.2}×", playback.get().speed)}</span>
-            </label>
+            <ValueSlider
+                label="Speed"
+                value=Signal::derive(move || playback.get().speed)
+                range=ValueRange { min: 0.1, max: 4.0, step: 0.05 }
+                format=ValueFormat::plain(2).suffixed("\u{d7}")
+                default=Some(MediaPlayback::default().speed)
+                on_commit=Some(Callback::new(move |value: f32| {
+                    push_speed(&|playback| playback.speed = value.clamp(0.1, 4.0));
+                }))
+                label_class=SLIDER_LABEL
+            />
             <crate::components::silk_select::SilkSelect
                 value=Signal::derive(loop_value)
                 options=Signal::derive(move || loop_options.clone())

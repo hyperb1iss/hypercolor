@@ -121,7 +121,7 @@ test("Studio advanced layer edits keep the disclosure open and preserve scrollin
   const fixture = await openControls(page);
   const disclosure = fixture.inspector.locator("article details");
   await disclosure.locator("summary").click();
-  const scaleY = disclosure.locator('label:has(> span:text-is("Scale Y")) > input[type="range"]');
+  const scaleY = disclosure.locator('div:has(> label:text-is("Scale Y")) > input[type="range"]');
   await scaleY.scrollIntoViewIfNeeded();
   await expect.poll(async () => Number(await scaleY.inputValue())).toBe(1);
   const beforeScroll = await scrollState(scaleY);

@@ -56,3 +56,4 @@ pub mod zone_tabs;
 
 pub mod bridge_status;
 pub mod unclaimed_hardware;
+pub mod value_slider;
