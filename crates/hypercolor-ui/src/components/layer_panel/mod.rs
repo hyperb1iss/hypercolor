@@ -41,6 +41,7 @@
 //! component is decoupled from any host page's selection state.
 
 mod controls;
+pub mod mount;
 mod picker;
 pub mod row;
 pub mod scope;
@@ -64,6 +65,7 @@ use crate::toasts;
 use crate::ws::messages::layer_health_key;
 use crate::zones::surface::zone_display_name;
 
+use mount::{MountedRow, RowKey, RowSlot, inherit_mounts};
 use picker::AddLayerPicker;
 pub use picker::NewLayerDraft;
 use row::LayerRow;
@@ -257,17 +259,6 @@ pub struct ScreenHost {
     pub replaced: Callback<(String, SceneLayerId, SceneLayerId)>,
 }
 
-/// A row to mount: the zone whose stack holds its layer, and what keeps
-/// it mounted.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RowKey {
-    scene_id: String,
-    zone_id: String,
-    mount: (String, String),
-    /// One of a screen's own layers.
-    on_screen: bool,
-}
-
 /// Layer-stack editor for one zone. See the module docs for the
 /// mount contract.
 #[component]
@@ -444,37 +435,47 @@ pub fn LayerPanel(
             .filter(|layer| !on_screen.contains(&layer.id))
             .collect::<Vec<_>>()
     });
-    let row_keys = Memo::new(move |_| {
+    // The rows shown, each with the layer it shows now. A replace mints
+    // its layer a new id; the row it had is handed on, not rebuilt.
+    let mounted = Memo::new(move |held: Option<&Vec<MountedRow>>| {
         let scene = scene_id.get();
-        if let Some(view) = view_now.get() {
-            return view
-                .rows
+        let slots = if let Some(view) = view_now.get() {
+            view.rows
                 .iter()
-                .filter_map(|row| {
-                    let layer = stack_of(&row.zone_id)
-                        .into_iter()
-                        .find(|layer| layer.id == row.layer_id)?;
-                    Some(RowKey {
-                        scene_id: scene.clone(),
-                        zone_id: row.zone_id.clone(),
-                        mount: layer_mount_key(&layer),
-                        on_screen: true,
-                    })
+                .map(|row| RowSlot {
+                    scene_id: scene.clone(),
+                    zone_id: row.zone_id.clone(),
+                    layer_id: row.layer_id.to_string(),
+                    source: stack_of(&row.zone_id)
+                        .iter()
+                        .find(|layer| layer.id == row.layer_id)
+                        .map(|layer| layer_mount_key(layer).1),
+                    on_screen: true,
                 })
-                .collect::<Vec<_>>();
-        }
-        let zone = selected_zone_id.get().unwrap_or_default();
-        canvas_layers
-            .get()
-            .iter()
-            .rev()
-            .map(|layer| RowKey {
-                scene_id: scene.clone(),
-                zone_id: zone.clone(),
-                mount: layer_mount_key(layer),
-                on_screen: false,
+                .collect::<Vec<_>>()
+        } else {
+            let zone = selected_zone_id.get().unwrap_or_default();
+            canvas_layers.with(|layers| {
+                layers
+                    .iter()
+                    .rev()
+                    .map(|layer| {
+                        let (layer_id, source) = layer_mount_key(layer);
+                        RowSlot {
+                            scene_id: scene.clone(),
+                            zone_id: zone.clone(),
+                            layer_id,
+                            source: Some(source),
+                            on_screen: false,
+                        }
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>()
+        };
+        inherit_mounts(held.map_or(&[], Vec::as_slice), &slots)
+    });
+    let row_keys = Memo::new(move |_| {
+        mounted.with(|rows| rows.iter().map(|row| row.key.clone()).collect::<Vec<_>>())
     });
 
     // Per-layer runtime health streams in over the WebSocket, independent
@@ -885,17 +886,45 @@ pub fn LayerPanel(
                 <For
                     each=move || row_keys.get()
                     key=|key| key.clone()
-                    children=move |RowKey { scene_id, zone_id, mount: (layer_id, _), on_screen }| {
+                    children=move |key: RowKey| {
+                        let RowKey { scene_id, zone_id, mount: (mounted_as, _), on_screen } = key.clone();
                         let row_zone = StoredValue::new(zone_id.clone());
                         let stack = Signal::derive(move || row_zone.with_value(|zone| stack_of(zone)));
-                        let Some(initial) = untrack(|| row_zone.with_value(|zone| layer_of(zone, &layer_id))) else {
+                        // The layer the row shows now: the one it mounted
+                        // for, or whichever has since taken its place.
+                        let layer_id = Memo::new(move |held: Option<&String>| {
+                            mounted
+                                .with(|rows| {
+                                    rows.iter()
+                                        .find(|row| row.key == key)
+                                        .map(|row| row.layer_id.clone())
+                                })
+                                .or_else(|| held.cloned())
+                                .unwrap_or_else(|| mounted_as.clone())
+                        });
+                        let Some(initial) = untrack(|| {
+                            row_zone.with_value(|zone| layer_of(zone, &layer_id.get()))
+                        }) else {
                             return ().into_any();
                         };
-                        let lookup_id = layer_id.clone();
-                        let current_layer = Memo::new(move |_| {
-                            row_zone.with_value(|zone| layer_of(zone, &lookup_id)).unwrap_or_else(|| initial.clone())
+                        // Between a replace and the stack that reports it,
+                        // the row keeps the layer it last read.
+                        let current_layer = Memo::new(move |held: Option<&SceneLayer>| {
+                            layer_id
+                                .with(|id| row_zone.with_value(|zone| layer_of(zone, id)))
+                                .or_else(|| held.cloned())
+                                .unwrap_or_else(|| initial.clone())
                         });
-                        let stack_index = Signal::derive(move || stack.with(|layers| layers.iter().position(|layer| layer.id.to_string() == layer_id).unwrap_or_default()));
+                        let stack_index = Signal::derive(move || {
+                            layer_id.with(|id| {
+                                stack.with(|layers| {
+                                    layers
+                                        .iter()
+                                        .position(|layer| layer.id.to_string() == *id)
+                                        .unwrap_or_default()
+                                })
+                            })
+                        });
                         // A row's two disclosures, each remembered by its slot:
                         // transform and color, and a screen row's blend.
                         let slot = (scene_id.clone(), zone_id.clone());
@@ -913,14 +942,20 @@ pub fn LayerPanel(
                         let (blend_open, on_blend_disclosure) = disclosure(1);
                         // This row among the screens' rows, while screens
                         // are what is shown.
+                        // Found by the id the list names, which is the
+                        // screens' own: the stack may be a read behind it.
                         let view_row = Memo::new(move |_| {
-                            let id = current_layer.with(|layer| layer.id);
-                            view_now.with(|view| {
-                                view.as_ref().and_then(|view| {
-                                    view.rows
-                                        .iter()
-                                        .find(|row| row.layer_id == id && row_zone.with_value(|zone| row.zone_id == *zone))
-                                        .cloned()
+                            layer_id.with(|id| {
+                                view_now.with(|view| {
+                                    view.as_ref().and_then(|view| {
+                                        view.rows
+                                            .iter()
+                                            .find(|row| {
+                                                row.layer_id.to_string() == *id
+                                                    && row_zone.with_value(|zone| row.zone_id == *zone)
+                                            })
+                                            .cloned()
+                                    })
                                 })
                             })
                         });
@@ -1254,8 +1289,10 @@ fn reorder_layer(
     });
 }
 
-/// Keep editors mounted across value/revision changes, but retire a session
-/// when its layer or source identity changes.
+/// What a layer mounts under when no row is handed on to it: its own id
+/// and its source's identity. Editors stay mounted across value and
+/// revision changes, and across a replace (see [`mount::inherit_mounts`]),
+/// and a session retires when the source changes.
 #[must_use]
 pub fn layer_mount_key(layer: &SceneLayer) -> (String, String) {
     use hypercolor_types::layer::LayerSource;
