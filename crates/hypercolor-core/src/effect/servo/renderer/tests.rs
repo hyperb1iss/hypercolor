@@ -273,6 +273,27 @@ fn attach_renderer_session(
     renderer.session = Some(session);
 }
 
+/// A failed page load and a hung render are the two states only a rebuild
+/// gets a page out of, and the pool reads this to rebuild instead of
+/// handing the renderer on.
+#[test]
+fn failed_load_or_hung_render_reports_the_renderer_failed() {
+    let mut renderer = ServoRenderer::new();
+    assert!(!renderer.has_failed());
+
+    renderer.load_failed = Some("page did not load".to_owned());
+    assert!(renderer.has_failed());
+
+    renderer.load_failed = None;
+    renderer.hard_stall = Some(ServoHardStall {
+        executing: HARD_STALL_TIMEOUT,
+    });
+    assert!(renderer.has_failed());
+
+    renderer.hard_stall = None;
+    assert!(!renderer.has_failed());
+}
+
 #[test]
 fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
     let (worker, stopped) = spawn_test_worker();

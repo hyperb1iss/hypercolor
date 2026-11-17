@@ -303,6 +303,10 @@ impl EffectRenderer for ServoRenderer {
             && (self.load_task.is_some() || (self.session.is_some() && self.awaiting_first_frame))
     }
 
+    fn has_failed(&self) -> bool {
+        self.load_failed.is_some() || self.hard_stall.is_some()
+    }
+
     fn destroy(&mut self) {
         self.load_task = None;
         if let Some(session) = self.session.take() {

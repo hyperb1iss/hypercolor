@@ -317,6 +317,17 @@ pub trait EffectRenderer: Send {
         false
     }
 
+    /// Whether the renderer has given up on its current content, for
+    /// example a page whose load failed or whose render has hung.
+    ///
+    /// Only a rebuild retries such content, so the effect pool never hands
+    /// a failed renderer on to a layer that takes its layer's place:
+    /// replacing the layer, or applying its effect again, builds a fresh
+    /// one. Renderers that cannot fail this way keep the default.
+    fn has_failed(&self) -> bool {
+        false
+    }
+
     /// Tear down the renderer and release all resources.
     ///
     /// Called when the effect transitions to `Destroying`. After this call,
