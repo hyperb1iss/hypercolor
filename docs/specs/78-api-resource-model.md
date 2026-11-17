@@ -65,6 +65,7 @@ All mutations route through `SceneMutation`/`commit_scene` (Spec 76 §2.3) — `
 ### 1.4 Layer identity lifecycle
 
 - Every layer id is a `SceneLayerId` UUID minted at layer creation. Replacement is creation: **every** successful whole-layer `PUT .../layers/{layer}` and every apply (§2.3) mints a new layer id, same effect or not — an id never survives replacement. In-place mutation is exactly two operations: `PATCH .../controls` and `PATCH .../layers/order`.
+- Identity is a wire contract, not a lifetime for the running effect. Opacity, blend, transform, and color adjust have no in-place operation, so every edit to them is a replace. When the layer that replaces another in the same zone names the same effect with the same controls and bindings, the render side hands it the running instance: the page is not reloaded and its clock does not restart. The id still changes, and a patch sent to the old id still 404s. A replace that changes the effect or its controls starts a new instance.
 - A control patch addressing a vanished layer returns 404 `layer_not_found`; the client recovers by re-reading `/scene` (the UI stays current via WS events). Stale patches can never land on a newer effect.
 - Layer and zone ids in **persisted** scenes are stable across activation, deactivation, daemon restart, and snapshot. Ids inside the auto-managed default scene are stable within a daemon run only; clients must not persist them.
 

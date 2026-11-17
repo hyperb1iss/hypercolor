@@ -1072,3 +1072,98 @@ fn a_layer_whose_scope_names_no_output_of_its_zone_gets_no_renderer() {
         .expect("revived zone should reconcile");
     assert_eq!(pool.slot_count(), 2);
 }
+
+/// Render `frames` frames of `zone` at a fixed step and return the last
+/// one's top row.
+fn top_row_after(pool: &mut EffectPool, zone: &Zone, frames: usize) -> Vec<Rgba> {
+    let mut canvas = Canvas::new(32, 16);
+    for _ in 0..frames {
+        pool.render_zone_into(
+            zone,
+            0.05,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &EMPTY_SENSORS,
+            hypercolor_core::effect::FrameDataSources::default(),
+            &mut canvas,
+        )
+        .expect("zone should render");
+    }
+    (0..32).map(|x| canvas.get_pixel(x, 0)).collect()
+}
+
+/// The zone as a whole-layer replace leaves it: every layer under a new
+/// id, with `edit` applied.
+fn replaced(zone: &Zone, edit: impl Fn(&mut SceneLayer)) -> Zone {
+    let mut zone = zone.clone();
+    for layer in &mut zone.layers {
+        layer.id = SceneLayerId::new();
+        edit(layer);
+    }
+    zone.layers_version += 1;
+    zone
+}
+
+/// Replacing a layer mints a new layer id, and moving its opacity or color
+/// adjust is a replace. The effect keeps running through it: the frame
+/// after the replace is the one an undisturbed effect draws next, not the
+/// first frame of a restarted one.
+#[test]
+fn replacing_a_layer_without_touching_its_source_keeps_the_effect_running() {
+    let registry = registry_with_builtins();
+    let rainbow_id = builtin_effect_id(&registry, "rainbow");
+    let zone = render_zone(ZoneId::new(), rainbow_id);
+
+    let mut undisturbed = EffectPool::new();
+    undisturbed
+        .reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("zone should reconcile");
+    let first_frame = top_row_after(&mut undisturbed, &zone, 1);
+    let twenty_first_frame = top_row_after(&mut undisturbed, &zone, 20);
+    assert_ne!(
+        first_frame, twenty_first_frame,
+        "the fixture effect must move for this test to mean anything"
+    );
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("zone should reconcile");
+    top_row_after(&mut pool, &zone, 20);
+    let adjusted = replaced(&zone, |layer| {
+        layer.opacity = 0.5;
+        layer.adjust.brightness = 1.05;
+    });
+    pool.reconcile(std::slice::from_ref(&adjusted), &registry, &HashMap::new())
+        .expect("replacement should reconcile");
+
+    assert_eq!(pool.slot_count(), 1);
+    assert_eq!(top_row_after(&mut pool, &adjusted, 1), twenty_first_frame);
+}
+
+/// A replace that changes the effect's controls is a new instance, and it
+/// starts from its first frame.
+#[test]
+fn replacing_a_layer_with_new_controls_starts_the_effect_over() {
+    let registry = registry_with_builtins();
+    let rainbow_id = builtin_effect_id(&registry, "rainbow");
+    let zone = render_zone(ZoneId::new(), rainbow_id);
+    let slower = replaced(&zone, |_| {});
+    let mut slower = slower;
+    set_effect_control(&mut slower, "speed", ControlValue::Float(12.0));
+
+    let mut fresh = EffectPool::new();
+    fresh
+        .reconcile(std::slice::from_ref(&slower), &registry, &HashMap::new())
+        .expect("zone should reconcile");
+    let first_frame = top_row_after(&mut fresh, &slower, 1);
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+        .expect("zone should reconcile");
+    top_row_after(&mut pool, &zone, 20);
+    pool.reconcile(std::slice::from_ref(&slower), &registry, &HashMap::new())
+        .expect("replacement should reconcile");
+
+    assert_eq!(top_row_after(&mut pool, &slower, 1), first_frame);
+}
