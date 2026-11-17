@@ -600,6 +600,16 @@ wash on the active item. Inactive items sit at `--text-tertiary` and take a
   translucent white track with a 14px white thumb whose glow reads
   `--glow-rgb`, scaling 1.2x on hover and 0.95x on press. `.color-channel`
   overrides the base with a 10px transparent track and a white thumb.
+- **Value slider.** `ValueSlider` (`src/components/value_slider.rs`) is the one
+  labelled slider for a number an effect or a layer owns: a `.slider-silk` track,
+  a mono readout in the accent, and a reset button between them that shows only
+  while the value is away from its default. The arrow keys step the track and
+  Shift takes ten steps; the readout opens into a field that takes a typed
+  value (Enter takes it, Escape leaves it, anything that is not a number is
+  marked and changes nothing); a double-click on the track or the label resets.
+  Values that come to rest are written once, after a short settle, so a held
+  key costs one write. Build a new numeric control on it, not a bare range
+  input.
 - **Toggle.** The track glows when on (`.toggle-track-on`); the thumb springs
   across with a halo.
 - **Color picker.** A glowing swatch button expands into a floating
