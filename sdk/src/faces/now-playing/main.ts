@@ -99,15 +99,14 @@ const STYLES = `
 }
 
 .hc-now__artist {
+    display: inline-block;
     font-family: var(--ui-font);
     font-weight: 600;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--ui-ink);
-    flex: 0 0 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
+    will-change: transform;
 }
 
 .hc-now__times {
@@ -161,7 +160,6 @@ const STYLES = `
     text-align: left;
 }
 
-.hc-now--wide .hc-now__artist { max-width: 100%; }
 
 .hc-now__hidden { display: none !important; }
 `
@@ -283,7 +281,7 @@ export default face(
     {
         accent: color('Accent', palette.electricPurple, { group: 'Style' }),
         artSize: num('Art Size', [20, 70], 44, { group: 'Layout', step: 1 }),
-        detailSize: num('Detail Size', [10, 48], 24, { group: 'Typography', step: 1 }),
+        detailSize: num('Detail Size', [10, 72], 40, { group: 'Typography', step: 1 }),
         heroFont: font('Title Font', 'Sora', {
             families: [...UI_FONT_FAMILIES, ...DISPLAY_FONT_FAMILIES.filter((family) => family !== 'Exo 2')],
             group: 'Typography',
@@ -293,7 +291,7 @@ export default face(
         showArt: toggle('Show Art', true, { group: 'Elements' }),
         showProgress: toggle('Show Progress', true, { group: 'Elements' }),
         showTimes: toggle('Show Times', true, { group: 'Elements' }),
-        titleSize: num('Title Size', [20, 96], 44, { group: 'Typography', step: 1 }),
+        titleSize: num('Title Size', [20, 140], 84, { group: 'Typography', step: 1 }),
         transparentBackground: transparentBackgroundControl(),
         uiFont: font('Detail Font', 'Inter', {
             families: [...UI_FONT_FAMILIES],
@@ -330,10 +328,10 @@ export default face(
             },
             {
                 controls: {
-                    detailSize: 34,
+                    detailSize: 48,
                     showArt: false,
                     showTimes: false,
-                    titleSize: 72,
+                    titleSize: 110,
                 },
                 description: 'Type only, sized to read from across the room.',
                 name: 'Marquee',
@@ -369,7 +367,7 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
                 <div class="hc-now__glyph">&#9835;</div>
             </div>`
     const title = `<div class="hc-now__marquee"><div class="hc-now__title">Nothing Playing</div></div>`
-    const artist = `<div class="hc-now__artist">waiting for a player</div>`
+    const artist = `<div class="hc-now__marquee hc-now__marquee--detail"><div class="hc-now__artist">waiting for a player</div></div>`
     root.innerHTML = wide
         ? `
         <div class="hc-now__stack">${art}
@@ -393,6 +391,7 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
     const titleEl = root.querySelector<HTMLDivElement>('.hc-now__title')
     const artistEl = root.querySelector<HTMLDivElement>('.hc-now__artist')
     const marqueeEl = root.querySelector<HTMLDivElement>('.hc-now__marquee')
+    const artistLineEl = root.querySelector<HTMLDivElement>('.hc-now__marquee--detail')
     const timesEl = root.querySelector<HTMLDivElement>('.hc-now__times')
     const elapsedEl = root.querySelector<HTMLSpanElement>('.hc-now__elapsed')
     const totalEl = root.querySelector<HTMLSpanElement>('.hc-now__total')
@@ -405,6 +404,7 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         !titleEl ||
         !artistEl ||
         !marqueeEl ||
+        !artistLineEl ||
         !timesEl ||
         !elapsedEl ||
         !totalEl ||
@@ -425,11 +425,12 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         glyphEl.style.fontSize = `${size * 0.42}px`
     }
 
-    /** The art's size, the progress ring or rail, and the title's travel speed. */
+    /** The art's size, the progress ring or rail, and each line's travel speed. */
     interface Applied {
         art: number
         ring: ReturnType<typeof layoutStack>['ring'] | null
         marqueeSpeed: number
+        detailSpeed: number
     }
 
     const applyStack = (sizes: NowPlayingSizes): Applied => {
@@ -439,11 +440,12 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         artWrap.style.margin = `${layout.artOutset}px 0`
         sizeLine(marqueeEl, layout.title.fontSize, layout.title.height)
         marqueeEl.style.width = `${layout.title.width}px`
-        sizeLine(artistEl, layout.artist.fontSize, layout.artist.height)
-        artistEl.style.maxWidth = `${layout.artist.width}px`
+        sizeLine(artistLineEl, layout.artist.fontSize, layout.artist.height)
+        artistLineEl.style.width = `${layout.artist.width}px`
         sizeLine(timesEl, layout.times.fontSize, layout.times.height)
         return {
             art: layout.art,
+            detailSpeed: layout.artist.fontSize * MARQUEE_SPEED_EMS,
             marqueeSpeed: layout.title.fontSize * MARQUEE_SPEED_EMS,
             ring: layout.ring,
         }
@@ -454,13 +456,18 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         sizeArt(layout.art)
         marqueeEl.style.fontSize = `${layout.titleSize}px`
         marqueeEl.style.lineHeight = '1.16'
-        artistEl.style.fontSize = `${layout.artistSize}px`
-        artistEl.style.lineHeight = '1.3'
-        artistEl.style.marginTop = `${layout.gap}px`
+        artistLineEl.style.fontSize = `${layout.artistSize}px`
+        artistLineEl.style.lineHeight = '1.3'
+        artistLineEl.style.marginTop = `${layout.gap}px`
         timesEl.style.fontSize = `${layout.timesSize}px`
         timesEl.style.lineHeight = '1.3'
         timesEl.style.marginTop = `${layout.gap}px`
-        return { art: layout.art, marqueeSpeed: layout.titleSize * MARQUEE_SPEED_EMS, ring: null }
+        return {
+            art: layout.art,
+            detailSpeed: layout.artistSize * MARQUEE_SPEED_EMS,
+            marqueeSpeed: layout.titleSize * MARQUEE_SPEED_EMS,
+            ring: null,
+        }
     }
 
     const crossfade = createArtCrossfade(artFront, artBack)
@@ -473,7 +480,30 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
     let lastTime = Number.NaN
     let lastTrackKey = ''
     let layoutKey = ''
-    let applied: Applied = { art: 0, marqueeSpeed: 0, ring: null }
+    let applied: Applied = { art: 0, detailSpeed: 0, marqueeSpeed: 0, ring: null }
+    let fitPending = true
+    let fittedAt = 0
+
+    /**
+     * The idle lines are fixed copy, so they shrink to their line instead
+     * of travelling. Idle copy is measured again each second, because the
+     * first measure can land before the font does and the fallback face
+     * has different widths.
+     */
+    const fitIdleCopy = (idle: boolean, time: number): void => {
+        const lines: [HTMLElement, HTMLElement][] = [
+            [marqueeEl, titleEl],
+            [artistLineEl, artistEl],
+        ]
+        for (const [line, text] of lines) {
+            text.style.fontSize = ''
+            if (!idle) continue
+            const ratio = line.clientWidth / Math.max(1, text.scrollWidth)
+            if (ratio < 1) text.style.fontSize = `${Math.floor(ratio * 100)}%`
+        }
+        fitPending = false
+        fittedAt = time
+    }
 
     return (
         time: number,
@@ -506,6 +536,7 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         const nextKey = JSON.stringify(sizes)
         if (nextKey !== layoutKey) {
             layoutKey = nextKey
+            fitPending = true
             timesEl.classList.toggle('hc-now__hidden', !showTimes)
             applied = wide ? applyStrip(sizes) : applyStack(sizes)
         }
@@ -514,12 +545,14 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
             const trackKey = `${media.player}\u{1f}${media.artist}\u{1f}${media.track}`
             if (trackKey !== lastTrackKey) {
                 lastTrackKey = trackKey
+                fitPending = true
                 titleEl.textContent = media.track || 'Unknown Track'
                 artistEl.textContent = media.artist || media.player
             }
             crossfade.setArt(media.artDataUrl, time)
         } else if (lastTrackKey !== '') {
             lastTrackKey = ''
+            fitPending = true
             titleEl.textContent = 'Nothing Playing'
             artistEl.textContent = 'waiting for a player'
             crossfade.setArt(null, time)
@@ -528,10 +561,21 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         glyphEl.classList.toggle('hc-now__hidden', Boolean(media.available && media.artDataUrl))
         artWrap.style.opacity = media.available && !playing ? '0.6' : '1'
 
-        // A title wider than its line travels end to end instead of clipping.
+        if (fitPending || (!media.available && time - fittedAt > 1)) fitIdleCopy(!media.available, time)
+
+        // A line wider than its room travels end to end instead of clipping.
+        // The artist starts half a dwell behind the title so the two lines
+        // do not slide in step.
         const overflow = titleEl.scrollWidth - marqueeEl.clientWidth
         marqueeEl.classList.toggle('hc-now__marquee--running', overflow > 0)
         titleEl.style.transform = `translateX(${marqueeOffset(time, overflow, applied.marqueeSpeed).toFixed(1)}px)`
+        const artistOverflow = artistEl.scrollWidth - artistLineEl.clientWidth
+        artistLineEl.classList.toggle('hc-now__marquee--running', artistOverflow > 0)
+        artistEl.style.transform = `translateX(${marqueeOffset(
+            Math.max(0, time - MARQUEE_DWELL_SECS / 2),
+            artistOverflow,
+            applied.detailSpeed,
+        ).toFixed(1)}px)`
 
         if (showTimes) {
             elapsedEl.textContent = formatTrackTime(data.media.positionMs())
