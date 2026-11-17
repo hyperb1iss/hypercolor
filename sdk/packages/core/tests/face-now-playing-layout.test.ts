@@ -18,11 +18,11 @@ function panel(width: number, height: number, circular: boolean): FaceContext {
 
 const DEFAULTS: NowPlayingSizes = {
     artSize: 44,
-    detailSize: 24,
+    detailSize: 40,
     showArt: true,
     showProgress: true,
     showTimes: true,
-    titleSize: 44,
+    titleSize: 84,
 }
 
 /** Top and bottom of everything the stack draws, ring included. */
@@ -60,20 +60,33 @@ describe('Now Playing stack', () => {
         const layout = layoutStack(round, DEFAULTS)
         const extent = stackExtent(round, DEFAULTS)
         const safe = round.display.safeArea
-        expect(layout.art).toBeGreaterThan(140)
-        expect(layout.title.fontSize).toBe(44)
+        expect(layout.art).toBeGreaterThan(64)
+        expect(layout.title.fontSize).toBe(84)
         expect(extent.top).toBeGreaterThanOrEqual(safe.y)
         expect(extent.bottom).toBeLessThanOrEqual(safe.y + safe.height)
     })
 
+    test('a 400 pixel fan panel shows the default title near seventy pixels with art beside it', () => {
+        const fan = panel(400, 400, true)
+        fan.display.safeArea = { height: 282, width: 282, x: 59, y: 59 }
+        const layout = layoutStack(fan, DEFAULTS)
+        const extent = stackExtent(fan, DEFAULTS)
+        expect(layout.title.fontSize).toBeGreaterThan(69)
+        expect(layout.artist.fontSize).toBeGreaterThan(33)
+        expect(layout.art).toBeGreaterThan(64 * (282 / 339))
+        expect(extent.top).toBeGreaterThanOrEqual(59)
+        expect(extent.bottom).toBeLessThanOrEqual(59 + 282)
+    })
+
     test('larger type shrinks the art before it moves a line off the panel', () => {
-        const sizes = { ...DEFAULTS, detailSize: 30, titleSize: 64 }
+        const base = { ...DEFAULTS, showTimes: false }
+        const sizes = { ...base, detailSize: 46, titleSize: 96 }
         const layout = layoutStack(round, sizes)
         const extent = stackExtent(round, sizes)
         const safe = round.display.safeArea
-        expect(layout.title.fontSize).toBe(64)
+        expect(layout.title.fontSize).toBe(96)
         expect(layout.art).toBeGreaterThan(0)
-        expect(layout.art).toBeLessThan(layoutStack(round, DEFAULTS).art)
+        expect(layout.art).toBeLessThan(layoutStack(round, base).art)
         expect(extent.bottom).toBeLessThanOrEqual(safe.y + safe.height)
     })
 
@@ -110,14 +123,14 @@ describe('Now Playing stack', () => {
 describe('Now Playing strip', () => {
     const strip = panel(960, 160, false)
 
-    test('the default title lands near thirty pixels on a 160 strip', () => {
+    test('the default title takes close to a third of a 160 strip', () => {
         const layout = layoutStrip(strip, DEFAULTS)
-        expect(layout.titleSize).toBeCloseTo(30.07, 1)
+        expect(layout.titleSize).toBeCloseTo(47.2, 1)
         expect(layout.art).toBeCloseTo(124.8, 1)
     })
 
     test('the largest type scales down together to fit the strip', () => {
-        const layout = layoutStrip(strip, { ...DEFAULTS, detailSize: 48, titleSize: 96 })
+        const layout = layoutStrip(strip, { ...DEFAULTS, detailSize: 70, titleSize: 140 })
         const height = layout.titleSize * 1.16 + layout.artistSize * 1.3 + layout.timesSize * 1.3 + layout.gap * 2
         expect(height).toBeLessThanOrEqual(160 * 0.76 + 0.001)
         expect(layout.titleSize / layout.artistSize).toBeCloseTo(2, 5)
