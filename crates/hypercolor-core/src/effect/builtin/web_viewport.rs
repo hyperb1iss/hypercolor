@@ -286,6 +286,10 @@ impl EffectRenderer for WebViewportRenderer {
         Ok(())
     }
 
+    fn has_failed(&self) -> bool {
+        self.load_failed
+    }
+
     fn park(&mut self) {
         // A live web page keeps animating between renders; throttling it
         // stops its self-scheduled animation frames until the next render.

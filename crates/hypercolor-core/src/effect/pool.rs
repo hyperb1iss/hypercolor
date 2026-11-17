@@ -43,9 +43,23 @@ pub struct EffectPool {
 pub struct PreparedEffectPoolReconcile {
     slots: HashMap<EffectSlotKey, EffectSlot>,
     unavailable: HashSet<EffectSlotKey>,
-    reused_keys: Vec<EffectSlotKey>,
+    reused: Vec<ReusedSlot>,
+    inherited: Vec<InheritedSlot>,
     control_updates: Vec<PreparedControlUpdate>,
     source_generation: u64,
+}
+
+/// A live slot that stays under its key.
+struct ReusedSlot {
+    key: EffectSlotKey,
+    stack_index: usize,
+}
+
+/// A live slot that carries on under the id of a layer new to its zone.
+struct InheritedSlot {
+    from: EffectSlotKey,
+    to: EffectSlotKey,
+    stack_index: usize,
 }
 
 struct PreparedControlUpdate {
@@ -123,6 +137,16 @@ impl EffectPool {
 
     /// Construct every replacement renderer before changing the live pool.
     ///
+    /// A layer id never survives a whole-layer replace, even one that only
+    /// moves the layer's opacity or color adjust. A layer new to a zone
+    /// therefore takes over the slot of a layer that left that zone in the
+    /// same reconcile, when the slot is healthy and would run the new
+    /// layer's effect with no control or binding changed: the renderer
+    /// keeps its page, its clock, and its last frame instead of starting
+    /// over. Vacated slots are offered in their old stack order to new
+    /// layers in theirs, so two matching layers replaced together each
+    /// keep their own instance.
+    ///
     /// Available layers validate before any renderer is built. Missing effects
     /// remain inactive until a registry change makes them available. A
     /// scene that fails to admit retries every frame, so invalid controls
@@ -146,14 +170,23 @@ impl EffectPool {
         slots.try_reserve(desired_layers.len())?;
         let mut unavailable = HashSet::new();
         unavailable.try_reserve(desired_layers.len())?;
-        let mut reused_keys = Vec::new();
-        reused_keys.try_reserve(desired_layers.len())?;
+        let mut reused = Vec::new();
+        reused.try_reserve(desired_layers.len())?;
+        let mut vacated = self.vacated_keys(&desired_layers)?;
+        let mut inherited = Vec::new();
+        inherited.try_reserve(vacated.len())?;
         let mut control_updates = Vec::new();
         control_updates.try_reserve(desired_layers.len())?;
         let mut replacements = Vec::new();
         replacements.try_reserve(desired_layers.len())?;
 
-        for (zone, layer, extent) in desired_layers {
+        for DesiredLayer {
+            zone,
+            stack_index,
+            layer,
+            extent,
+        } in desired_layers
+        {
             let Some(source) = layer_effect_source(&layer) else {
                 continue;
             };
@@ -181,17 +214,55 @@ impl EffectPool {
                         state: slot.prepare_layer_state(source, revision)?,
                     });
                 }
-                reused_keys.push(key);
+                reused.push(ReusedSlot { key, stack_index });
+                continue;
+            }
+            let successor = (!self.slots.contains_key(&key))
+                .then(|| {
+                    vacated.iter().enumerate().find_map(|(index, vacated_key)| {
+                        let slot = self.slots.get(vacated_key)?;
+                        (vacated_key.zone_id == key.zone_id
+                            && !slot.renderer.has_failed()
+                            && !slot.needs_rebuild(
+                                source.effect_id,
+                                entry,
+                                display_descriptor,
+                                extent,
+                            ))
+                        .then(|| slot.prepare_unchanged_layer_state(&source, revision))
+                        .flatten()
+                        .map(|state| (index, slot, state))
+                    })
+                })
+                .flatten();
+            if let Some((index, slot, state)) = successor {
+                let from = vacated.remove(index);
+                if slot.controls.set_revision() != revision {
+                    control_updates.push(PreparedControlUpdate { key: from, state });
+                }
+                inherited.push(InheritedSlot {
+                    from,
+                    to: key,
+                    stack_index,
+                });
             } else {
                 // The slot built from these controls validates them the same
                 // way, so this check only moves the failure ahead of the build.
                 canonical_control_set(revision, &entry.metadata, &source)?;
-                replacements.push((key, zone, entry, source, display_descriptor, extent));
+                replacements.push((
+                    key,
+                    stack_index,
+                    zone,
+                    entry,
+                    source,
+                    display_descriptor,
+                    extent,
+                ));
             }
         }
 
-        for (key, zone, entry, source, display_descriptor, extent) in replacements {
-            let slot = EffectSlot::build(
+        for (key, stack_index, zone, entry, source, display_descriptor, extent) in replacements {
+            let mut slot = EffectSlot::build(
                 entry,
                 zone,
                 extent,
@@ -199,16 +270,41 @@ impl EffectPool {
                 self.asset_library.as_ref(),
                 display_descriptor.cloned(),
             )?;
+            slot.stack_index = stack_index;
             slots.insert(key, slot);
         }
 
         Ok(PreparedEffectPoolReconcile {
             slots,
             unavailable,
-            reused_keys,
+            reused,
+            inherited,
             control_updates,
             source_generation: self.generation,
         })
+    }
+
+    /// Live slots whose layer is no longer in its zone's stack, in the
+    /// order those layers were stacked. The layer id breaks a tie so the
+    /// order never depends on map order.
+    fn vacated_keys(&self, desired_layers: &[DesiredLayer<'_>]) -> Result<Vec<EffectSlotKey>> {
+        let mut desired = HashSet::new();
+        desired.try_reserve(desired_layers.len())?;
+        desired.extend(
+            desired_layers
+                .iter()
+                .map(|desired| EffectSlotKey::new(desired.zone.id, desired.layer.id)),
+        );
+        let mut vacated: Vec<(usize, EffectSlotKey)> = Vec::new();
+        vacated.try_reserve(self.slots.len())?;
+        vacated.extend(
+            self.slots
+                .iter()
+                .filter(|(key, _)| !desired.contains(key))
+                .map(|(key, slot)| (slot.stack_index, *key)),
+        );
+        vacated.sort_unstable_by_key(|(stack_index, key)| (*stack_index, key.layer_id.as_uuid()));
+        Ok(vacated.into_iter().map(|(_, key)| key).collect())
     }
 
     /// Commit a previously prepared reconciliation.
@@ -224,7 +320,8 @@ impl EffectPool {
         let PreparedEffectPoolReconcile {
             mut slots,
             unavailable,
-            reused_keys,
+            reused,
+            inherited,
             control_updates,
             source_generation,
         } = prepared;
@@ -234,7 +331,10 @@ impl EffectPool {
         );
         let next_generation = self.next_generation();
         assert!(
-            reused_keys.iter().all(|key| self.slots.contains_key(key))
+            reused.iter().all(|slot| self.slots.contains_key(&slot.key))
+                && inherited
+                    .iter()
+                    .all(|slot| self.slots.contains_key(&slot.from))
                 && control_updates
                     .iter()
                     .all(|update| self.slots.contains_key(&update.key)),
@@ -248,11 +348,24 @@ impl EffectPool {
             slot.commit_prepared_layer_state(update.state)?;
         }
         let mut live_slots = std::mem::take(&mut self.slots);
-        for key in reused_keys {
-            let slot = live_slots
+        for ReusedSlot { key, stack_index } in reused {
+            let mut slot = live_slots
                 .remove(&key)
                 .expect("prepared effect slot was validated before commit");
+            slot.stack_index = stack_index;
             slots.insert(key, slot);
+        }
+        for InheritedSlot {
+            from,
+            to,
+            stack_index,
+        } in inherited
+        {
+            let mut slot = live_slots
+                .remove(&from)
+                .expect("inherited effect slot was validated before commit");
+            slot.stack_index = stack_index;
+            slots.insert(to, slot);
         }
         self.slots = slots;
         self.unavailable = unavailable;
@@ -506,6 +619,9 @@ struct EffectSlot {
     resolution_seq: u64,
     elapsed: Duration,
     frame_number: u64,
+    /// Where the slot's layer sat in its zone's stack at the last
+    /// reconcile, bottom first.
+    stack_index: usize,
 }
 
 impl EffectSlot {
@@ -545,6 +661,7 @@ impl EffectSlot {
             resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
+            stack_index: 0,
         };
         slot.sync_layer_state(layer_source, SetRevision::new(zone.layers_version))?;
         Ok(slot)
@@ -564,6 +681,36 @@ impl EffectSlot {
             || self.display_descriptor.as_ref() != display_descriptor
             || self.canvas_width != canvas_width
             || self.canvas_height != canvas_height
+    }
+
+    /// The state this slot takes to run `source` as it already runs, or
+    /// `None` when `source` would change a control or a binding. A slot
+    /// that never took its controls has nothing to compare against.
+    ///
+    /// The control diff alone does not settle it. It compares what the
+    /// renderer is fed, so under an active binding it sees the sensor's
+    /// value on both sides and misses a changed authored value, the one
+    /// the control falls back to when the binding goes. It also walks only
+    /// the controls `source` resolves to, so it misses a control the slot
+    /// holds and `source` no longer names. The authored sets are therefore
+    /// compared as well, value for value; equal counts then mean equal
+    /// keys.
+    fn prepare_unchanged_layer_state(
+        &self,
+        source: &LayerEffectSource,
+        revision: SetRevision,
+    ) -> Option<PreparedLayerState> {
+        if !self.controls_initialized {
+            return None;
+        }
+        let state = self.prepare_layer_state(source.clone(), revision).ok()?;
+        let same_authored_controls = state.controls.len() == self.controls.len()
+            && state
+                .controls
+                .iter()
+                .all(|(control_id, value)| self.controls.get(control_id.as_str()) == Some(value));
+        (state.changes.is_empty() && state.changed_bindings.is_empty() && same_authored_controls)
+            .then_some(state)
     }
 
     fn sync_layer_state(&mut self, source: LayerEffectSource, revision: SetRevision) -> Result<()> {
@@ -806,10 +953,20 @@ impl Drop for EffectSlot {
     }
 }
 
-/// Every enabled effect layer that renders, with the size it renders at. A
-/// layer whose scope names no output of its zone is dormant: it gets no
-/// renderer.
-fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer, (u32, u32))> {
+/// An enabled effect layer that renders.
+struct DesiredLayer<'a> {
+    zone: &'a Zone,
+    /// The layer's place in its zone's stack, bottom first.
+    stack_index: usize,
+    layer: SceneLayer,
+    /// The size the layer renders at.
+    extent: (u32, u32),
+}
+
+/// Every enabled effect layer that renders, in stack order within its
+/// zone. A layer whose scope names no output of its zone is dormant: it
+/// gets no renderer.
+fn desired_effect_layers(zones: &[Zone]) -> Vec<DesiredLayer<'_>> {
     zones
         .iter()
         .filter(|zone| zone.enabled)
@@ -817,10 +974,16 @@ fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer, (u32, u32))>
             zone.layers
                 .clone()
                 .into_iter()
-                .filter(|layer| layer.enabled && layer_effect_source(layer).is_some())
-                .filter_map(move |layer| {
+                .enumerate()
+                .filter(|(_, layer)| layer.enabled && layer_effect_source(layer).is_some())
+                .filter_map(move |(stack_index, layer)| {
                     let extent = layer_render_extent(zone, &layer)?;
-                    Some((zone, layer, extent))
+                    Some(DesiredLayer {
+                        zone,
+                        stack_index,
+                        layer,
+                        extent,
+                    })
                 })
         })
         .collect()
@@ -1035,6 +1198,33 @@ mod tests {
         }
     }
 
+    /// A renderer that has given up, as a page whose load failed has.
+    struct FailedRenderer {
+        destroyed: Arc<AtomicBool>,
+    }
+
+    impl EffectRenderer for FailedRenderer {
+        fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        fn render_into(&mut self, _input: &FrameInput<'_>, _target: &mut Canvas) -> Result<()> {
+            Ok(())
+        }
+
+        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        fn has_failed(&self) -> bool {
+            true
+        }
+
+        fn destroy(&mut self) {
+            self.destroyed.store(true, Ordering::SeqCst);
+        }
+    }
+
     impl EffectRenderer for AdvanceSpyRenderer {
         fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
             Ok(())
@@ -1227,6 +1417,7 @@ mod tests {
             resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
+            stack_index: 0,
         }
     }
 
@@ -1249,6 +1440,7 @@ mod tests {
             resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
+            stack_index: 0,
         }
     }
 
@@ -1271,6 +1463,7 @@ mod tests {
             resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
+            stack_index: 0,
         }
     }
 
@@ -1383,6 +1576,7 @@ mod tests {
             resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
+            stack_index: 0,
         };
         let source = super::LayerEffectSource {
             effect_id,
@@ -1641,6 +1835,7 @@ mod tests {
             resolution_seq: 1,
             elapsed: Duration::ZERO,
             frame_number: 0,
+            stack_index: 0,
         };
         let source = super::LayerEffectSource {
             effect_id,
@@ -1957,6 +2152,330 @@ mod tests {
 
         assert!(destroyed.load(Ordering::SeqCst));
         assert_eq!(pool.slots.len(), 1);
+    }
+
+    /// Replace the zone's layers the way a whole-layer `PUT` does: a new id
+    /// each, everything else as `edit` leaves it.
+    fn replace_layers(zone: &mut Zone, edit: impl Fn(&mut SceneLayer)) {
+        for layer in &mut zone.layers {
+            layer.id = SceneLayerId::new();
+            edit(layer);
+        }
+        zone.layers_version += 1;
+    }
+
+    /// Stamp each slot of `zone` so a later check can tell it from a rebuilt
+    /// one, which starts at frame zero.
+    fn stamp_slots(pool: &mut EffectPool, zone: &Zone) {
+        for (index, layer) in zone.layers.iter().enumerate() {
+            pool.slots
+                .get_mut(&EffectSlotKey::new(zone.id, layer.id))
+                .expect("layer should hold a slot")
+                .frame_number = 100 + index as u64;
+        }
+    }
+
+    fn frame_numbers(pool: &EffectPool, zone: &Zone) -> Vec<u64> {
+        zone.layers
+            .iter()
+            .map(|layer| pool.slots[&EffectSlotKey::new(zone.id, layer.id)].frame_number)
+            .collect()
+    }
+
+    /// A whole-layer replace mints a new layer id even when it only moves
+    /// the opacity. The new layer takes over the running slot: nothing is
+    /// built and the renderer is the one that was already running.
+    #[test]
+    fn layer_replaced_with_the_same_source_inherits_its_slot() {
+        let registry = registry_with_builtins();
+        let mut zone = render_zone(ZoneId::new(), builtin_effect_id(&registry, "rainbow"));
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("zone should reconcile");
+        stamp_slots(&mut pool, &zone);
+        let old_key = EffectSlotKey::new(zone.id, zone.layers[0].id);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        for opacity in [0.9, 0.8, 0.7] {
+            replace_layers(&mut zone, |layer| layer.opacity = opacity);
+            pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+                .expect("replacement should reconcile");
+        }
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before);
+        assert_eq!(frame_numbers(&pool, &zone), [100]);
+        assert!(!pool.slots.contains_key(&old_key));
+        assert_eq!(pool.slots.len(), 1);
+        let slot = &pool.slots[&EffectSlotKey::new(zone.id, zone.layers[0].id)];
+        assert_eq!(
+            slot.controls.set_revision(),
+            SetRevision::new(zone.layers_version)
+        );
+    }
+
+    /// Only an untouched source carries the slot over. A replacement that
+    /// changes a control is a new effect instance, as it always was.
+    #[test]
+    fn layer_replaced_with_a_changed_control_builds_a_new_slot() {
+        let registry = registry_with_builtins();
+        let mut zone = render_zone(ZoneId::new(), builtin_effect_id(&registry, "rainbow"));
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("zone should reconcile");
+        stamp_slots(&mut pool, &zone);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| {
+            let LayerSource::Effect { controls, .. } = &mut layer.source else {
+                panic!("test layer should be an effect");
+            };
+            controls.insert("speed".into(), ControlValue::Float(12.0));
+        });
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
+        assert_eq!(frame_numbers(&pool, &zone), [0]);
+    }
+
+    /// A control the effect does not declare has no default to fall back
+    /// to, so it simply leaves the control set when the source drops it.
+    /// That is a changed source, even though no remaining value differs:
+    /// the running page would keep the dropped value.
+    #[test]
+    fn layer_replaced_without_an_undeclared_control_builds_a_new_slot() {
+        let registry = registry_with_builtins();
+        let mut zone = render_zone(ZoneId::new(), builtin_effect_id(&registry, "rainbow"));
+        let LayerSource::Effect { controls, .. } = &mut zone.layers[0].source else {
+            panic!("test layer should be an effect");
+        };
+        controls.insert("undeclared".into(), ControlValue::Float(3.0));
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("zone should reconcile");
+        stamp_slots(&mut pool, &zone);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| {
+            let LayerSource::Effect { controls, .. } = &mut layer.source else {
+                panic!("test layer should be an effect");
+            };
+            controls.remove("undeclared");
+        });
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
+        assert_eq!(frame_numbers(&pool, &zone), [0]);
+    }
+
+    /// A rainbow layer whose speed is authored at 5 and bound to the CPU
+    /// temperature, rendered once at 58 degrees so the binding is active
+    /// and feeds the renderer 4.
+    fn bound_rainbow_pool(registry: &EffectRegistry) -> (EffectPool, Zone) {
+        let mut zone = render_zone(ZoneId::new(), builtin_effect_id(registry, "rainbow"));
+        let LayerSource::Effect {
+            controls,
+            control_bindings,
+            ..
+        } = &mut zone.layers[0].source
+        else {
+            panic!("test layer should be an effect");
+        };
+        controls.insert("speed".into(), ControlValue::Float(5.0));
+        control_bindings.insert(
+            "speed".into(),
+            ControlBinding {
+                sensor: "cpu_temp".into(),
+                sensor_min: 30.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 10.0,
+                deadband: 0.0,
+                smoothing: 0.0,
+            },
+        );
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), registry, &HashMap::new())
+            .expect("zone should reconcile");
+        let sensors = hypercolor_types::sensor::SystemSnapshot {
+            cpu_temp_celsius: Some(58.0),
+            ..hypercolor_types::sensor::SystemSnapshot::empty()
+        };
+        pool.render_zone_into(
+            &zone,
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &sensors,
+            FrameDataSources::default(),
+            &mut Canvas::new(32, 16),
+        )
+        .expect("zone should render");
+        let slot = &pool.slots[&EffectSlotKey::new(zone.id, zone.layers[0].id)];
+        assert_eq!(
+            slot.binding_state
+                .get("speed")
+                .map(|state| &state.control_value),
+            Some(&ControlValue::Float(4.0)),
+            "the binding must be active for these tests to mean anything"
+        );
+        stamp_slots(&mut pool, &zone);
+        (pool, zone)
+    }
+
+    /// An active binding feeds the renderer the sensor's value whatever
+    /// the authored one is, so the renderer would see no difference. The
+    /// authored value is still part of the source: it is what the control
+    /// returns to when the binding goes. Changing it is a new instance.
+    #[test]
+    fn layer_replaced_with_a_changed_authored_value_under_a_binding_builds_a_new_slot() {
+        let registry = registry_with_builtins();
+        let (mut pool, mut zone) = bound_rainbow_pool(&registry);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| {
+            let LayerSource::Effect { controls, .. } = &mut layer.source else {
+                panic!("test layer should be an effect");
+            };
+            controls.insert("speed".into(), ControlValue::Float(7.0));
+        });
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
+        assert_eq!(frame_numbers(&pool, &zone), [0]);
+    }
+
+    /// The same binding over the same authored value is an untouched
+    /// source, and the bound instance carries on with its binding live.
+    #[test]
+    fn layer_replaced_with_the_same_bound_source_inherits_its_slot() {
+        let registry = registry_with_builtins();
+        let (mut pool, mut zone) = bound_rainbow_pool(&registry);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| layer.opacity = 0.5);
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before);
+        assert_eq!(frame_numbers(&pool, &zone), [100]);
+        let slot = &pool.slots[&EffectSlotKey::new(zone.id, zone.layers[0].id)];
+        assert_eq!(
+            slot.binding_state
+                .get("speed")
+                .map(|state| &state.control_value),
+            Some(&ControlValue::Float(4.0))
+        );
+    }
+
+    /// A slot stays in its zone: a layer that appears in another zone never
+    /// takes over the renderer of one that left.
+    #[test]
+    fn vacated_slot_is_not_inherited_across_zones() {
+        let registry = registry_with_builtins();
+        let rainbow_id = builtin_effect_id(&registry, "rainbow");
+        let first = render_zone(ZoneId::new(), rainbow_id);
+        let second = render_zone(ZoneId::new(), rainbow_id);
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&first), &registry, &HashMap::new())
+            .expect("first zone should reconcile");
+        stamp_slots(&mut pool, &first);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        pool.reconcile(std::slice::from_ref(&second), &registry, &HashMap::new())
+            .expect("second zone should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
+        assert_eq!(frame_numbers(&pool, &second), [0]);
+    }
+
+    /// A renderer that has given up is not worth keeping: only a rebuild
+    /// retries a failed page load. Replacing its layer builds a new one,
+    /// as it did before slots were handed on.
+    #[test]
+    fn failed_renderer_is_rebuilt_when_its_layer_is_replaced() {
+        let registry = registry_with_builtins();
+        let mut zone = render_zone(ZoneId::new(), builtin_effect_id(&registry, "rainbow"));
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("zone should reconcile");
+        stamp_slots(&mut pool, &zone);
+        let destroyed = Arc::new(AtomicBool::new(false));
+        pool.slots
+            .get_mut(&EffectSlotKey::new(zone.id, zone.layers[0].id))
+            .expect("layer should hold a slot")
+            .renderer = Box::new(FailedRenderer {
+            destroyed: Arc::clone(&destroyed),
+        });
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| layer.opacity = 0.5);
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
+        assert_eq!(frame_numbers(&pool, &zone), [0]);
+        assert!(destroyed.load(Ordering::SeqCst));
+    }
+
+    /// Slots pair with their successors by stack position, not by which
+    /// layer id is older. Replacing the bottom of two matching layers
+    /// makes its id the newer one; replacing both afterwards must still
+    /// leave each instance where it was.
+    #[test]
+    fn matching_layers_replaced_together_keep_their_own_instances() {
+        let registry = registry_with_builtins();
+        let rainbow_id = builtin_effect_id(&registry, "rainbow");
+        let mut zone = render_zone(ZoneId::new(), rainbow_id);
+        zone.layers.push(zone.layers[0].clone());
+        zone.layers[1].id = SceneLayerId::new();
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("zone should reconcile");
+        stamp_slots(&mut pool, &zone);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        zone.layers[0].id = SceneLayerId::new();
+        zone.layers_version += 1;
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("bottom replacement should reconcile");
+        assert_eq!(frame_numbers(&pool, &zone), [100, 101]);
+
+        replace_layers(&mut zone, |layer| layer.opacity = 0.5);
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("joint replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before);
+        assert_eq!(frame_numbers(&pool, &zone), [100, 101]);
+    }
+
+    /// Each vacated slot goes to one successor, in stack order. Two
+    /// matching layers replaced at once keep their own renderers, and a
+    /// third matching layer added on top gets a renderer of its own.
+    #[test]
+    fn each_vacated_slot_is_inherited_once() {
+        let registry = registry_with_builtins();
+        let rainbow_id = builtin_effect_id(&registry, "rainbow");
+        let mut zone = render_zone(ZoneId::new(), rainbow_id);
+        zone.layers.push(zone.layers[0].clone());
+        zone.layers[1].id = SceneLayerId::new();
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("zone should reconcile");
+        stamp_slots(&mut pool, &zone);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| layer.opacity = 0.5);
+        zone.layers.push(zone.layers[0].clone());
+        zone.layers[2].id = SceneLayerId::new();
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
+        assert_eq!(frame_numbers(&pool, &zone), [100, 101, 0]);
     }
 
     /// A scene whose later layer cannot admit fails before the layers ahead of
