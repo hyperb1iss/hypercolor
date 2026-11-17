@@ -115,9 +115,11 @@ pub fn EffectControlsSection(
     // Optimistic local control values. Layer identity fences stale patches,
     // so the canonical control route carries no revision token.
     let (values, set_values) = signal(controls);
-    let layer_id = layer.get_untracked().id.to_string();
+    let mounted_as = layer.get_untracked().id.to_string();
 
-    let session_target = Signal::stored(Some(format!("{zone_id}:{layer_id}")));
+    // The session answers for the row, which outlives a replace of its
+    // layer; each patch is addressed to the id the layer has when sent.
+    let session_target = Signal::stored(Some(format!("{zone_id}:{mounted_as}")));
     let patch: ControlPatchFn = Arc::new({
         let zone_id = zone_id.clone();
         move |_target: String,
@@ -125,7 +127,9 @@ pub fn EffectControlsSection(
               _version: Option<u64>|
               -> ControlPatchFuture {
             let zone_id = zone_id.clone();
-            let layer_id = layer_id.clone();
+            let layer_id = layer
+                .try_with_untracked(|layer| layer.id.to_string())
+                .unwrap_or_else(|| mounted_as.clone());
             Box::pin(async move {
                 api::patch_layer_controls(&zone_id, &layer_id, &payload).await?;
                 Ok(api::MutationOutcome::Applied(None))

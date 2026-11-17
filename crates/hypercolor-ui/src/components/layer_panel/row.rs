@@ -252,7 +252,6 @@ pub fn LayerRow(
             ));
         }
     };
-    let layer_id = initial.id.to_string();
     let is_effect = matches!(initial.source, LayerSource::Effect { .. });
     let is_media = matches!(initial.source, LayerSource::Media { .. });
     let place = Memo::new(move |_| {
@@ -484,7 +483,7 @@ pub fn LayerRow(
                     .get()
                     .then_some("color-mix(in oklch, var(--color-accent) 60%, transparent)")
             }
-            data-layer-row=layer_id.clone()
+            data-layer-row=move || layer.with(|layer| layer.id.to_string())
             data-layer-recedes=move || recedes.get().to_string()
         >
             // ── Header: identity + ordering + delete ──────────────────
