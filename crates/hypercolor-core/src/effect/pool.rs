@@ -687,9 +687,14 @@ impl EffectSlot {
     /// `None` when `source` would change a control or a binding. A slot
     /// that never took its controls has nothing to compare against.
     ///
-    /// The control diff only walks the controls `source` resolves to, so a
-    /// control the slot holds and `source` no longer names is caught by
-    /// the counts: with no value changed, equal counts mean equal keys.
+    /// The control diff alone does not settle it. It compares what the
+    /// renderer is fed, so under an active binding it sees the sensor's
+    /// value on both sides and misses a changed authored value, the one
+    /// the control falls back to when the binding goes. It also walks only
+    /// the controls `source` resolves to, so it misses a control the slot
+    /// holds and `source` no longer names. The authored sets are therefore
+    /// compared as well, value for value; equal counts then mean equal
+    /// keys.
     fn prepare_unchanged_layer_state(
         &self,
         source: &LayerEffectSource,
@@ -699,10 +704,13 @@ impl EffectSlot {
             return None;
         }
         let state = self.prepare_layer_state(source.clone(), revision).ok()?;
-        (state.changes.is_empty()
-            && state.changed_bindings.is_empty()
-            && state.controls.len() == self.controls.len())
-        .then_some(state)
+        let same_authored_controls = state.controls.len() == self.controls.len()
+            && state
+                .controls
+                .iter()
+                .all(|(control_id, value)| self.controls.get(control_id.as_str()) == Some(value));
+        (state.changes.is_empty() && state.changed_bindings.is_empty() && same_authored_controls)
+            .then_some(state)
     }
 
     fn sync_layer_state(&mut self, source: LayerEffectSource, revision: SetRevision) -> Result<()> {
@@ -2259,6 +2267,108 @@ mod tests {
 
         assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
         assert_eq!(frame_numbers(&pool, &zone), [0]);
+    }
+
+    /// A rainbow layer whose speed is authored at 5 and bound to the CPU
+    /// temperature, rendered once at 58 degrees so the binding is active
+    /// and feeds the renderer 4.
+    fn bound_rainbow_pool(registry: &EffectRegistry) -> (EffectPool, Zone) {
+        let mut zone = render_zone(ZoneId::new(), builtin_effect_id(registry, "rainbow"));
+        let LayerSource::Effect {
+            controls,
+            control_bindings,
+            ..
+        } = &mut zone.layers[0].source
+        else {
+            panic!("test layer should be an effect");
+        };
+        controls.insert("speed".into(), ControlValue::Float(5.0));
+        control_bindings.insert(
+            "speed".into(),
+            ControlBinding {
+                sensor: "cpu_temp".into(),
+                sensor_min: 30.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 10.0,
+                deadband: 0.0,
+                smoothing: 0.0,
+            },
+        );
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&zone), registry, &HashMap::new())
+            .expect("zone should reconcile");
+        let sensors = hypercolor_types::sensor::SystemSnapshot {
+            cpu_temp_celsius: Some(58.0),
+            ..hypercolor_types::sensor::SystemSnapshot::empty()
+        };
+        pool.render_zone_into(
+            &zone,
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &sensors,
+            FrameDataSources::default(),
+            &mut Canvas::new(32, 16),
+        )
+        .expect("zone should render");
+        let slot = &pool.slots[&EffectSlotKey::new(zone.id, zone.layers[0].id)];
+        assert_eq!(
+            slot.binding_state
+                .get("speed")
+                .map(|state| &state.control_value),
+            Some(&ControlValue::Float(4.0)),
+            "the binding must be active for these tests to mean anything"
+        );
+        stamp_slots(&mut pool, &zone);
+        (pool, zone)
+    }
+
+    /// An active binding feeds the renderer the sensor's value whatever
+    /// the authored one is, so the renderer would see no difference. The
+    /// authored value is still part of the source: it is what the control
+    /// returns to when the binding goes. Changing it is a new instance.
+    #[test]
+    fn layer_replaced_with_a_changed_authored_value_under_a_binding_builds_a_new_slot() {
+        let registry = registry_with_builtins();
+        let (mut pool, mut zone) = bound_rainbow_pool(&registry);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| {
+            let LayerSource::Effect { controls, .. } = &mut layer.source else {
+                panic!("test layer should be an effect");
+            };
+            controls.insert("speed".into(), ControlValue::Float(7.0));
+        });
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 1);
+        assert_eq!(frame_numbers(&pool, &zone), [0]);
+    }
+
+    /// The same binding over the same authored value is an untouched
+    /// source, and the bound instance carries on with its binding live.
+    #[test]
+    fn layer_replaced_with_the_same_bound_source_inherits_its_slot() {
+        let registry = registry_with_builtins();
+        let (mut pool, mut zone) = bound_rainbow_pool(&registry);
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        replace_layers(&mut zone, |layer| layer.opacity = 0.5);
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+            .expect("replacement should reconcile");
+
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before);
+        assert_eq!(frame_numbers(&pool, &zone), [100]);
+        let slot = &pool.slots[&EffectSlotKey::new(zone.id, zone.layers[0].id)];
+        assert_eq!(
+            slot.binding_state
+                .get("speed")
+                .map(|state| &state.control_value),
+            Some(&ControlValue::Float(4.0))
+        );
     }
 
     /// A slot stays in its zone: a layer that appears in another zone never
