@@ -378,3 +378,66 @@ fn the_lock_notice_and_the_refusal_toast_share_one_dev_hint() {
         "Dev stack: open the protected controls link that just dev prints."
     );
 }
+
+// ── Which 403 it is ─────────────────────────────────────────────────
+
+fn refusal_with_details(message: &str, details: serde_json::Value) -> ApiError {
+    ApiError::Http {
+        status: 403,
+        code: Some("forbidden".to_owned()),
+        message: Some(message.to_owned()),
+        details: Some(details),
+    }
+}
+
+/// The capture gate answers with a bare 403: the shape a keyless
+/// browser, or a read-only key on the same machine, gets back.
+#[test]
+fn a_bare_403_on_a_capture_key_is_the_capture_credential_refusal() {
+    let error = refusal(
+        403,
+        "forbidden",
+        "Protected capture access requires a control credential",
+    );
+    assert!(is_capture_credential_refusal("audio.device", &error));
+
+    let null_details = refusal_with_details(
+        "Protected capture access requires a control credential",
+        serde_json::Value::Null,
+    );
+    assert!(is_capture_credential_refusal("audio.device", &null_details));
+}
+
+/// A read-only API key sent from another machine never reaches the
+/// capture gate: the tier check answers first, and says what is wrong.
+#[test]
+fn a_read_only_key_refusal_on_a_capture_key_keeps_the_daemon_s_message() {
+    let error = refusal_with_details(
+        "Read-only API key cannot perform write operations",
+        serde_json::json!({ "required_tier": "control", "current_tier": "read" }),
+    );
+
+    assert!(!is_capture_credential_refusal("audio.device", &error));
+    for dev_build in [false, true] {
+        assert_eq!(
+            config_write_failure_message("audio.device", ConfigWrite::Change, &error, dev_build),
+            "Audio device wasn't changed: Read-only API key cannot perform write operations"
+        );
+    }
+}
+
+/// Any other gate that explains itself in details is not the capture
+/// gate either.
+#[test]
+fn a_403_with_other_details_on_a_capture_key_keeps_the_daemon_s_message() {
+    let error = refusal_with_details(
+        "Requests relayed by a reverse proxy need an API key",
+        serde_json::json!({ "setting": "network.access_mode" }),
+    );
+
+    assert!(!is_capture_credential_refusal("capture.enabled", &error));
+    assert_eq!(
+        config_write_failure_message("capture.enabled", ConfigWrite::Change, &error, false),
+        "Screen capture wasn't changed: Requests relayed by a reverse proxy need an API key"
+    );
+}

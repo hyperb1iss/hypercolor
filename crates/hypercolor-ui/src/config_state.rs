@@ -267,9 +267,24 @@ pub fn config_write_failure_message(
 
 /// Whether `error` is the daemon turning down a capture-setting write
 /// because the session holds no capture credential.
+///
+/// That refusal is a bare 403 on a protected key. A 403 that carries
+/// details is some other gate speaking, and its own message names the
+/// real cause: a read-only API key sent from another machine is stopped
+/// by the tier check before the capture gate runs, with
+/// `details.required_tier`, and telling that person to use the app would
+/// send them the wrong way.
 #[must_use]
 pub fn is_capture_credential_refusal(key: &str, error: &ApiError) -> bool {
-    matches!(error, ApiError::Http { status: 403, .. })
+    let ApiError::Http {
+        status: 403,
+        details,
+        ..
+    } = error
+    else {
+        return false;
+    };
+    details.as_ref().is_none_or(serde_json::Value::is_null)
         && hypercolor_types::config_registry::requires_protected_control(key)
 }
 
