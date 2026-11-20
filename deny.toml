@@ -9,6 +9,13 @@ ignore = [
     # TLS_PSK_WITH_AES_128_GCM_SHA256, so no ECDHE or ECDSA arithmetic runs
     # on secrets. Drop this once webrtc-dtls moves to elliptic-curve 0.14.
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via webrtc-dtls; Hue DTLS is PSK only" },
+    # chrono is flagged unmaintained with no release to move to; the
+    # advisory reports no vulnerability. Six workspace crates depend on it
+    # directly and its timestamps are serialized in the shared API types,
+    # so leaving it is a migration to jiff that has to keep that format
+    # byte for byte, not a version bump. Drop this entry when that
+    # migration lands.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no vulnerability; replacing it is a wire-format migration" },
 ]
 
 [licenses]
