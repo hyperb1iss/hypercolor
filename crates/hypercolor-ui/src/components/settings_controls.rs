@@ -79,8 +79,7 @@ pub fn CaptureLockNotice(
                     <Icon icon=LuLock width="12px" height="12px" style="color: rgba(225, 53, 255, 0.6)" />
                 </span>
                 <span>
-                    {subject}
-                    " are locked in this browser. Change them from the Hypercolor app."
+                    {crate::config_state::capture_lock_notice(subject, cfg!(debug_assertions))}
                 </span>
             </div>
         </Show>

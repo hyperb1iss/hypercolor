@@ -1,9 +1,10 @@
 use hypercolor_types::config::{HypercolorConfig, InteractionRoutePolicy};
 use hypercolor_ui::api::ApiError;
 use hypercolor_ui::config_state::{
-    ConfigApplyTracker, ConfigWrite, apply_config_key, config_key_value, config_setting_label,
-    config_write_failure_message, is_capture_credential_refusal, schema_entry_for,
-    schema_requires_protected_control, schema_requires_restart,
+    ConfigApplyTracker, ConfigWrite, DEV_CAPTURE_UNLOCK_HINT, apply_config_key,
+    capture_lock_notice, config_key_value, config_setting_label, config_write_failure_message,
+    is_capture_credential_refusal, schema_entry_for, schema_requires_protected_control,
+    schema_requires_restart,
 };
 
 #[test]
@@ -334,5 +335,46 @@ fn a_refused_section_reset_says_reset_and_stays_singular() {
     assert_eq!(
         config_write_failure_message("network", ConfigWrite::Reset, &invalid, false),
         "Network wasn't reset: A snapshot scene is active"
+    );
+}
+
+// ── Lock notice ─────────────────────────────────────────────────────
+
+#[test]
+fn a_release_build_s_lock_notice_names_only_the_app() {
+    assert_eq!(
+        capture_lock_notice("Screen capture settings", false),
+        "Screen capture settings are locked in this browser. Change them from the Hypercolor app."
+    );
+    assert!(
+        !capture_lock_notice("The audio capture switch and device", false).contains("Dev stack")
+    );
+}
+
+#[test]
+fn a_dev_build_s_lock_notice_points_at_the_link_just_dev_prints() {
+    assert_eq!(
+        capture_lock_notice("The audio capture switch and device", true),
+        "The audio capture switch and device are locked in this browser. Change them from the Hypercolor app. Dev stack: open the protected controls link that just dev prints."
+    );
+}
+
+/// A locked row never reaches the refusal toast, so the notice has to
+/// carry the same pointer the toast does, word for word.
+#[test]
+fn the_lock_notice_and_the_refusal_toast_share_one_dev_hint() {
+    let error = refusal(
+        403,
+        "forbidden",
+        "Protected capture access requires a control credential",
+    );
+    let toast = config_write_failure_message("audio.device", ConfigWrite::Change, &error, true);
+    let notice = capture_lock_notice("The audio capture switch and device", true);
+
+    assert!(toast.ends_with(DEV_CAPTURE_UNLOCK_HINT));
+    assert!(notice.ends_with(DEV_CAPTURE_UNLOCK_HINT));
+    assert_eq!(
+        DEV_CAPTURE_UNLOCK_HINT,
+        "Dev stack: open the protected controls link that just dev prints."
     );
 }

@@ -205,6 +205,12 @@ pub fn config_setting_label(key: &str) -> String {
     })
 }
 
+/// How a development stack unlocks capture settings in a browser: the
+/// dev recipes print a link whose fragment carries the credential. Only
+/// debug builds read that fragment, so only they mention it.
+pub const DEV_CAPTURE_UNLOCK_HINT: &str =
+    "Dev stack: open the protected controls link that just dev prints.";
+
 /// What a config write was trying to do, for the message when it fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigWrite {
@@ -244,7 +250,8 @@ pub fn config_write_failure_message(
             "{label} {outcome}. Capture settings can only be changed from the Hypercolor app."
         );
         if dev_build {
-            message.push_str(" Dev stack: open the protected controls link that just dev prints.");
+            message.push(' ');
+            message.push_str(DEV_CAPTURE_UNLOCK_HINT);
         }
         return message;
     }
@@ -296,6 +303,21 @@ pub fn protected_write_locked(key: &str) -> Signal<bool> {
         schema.is_some_and(|schema| schema.requires_protected_control(&key))
             && !crate::api::client::may_hold_protected_control()
     })
+}
+
+/// The line a settings section shows above its locked rows. `subject`
+/// starts the sentence ("Screen capture settings"), and `dev_build` adds
+/// the same hint the refusal toast carries, since a locked row never
+/// reaches that toast.
+#[must_use]
+pub fn capture_lock_notice(subject: &str, dev_build: bool) -> String {
+    let mut notice =
+        format!("{subject} are locked in this browser. Change them from the Hypercolor app.");
+    if dev_build {
+        notice.push(' ');
+        notice.push_str(DEV_CAPTURE_UNLOCK_HINT);
+    }
+    notice
 }
 
 /// Whether this session can write none of the capture settings, for the
