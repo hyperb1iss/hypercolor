@@ -9,6 +9,23 @@ use leptos::prelude::{GetUntracked, Set, use_context};
 
 const TOAST_EXPIRY_MS: u32 = 2_500;
 const TOAST_EXIT_MS: u64 = 200;
+/// Characters a toast shows before it earns extra time on screen.
+const TOAST_SHORT_CHARS: usize = 40;
+const TOAST_EXTRA_MS_PER_CHAR: u32 = 45;
+const TOAST_MAX_EXPIRY_MS: u32 = 8_000;
+
+/// How long a toast stays up: the base time for a short line, plus
+/// reading time for each character past that, up to a ceiling.
+#[must_use]
+pub fn toast_expiry_ms(msg: &str) -> u32 {
+    let extra_chars = msg.chars().count().saturating_sub(TOAST_SHORT_CHARS);
+    let extra_ms = u32::try_from(extra_chars)
+        .unwrap_or(u32::MAX)
+        .saturating_mul(TOAST_EXTRA_MS_PER_CHAR);
+    TOAST_EXPIRY_MS
+        .saturating_add(extra_ms)
+        .min(TOAST_MAX_EXPIRY_MS)
+}
 
 thread_local! {
     static ROOT_TOASTER: RefCell<Option<ToasterContext>> = const { RefCell::new(None) };
@@ -42,18 +59,19 @@ fn toast(msg: &str, level: ToastLevel) {
         return;
     };
 
+    let expiry_ms = toast_expiry_ms(msg);
     toaster.toast(
         ToastBuilder::new(msg)
             .with_level(level)
             .with_position(ToastPosition::BottomRight)
-            .with_expiry(Some(TOAST_EXPIRY_MS)),
+            .with_expiry(Some(expiry_ms)),
     );
 
     let Some(toast) = toaster.queue.get_untracked().last().cloned() else {
         return;
     };
 
-    schedule_timeout(u64::from(TOAST_EXPIRY_MS), move || {
+    schedule_timeout(u64::from(expiry_ms), move || {
         toast.clear_signal.set(true);
 
         let toaster = toaster.clone();

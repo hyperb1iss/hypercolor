@@ -19,7 +19,7 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
-use crate::async_helpers::{spawn_mutation, toast_on_err, with_rollback};
+use crate::async_helpers::{spawn_mutation, with_rollback};
 use crate::components::canvas_preview::effect_wants_interaction;
 use crate::icons::{LuKeyboard, LuX};
 use crate::input_access::{InputAccessRemedy, input_access_remedy};
@@ -95,7 +95,13 @@ pub fn InputAccessBanner() -> impl IntoView {
             },
             with_rollback(
                 move || enabling.set(false),
-                toast_on_err("Enable input access failed"),
+                |error| {
+                    crate::config_state::report_config_write_failure(
+                        "input.enabled",
+                        crate::config_state::ConfigWrite::Change,
+                        &error,
+                    );
+                },
             ),
         );
     };

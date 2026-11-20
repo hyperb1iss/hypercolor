@@ -14,7 +14,10 @@ use crate::api;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_controls::SectionHeader;
 use crate::components::settings_sections::*;
-use crate::config_state::{ConfigApplyTracker, ConfigContext, apply_config_key, config_key_value};
+use crate::config_state::{
+    ConfigApplyTracker, ConfigContext, ConfigWrite, apply_config_key, config_key_value,
+    report_config_write_failure,
+};
 use crate::extensions::SettingsExtensionSections;
 use crate::icons::*;
 use crate::settings_audio_devices::{
@@ -156,6 +159,9 @@ pub fn SettingsPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             if let Err(e) = api::set_config_value(&key, &value).await {
                 leptos::logging::warn!("Config set failed: {e}");
+                // The control snaps back below; without this nobody
+                // learns the daemon said no, or why.
+                report_config_write_failure(&key, ConfigWrite::Change, &e);
                 let is_current = config_applies
                     .lock()
                     .expect("config apply tracker lock poisoned")
@@ -187,6 +193,7 @@ pub fn SettingsPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             if let Err(e) = api::reset_config_key(&key).await {
                 leptos::logging::warn!("Config reset failed: {e}");
+                report_config_write_failure(&key, ConfigWrite::Reset, &e);
             }
             config_ctx.refresh.run(());
         });

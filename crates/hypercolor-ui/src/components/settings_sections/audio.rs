@@ -183,6 +183,7 @@ pub fn AudioSection(
     view! {
         <section id="section-audio" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Audio" icon=LuAudioLines />
+            <CaptureLockNotice subject="The audio capture switch and device" />
             <AudioVuMeter enabled=enabled />
             <SettingToggle
                 label="Enabled"
