@@ -5,7 +5,8 @@ use super::{MacosCaptureOwnerRestartAction, read_config, validate_macos_restart_
 use crate::api::{self, InputStatus, SourceDiagnosticsDisplayField, SystemStatusServiceExt};
 use crate::app::WsContext;
 use crate::components::settings_controls::{
-    AdvancedDisclosure, SectionHeader, SectionReset, SettingDropdown, SettingToggle,
+    AdvancedDisclosure, CaptureLockNotice, SectionHeader, SectionReset, SettingDropdown,
+    SettingToggle,
 };
 use crate::icons::LuKeyboard;
 use crate::input_access::{StatusLineTone, input_status_epoch, input_status_line};
@@ -131,6 +132,7 @@ pub fn InputSection(
     view! {
         <section id="section-input" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Input Access" icon=LuKeyboard />
+            <CaptureLockNotice subject="The input capture, keyboard, and mouse switches" />
             <SettingToggle
                 label="Keyboard and mouse input"
                 description="Allow explicitly input-reactive effects to receive the keyboard and pointer where Hypercolor runs"

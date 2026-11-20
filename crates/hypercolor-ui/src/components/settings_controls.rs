@@ -6,7 +6,7 @@ use leptos_icons::Icon;
 
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
-use crate::config_state::ConfigSchemaContext;
+use crate::config_state::{ConfigSchemaContext, protected_write_locked};
 use crate::icons::*;
 
 // ── Section Header ─────────────────────────────────────────────────────────
@@ -23,22 +23,67 @@ pub fn SectionHeader(title: &'static str, icon: icondata_core::Icon) -> impl Int
     }
 }
 
-// ── Restart Badge ──────────────────────────────────────────────────────────
+// ── Row Marks ──────────────────────────────────────────────────────────────
 
-/// The restart badge for a control, derived from the daemon's config
-/// key registry.
+/// The marks beside a control's label, derived from the daemon's config
+/// key registry, and whether the row is locked.
+///
+/// A key that only applies at the next daemon start gets the restart
+/// badge. A capture key this session has no credential to write gets a
+/// lock, and the row goes inert, so nobody is offered a change the
+/// daemon would turn down.
 ///
 /// `policy_key` names the real key to ask about when the control's own
 /// key is a UI-local composite that fans out to several real ones. No
-/// badge renders until the schema arrives, so the row states what the
+/// mark renders until the schema arrives, so the row states what the
 /// daemon reports rather than what the UI guesses.
-fn restart_badge_for(policy_key: Option<String>, key: &str) -> impl IntoView + use<> {
+fn row_marks_for(policy_key: Option<String>, key: &str) -> (impl IntoView + use<>, Signal<bool>) {
     let key = policy_key.unwrap_or_else(|| key.to_owned());
     let schema = use_context::<ConfigSchemaContext>();
-    move || {
+    let locked = protected_write_locked(&key);
+    let restart = move || {
         schema
             .filter(|schema| schema.requires_restart(&key))
             .map(|_| restart_badge())
+    };
+    let lock = move || locked.get().then(lock_mark);
+    ((restart, lock), locked)
+}
+
+fn lock_mark() -> impl IntoView {
+    view! {
+        <span
+            class="inline-flex items-center"
+            title="Locked in this browser. Change it from the Hypercolor app."
+        >
+            <Icon icon=LuLock width="11px" height="11px" style="color: rgba(139, 133, 160, 0.85)" />
+        </span>
+    }
+}
+
+/// One line above a section's locked rows saying why they are locked.
+/// Renders only while this session cannot write capture settings.
+#[component]
+pub fn CaptureLockNotice(
+    /// What is locked, as the start of a sentence: "Screen capture settings".
+    subject: &'static str,
+) -> impl IntoView {
+    let locked = crate::config_state::capture_settings_locked();
+    view! {
+        <Show when=move || locked.get()>
+            <div
+                class="flex items-start gap-2 rounded-lg border border-edge-subtle bg-surface-overlay/40 px-3 py-2 mb-2 text-xs text-fg-tertiary"
+                role="note"
+            >
+                <span class="mt-px shrink-0">
+                    <Icon icon=LuLock width="12px" height="12px" style="color: rgba(225, 53, 255, 0.6)" />
+                </span>
+                <span>
+                    {subject}
+                    " are locked in this browser. Change them from the Hypercolor app."
+                </span>
+            </div>
+        </Show>
     }
 }
 
@@ -64,10 +109,13 @@ pub fn SettingToggle(
     on_change: Callback<(String, serde_json::Value)>,
     #[prop(into, optional)] policy_key: Option<String>,
 ) -> impl IntoView {
-    let badge = restart_badge_for(policy_key, &key);
+    let (badge, locked) = row_marks_for(policy_key, &key);
     let key_owned = key;
     view! {
-        <div class="flex items-start justify-between gap-4 py-3 setting-row">
+        <div class="flex items-start justify-between gap-4 py-3 setting-row"
+            class:opacity-60=move || locked.get()
+            inert=move || locked.get()
+        >
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
@@ -117,7 +165,7 @@ pub fn SettingSlider(
     #[prop(default = 2)] decimals: usize,
     #[prop(default = false)] integer: bool,
 ) -> impl IntoView {
-    let badge = restart_badge_for(policy_key, key);
+    let (badge, locked) = row_marks_for(policy_key, key);
     let key_owned = key.to_string();
     let fmt = move || {
         let v = value.get();
@@ -130,7 +178,10 @@ pub fn SettingSlider(
     view! {
         // Phones stack label over a full-width slider (same shape as the
         // select row below); the desktop keeps the label|control split.
-        <div class="flex flex-col gap-2 py-3 setting-row md:flex-row md:items-start md:justify-between md:gap-4">
+        <div class="flex flex-col gap-2 py-3 setting-row md:flex-row md:items-start md:justify-between md:gap-4"
+            class:opacity-60=move || locked.get()
+            inert=move || locked.get()
+        >
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
@@ -183,10 +234,13 @@ pub fn SettingSegmented(
     #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = false)] numeric: bool,
 ) -> impl IntoView {
-    let badge = restart_badge_for(policy_key, key);
+    let (badge, locked) = row_marks_for(policy_key, key);
     let key_owned = key.to_string();
     view! {
-        <div class="flex items-start justify-between gap-4 py-3 setting-row">
+        <div class="flex items-start justify-between gap-4 py-3 setting-row"
+            class:opacity-60=move || locked.get()
+            inert=move || locked.get()
+        >
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
@@ -248,10 +302,13 @@ pub fn SettingDropdown(
     #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = false)] numeric: bool,
 ) -> impl IntoView {
-    let badge = restart_badge_for(policy_key, key);
+    let (badge, locked) = row_marks_for(policy_key, key);
     let key_owned = key.to_string();
     view! {
-        <div class="flex flex-col gap-3 py-3 setting-row md:flex-row md:items-start md:justify-between">
+        <div class="flex flex-col gap-3 py-3 setting-row md:flex-row md:items-start md:justify-between"
+            class:opacity-60=move || locked.get()
+            inert=move || locked.get()
+        >
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
@@ -295,10 +352,13 @@ pub fn SettingTextInput(
     #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = "")] placeholder: &'static str,
 ) -> impl IntoView {
-    let badge = restart_badge_for(policy_key, key);
+    let (badge, locked) = row_marks_for(policy_key, key);
     let key_owned = key.to_string();
     view! {
-        <div class="flex items-start justify-between gap-4 py-3 setting-row">
+        <div class="flex items-start justify-between gap-4 py-3 setting-row"
+            class:opacity-60=move || locked.get()
+            inert=move || locked.get()
+        >
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
@@ -338,7 +398,7 @@ pub fn SettingNumberInput(
     #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = true)] integer: bool,
 ) -> impl IntoView {
-    let badge = restart_badge_for(policy_key, key);
+    let (badge, locked) = row_marks_for(policy_key, key);
     let key_owned = key.to_string();
     let key_dec = key.to_string();
     let key_inc = key.to_string();
@@ -351,7 +411,10 @@ pub fn SettingNumberInput(
         }
     };
     view! {
-        <div class="flex items-start justify-between gap-4 py-3 setting-row">
+        <div class="flex items-start justify-between gap-4 py-3 setting-row"
+            class:opacity-60=move || locked.get()
+            inert=move || locked.get()
+        >
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>

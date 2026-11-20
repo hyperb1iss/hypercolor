@@ -85,6 +85,7 @@ pub fn CaptureSharedControls(
     #[prop(into)] accent_rgb: Signal<String>,
 ) -> impl IntoView {
     let config_ctx = expect_context::<ConfigContext>();
+    let locked = crate::config_state::capture_settings_locked();
 
     let on_change = move |key: String, value: f64| {
         let json_value = serde_json::json!(value);
@@ -96,6 +97,11 @@ pub fn CaptureSharedControls(
         leptos::task::spawn_local(async move {
             if let Err(e) = api::set_config_value(&key, &json_value).await {
                 leptos::logging::warn!("Capture config set failed: {e}");
+                crate::config_state::report_config_write_failure(
+                    &key,
+                    crate::config_state::ConfigWrite::Change,
+                    &e,
+                );
                 config_ctx.refresh.run(());
             }
         });
@@ -124,6 +130,11 @@ pub fn CaptureSharedControls(
                         </div>
                     }
                 }}
+                <Show when=move || locked.get()>
+                    <p class="px-3 pb-1 text-[11px] text-fg-tertiary" role="note">
+                        "Locked in this browser. Change capture tuning from the Hypercolor app."
+                    </p>
+                </Show>
                 {capture_knobs()
                     .into_iter()
                     .map(|knob| {
@@ -137,6 +148,8 @@ pub fn CaptureSharedControls(
                         view! {
                             <div
                                 class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
+                                class:opacity-60=move || locked.get()
+                                inert=move || locked.get()
                                 title=knob.tooltip
                                 style=move || format!("--glow-rgb: {}", accent_rgb.get())
                             >

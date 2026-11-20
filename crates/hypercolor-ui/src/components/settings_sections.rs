@@ -246,6 +246,7 @@ pub fn CaptureSection(
     view! {
         <section id="section-capture" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Screen Capture" icon=LuMonitor />
+            <CaptureLockNotice subject="Screen capture settings" />
             <SettingToggle
                 label="Screen capture"
                 description="Let effects like Ambilight and Screen Cast mirror what's on your screen"

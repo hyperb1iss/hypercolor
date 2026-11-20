@@ -10,7 +10,6 @@ use leptos_router::hooks::use_location;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
-use crate::async_helpers::spawn_api_call;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::now_playing::{NowPlaying, use_now_playing};
 use crate::components::zone_now_playing::SidebarZoneSelector;
@@ -436,13 +435,17 @@ pub(crate) fn SidebarAudioToggle(#[prop(default = false)] touch: bool) -> impl I
                 current.audio.enabled = new_state;
             }
         });
-        spawn_api_call("Failed to toggle audio", async move {
-            let result =
-                api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await;
-            if result.is_err() {
+        leptos::task::spawn_local(async move {
+            if let Err(error) =
+                api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await
+            {
+                crate::config_state::report_config_write_failure(
+                    "audio.enabled",
+                    crate::config_state::ConfigWrite::Change,
+                    &error,
+                );
                 config_ctx.refresh.run(());
             }
-            result
         });
     };
 

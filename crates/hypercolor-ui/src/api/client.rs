@@ -142,6 +142,13 @@ impl DaemonTransport {
     fn authorization_token(&self, stored_api_key: Option<String>) -> Option<String> {
         self.protected_control_credential.clone().or(stored_api_key)
     }
+
+    /// Whether a session on this transport could hold the daemon's
+    /// capture authority: a Remote session is admitted on the daemon's
+    /// side, and any other session needs something to present.
+    fn may_hold_protected_control(&self, stored_api_key: Option<String>) -> bool {
+        self.remote || self.authorization_token(stored_api_key).is_some()
+    }
 }
 
 // ── Error type ──────────────────────────────────────────────────────────────
@@ -419,6 +426,18 @@ pub fn daemon_url(url: &str) -> Option<String> {
 #[must_use]
 pub fn authorization_token() -> Option<String> {
     DAEMON_TRANSPORT.with_borrow(|transport| transport.authorization_token(stored_api_key()))
+}
+
+/// Whether this session could hold the daemon's capture authority.
+///
+/// False only when the page talks to the daemon directly and has nothing
+/// to present: a keyless browser session never holds it, whatever the
+/// daemon's security mode. A Remote session is admitted on the daemon's
+/// side, and a session with a credential may or may not be granted it,
+/// so both answer true and the daemon's reply decides.
+#[must_use]
+pub fn may_hold_protected_control() -> bool {
+    DAEMON_TRANSPORT.with_borrow(|transport| transport.may_hold_protected_control(stored_api_key()))
 }
 
 /// Fence every daemon call to a logical, unambiguous relative path.
@@ -1236,6 +1255,42 @@ mod tests {
         stale_current_version, validate_relative_path,
     };
     use hypercolor_types::service::ProtectedControlCredential;
+
+    #[test]
+    fn a_keyless_direct_session_cannot_hold_capture_authority() {
+        let browser = DaemonTransport {
+            native_app: false,
+            remote: false,
+            base_url: None,
+            protected_control_credential: None,
+        };
+        assert!(!browser.may_hold_protected_control(None));
+        // A stored API key may be a control key, so the daemon decides.
+        assert!(browser.may_hold_protected_control(Some("api-key".to_owned())));
+
+        let native_without_credential = DaemonTransport {
+            native_app: true,
+            remote: false,
+            base_url: Some("http://127.0.0.1:9420".to_owned()),
+            protected_control_credential: None,
+        };
+        assert!(!native_without_credential.may_hold_protected_control(None));
+
+        let native_with_credential = DaemonTransport {
+            protected_control_credential: Some("credential".to_owned()),
+            ..native_without_credential.clone()
+        };
+        assert!(native_with_credential.may_hold_protected_control(None));
+
+        // Remote never carries a local bearer; the daemon admits it.
+        let remote = DaemonTransport {
+            native_app: false,
+            remote: true,
+            base_url: Some("https://relay.example".to_owned()),
+            protected_control_credential: None,
+        };
+        assert!(remote.may_hold_protected_control(None));
+    }
 
     #[test]
     fn native_transport_routes_relative_urls_and_preserves_absolute_urls() {
