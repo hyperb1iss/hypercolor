@@ -779,6 +779,8 @@ dev *args='': ui-deps
     }
 
     trap cleanup EXIT INT TERM
+    protected_control_credential="$(./scripts/dev-control-credential.sh)"
+    unset HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL
     just prepare-dev-assets
     daemon_args=(--log-level debug)
     if [[ -n "${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE:-}" ]]; then
@@ -794,11 +796,12 @@ dev *args='': ui-deps
     else
       echo "[dev] Servo GPU import mode: ${servo_gpu_import_mode} (default)"
     fi
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
+    HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL="${protected_control_credential}" ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
     daemon_pid=$!
     sleep 2
     (cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev) &
     trunk_pid=$!
+    echo "[dev] protected controls: http://127.0.0.1:9430/#${protected_control_credential}"
     wait_for_first_exit
 
 [windows]
