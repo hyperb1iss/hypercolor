@@ -84,6 +84,14 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 | `just ui-dev` | Leptos dev server on `:9430`, proxies API to `:9420` |
 | `just sdk-dev` | Watch-rebuild of the SDK packages on change |
 
+`just dev` prints a `[dev] protected controls:` link. Audio, input, and screen
+capture settings only change for a session that holds a control credential
+(see [Auth and security](@/api/auth-and-security.md)), and that link carries
+one as its URL fragment, so open the UI through it to change those settings.
+The page drops the credential on reload; open the link again. To keep one link
+across restarts, export `HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL` (an `hc_pc_`
+token followed by 64 hex digits) before running the recipe.
+
 ---
 
 ## Code conventions
