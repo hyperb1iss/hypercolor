@@ -68,8 +68,8 @@ pub async fn open_portal_session(request: &PortalRequest) -> Result<PortalSessio
         .select_sources(
             &session,
             SelectSourcesOptions::default()
-                .set_cursor_mode(CursorMode::Hidden)
-                .set_sources(Some(SourceType::Monitor.into()))
+                .set_cursor_mode(CursorMode::HIDDEN)
+                .set_sources(SourceType::MONITOR)
                 .set_multiple(false)
                 .set_restore_token(request.restore_token.as_deref())
                 .set_persist_mode(PersistMode::ExplicitlyRevoked),
