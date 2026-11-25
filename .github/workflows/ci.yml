@@ -2205,8 +2205,8 @@ jobs:
           printf 'macOS SDK: %s\n' "${sdk_version}"
           test "${sdk_version%%.*}" = "26"
 
-      # Servo's mozangle runs bindgen over the MSVC STL headers, which only
-      # accept the Clang that ships with the same Visual Studio.
+      # Servo's mozangle runs bindgen over the MSVC STL headers, which reject
+      # a Clang older than the one Visual Studio ships beside them.
       - name: Qualify Windows libclang
         if: runner.os == 'Windows'
         uses: ./.github/actions/windows-libclang
