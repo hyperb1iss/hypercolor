@@ -42,8 +42,9 @@ finds one, you see it in several places:
 
 The catalog covers the vendor suites and Linux daemons that touch hardware Hypercolor
 drives: SignalRGB, L-Connect, Razer Synapse, Corsair iCUE, Armoury Crate, MSI Center,
-RGB Fusion, Polychrome, NZXT CAM, TT RGB Plus, NollieRGB, openrazer, ckb-next,
-OpenLinkHub, lian-li-linux, and CoolerControl. It lives in
+RGB Fusion, Polychrome, NZXT CAM, TT RGB Plus, NollieRGB, Thermalright TRCC,
+openrazer, ckb-next, OpenLinkHub, lian-li-linux, linux-thermalright-lcd-control,
+and CoolerControl. It lives in
 `crates/hypercolor-core/src/device/conflicts/catalog.toml`. OpenRGB is not on it: running
 OpenRGB beside Hypercolor is a supported setup, and the [OpenRGB section](#openrgb) below
 explains how the two share hardware. macOS is not checked yet.
@@ -136,6 +137,15 @@ tray: right-click the tray icon and choose Exit. Version 2.5 and later also inst
 panels, and WinUSB lets only one program open a device. Quit L-Connect from its tray
 icon, then stop the **L-Connect Service Watcher** and the **L-Connect Service** in
 `services.msc`. Stop the watcher first, because it restarts the service.
+
+### Thermalright TRCC (Windows and Linux)
+
+TRCC streams frames to Thermalright cooler LCDs over the same HID interface Hypercolor
+drives. Whichever program opens the panel second either fails to connect or writes
+alongside the first, and the screen tears between two pictures. Quit TRCC from its tray
+icon. The community TRCC Linux app runs as the `trccd` and `trcc-display` user services;
+stop them with `systemctl --user stop trccd trcc-display`. linux-thermalright-lcd-control
+drives the same panels and starts minimized to the tray, so quit it there too.
 
 ### Razer Synapse (Windows)
 

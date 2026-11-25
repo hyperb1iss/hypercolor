@@ -165,6 +165,27 @@ processes = ["TTRGBPlus.exe", "TTRGBPLUSGUI_V3.exe", "TTRGBPlusGUI.exe"]
 smbus = true
 remedy = "Quit TT RGB Plus from its tray icon. It reaches RGB memory over SMBus."
 
+# Sources: github.com/Lexonight1/thermalright-trcc-linux at 41a79a7,
+# doc/PROTOCOL_USBLED.md (TRCC.exe sends the HID LCD frames itself, with no
+# helper process). Linux entry points: pyproject.toml [project.scripts] and
+# packaging/systemd/trccd.service and trcc-display.service.
+[[software]]
+id = "thermalright_trcc"
+name = "Thermalright TRCC"
+processes = ["TRCC.exe", "trcc", "trcc-gui", "trcc-lcd", "trcc-display-ticker"]
+drivers = ["thermalright"]
+remedy = "Quit TRCC from its tray icon. On Linux, also stop its background services: systemctl --user stop trccd trcc-display."
+
+# Sources: github.com/rejeb/linux-thermalright-lcd-control at e249ed9,
+# pyproject.toml [project.scripts] and install.sh, which autostarts the app
+# minimized to the tray.
+[[software]]
+id = "thermalright_lcd_control"
+name = "linux-thermalright-lcd-control"
+processes = ["thermalright-lcd-control-app"]
+drivers = ["thermalright"]
+remedy = "Quit thermalright-lcd-control from its tray icon, and remove its autostart entry if it should stay off."
+
 # Sources: nolliergb.com/software (2.3.0 portable build). It also drives
 # PrismRGB Prism 8 controllers.
 [[software]]
