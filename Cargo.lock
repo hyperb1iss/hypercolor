@@ -1786,9 +1786,9 @@ dependencies = [
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -2195,7 +2195,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.6",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3269,9 +3269,9 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -10790,7 +10790,7 @@ checksum = "58a502704ce2fee976f20ee6192c575a3a77dfe844431f83cd4946da6e524985"
 dependencies = [
  "accesskit",
  "bitflags 2.13.2",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "crossbeam-channel",
  "dpi",
  "env_logger",
@@ -11107,7 +11107,7 @@ dependencies = [
  "accesskit",
  "bitflags 2.13.2",
  "content-security-policy",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "crossbeam-channel",
  "euclid",
  "http",
@@ -11239,7 +11239,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1788ecb0b411de12a053a0c4f3f0a08b9d2f119f3f86b457f515e86065acf79e"
 dependencies = [
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "headers",
  "http",
  "hyper",
@@ -11369,7 +11369,7 @@ dependencies = [
  "atomic_refcell",
  "bytes",
  "content-security-policy",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "crossbeam-channel",
  "data-url",
  "encoding_rs",
@@ -11600,7 +11600,7 @@ dependencies = [
  "bytes",
  "chrono",
  "content-security-policy",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "crossbeam-channel",
  "data-url",
  "fst",
@@ -11671,7 +11671,7 @@ checksum = "80e6ac24573425319af0ac9dbc3ec7eec925b9da656902a15815506fd5e3e417"
 dependencies = [
  "bytes",
  "content-security-policy",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "crossbeam-channel",
  "data-url",
  "headers",
@@ -11849,7 +11849,7 @@ dependencies = [
  "chardetng",
  "chrono",
  "content-security-policy",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "crossbeam-channel",
  "cssparser 0.38.0",
  "data-url",
@@ -13194,7 +13194,7 @@ checksum = "d061d042ccd2df9c9f1508c1e63d835278c0a4c8801eb41764080e51f2eaaf34"
 dependencies = [
  "anyhow",
  "bytes",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "dirs 7.0.0",
  "dunce",
  "embed_plist",
@@ -13351,7 +13351,7 @@ version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a57a2a9b8c8b7fc00d35b510fe808ded7f9f1b44fc1cdda6aee38632ea5413"
 dependencies = [
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "dpi",
  "gtk",
  "http",
@@ -14481,9 +14481,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -16204,7 +16204,7 @@ checksum = "a819957a01b3119af85e638a38d242af76dbc87d130dca67bfd0441072e21ff0"
 dependencies = [
  "base64 0.22.1",
  "block2",
- "cookie 0.18.2",
+ "cookie 0.18.3",
  "crossbeam-channel",
  "dirs 7.0.0",
  "dom_query",
