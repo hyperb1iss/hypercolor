@@ -16,6 +16,12 @@ ignore = [
     # byte for byte, not a version bump. Drop this entry when that
     # migration lands.
     { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no vulnerability; replacing it is a wire-format migration" },
+    # cookie 0.16.2 reaches us only through Servo's webdriver 0.54, which
+    # builds it with default features off. The repeating nonce lives in the
+    # private cookie jar behind the "private" feature, so none of the
+    # affected code is compiled. The 0.18 line is patched. Drop this once
+    # Servo moves webdriver to cookie 0.18.
+    { id = "RUSTSEC-2026-0594", reason = "cookie 0.16 via Servo webdriver, built without the private jar" },
 ]
 
 [licenses]
