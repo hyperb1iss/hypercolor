@@ -44,6 +44,7 @@ fn main() -> anyhow::Result<()> {
         .manage(hypercolor_app::supervisor::SupervisorState::default())
         .manage(hypercolor_app::supervisor::openrgb::OpenRgbSupervisor::default())
         .manage(hypercolor_app::tray::TrayRuntime::default())
+        .manage(hypercolor_app::window::WindowBackground::default())
         .invoke_handler(tauri::generate_handler![
             hypercolor_app::first_run::is_first_run_pending,
             hypercolor_app::first_run::mark_first_run_complete,
@@ -123,6 +124,12 @@ fn main() -> anyhow::Result<()> {
                     .build()?;
 
             maybe_open_devtools(&window);
+            // A window that starts hidden (the autostart launch) is already
+            // in the background, and WebView2 should trim for it like any
+            // hidden window.
+            if cli.start_minimized {
+                hypercolor_app::window::set_backgrounded(&window, true);
+            }
 
             tracing::info!("window created");
 
@@ -145,6 +152,11 @@ fn main() -> anyhow::Result<()> {
                     label = %window.label(),
                     "failed to release webview secure input"
                 );
+            }
+            if let tauri::WindowEvent::Resized(_) = event
+                && let Err(error) = hypercolor_app::window::follow_minimized(window)
+            {
+                tracing::warn!(%error, label = %window.label(), "failed to follow minimize state");
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 tracing::info!(label = %window.label(), "hiding window instead of closing");

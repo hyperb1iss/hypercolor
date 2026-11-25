@@ -1,5 +1,7 @@
 //! Main window lifecycle helpers.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::{
     AppHandle, Manager, Runtime, WebviewWindow, Window,
     webview::{NewWindowFeatures, NewWindowResponse},
@@ -226,7 +228,7 @@ pub fn toggle_main<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         if window.is_visible()? {
             window.hide()?;
-            notify_visibility(&window, false);
+            set_backgrounded(&window, true);
         } else {
             show_and_focus(&window)?;
         }
@@ -242,15 +244,131 @@ pub fn toggle_main<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 pub fn hide<R: Runtime>(window: &Window<R>) -> tauri::Result<()> {
     window.hide()?;
     if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
-        notify_visibility(&webview_window, false);
+        set_backgrounded(&webview_window, true);
     }
     Ok(())
 }
 
+/// Follow a minimize or restore after the native window resized.
+///
+/// Neither Tauri nor the webview reports minimizing as hidden, so the
+/// webview would keep painting and streaming previews for a window nobody
+/// can see. A window hidden to the tray also receives resize events (on
+/// creation, or when the display scale changes), and must stay in the
+/// background through them.
+///
+/// # Errors
+///
+/// Returns a Tauri error if the window state cannot be read.
+pub fn follow_minimized<R: Runtime>(window: &Window<R>) -> tauri::Result<()> {
+    let backgrounded = window.is_minimized()? || !window.is_visible()?;
+    if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
+        set_backgrounded(&webview_window, backgrounded);
+    }
+    Ok(())
+}
+
+/// Whether the main window is put away, either hidden to the tray or
+/// minimized.
+///
+/// Records the last state handed to the webview, so the resize events a
+/// window drag emits cost one atomic swap and nothing else.
+#[derive(Debug, Default)]
+pub struct WindowBackground {
+    backgrounded: AtomicBool,
+}
+
+impl WindowBackground {
+    /// Record a new state and report whether it differs from the last one.
+    pub fn transition(&self, backgrounded: bool) -> bool {
+        self.backgrounded.swap(backgrounded, Ordering::AcqRel) != backgrounded
+    }
+}
+
+/// Move the webview into or out of the background.
+///
+/// The web UI stops streaming previews, and on Windows WebView2 is told the
+/// window is not visible and asked to trim its memory. Hiding the native
+/// window alone tells WebView2 nothing, so without this its renderer keeps
+/// running and holds its full working set for as long as the app sits in
+/// the tray.
+pub fn set_backgrounded<R: Runtime>(window: &WebviewWindow<R>, backgrounded: bool) {
+    let changed = window
+        .try_state::<WindowBackground>()
+        .is_none_or(|state| state.transition(backgrounded));
+    if !changed {
+        return;
+    }
+    notify_visibility(window, !backgrounded);
+    apply_webview_background(window, backgrounded);
+}
+
+#[cfg(target_os = "windows")]
+fn apply_webview_background<R: Runtime>(window: &WebviewWindow<R>, backgrounded: bool) {
+    let dispatched = window.with_webview(move |platform_webview| {
+        if let Err(error) = set_webview2_background(&platform_webview.controller(), backgrounded) {
+            tracing::warn!(%error, backgrounded, "WebView2 refused a background state change");
+        }
+    });
+    if let Err(error) = dispatched {
+        tracing::warn!(
+            %error,
+            label = %window.label(),
+            backgrounded,
+            "failed to reach WebView2 to change its background state"
+        );
+    }
+}
+
+/// Visibility drops before the memory target and returns after it, so
+/// WebView2 never trims a page that is still on screen.
+#[cfg(target_os = "windows")]
+fn set_webview2_background(
+    controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller,
+    backgrounded: bool,
+) -> windows_core::Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        ICoreWebView2_19,
+    };
+    use windows_core::Interface;
+
+    let level = if backgrounded {
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+    } else {
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+    };
+    // SAFETY: Tauri hands this controller to `with_webview` closures on the
+    // UI thread that owns it and keeps it alive for the call. Each call is a
+    // plain COM method on that live interface.
+    unsafe {
+        if backgrounded {
+            controller.SetIsVisible(false)?;
+        }
+        controller
+            .CoreWebView2()?
+            .cast::<ICoreWebView2_19>()?
+            .SetMemoryUsageTargetLevel(level)?;
+        if !backgrounded {
+            controller.SetIsVisible(true)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_webview_background<R: Runtime>(_window: &WebviewWindow<R>, _backgrounded: bool) {}
+
 fn show_and_focus<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    // The webview comes forward before the window shows, so the first frame
+    // on screen is painted rather than blank. Both requests travel the same
+    // event loop queue, in this order.
+    set_backgrounded(window, false);
     window.show()?;
+    if window.is_minimized()? {
+        window.unminimize()?;
+    }
     window.set_focus()?;
-    notify_visibility(window, true);
     Ok(())
 }
 
