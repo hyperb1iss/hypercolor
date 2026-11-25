@@ -2205,6 +2205,12 @@ jobs:
           printf 'macOS SDK: %s\n' "${sdk_version}"
           test "${sdk_version%%.*}" = "26"
 
+      # Servo's mozangle runs bindgen over the MSVC STL headers, which only
+      # accept the Clang that ships with the same Visual Studio.
+      - name: Qualify Windows libclang
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/windows-libclang
+
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
