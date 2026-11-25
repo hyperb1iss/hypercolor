@@ -36,7 +36,9 @@ use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::windows::fs::OpenOptionsExt as _;
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, IntoRawHandle as _, OwnedHandle};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -44,7 +46,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+use tokio::net::windows::named_pipe::NamedPipeServer;
 use tokio::sync::watch;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
@@ -56,11 +58,18 @@ use windows_service::service_control_handler::{
     self, ServiceControlHandlerResult, ServiceStatusHandle,
 };
 use windows_service::service_dispatcher;
-use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Foundation::{FALSE, INVALID_HANDLE_VALUE, LocalFree, TRUE};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
+};
+use windows_sys::Win32::System::Threading::CreateEventW;
 
 use super::log_directory::{open_machine_log_directory, remove_machine_directory};
 use super::service_log::open_broker_log;
@@ -92,6 +101,14 @@ const PIPE_CREATE_ATTEMPTS: u32 = 40;
 const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// `ERROR_PIPE_BUSY`: every instance of the pipe is in use.
 const ERROR_PIPE_BUSY: i32 = 231;
+/// `ERROR_NO_DATA`: the client opened the pipe and has already closed it.
+const ERROR_NO_DATA: i32 = 232;
+/// `ERROR_PIPE_CONNECTED`: a client opened the pipe before the server
+/// started waiting for one.
+const ERROR_PIPE_CONNECTED: i32 = 535;
+const ERROR_IO_PENDING: i32 = 997;
+/// Inbound and outbound buffer size of each pipe instance.
+const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_BATCH_DELAY_MS: u64 = 1_000;
@@ -358,7 +375,7 @@ fn run_console() -> Result<()> {
         }
     });
 
-    runtime.block_on(serve_until_shutdown(shutdown_rx))
+    runtime.block_on(serve_until_shutdown(PIPE_NAME, shutdown_rx))
 }
 
 /// Why the broker left its serve loop.
@@ -434,7 +451,7 @@ fn run_service() -> Result<()> {
     )?;
     info!(pipe = PIPE_NAME, "Hypercolor SMBus broker is running");
 
-    let run_result = runtime.block_on(serve_until_shutdown(shutdown_rx.clone()));
+    let run_result = runtime.block_on(serve_until_shutdown(PIPE_NAME, shutdown_rx.clone()));
     let reason = *shutdown_rx.borrow();
     match (&run_result, reason) {
         (Err(error), _) => {
@@ -547,19 +564,22 @@ fn report_stopped(status_handle: &ServiceStatusHandle, exit_code: ServiceExitCod
     }
 }
 
-async fn serve_until_shutdown(mut shutdown: watch::Receiver<Option<StopReason>>) -> Result<()> {
+async fn serve_until_shutdown(
+    pipe_name: &str,
+    mut shutdown: watch::Receiver<Option<StopReason>>,
+) -> Result<()> {
     let state = Arc::new(BrokerState::default());
-    info!(pipe = PIPE_NAME, "Hypercolor SMBus broker listening");
+    info!(pipe = pipe_name, "Hypercolor SMBus broker listening");
     let mut create_failures = 0_u32;
     let mut busy_instances = RepeatGate::default();
     let mut connect_failures = RepeatGate::default();
 
     while shutdown.borrow().is_none() {
-        let server = match create_server_pipe() {
-            Ok(server) => {
+        let pipe = match create_server_pipe(pipe_name) {
+            Ok(pipe) => {
                 create_failures = 0;
                 busy_instances.reset();
-                server
+                pipe
             }
             Err(error) if pipe_held_elsewhere(&error) => {
                 // Every instance is busy, or another process holds the pipe
@@ -601,17 +621,23 @@ async fn serve_until_shutdown(mut shutdown: watch::Receiver<Option<StopReason>>)
             }
         };
         tokio::select! {
-            connect_result = server.connect() => {
-                match connect_result {
-                    Ok(()) => {
+            accepted = accept_client(pipe) => {
+                match accepted {
+                    Ok(server) => {
                         connect_failures.reset();
                         tokio::spawn(handle_connected_client(server, Arc::clone(&state)));
                     }
                     Err(error) => {
                         if connect_failures.first() {
-                            warn!(%error, "SMBus broker pipe connection failed; accepting next client");
+                            warn!(
+                                error = %format_args!("{error:#}"),
+                                "SMBus broker pipe connection failed; accepting next client"
+                            );
                         } else {
-                            debug!(%error, "SMBus broker pipe connection failed again");
+                            debug!(
+                                error = %format_args!("{error:#}"),
+                                "SMBus broker pipe connection failed again"
+                            );
                         }
                         tokio::time::sleep(Duration::from_millis(25)).await;
                     }
@@ -696,17 +722,176 @@ fn pipe_held_elsewhere(error: &anyhow::Error) -> bool {
     )
 }
 
-fn create_server_pipe() -> Result<NamedPipeServer> {
-    let mut security = PipeSecurity::new().context("failed to build SMBus broker pipe ACL")?;
-    let mut options = ServerOptions::new();
-    options.reject_remote_clients(true);
-    let pipe = unsafe {
-        // SAFETY: `PipeSecurity` owns a valid SECURITY_ATTRIBUTES structure for
-        // the duration of this CreateNamedPipeW call. Tokio copies the raw
-        // pointer into the immediate OS call and does not retain it.
-        options.create_with_security_attributes_raw(PIPE_NAME, security.as_mut_ptr())
-    }?;
-    Ok(pipe)
+/// Create the next pipe instance, overlapped so tokio can take it once a
+/// client connects, and not yet registered with tokio.
+fn create_server_pipe(pipe_name: &str) -> Result<OwnedHandle> {
+    let security = PipeSecurity::new().context("failed to build SMBus broker pipe ACL")?;
+    let name = wide_null(pipe_name);
+    let handle = unsafe {
+        // SAFETY: `name` is NUL-terminated UTF-16 and `security` owns a valid
+        // SECURITY_ATTRIBUTES; both outlive this call, which keeps neither.
+        CreateNamedPipeW(
+            name.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES,
+            PIPE_BUFFER_BYTES,
+            PIPE_BUFFER_BYTES,
+            0,
+            security.attributes(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(unsafe {
+        // SAFETY: CreateNamedPipeW just returned this handle and nothing else
+        // owns it.
+        OwnedHandle::from_raw_handle(handle)
+    })
+}
+
+/// Wait for a client to open `pipe`, then hand the connected pipe to tokio.
+///
+/// Registering a pipe with tokio starts a read on it at once. A read on an
+/// instance no client has opened yet used to fail on the spot with
+/// `ERROR_PIPE_LISTENING`, which mio treats as "no client yet". Windows 11
+/// 26H2 can instead leave that read pending and complete it with the same
+/// error later. mio 1.2.3 then lost track of the read and panicked on the
+/// I/O driver thread when its completion arrived, which aborted the broker;
+/// later versions keep the error and return it from the first read after a
+/// client connects, failing that client's request. Waiting for the client
+/// before registering means tokio never reads from a pipe without one.
+async fn accept_client(pipe: OwnedHandle) -> Result<NamedPipeServer> {
+    let pipe = Arc::new(pipe);
+    let cancel = CancelClientWait {
+        pipe: Arc::clone(&pipe),
+        requested: Arc::new(AtomicBool::new(false)),
+        armed: true,
+    };
+    let waiter = {
+        let pipe = Arc::clone(&pipe);
+        let requested = Arc::clone(&cancel.requested);
+        tokio::task::spawn_blocking(move || wait_for_client(&pipe, &requested))
+    };
+    let outcome = waiter.await;
+    cancel.disarm();
+    outcome
+        .context("the SMBus broker client wait did not finish")?
+        .context("failed waiting for an SMBus broker client")?;
+
+    // The blocking closure dropped its clone before its result was ready,
+    // and `cancel` dropped the other, so this is the last reference.
+    let pipe = Arc::try_unwrap(pipe)
+        .map_err(|_| anyhow!("the SMBus broker pipe is still shared after its client wait"))?;
+    let server = unsafe {
+        // SAFETY: `pipe` is an overlapped named pipe server handle this
+        // function owns outright and has not associated with any completion
+        // port. Tokio takes ownership of it here.
+        NamedPipeServer::from_raw_handle(pipe.into_raw_handle())
+    }
+    .context("failed to register the SMBus broker pipe with tokio")?;
+    Ok(server)
+}
+
+/// Block until a client opens `pipe`, or until the wait is cancelled.
+///
+/// Runs on a blocking thread. The connect signals an event rather than a
+/// completion port, since the pipe is not registered with tokio yet.
+fn wait_for_client(pipe: &OwnedHandle, cancel_requested: &AtomicBool) -> std::io::Result<()> {
+    let event = unsafe {
+        // SAFETY: null attributes and a null name create an unnamed
+        // manual-reset event with default security.
+        CreateEventW(std::ptr::null(), TRUE, FALSE, std::ptr::null())
+    };
+    if event.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let event = unsafe {
+        // SAFETY: CreateEventW just returned this handle and nothing else
+        // owns it.
+        OwnedHandle::from_raw_handle(event)
+    };
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.as_raw_handle(),
+        ..OVERLAPPED::default()
+    };
+
+    let connected = unsafe {
+        // SAFETY: `overlapped` and its event live in this frame, and every
+        // path below that leaves the connect pending waits for it to finish
+        // before returning.
+        ConnectNamedPipe(pipe.as_raw_handle(), &raw mut overlapped)
+    };
+    if connected != 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        // The client opened the pipe before the wait began. It is connected,
+        // or already gone, which its first read reports.
+        Some(ERROR_PIPE_CONNECTED | ERROR_NO_DATA) => return Ok(()),
+        Some(ERROR_IO_PENDING) => {}
+        _ => return Err(error),
+    }
+
+    // A cancel that ran before the connect was issued had nothing to cancel.
+    if cancel_requested.load(Ordering::SeqCst) {
+        let _ = unsafe {
+            // SAFETY: cancels the connect issued above with this OVERLAPPED,
+            // if it is still pending; the handle is open for this frame.
+            CancelIoEx(pipe.as_raw_handle(), &raw const overlapped)
+        };
+    }
+    let mut transferred = 0_u32;
+    let finished = unsafe {
+        // SAFETY: with bWait set this returns only once the connect has
+        // completed or been cancelled, so `overlapped` stays valid for the
+        // whole operation.
+        GetOverlappedResult(
+            pipe.as_raw_handle(),
+            &raw const overlapped,
+            &raw mut transferred,
+            TRUE,
+        )
+    };
+    if finished == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Cancels a pending client wait when its future is dropped, so the blocking
+/// thread returns and releases the pipe instead of holding it until some
+/// client opens it.
+struct CancelClientWait {
+    pipe: Arc<OwnedHandle>,
+    requested: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelClientWait {
+    /// The wait finished on its own; nothing is left to cancel.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelClientWait {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Set before cancelling, so a wait that issues its connect after the
+        // cancel below sees the request and cancels that connect itself.
+        self.requested.store(true, Ordering::SeqCst);
+        let _ = unsafe {
+            // SAFETY: the Arc keeps the handle open. Until the pipe is handed
+            // to tokio, the client wait's connect is the only I/O issued on
+            // it, so this cancels nothing else.
+            CancelIoEx(self.pipe.as_raw_handle(), std::ptr::null())
+        };
+    }
 }
 
 async fn read_frame(stream: &mut NamedPipeServer) -> Result<Vec<u8>> {
@@ -746,7 +931,7 @@ fn send_request(request: BrokerRequest, operation: &'static str) -> PawnIoResult
     let request_bytes = serde_json::to_vec(&request).map_err(|error| {
         PawnIoError::broker_call(operation, format!("failed to encode request: {error}"))
     })?;
-    let response_bytes = send_request_bytes(&request_bytes)?;
+    let response_bytes = send_request_bytes(PIPE_NAME, &request_bytes)?;
     let envelope = serde_json::from_slice::<BrokerEnvelope>(&response_bytes).map_err(|error| {
         PawnIoError::broker_call(operation, format!("failed to decode response: {error}"))
     })?;
@@ -754,20 +939,20 @@ fn send_request(request: BrokerRequest, operation: &'static str) -> PawnIoResult
     envelope.into_result(operation)
 }
 
-fn send_request_bytes(request: &[u8]) -> PawnIoResult<Vec<u8>> {
-    let mut stream = open_pipe_client()?;
+fn send_request_bytes(pipe_name: &str, request: &[u8]) -> PawnIoResult<Vec<u8>> {
+    let mut stream = open_pipe_client(pipe_name)?;
     write_blocking_frame(&mut stream, request)?;
     read_blocking_frame(&mut stream)
 }
 
-fn open_pipe_client() -> PawnIoResult<std::fs::File> {
+fn open_pipe_client(pipe_name: &str) -> PawnIoResult<std::fs::File> {
     let mut last_error = None;
     for attempt in 0..CLIENT_CONNECT_ATTEMPTS {
         match OpenOptions::new()
             .read(true)
             .write(true)
             .security_qos_flags(SECURITY_IDENTIFICATION)
-            .open(PIPE_NAME)
+            .open(pipe_name)
         {
             Ok(file) => return Ok(file),
             Err(error) => {
@@ -1427,8 +1612,8 @@ impl PipeSecurity {
         })
     }
 
-    fn as_mut_ptr(&mut self) -> *mut c_void {
-        (&mut self.attrs as *mut SECURITY_ATTRIBUTES).cast::<c_void>()
+    fn attributes(&self) -> *const SECURITY_ATTRIBUTES {
+        &raw const self.attrs
     }
 }
 
@@ -1448,6 +1633,10 @@ impl Drop for PipeSecurity {
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+#[cfg(test)]
+#[path = "broker_pipe_tests.rs"]
+mod pipe_tests;
 
 #[cfg(test)]
 mod tests {
