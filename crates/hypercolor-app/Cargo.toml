@@ -57,7 +57,11 @@ tauri-build = { version = "2", features = [] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 hypercolor-install = { workspace = true }
+# Same versions Tauri's wry links, so the WebView2 controller Tauri hands
+# out is the type these bindings name.
+webview2-com = "0.39.1"
 win32job = "2.0.3"
+windows-core = "0.62.2"
 windows-registry = "0.100.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",

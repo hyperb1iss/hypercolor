@@ -1,7 +1,7 @@
 use hypercolor_app::window::{
-    SETTINGS_ROUTE, WINDOW_VISIBILITY_EVENT, WINDOW_VISIBILITY_GLOBAL, macos_system_settings_url,
-    navigation_is_trusted, route_navigation_script, should_open_in_system_browser,
-    system_browser_url, visibility_state_script,
+    SETTINGS_ROUTE, WINDOW_VISIBILITY_EVENT, WINDOW_VISIBILITY_GLOBAL, WindowBackground,
+    macos_system_settings_url, navigation_is_trusted, route_navigation_script,
+    should_open_in_system_browser, system_browser_url, visibility_state_script,
 };
 
 #[test]
@@ -88,4 +88,28 @@ fn macos_system_settings_allowlist_has_only_the_two_privacy_remedies() {
         "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent"
     )
     .is_err());
+}
+
+#[test]
+fn window_background_reports_only_real_transitions() {
+    let state = WindowBackground::default();
+
+    assert!(
+        !state.transition(false),
+        "a new window starts in the foreground"
+    );
+    assert!(state.transition(true), "hiding or minimizing moves it back");
+    assert!(
+        !state.transition(true),
+        "a second hide while already hidden changes nothing"
+    );
+    assert!(state.is_backgrounded());
+    assert!(state.transition(false), "showing brings it forward");
+    assert!(!state.is_backgrounded());
+    for _ in 0..3 {
+        assert!(
+            !state.transition(false),
+            "resize events on a visible window change nothing"
+        );
+    }
 }
