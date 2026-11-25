@@ -1,0 +1,28 @@
+name: Windows libclang
+description: >-
+  Point bindgen at the libclang that ships with the Visual Studio C++
+  toolchain, so build scripts that parse the MSVC STL headers (mozangle,
+  under Servo) use a Clang that STL accepts. Fails before the build when
+  that libclang is missing or older than minimum-version.
+
+inputs:
+  minimum-version:
+    description: >-
+      Lowest Clang major version to accept. The MSVC STL rejects older Clang
+      with STL1000; 14.52 requires 22.
+    default: "22"
+
+outputs:
+  version:
+    description: The version string the selected libclang reports.
+    value: ${{ steps.select.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Select Visual Studio libclang
+      id: select
+      shell: pwsh
+      env:
+        MINIMUM_VERSION: ${{ inputs.minimum-version }}
+      run: '& "$env:GITHUB_ACTION_PATH/select-libclang.ps1" -MinimumMajor $env:MINIMUM_VERSION'
