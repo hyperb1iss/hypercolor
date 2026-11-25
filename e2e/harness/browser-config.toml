@@ -62,6 +62,9 @@ enabled = false
 [drivers.smbus]
 enabled = false
 
+[drivers.thermalright]
+enabled = false
+
 [drivers.twinkly]
 enabled = false
 

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use hypercolor_hal::display::{
     ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, LineRepack,
-    Packed16Format, WireKeepalive, encode_chunked_display_frame, encode_chunked_display_frame_into,
-    encode_prefixed_display_frame,
+    Packed16Format, QuarterTurn, WireKeepalive, encode_chunked_display_frame,
+    encode_chunked_display_frame_into, encode_prefixed_display_frame,
 };
 use hypercolor_hal::drivers::corsair::CorsairLcdProtocol;
 use hypercolor_hal::drivers::corsair::framing::{LCD_DATA_PER_PACKET, LCD_MAX_DISPLAY_CHUNKS};
@@ -626,6 +626,7 @@ fn push2_like_repack() -> LineRepack<'static> {
         line_len: 12,
         filler: 0x00,
         xor_mask: &MASK,
+        turn: QuarterTurn::None,
     }
 }
 
@@ -725,6 +726,89 @@ fn repack_rejects_a_short_source_and_a_short_line() {
             }
         ),
         "unexpected error: {short_line}"
+    );
+}
+
+#[test]
+fn rgb565_big_endian_writes_the_high_byte_first() {
+    assert_eq!(
+        Packed16Format::Rgb565BigEndian.pack(255, 0, 0),
+        Packed16Format::Rgb565.pack(255, 0, 0)
+    );
+    assert_eq!(Packed16Format::Rgb565.wire_bytes(255, 0, 0), [0x00, 0xF8]);
+    assert_eq!(
+        Packed16Format::Rgb565BigEndian.wire_bytes(255, 0, 0),
+        [0xF8, 0x00]
+    );
+    assert_eq!(Packed16Format::Bgr565.wire_bytes(255, 0, 0), [0x1F, 0x00]);
+}
+
+#[test]
+fn clockwise_repack_turns_source_columns_into_lines() {
+    // A 3x2 source whose red channel numbers each pixel:
+    //   a b c
+    //   d e f
+    // turned clockwise is 2 wide and 3 tall:
+    //   d a
+    //   e b
+    //   f c
+    let shade = |index: u8| (index + 1) * 8;
+    let source: Vec<u8> = (0..6).flat_map(|index| [shade(index), 0, 0]).collect();
+    let pixel = |index: u8| Packed16Format::Rgb565.wire_bytes(shade(index), 0, 0);
+    let repack = LineRepack {
+        width: 3,
+        height: 2,
+        format: Packed16Format::Rgb565,
+        line_len: 6,
+        filler: 0xEE,
+        xor_mask: &[],
+        turn: QuarterTurn::Clockwise,
+    };
+    assert_eq!(repack.line_pixels(), 2);
+    assert_eq!(repack.line_count(), 3);
+    assert_eq!(repack.output_len().expect("fits"), 18);
+
+    let mut out = Vec::new();
+    repack
+        .repack_rgb888(&source, &mut out)
+        .expect("turned frame should repack");
+
+    let lines: Vec<&[u8]> = out.chunks(6).collect();
+    for (line, (left, right)) in lines.iter().zip([(3, 0), (4, 1), (5, 2)]) {
+        assert_eq!(&line[..2], &pixel(left));
+        assert_eq!(&line[2..4], &pixel(right));
+        assert_eq!(&line[4..], &[0xEE, 0xEE], "filler after the turned pixels");
+    }
+}
+
+#[test]
+fn repack_into_a_slice_demands_the_exact_output_length() {
+    let repack = push2_like_repack();
+    let source = [0x00; 4 * 2 * 3];
+
+    let mut exact = [0xAA; 24];
+    repack
+        .repack_rgb888_into(&source, &mut exact)
+        .expect("an exact slice repacks");
+    let mut vec_out = Vec::new();
+    repack
+        .repack_rgb888(&source, &mut vec_out)
+        .expect("the Vec form agrees");
+    assert_eq!(exact.as_slice(), vec_out.as_slice());
+
+    let mut short = [0x00; 23];
+    let error = repack
+        .repack_rgb888_into(&source, &mut short)
+        .expect_err("a short slice is refused, not filled partway");
+    assert!(
+        matches!(
+            error,
+            hypercolor_hal::display::RepackError::OutputLength {
+                expected: 24,
+                actual: 23
+            }
+        ),
+        "unexpected error: {error}"
     );
 }
 

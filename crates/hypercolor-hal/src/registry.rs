@@ -162,6 +162,12 @@ pub struct DeviceDescriptor {
     /// Optional firmware-based disambiguation predicate.
     pub firmware_predicate: Option<fn(&str) -> bool>,
 
+    /// Device releases (USB `bcdDevice`) this descriptor drives. `None`
+    /// drives every release. With a predicate, the descriptor matches only
+    /// a known release the predicate accepts, so a release that cannot be
+    /// driven safely stays unclaimed.
+    pub release_predicate: Option<fn(u16) -> bool>,
+
     /// How to treat this device's reported USB serial, when it lies.
     pub serial_quirk: Option<SerialQuirk>,
 
@@ -191,6 +197,18 @@ impl DeviceDescriptor {
     pub const fn experimental(mut self) -> Self {
         self.stability = DriverStability::Experimental;
         self
+    }
+
+    /// Whether this descriptor drives a device reporting `release`
+    /// (`bcdDevice`). An unknown release passes only a descriptor without a
+    /// release predicate.
+    #[must_use]
+    pub fn accepts_release(&self, release: Option<u16>) -> bool {
+        match (self.release_predicate, release) {
+            (None, _) => true,
+            (Some(predicate), Some(release)) => predicate(release),
+            (Some(_), None) => false,
+        }
     }
 
     /// Whether `serial` is a factory placeholder rather than a real identity.

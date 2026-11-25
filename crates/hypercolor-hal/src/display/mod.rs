@@ -23,7 +23,7 @@ use hypercolor_types::device::DisplayFrameFormat;
 use crate::protocol::{CommandBuffer, ProtocolCommand, ResponsePlan, TransferType};
 
 pub use keepalive::WireKeepalive;
-pub use repack::{LineRepack, Packed16Format, RepackError};
+pub use repack::{LineRepack, Packed16Format, QuarterTurn, RepackError};
 
 /// Per-chunk context handed to a [`DisplayChunkLayout`] while framing.
 #[derive(Debug, Clone, Copy)]

@@ -14,7 +14,7 @@ pub use crate::registry::{
 };
 
 use crate::drivers::{
-    asus, corsair, dygma, lianli, nollie, nzxt, prismrgb, push2, qmk, razer, wooting,
+    asus, corsair, dygma, lianli, nollie, nzxt, prismrgb, push2, qmk, razer, thermalright, wooting,
 };
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 use crate::transport::{TransportError, TransportIntent, TransportPlatform, resolve_transport};
@@ -31,6 +31,7 @@ static DEVICE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     descriptors.extend_from_slice(push2::descriptors());
     descriptors.extend_from_slice(qmk::devices::descriptors());
     descriptors.extend_from_slice(razer::devices::descriptors());
+    descriptors.extend_from_slice(thermalright::devices::descriptors());
     descriptors.extend_from_slice(wooting::devices::descriptors());
     descriptors
 });
@@ -263,39 +264,48 @@ const fn route_backend_id(transport: &DriverTransportKind) -> &'static str {
 pub struct ProtocolDatabase;
 
 impl ProtocolDatabase {
-    /// Lookup a descriptor by `(VID, PID)`.
+    /// Lookup a descriptor by `(VID, PID)` with the device release unknown,
+    /// so descriptors with a release predicate never match.
     #[must_use]
     pub fn lookup(vendor_id: u16, product_id: u16) -> Option<&'static DeviceDescriptor> {
-        Self::lookup_with_firmware(vendor_id, product_id, None)
+        Self::lookup_with_firmware(vendor_id, product_id, None, None)
     }
 
-    /// Lookup a descriptor by `(VID, PID)` and optional firmware string.
+    /// Lookup a descriptor by `(VID, PID)`, optional firmware string, and
+    /// optional device release (USB `bcdDevice`).
     ///
     /// When multiple descriptors share a PID, firmware predicates are applied.
+    /// A descriptor whose release predicate does not accept `release` never
+    /// matches.
     #[must_use]
     pub fn lookup_with_firmware(
         vendor_id: u16,
         product_id: u16,
         firmware: Option<&str>,
+        release: Option<u16>,
     ) -> Option<&'static DeviceDescriptor> {
-        Self::lookup_with_firmware_for_driver_ids(vendor_id, product_id, firmware, None)
+        Self::lookup_with_firmware_for_driver_ids(vendor_id, product_id, firmware, release, None)
     }
 
-    /// Lookup a descriptor by `(VID, PID)`, firmware string, and optional
-    /// enabled driver module IDs.
+    /// Lookup a descriptor by `(VID, PID)`, firmware string, device release,
+    /// and optional enabled driver module IDs.
     ///
     /// When `enabled_driver_ids` is provided, descriptors whose driver ID is
-    /// absent are ignored.
+    /// absent are ignored, as are descriptors whose release predicate does
+    /// not accept `release`.
     #[must_use]
     pub fn lookup_with_firmware_for_driver_ids(
         vendor_id: u16,
         product_id: u16,
         firmware: Option<&str>,
+        release: Option<u16>,
         enabled_driver_ids: Option<&BTreeSet<String>>,
     ) -> Option<&'static DeviceDescriptor> {
         let candidates = MAP_BY_VID_PID.get(&(vendor_id, product_id))?;
         let driver_enabled = |descriptor: &DeviceDescriptor| {
-            enabled_driver_ids.is_none_or(|ids| ids.contains(descriptor.driver_id().as_ref()))
+            descriptor.accepts_release(release)
+                && enabled_driver_ids
+                    .is_none_or(|ids| ids.contains(descriptor.driver_id().as_ref()))
         };
 
         if let Some(firmware) = firmware {

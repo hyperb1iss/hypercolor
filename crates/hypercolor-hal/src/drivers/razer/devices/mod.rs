@@ -980,6 +980,7 @@ fn hidapi_descriptor(
             build,
         },
         firmware_predicate: None,
+        release_predicate: None,
         serial_quirk: None,
         stability: DriverStability::Stable,
     }
@@ -1008,6 +1009,7 @@ fn chroma_argb_descriptor() -> DeviceDescriptor {
             build: build_chroma_argb_protocol,
         },
         firmware_predicate: None,
+        release_predicate: None,
         serial_quirk: None,
         stability: DriverStability::Experimental,
     }
@@ -1040,6 +1042,7 @@ fn kraken_descriptor(
             build,
         },
         firmware_predicate: None,
+        release_predicate: None,
         serial_quirk: None,
         stability: DriverStability::Stable,
     }

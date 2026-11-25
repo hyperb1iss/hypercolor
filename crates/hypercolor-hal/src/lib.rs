@@ -17,8 +17,8 @@ pub use attachment_profile::{effective_attachment_slots, normalize_attachment_pr
 pub use database::ProtocolDatabase;
 pub use display::{
     ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, LineRepack,
-    Packed16Format, PrefixContext, RepackError, WireKeepalive, encode_chunked_display_frame,
-    encode_chunked_display_frame_into, encode_prefixed_display_frame,
+    Packed16Format, PrefixContext, QuarterTurn, RepackError, WireKeepalive,
+    encode_chunked_display_frame, encode_chunked_display_frame_into, encode_prefixed_display_frame,
     encode_prefixed_display_frame_into,
 };
 pub use protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};

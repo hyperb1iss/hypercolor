@@ -171,6 +171,7 @@ impl UsbScanner {
                 vendor_id,
                 product_id,
                 firmware_hint,
+                Some(usb.device_version()),
                 self.enabled_driver_ids.as_ref(),
             );
             if self.unclaimed.is_some() {
@@ -217,6 +218,10 @@ impl UsbScanner {
             let mut metadata = HashMap::new();
             metadata.insert("vendor_id".to_owned(), format!("0x{vendor_id:04X}"));
             metadata.insert("product_id".to_owned(), format!("0x{product_id:04X}"));
+            metadata.insert(
+                "bcd_device".to_owned(),
+                format!("0x{:04X}", usb.device_version()),
+            );
             match (usb.serial_number(), identity_serial) {
                 // Kept out of the "serial" key so nothing downstream treats a
                 // model string as an identity: device labels fall back to the

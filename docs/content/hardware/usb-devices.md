@@ -84,6 +84,7 @@ Every `hidraw` rule names a product, so a new product ID needs its own rule, and
 | Dygma | `35ef` | Serial port only |
 | Lian Li | `0416`, `04fc`, `1cbe` | Per product |
 | Lian Li Uni Hub | `0cf2` | USB device nodes, vendor-wide |
+| Thermalright | `0416` | HID interface 0 of the cooler LCD, per product |
 | PrismRGB / Nollie / GCS | `16d0`, `16d1`, `16d2`, `16d3`, `16d5`, `3061` | Per product |
 | Ableton | `2982` | USB device nodes, vendor-wide |
 | Wooting | `31e3` | Configuration interface of two PIDs only (see below) |

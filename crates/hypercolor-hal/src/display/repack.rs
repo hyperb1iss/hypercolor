@@ -3,16 +3,20 @@
 //! Panels that take a raw framebuffer want packed 16-bit pixels laid out in
 //! fixed-stride lines, often with filler bytes after the pixel region and a
 //! repeating XOR mask over the whole line (a signal-integrity shroud on the
-//! USB wire, not a pixel transform). This module owns that conversion so the
-//! per-driver code stays wire framing.
+//! USB wire, not a pixel transform). Some take the frame turned a quarter,
+//! because the glass is mounted across its own scan direction. This module
+//! owns that conversion so the per-driver code stays wire framing.
 
-/// Packed 16-bit pixel layouts, written little-endian.
+/// Packed 16-bit pixel layouts as they go on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Packed16Format {
-    /// `rrrrrggg gggbbbbb`: red occupies the high five bits.
+    /// `rrrrrggg gggbbbbb`, low byte first: red occupies the high five bits.
     Rgb565,
 
-    /// `bbbbbggg gggrrrrr`: blue occupies the high five bits.
+    /// The [`Self::Rgb565`] word written high byte first.
+    Rgb565BigEndian,
+
+    /// `bbbbbggg gggrrrrr`, low byte first: blue occupies the high five bits.
     Bgr565,
 }
 
@@ -25,10 +29,33 @@ impl Packed16Format {
         let blue5 = (blue >> 3) as u16;
 
         match self {
-            Self::Rgb565 => (red5 << 11) | (green6 << 5) | blue5,
+            Self::Rgb565 | Self::Rgb565BigEndian => (red5 << 11) | (green6 << 5) | blue5,
             Self::Bgr565 => (blue5 << 11) | (green6 << 5) | red5,
         }
     }
+
+    /// Pack one RGB888 pixel into the two bytes the wire carries.
+    #[must_use]
+    pub const fn wire_bytes(self, red: u8, green: u8, blue: u8) -> [u8; 2] {
+        let packed = self.pack(red, green, blue);
+        match self {
+            Self::Rgb565BigEndian => packed.to_be_bytes(),
+            Self::Rgb565 | Self::Bgr565 => packed.to_le_bytes(),
+        }
+    }
+}
+
+/// How a frame is turned while it is repacked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum QuarterTurn {
+    /// Lines are the source rows, top to bottom.
+    #[default]
+    None,
+
+    /// The frame is turned 90 degrees clockwise: output line `n` is source
+    /// column `n` read from the bottom row up, so a `width`x`height` source
+    /// becomes `width` lines of `height` pixels.
+    Clockwise,
 }
 
 /// Repack geometry: one source frame in, one line-strided framebuffer out.
@@ -52,13 +79,35 @@ pub struct LineRepack<'a> {
     /// Repeating XOR mask applied across every output byte of a line, phase
     /// aligned to the start of that line. Empty means no masking.
     pub xor_mask: &'a [u8],
+
+    /// Turn applied to the source frame. `width` and `height` always
+    /// describe the source; the turn decides what a line holds.
+    pub turn: QuarterTurn,
 }
 
 impl LineRepack<'_> {
+    /// Pixels one output line holds.
+    #[must_use]
+    pub const fn line_pixels(&self) -> usize {
+        match self.turn {
+            QuarterTurn::None => self.width,
+            QuarterTurn::Clockwise => self.height,
+        }
+    }
+
+    /// Output lines one frame produces.
+    #[must_use]
+    pub const fn line_count(&self) -> usize {
+        match self.turn {
+            QuarterTurn::None => self.height,
+            QuarterTurn::Clockwise => self.width,
+        }
+    }
+
     /// Bytes the packed pixels of one line occupy.
     #[must_use]
     pub const fn packed_line_bytes(&self) -> usize {
-        self.width.saturating_mul(2)
+        self.line_pixels().saturating_mul(2)
     }
 
     /// Total output length for this geometry.
@@ -68,7 +117,7 @@ impl LineRepack<'_> {
     /// Returns [`RepackError::Geometry`] when the geometry overflows `usize`.
     pub fn output_len(&self) -> Result<usize, RepackError> {
         self.line_len
-            .checked_mul(self.height)
+            .checked_mul(self.line_count())
             .ok_or(RepackError::Geometry {
                 width: self.width,
                 height: self.height,
@@ -87,6 +136,23 @@ impl LineRepack<'_> {
     /// needs, when a line cannot hold its packed pixels, or when the geometry
     /// overflows `usize`.
     pub fn repack_rgb888(&self, source: &[u8], out: &mut Vec<u8>) -> Result<(), RepackError> {
+        let total = self.output_len()?;
+        if out.len() != total {
+            out.clear();
+            out.resize(total, 0);
+        }
+        self.repack_rgb888_into(source, out)
+    }
+
+    /// Repack an RGB888 frame into a slice of exactly [`Self::output_len`]
+    /// bytes, for a framebuffer that sits inside a larger wire buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RepackError`] for the conditions [`Self::repack_rgb888`]
+    /// names, and [`RepackError::OutputLength`] when `out` is not exactly
+    /// the output length.
+    pub fn repack_rgb888_into(&self, source: &[u8], out: &mut [u8]) -> Result<(), RepackError> {
         let packed_line_bytes = self.packed_line_bytes();
         if self.line_len < packed_line_bytes {
             return Err(RepackError::LineTooShort {
@@ -113,22 +179,32 @@ impl LineRepack<'_> {
 
         let total = self.output_len()?;
         if out.len() != total {
-            out.clear();
-            out.resize(total, 0);
+            return Err(RepackError::OutputLength {
+                expected: total,
+                actual: out.len(),
+            });
         }
 
-        for row in 0..self.height {
-            let source_row = &source[row * source_stride..(row + 1) * source_stride];
-            let line = &mut out[row * self.line_len..(row + 1) * self.line_len];
+        for line_index in 0..self.line_count() {
+            let line = &mut out[line_index * self.line_len..(line_index + 1) * self.line_len];
+            let packed_line = line[..packed_line_bytes].as_chunks_mut::<2>().0;
 
-            for (pixel, packed) in source_row
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .zip(line[..packed_line_bytes].as_chunks_mut::<2>().0)
-            {
-                packed
-                    .copy_from_slice(&self.format.pack(pixel[0], pixel[1], pixel[2]).to_le_bytes());
+            match self.turn {
+                QuarterTurn::None => {
+                    let source_row =
+                        &source[line_index * source_stride..(line_index + 1) * source_stride];
+                    for (pixel, packed) in source_row.as_chunks::<3>().0.iter().zip(packed_line) {
+                        *packed = self.format.wire_bytes(pixel[0], pixel[1], pixel[2]);
+                    }
+                }
+                QuarterTurn::Clockwise => {
+                    let column = line_index * 3;
+                    for (offset, packed) in packed_line.iter_mut().enumerate() {
+                        let start = (self.height - 1 - offset) * source_stride + column;
+                        let pixel = &source[start..start + 3];
+                        *packed = self.format.wire_bytes(pixel[0], pixel[1], pixel[2]);
+                    }
+                }
             }
 
             line[packed_line_bytes..].fill(self.filler);
@@ -194,5 +270,15 @@ pub enum RepackError {
 
         /// Declared output line length.
         line_len: usize,
+    },
+
+    /// Output slice is not the length the geometry produces.
+    #[error("output of {actual} bytes does not match the {expected} bytes the geometry produces")]
+    OutputLength {
+        /// Bytes the geometry produces.
+        expected: usize,
+
+        /// Bytes the caller supplied.
+        actual: usize,
     },
 }

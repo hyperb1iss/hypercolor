@@ -2,20 +2,20 @@
   "schemaVersion": 1,
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
-    "vendors": 38,
-    "devices": 487,
+    "vendors": 39,
+    "devices": 490,
     "byStatus": {
-      "supported": 290,
+      "supported": 291,
       "in_progress": 1,
       "planned": 0,
-      "researched": 64,
+      "researched": 66,
       "known": 130,
       "blocked": 2
     },
     "supportedByVerification": {
       "hardware": 16,
       "community": 1,
-      "unverified": 273
+      "unverified": 274
     },
     "drivers": [
       "adalight",
@@ -33,6 +33,7 @@
       "push2",
       "qmk",
       "razer",
+      "thermalright",
       "twinkly",
       "wiz",
       "wled",
@@ -7552,6 +7553,86 @@
         "mousepad"
       ],
       "sourceFile": "data/drivers/vendors/steelseries.toml"
+    },
+    {
+      "slug": "thermalright",
+      "name": "Thermalright",
+      "website": "https://www.thermalright.com",
+      "vids": [
+        1046
+      ],
+      "vidsHex": [
+        "0x0416"
+      ],
+      "notes": "0x0416 is Winbond's vendor ID, shared with Lian Li hardware. Thermalright cooler LCDs report product string USBDISPLAY, and one product ID covers panels of several sizes; the handshake reply names the panel model.",
+      "devices": [
+        {
+          "pid": 21250,
+          "pidHex": "0x5302",
+          "vid": null,
+          "vidHex": null,
+          "name": "Frozen Warframe LCD (320x240)",
+          "type": "lcd",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "thermalright",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Frozen Warframe 240, 360, and SE cooler LCDs and other 320x240 panels on this ID (panel models 49 to 53 and 58). RGB565 frames as 301 HID reports of 512 bytes, turned a quarter clockwise into a 240x320 raster, resent each second so the panel keeps the picture. Units on firmware 4.07 (bcdDevice 0x0407) are left unclaimed: the streaming Frozen Warframe SE on that release reboots on the handshake and wedges when reopened, and the release alone does not tell it apart from other panels. Spec 96."
+        },
+        {
+          "pid": 21250,
+          "pidHex": "0x5302",
+          "vid": null,
+          "vidHex": null,
+          "name": "Assassin Spirit 120 Vision (240x240)",
+          "type": "lcd",
+          "status": "researched",
+          "verification": "unverified",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Same USB ID, panel models 36 and 37. Unturned RGB565; the driver refuses these models until the square geometry is added."
+        },
+        {
+          "pid": 21250,
+          "pidHex": "0x5302",
+          "vid": null,
+          "vidHex": null,
+          "name": "Trofeo Vision LCD (1280x480)",
+          "type": "lcd",
+          "status": "researched",
+          "verification": "unverified",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Same USB ID, panel model 128. Takes JPEG frames through the same header; the driver refuses this model until the JPEG path is built."
+        }
+      ],
+      "counts": {
+        "supported": 1,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 2,
+        "known": 0,
+        "blocked": 0
+      },
+      "supportedByVerification": {
+        "hardware": 0,
+        "community": 0,
+        "unverified": 1
+      },
+      "totalDevices": 3,
+      "drivers": [
+        "thermalright"
+      ],
+      "transports": [
+        "usb_hid"
+      ],
+      "deviceTypes": [
+        "lcd"
+      ],
+      "sourceFile": "data/drivers/vendors/thermalright.toml"
     },
     {
       "slug": "thermaltake",

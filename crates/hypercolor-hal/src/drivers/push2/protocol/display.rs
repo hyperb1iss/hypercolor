@@ -15,7 +15,7 @@ use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use crate::display::{
     ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, LineRepack,
-    Packed16Format, encode_chunked_display_frame_into,
+    Packed16Format, QuarterTurn, encode_chunked_display_frame_into,
 };
 use crate::protocol::{CommandBuffer, ProtocolCommand, TransferType};
 
@@ -46,6 +46,7 @@ const PUSH2_DISPLAY_REPACK: LineRepack<'static> = LineRepack {
     line_len: PUSH2_DISPLAY_LINE_SIZE,
     filler: 0x00,
     xor_mask: &PUSH2_DISPLAY_XOR_MASK,
+    turn: QuarterTurn::None,
 };
 
 const _: () = assert!(

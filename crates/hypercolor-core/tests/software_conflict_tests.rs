@@ -494,6 +494,18 @@ fn the_builtin_catalog_recognizes_the_real_spellings() {
         ["openlinkhub"],
         "the lowercase Arch binary matches too"
     );
+    assert_eq!(
+        detect(HostProcess::named("TRCC.exe"), &[]),
+        ["thermalright_trcc"]
+    );
+    assert_eq!(
+        detect(
+            HostProcess::with_command_line("python3", "/usr/bin/python3 /usr/bin/trcc daemon"),
+            &[],
+        ),
+        ["thermalright_trcc"],
+        "the Linux port's daemon runs as a Python script"
+    );
     assert!(
         detect(HostProcess::named("gcc.exe"), &[]).is_empty(),
         "generic names stay out of the catalog"

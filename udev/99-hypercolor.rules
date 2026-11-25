@@ -471,6 +471,13 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idPro
 # Universal Screen 8.8" in LCD mode (a088), same vendor ID, same scoping.
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="a088", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# ─── Thermalright ─────────────────────────────────────────────────────────────
+# Cooler LCD panels (5302), scoped to the HID interface Hypercolor opens. 0416
+# is Winbond's vendor ID, shared with the Lian Li hardware above and with
+# unrelated HID devices. Interface 1 is a vendor function nothing drives, and
+# the panel gets no usb_device grant: Hypercolor reaches it through hidraw.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0416p5302d*ic03isc*ip*in00", MODE="0660", GROUP="users", TAG+="uaccess"
+
 # ─── NZXT ─────────────────────────────────────────────────────────────────────
 # Scoped to the lighting controllers and Kraken AIOs Hypercolor drives. A
 # vendor-wide hidraw rule would also open the Function keyboard and Lift
