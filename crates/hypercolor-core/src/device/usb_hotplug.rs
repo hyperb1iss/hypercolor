@@ -174,6 +174,7 @@ async fn run_hotplug_loop(monitor: UsbHotplugMonitor, mut watch: nusb::hotplug::
                     vendor_id,
                     product_id,
                     device.product_string(),
+                    Some(device.device_version()),
                     None,
                 );
                 // HID usage pages stay unknown on arrival. The HID stack may
@@ -218,6 +219,7 @@ async fn enumerate_known_devices() -> HashMap<nusb::DeviceId, SeenDevice> {
                     vendor_id,
                     product_id,
                     device.product_string(),
+                    Some(device.device_version()),
                     None,
                 );
                 known_devices.insert(

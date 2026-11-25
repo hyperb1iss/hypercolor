@@ -54,6 +54,7 @@ static PUSH2_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             build: build_push2_protocol,
         },
         firmware_predicate: None,
+        release_predicate: None,
         serial_quirk: None,
         stability: DriverStability::Stable,
     }]

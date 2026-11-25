@@ -297,6 +297,7 @@ fn lookup_with_firmware_routes_al_pid_to_correct_protocol_family() {
         LIANLI_ENE_VENDOR_ID,
         PID_UNI_HUB_AL,
         Some("LianLi-UNI FAN-AL-v1.7"),
+        None,
     )
     .expect("AL HID descriptor should resolve from product string");
     assert_eq!(al.protocol.id, "lianli/al");
@@ -311,10 +312,77 @@ fn lookup_with_firmware_routes_al_pid_to_correct_protocol_family() {
         LIANLI_ENE_VENDOR_ID,
         PID_UNI_HUB_AL,
         Some("LianLi-UNI FAN-AL-v1.0"),
+        None,
     )
     .expect("AL10 fallback descriptor should resolve from product string");
     assert_eq!(al10.protocol.id, "lianli/al10");
     assert_eq!(al10.transport, TransportType::UsbVendor);
+}
+
+#[test]
+fn firmware_routing_is_unchanged_by_a_known_release() {
+    for release in [0x0100, 0x0407] {
+        let al = ProtocolDatabase::lookup_with_firmware(
+            LIANLI_ENE_VENDOR_ID,
+            PID_UNI_HUB_AL,
+            Some("LianLi-UNI FAN-AL-v1.7"),
+            Some(release),
+        )
+        .expect("AL HID descriptor should resolve at any release");
+        assert_eq!(al.protocol.id, "lianli/al");
+
+        let al10 = ProtocolDatabase::lookup_with_firmware(
+            LIANLI_ENE_VENDOR_ID,
+            PID_UNI_HUB_AL,
+            Some("LianLi-UNI FAN-AL-v1.0"),
+            Some(release),
+        )
+        .expect("AL10 descriptor should resolve at any release");
+        assert_eq!(al10.protocol.id, "lianli/al10");
+    }
+}
+
+#[test]
+fn lian_li_on_the_shared_vendor_id_ignores_the_release() {
+    let unknown = ProtocolDatabase::lookup(LIANLI_TL_VENDOR_ID, PID_TL_FAN_HUB)
+        .expect("TL Fan Hub resolves with no release");
+    for release in [0x0001, 0x0100, 0x0407, 0xFFFF] {
+        let descriptor = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+            LIANLI_TL_VENDOR_ID,
+            PID_TL_FAN_HUB,
+            None,
+            Some(release),
+            None,
+        )
+        .expect("TL Fan Hub resolves at every release");
+        assert_eq!(descriptor.protocol.id, unknown.protocol.id);
+    }
+}
+
+fn accepts_any_release_but_4_07(release: u16) -> bool {
+    release != 0x0407
+}
+
+#[test]
+fn release_predicates_match_only_a_known_accepted_release() {
+    let open = ProtocolDatabase::lookup(DYGMA_VENDOR_ID, PID_DEFY_WIRED)
+        .expect("Dygma Defy descriptor should exist")
+        .clone();
+    assert!(open.release_predicate.is_none());
+    for release in [None, Some(0x0100), Some(0x0407)] {
+        assert!(open.accepts_release(release), "{release:?}");
+    }
+
+    let gated = hypercolor_hal::registry::DeviceDescriptor {
+        release_predicate: Some(accepts_any_release_but_4_07),
+        ..open
+    };
+    assert!(gated.accepts_release(Some(0x0100)));
+    assert!(!gated.accepts_release(Some(0x0407)));
+    assert!(
+        !gated.accepts_release(None),
+        "an unknown release cannot prove the device is safe to drive"
+    );
 }
 
 #[test]
@@ -1075,6 +1143,7 @@ fn lookup_filters_by_enabled_hal_driver_ids() {
         NOLLIE_VENDOR_ID,
         PID_NOLLIE_1,
         None,
+        None,
         Some(&nollie_only),
     )
     .expect("enabled Nollie descriptor should resolve");
@@ -1083,6 +1152,7 @@ fn lookup_filters_by_enabled_hal_driver_ids() {
     let prism_8 = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
         PRISM_VENDOR_ID,
         PID_PRISM_8,
+        None,
         None,
         Some(&nollie_only),
     )
@@ -1096,6 +1166,7 @@ fn lookup_filters_by_enabled_hal_driver_ids() {
     let disabled = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
         NOLLIE_VENDOR_ID,
         PID_NOLLIE_1,
+        None,
         None,
         Some(&razer_only),
     );

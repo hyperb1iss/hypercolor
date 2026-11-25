@@ -1634,6 +1634,10 @@ fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingUsbDe
             .metadata
             .get("product_string")
             .map(String::as_str),
+        discovered
+            .metadata
+            .get("bcd_device")
+            .and_then(|release| parse_u16_hex(release)),
     )?;
 
     Some(PendingUsbDevice {

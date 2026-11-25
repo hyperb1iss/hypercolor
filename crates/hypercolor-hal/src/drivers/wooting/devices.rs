@@ -356,6 +356,7 @@ static WOOTING_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
                     build: model.build,
                 },
                 firmware_predicate: None,
+                release_predicate: None,
                 serial_quirk: None,
                 stability: DriverStability::Experimental,
             })

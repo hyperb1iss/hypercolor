@@ -4427,6 +4427,7 @@ fn driver_usb_descriptor(publishes_input: bool) -> &'static DeviceDescriptor {
             build: input_test_protocol,
         },
         firmware_predicate: None,
+        release_predicate: None,
         serial_quirk: None,
         stability: hypercolor_types::device::DriverStability::Stable,
     }))
