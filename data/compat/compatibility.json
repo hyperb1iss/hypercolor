@@ -7578,7 +7578,7 @@
           "driver": "thermalright",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "Frozen Warframe 240, 360, and SE cooler LCDs and other 320x240 panels on this ID (panel models 49 to 53 and 58). RGB565 frames as 301 HID reports of 512 bytes, turned a quarter clockwise into a 240x320 raster, resent each second so the panel keeps the picture. Spec 96."
+          "notes": "Frozen Warframe 240, 360, and SE cooler LCDs and other 320x240 panels on this ID (panel models 49 to 53 and 58). RGB565 frames as 301 HID reports of 512 bytes, turned a quarter clockwise into a 240x320 raster, resent each second so the panel keeps the picture. Units on firmware 4.07 (bcdDevice 0x0407) are left unclaimed: the streaming Frozen Warframe SE on that release reboots on the handshake and wedges when reopened, and the release alone does not tell it apart from other panels. Spec 96."
         },
         {
           "pid": 21250,

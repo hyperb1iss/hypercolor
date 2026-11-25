@@ -4,8 +4,8 @@
 > `0x0416:0x5302` (product string `USBDISPLAY`): the Frozen Warframe 240,
 > 360, and SE and their 320x240 siblings. The panel identifies its model in
 > a handshake reply, then takes RGB565 frames as a stream of 512-byte HID
-> output reports, turned a quarter clockwise. Requested in GitHub issue
-> #599.
+> output reports, turned a quarter clockwise. Units on firmware 4.07 are
+> left unclaimed (section 7). Requested in GitHub issue #599.
 
 **Status:** Implemented, awaiting hardware confirmation
 **Crate:** `hypercolor-hal`
@@ -136,16 +136,15 @@ A reply is the **standard shape** when it is at least 20 bytes, carries the
 magic, and has `0x01` at byte 12 (`hid_lcd.py` lines 396 to 409 and 411 to
 444; `PROTOCOL_USBLCDNEW.md` line 456).
 
-The **short shape** is the eight bytes `DA DB DC DD 00 3A 00 00` that a
-firmware 4.07 streaming unit volunteers (`hid_lcd.py` lines 398 to 402): SUB
-0, PM 58. Linux hidraw hands the eight bytes over as they arrive; Windows
-`HidUsb` always returns a whole input report, so on Windows the same reply
-arrives as a 512-byte report that is zero past byte 6. The driver takes
-either as short: magic, PM, and SUB, then nothing.
-
-Anything else with the magic (a full report with something other than
-`0x01` at byte 12 and nonzero bytes after it) is malformed, as is a reply
-without the magic or under six bytes.
+Every other reply fails the handshake as malformed. One of them gets its
+own log line: the **short shape**, the eight bytes `DA DB DC DD 00 3A 00 00`
+(SUB 0, PM 58) that a firmware 4.07 streaming unit volunteers (`hid_lcd.py`
+lines 398 to 402). Linux hidraw hands the eight bytes over as they arrive;
+Windows `HidUsb` returns every input report whole, so there it arrives as a
+512-byte report that is zero past byte 6. The driver recognizes either form
+and says it met the 4.07 streaming variant, which it does not drive. Such a
+unit should never get this far (section 7); the line exists for a 4.07
+panel whose descriptor reports some other release.
 
 ### 3.3 Frame header (20 bytes)
 
@@ -307,10 +306,9 @@ before it.
 ## 6. Topology and Orientation
 
 The device exposes one display segment named `Display`, 320x240, not
-circular, in `DisplayFrameFormat::Rgb`, with no LEDs. Before the handshake
-the protocol reports this default; after it the backend rebuilds the device
-info from the protocol (`usb_backend.rs`, `build_connected_device_info`
-after `init_sequence`), so a short-shape panel comes up 240x320 instead.
+circular, in `DisplayFrameFormat::Rgb`, with no LEDs. Every model the
+driver accepts shares that geometry, so the segment never changes after the
+handshake; only the pixel byte order does.
 
 At mounting rotation "Upright" the image should read upright on a Frozen
 Warframe, because the driver turns it exactly as TRCC does at orientation 0.
@@ -329,28 +327,44 @@ from a reporter's own driver (`core/models.py` lines 535 to 544, and
 - The reply is the eight-byte short shape.
 - The raster is upright portrait: the firmware turns the image, so the frame
   must not be pre-rotated.
-- Reopening the device wedges it until a replug.
+- Reopening the device wedges it until a replug, so trcc keeps one session
+  for the life of the process.
 
-The fingerprint is not the panel. Several different coolers ship firmware
-4.07, and the ones that answer the ordinary handshake (a 1280x480 Trofeo
-Vision, a PM 52 panel) behave like any other unit (`hid_lcd.py` lines 264 to
-273 and 209 to 218; trcc changelog `v9.9.6`, lines 1945 to 1955).
+The release is not the panel. Several different coolers ship firmware 4.07,
+and the ones that answer the ordinary handshake (a 1280x480 Trofeo Vision, a
+PM 52 panel) behave like any other unit (`hid_lcd.py` lines 264 to 273 and
+209 to 218; trcc changelog `v9.9.6`, lines 1945 to 1955). Only the reply a
+streaming unit volunteers identifies it.
 
-What this driver does:
+**This driver claims no unit on release 4.07.** The descriptor's release
+predicate (`release != 0x0407`, `THERMALRIGHT_STREAMING_FIRMWARE_RELEASE`)
+keeps the lookup from matching, so the device lands in the unclaimed
+hardware list like any unsupported one, and Hypercolor never writes to it.
+The alternative was worse: every connect would send the handshake, reboot a
+streaming panel, fail, and reconnect into another reboot, and each reopen
+risks the wedge. Experimental descriptors claim devices automatically, so
+every owner of such a panel who upgraded would hit that loop. Panels on 4.07
+that would have answered the ordinary handshake are refused too; that is the
+price of not being able to tell them apart without risking the reboot.
 
-- It always sends the handshake. Hypercolor cannot key on `bcdDevice`
-  before init: descriptor predicates receive the product string, and
-  `bcdDevice` reaches only `DeviceInfo::firmware_version` after the match.
-- A short-shape reply, bare or zero-padded, is accepted. It selects the
-  portrait-native profile: a 240x320 surface sent unturned, in the byte
-  order the model names.
-- A unit that reboots on the handshake gives no reply. The read times out,
-  the connect fails with the timeout in the log, and the lifecycle tries
-  again later. That costs the panel a reboot per attempt and draws nothing,
-  but it leaves the panel where it was. Supporting it properly needs a
-  `bcdDevice` seam into descriptor selection and a no-init descriptor that
-  reads the volunteered reply; the field test's hardware ID says whether
-  that work is needed.
+The release reaches the lookup from nusb's `device_version`: the scanner and
+the hotplug watcher pass it, and the scanner stores it as `bcd_device`
+metadata so the backend's adoption makes the same match. A descriptor with
+a release predicate never matches a device whose release is unknown.
+
+Driving these units faithfully needs three things the HAL does not have:
+
+- **A read-before-write init step.** Settle 3 seconds after open, then read
+  for up to 5 seconds without sending anything. A volunteered short reply
+  identifies the streaming variant; silence means some other 4.07 panel,
+  which then gets the ordinary handshake.
+- **A portrait-native profile:** a 240x320 surface sent unturned, chosen by
+  that reply.
+- **Single-session lifecycle.** The session must survive sleep, write
+  errors, and the daemon's reconnect policy without ever closing and
+  reopening the device, short of the device leaving the bus.
+
+None of it is worth building before a 4.07 owner can test it.
 
 ## 8. HAL Integration
 
@@ -358,11 +372,13 @@ What this driver does:
 
 | File | Role |
 |------|------|
-| `drivers/thermalright/hid_lcd.rs` | `HidLcdProtocol`, the handshake and frame-header structs with size assertions, `parse_handshake_reply`, `PanelProfile`, the report layout |
-| `drivers/thermalright/devices.rs` | The descriptor and `build_hid_lcd_protocol` |
+| `drivers/thermalright/hid_lcd.rs` | `HidLcdProtocol`, the handshake and frame-header structs with size assertions, `parse_handshake_reply`, `model_pixel_format`, the report layout |
+| `drivers/thermalright/devices.rs` | The descriptor, its release predicate, and `build_hid_lcd_protocol` |
 | `drivers/thermalright/mod.rs` | Module docs and re-exports |
 | `display/repack.rs` | `QuarterTurn` on `LineRepack`, `Packed16Format::Rgb565BigEndian`, and `repack_rgb888_into` for a framebuffer inside a larger buffer |
-| `database.rs` | Registration |
+| `database.rs` | Registration, and the release argument on the lookups |
+| `registry.rs` | `DeviceDescriptor::release_predicate` and `accepts_release` |
+| `crates/hypercolor-core/src/device/{usb_scanner,usb_hotplug,usb_backend}.rs` | Pass `bcdDevice` to the lookup; the scanner records it as `bcd_device` metadata for adoption |
 | `udev/99-hypercolor.rules` | `hidraw` grant on `0416:5302` interface 0 |
 | `data/drivers/vendors/thermalright.toml` | One `supported` row (unverified) and two `researched` rows for the other panels on the ID |
 | `crates/hypercolor-core/src/device/conflicts/catalog.toml` | TRCC (`TRCC.exe`, the TRCC Linux entry points) and linux-thermalright-lcd-control |
@@ -394,6 +410,7 @@ DeviceDescriptor {
         build: build_hid_lcd_protocol,
     },
     firmware_predicate: None,
+    release_predicate: Some(drives_release), // release != 0x0407
     serial_quirk: None,
     stability: DriverStability::Experimental,
 }
@@ -422,8 +439,8 @@ on the device, and code 4 has no representation at all.
 1. **Unconfirmed on Hypercolor.** Every byte here comes from other
    implementations. The row stays `unverified` and the descriptor
    experimental until section 11 passes.
-2. **Firmware 4.07 streaming units** (section 7) fail to connect, at the
-   price of a panel reboot per attempt.
+2. **Firmware 4.07 units are unclaimed** (section 7), including any that
+   would have answered the ordinary handshake.
 3. **Output report length on Windows.** `HidUsb` takes writes of exactly the
    descriptor's output report length. trcc on Windows reports 513 bytes
    written per 512-byte chunk (`hid_lcd.py` lines 360 to 365), which
@@ -441,10 +458,9 @@ on the device, and code 4 has no representation at all.
 7. **Reply length on Linux.** The hidraw transport reads at most 91 bytes,
    so a 512-byte reply is truncated there. Everything the driver reads sits
    in the first 36 bytes.
-8. **Short-shape detection on Windows** relies on a padded short reply being
-   zero past byte 6. A standard reply always has `0x01` at byte 12, so the
-   two cannot be confused, but an unknown third shape would read as
-   malformed.
+8. **Firmware revisions besides 4.07.** Nothing upstream says another
+   release behaves like the streaming firmware. If one does, the handshake
+   times out with no reply in the log, and its release joins the predicate.
 9. **The skipped pre-handshake pause** (section 5.1). If the first
    handshake after plug-in times out while a later one succeeds, that pause
    is the first suspect.
@@ -461,32 +477,38 @@ hardware:
 - The handshake: one 513-byte command, the report ID, the magic, `01 00 00
   00` at report byte 12, zeros elsewhere, the 200 ms settle, the 5-second
   read, and an empty shutdown.
-- Reply parsing: the standard shape with and without a serial, the short
-  shape bare and zero-padded, bad magic, too short, and a full report
-  without the echo.
+- Reply parsing: the standard shape with and without a serial, bad magic,
+  too short, a full report without the echo, and the 4.07 short reply, bare
+  and zero-padded, refused with the message naming the variant and model.
 - The model table: 50 to 53 and 58 little-endian, 49 big-endian, and a set
   of other models refused. An unknown model fails `parse_response` and
-  leaves the panel unidentified, as does a short reply naming model 0.
-- Topology: 320x240 after a standard reply, 240x320 after a short one, the
-  default before either, and a new session forgetting both the panel and
-  the stored frame.
+  leaves the panel unidentified.
+- Topology: one 320x240 RGB segment, and a new session forgetting both the
+  panel and the stored frame.
 - Frames: 301 reports of 513 bytes, report ID zero, fire-and-forget, the
   1 ms settle on the last report only, the 20 header bytes exactly, and the
   last report's 20 pixel bytes followed by 492 zeros.
 - Orientation: three corners in three colors land where a clockwise turn
   puts them, with nothing else lit, so any other turn or a mirror fails; an
-  interior pixel lands at (239 - y, x); model 49 packs high byte first; the
-  portrait-native profile goes out unturned.
+  interior pixel lands at (239 - y, x); model 49 packs high byte first.
 - Command buffer reuse across frames with no stale bytes, and refusals for
   wrong geometry, JPEG, and short payloads.
 - The keepalive: nothing to pump before a frame or right after one, the full
   frame resent after a second of silence, the clock restarting on a resend,
   and no resend after a frame that failed to encode.
-- The vocabulary: every command from three sessions (standard, model 49,
-  short), including resends, carries only device info or picture at the
+- The vocabulary: every command from three sessions (models 58, 49, and
+  51), including resends, carries only device info or picture at the
   command positions, and never 4. No brightness command exists.
 - Registration: one experimental descriptor on interface 0 with the
-  resolved transport for the build platform.
+  resolved transport for the build platform, matched at releases such as
+  1.00 and 4.08, never at 4.07 (even with the driver explicitly enabled),
+  and never when the release is unknown.
+
+`database_tests.rs` covers the release predicate itself: firmware routing on
+the Lian Li AL is unchanged at any release, the Lian Li TL Fan Hub on the
+same vendor ID resolves at every release, and a predicate matches only a
+known release it accepts. `usb_backend/tests.rs` checks that adoption
+rebuilds the same match from the scanner's `bcd_device` metadata.
 
 `display_layer_tests.rs` covers the shared additions: big-endian wire bytes,
 a clockwise turn on a 3x2 frame with line filler, and the exact-length rule
@@ -513,7 +535,9 @@ Get-PnpDevice -PresentOnly |
 ```
 
 The first command should print nothing. The hardware IDs carry
-`REV_xxxx`, the firmware revision; `REV_0407` means section 7 applies.
+`REV_xxxx`, the firmware revision. On `REV_0407` Hypercolor leaves the panel
+alone by design (section 7): it shows up in the unclaimed hardware list, and
+the rest of this plan does not apply. Report the revision either way.
 
 **Step 2: patched build with debug logging.** Quit Hypercolor from its tray
 icon so only this daemon runs, then start it from PowerShell:
@@ -581,8 +605,8 @@ handshake, header, report size, and pacing against sections 3 and 5.
     `ENCODE_ROTATIONS` and the default arm (314 to 387), `_PM_TO_FBL_OVERRIDES`
     (420 to 446), `pm_to_fbl` (541 to 554), `resolve_encode_angle` (683 to
     703), `wire_angle` (755 to 797)
-  - `src/trcc/core/models.py`: `DeviceQuirks` (lines 499 to 528) and the
-    4.07 row (534 to 548)
+  - `src/trcc/core/models.py`: `DeviceQuirks` (lines 499 to 528), the
+    4.07 row (534 to 548), and `quirks_for` (551 to 557)
   - `src/trcc/core/ports.py`: `needs_keepalive` and `keepalive_interval`
     (lines 367 to 391), `build_frame` (2336 to 2370), `encode_payload` (2398
     to 2423)

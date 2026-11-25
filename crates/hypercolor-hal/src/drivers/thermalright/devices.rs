@@ -30,6 +30,16 @@ const HID_LCD_TRANSPORT_INTENT: TransportIntent = TransportIntent::Hid(HidTransp
     usage: None,
 });
 
+/// The firmware release (`bcdDevice`) of the streaming Frozen Warframe SE.
+/// That firmware reboots on the handshake and wedges until replug when the
+/// device is reopened. Other panels ship it too and only a reply the panel
+/// volunteers tells them apart, so no unit on this release is claimed.
+pub const THERMALRIGHT_STREAMING_FIRMWARE_RELEASE: u16 = 0x0407;
+
+fn drives_release(release: u16) -> bool {
+    release != THERMALRIGHT_STREAMING_FIRMWARE_RELEASE
+}
+
 /// Build a Thermalright HID LCD protocol instance.
 #[must_use]
 pub fn build_hid_lcd_protocol() -> Box<dyn Protocol> {
@@ -49,7 +59,7 @@ static THERMALRIGHT_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new
             build: build_hid_lcd_protocol,
         },
         firmware_predicate: None,
-        release_predicate: None,
+        release_predicate: Some(drives_release),
         serial_quirk: None,
         stability: DriverStability::Experimental,
     }]

@@ -4688,3 +4688,40 @@ async fn a_stalled_serial_frame_ends_the_actor_without_waiting_for_another_frame
     );
     drop(frame_tx);
 }
+
+/// A Thermalright LCD as the scanner reports it, at `release` when given.
+fn thermalright_lcd_discovered(release: Option<&str>) -> DiscoveredDevice {
+    let mut metadata = HashMap::from([
+        ("vendor_id".to_owned(), "0x0416".to_owned()),
+        ("product_id".to_owned(), "0x5302".to_owned()),
+        ("product_string".to_owned(), "USBDISPLAY".to_owned()),
+    ]);
+    if let Some(release) = release {
+        metadata.insert("bcd_device".to_owned(), release.to_owned());
+    }
+    DiscoveredDevice {
+        fingerprint: hypercolor_types::device::DeviceFingerprint::from_persisted(
+            "usb:0416:5302:test",
+        ),
+        connect_behavior: hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect,
+        info: temporary_control_test_device(false, 0),
+        metadata,
+        claim: None,
+    }
+}
+
+#[test]
+fn adoption_rebuilds_the_release_match_the_scan_made() {
+    let pending = pending_from_discovered(&thermalright_lcd_discovered(Some("0x0100")))
+        .expect("a panel on firmware 1.00 is adopted");
+    assert_eq!(pending.descriptor.protocol.id, "thermalright/hid-lcd");
+
+    assert!(
+        pending_from_discovered(&thermalright_lcd_discovered(Some("0x0407"))).is_none(),
+        "a panel on firmware 4.07 is never adopted"
+    );
+    assert!(
+        pending_from_discovered(&thermalright_lcd_discovered(None)).is_none(),
+        "without the release the descriptor cannot be matched"
+    );
+}

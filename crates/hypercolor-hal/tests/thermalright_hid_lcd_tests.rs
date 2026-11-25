@@ -1,5 +1,6 @@
 //! Thermalright HID LCD wire format, against spec 96.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
@@ -7,13 +8,14 @@ use hypercolor_hal::display::{DisplayEncodeError, Packed16Format, RepackError};
 use hypercolor_hal::drivers::thermalright::{
     HID_LCD_FRAME_HEADER_LEN, HID_LCD_FRAME_REPORTS, HID_LCD_KEEPALIVE_SILENCE, HID_LCD_MAGIC,
     HID_LCD_PACKET_LEN, HID_LCD_PIXEL_BYTES, HID_LCD_PUMP_INTERVAL, HID_LCD_REPORT_LEN,
-    HandshakeReply, HidLcdCommand, HidLcdProtocol, PanelProfile, PanelRaster, ReplyShape,
-    THERMALRIGHT_HID_LCD_PID, THERMALRIGHT_VENDOR_ID, parse_handshake_reply,
+    HandshakeReply, HidLcdCommand, HidLcdProtocol, THERMALRIGHT_HID_LCD_PID,
+    THERMALRIGHT_STREAMING_FIRMWARE_RELEASE, THERMALRIGHT_VENDOR_ID, model_pixel_format,
+    parse_handshake_reply,
 };
 use hypercolor_hal::protocol::{
     FrameBatch, Protocol, ProtocolCommand, ProtocolError, ResponseStatus, TransferType,
 };
-use hypercolor_hal::registry::{HidRawReportMode, TransportType};
+use hypercolor_hal::registry::{DeviceDescriptor, HidRawReportMode, TransportType};
 use hypercolor_types::device::{
     DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload, DriverStability,
 };
@@ -37,7 +39,7 @@ fn standard_reply(pm: u8, sub: u8) -> Vec<u8> {
     reply
 }
 
-/// The eight-byte reply a firmware 4.07 streaming unit volunteers.
+/// The eight-byte reply a firmware 4.07 streaming unit gives.
 fn short_reply() -> Vec<u8> {
     vec![0xDA, 0xDB, 0xDC, 0xDD, 0x00, 0x3A, 0x00, 0x00]
 }
@@ -135,7 +137,6 @@ fn standard_reply_parses_model_sub_and_serial() {
     assert_eq!(
         reply,
         HandshakeReply {
-            shape: ReplyShape::Standard,
             pm: 58,
             sub: 3,
             serial: None,
@@ -181,46 +182,44 @@ fn replies_without_the_magic_or_too_short_are_malformed() {
 }
 
 #[test]
-fn short_reply_parses_bare_and_zero_padded() {
-    let bare = parse_handshake_reply(&short_reply()).expect("eight-byte reply");
-    assert_eq!(
-        bare,
-        HandshakeReply {
-            shape: ReplyShape::Short,
-            pm: 58,
-            sub: 0,
-            serial: None,
-        }
-    );
-
-    // A host HID stack that always returns whole reports pads it with zeros.
+fn short_replies_are_refused_as_the_streaming_variant() {
     let mut padded = short_reply();
     padded.resize(HID_LCD_REPORT_LEN, 0);
-    assert_eq!(
-        parse_handshake_reply(&padded).expect("padded short reply"),
-        bare
-    );
+
+    // Bare as Linux hidraw hands it over, and zero-padded as Windows HID
+    // returns every input report.
+    for reply in [short_reply(), padded] {
+        let Err(ProtocolError::MalformedResponse { detail }) = parse_handshake_reply(&reply) else {
+            panic!("a {}-byte short reply must be refused", reply.len());
+        };
+        assert!(
+            detail.contains("firmware 4.07 streaming variant") && detail.contains("model 58"),
+            "the log line names the variant and the model: {detail}"
+        );
+    }
+
+    let protocol = HidLcdProtocol::new();
+    protocol.init_sequence();
+    assert!(protocol.parse_response(&short_reply()).is_err());
+    assert_eq!(protocol.handshake(), None);
 }
 
 #[test]
-fn panel_models_map_to_byte_order_and_orientation() {
+fn panel_models_map_to_byte_order() {
     for pm in [50, 51, 52, 53, 58] {
         assert_eq!(
-            PanelProfile::for_model(pm, PanelRaster::TurnedLandscape),
-            Some(PanelProfile {
-                format: Packed16Format::Rgb565,
-                raster: PanelRaster::TurnedLandscape,
-            }),
+            model_pixel_format(pm),
+            Some(Packed16Format::Rgb565),
             "model {pm}"
         );
     }
     assert_eq!(
-        PanelProfile::for_model(49, PanelRaster::TurnedLandscape).map(|profile| profile.format),
+        model_pixel_format(49),
         Some(Packed16Format::Rgb565BigEndian)
     );
     for pm in [0, 36, 48, 54, 64, 100, 128] {
         assert_eq!(
-            PanelProfile::for_model(pm, PanelRaster::TurnedLandscape),
+            model_pixel_format(pm),
             None,
             "model {pm} is not a 320x240 RGB565 panel"
         );
@@ -242,18 +241,12 @@ fn unknown_model_fails_the_handshake_and_leaves_the_panel_unidentified() {
         }
     ));
     assert_eq!(protocol.handshake(), None);
-
-    let error = protocol
-        .parse_response(&[0xDA, 0xDB, 0xDC, 0xDD, 0x00, 0x00, 0x00, 0x00])
-        .expect_err("a short reply naming no model is refused");
-    assert!(matches!(error, ProtocolError::DeviceError { .. }));
-    assert_eq!(protocol.handshake(), None);
 }
 
 #[test]
 fn standard_handshake_declares_a_landscape_rgb_surface() {
     let before = HidLcdProtocol::new();
-    assert_eq!(before.profile(), PanelProfile::DEFAULT);
+    assert_eq!(before.pixel_format(), Packed16Format::Rgb565);
 
     let protocol = identified(&standard_reply(52, 0));
     let response = protocol
@@ -286,35 +279,15 @@ fn standard_handshake_declares_a_landscape_rgb_surface() {
 }
 
 #[test]
-fn short_handshake_declares_a_portrait_surface() {
-    let protocol = identified(&short_reply());
-    assert_eq!(
-        protocol.profile(),
-        PanelProfile {
-            format: Packed16Format::Rgb565,
-            raster: PanelRaster::PortraitNative,
-        }
-    );
-    assert_eq!(
-        protocol.zones()[0].topology,
-        DeviceTopologyHint::Display {
-            width: 240,
-            height: 320,
-            circular: false,
-            format: DisplayFrameFormat::Rgb,
-        }
-    );
-}
-
-#[test]
 fn a_new_session_forgets_the_last_panel_and_frame() {
-    let protocol = identified(&short_reply());
-    let frame = vec![0x40; 240 * 320 * 3];
-    encode(&protocol, rgb_payload(240, 320, &frame));
+    let protocol = identified(&standard_reply(49, 0));
+    assert_eq!(protocol.pixel_format(), Packed16Format::Rgb565BigEndian);
+    let frame = vec![0x40; 320 * 240 * 3];
+    encode(&protocol, rgb_payload(320, 240, &frame));
 
     protocol.init_sequence();
     assert_eq!(protocol.handshake(), None);
-    assert_eq!(protocol.profile(), PanelProfile::DEFAULT);
+    assert_eq!(protocol.pixel_format(), Packed16Format::Rgb565);
 
     std::thread::sleep(HID_LCD_KEEPALIVE_SILENCE + Duration::from_millis(50));
     let mut pumped = Vec::new();
@@ -426,33 +399,6 @@ fn model_49_sends_pixels_high_byte_first() {
     let frame = marked_frame(320, 240, &[((0, 0), RED)]);
     let bytes = stream(&encode(&protocol, rgb_payload(320, 240, &frame)));
     assert_eq!(raster_pixel(&bytes, RASTER_WIDTH - 1, 0), [0xF8, 0x00]);
-}
-
-#[test]
-fn portrait_native_frames_go_out_unturned() {
-    let protocol = identified(&short_reply());
-    let frame = marked_frame(
-        240,
-        320,
-        &[((0, 0), RED), ((239, 0), GREEN), ((0, 319), BLUE)],
-    );
-    let commands = encode(&protocol, rgb_payload(240, 320, &frame));
-    assert_eq!(commands.len(), HID_LCD_FRAME_REPORTS);
-    let bytes = stream(&commands);
-
-    assert_eq!(
-        &bytes[..HID_LCD_FRAME_HEADER_LEN],
-        &commands[0].data[1..=HID_LCD_FRAME_HEADER_LEN],
-    );
-    assert_eq!(
-        &bytes[8..12],
-        &[0xF0, 0x00, 0x40, 0x01],
-        "same 240x320 header"
-    );
-    assert_eq!(raster_pixel(&bytes, 0, 0), RED_LE);
-    assert_eq!(raster_pixel(&bytes, RASTER_WIDTH - 1, 0), GREEN_LE);
-    assert_eq!(raster_pixel(&bytes, 0, RASTER_HEIGHT - 1), BLUE_LE);
-    assert_eq!(lit_pixels(&bytes), 3);
 }
 
 #[test]
@@ -577,21 +523,20 @@ fn a_frame_that_fails_to_encode_is_never_resent() {
 
 // --- Command vocabulary ---
 
-/// Every command a session can emit: handshake, frames for each profile,
+/// Every command a session can emit: handshake, frames in each byte order,
 /// a keepalive resend, and shutdown.
 fn every_session_command() -> Vec<ProtocolCommand> {
     let mut all = Vec::new();
-    for reply in [standard_reply(58, 0), standard_reply(49, 2), short_reply()] {
+    for reply in [
+        standard_reply(58, 0),
+        standard_reply(49, 2),
+        standard_reply(51, 1),
+    ] {
         let protocol = HidLcdProtocol::new();
         all.extend(protocol.init_sequence());
         protocol.parse_response(&reply).expect("supported model");
-        let profile = protocol.profile();
-        let frame =
-            vec![0xA5; usize::try_from(profile.width() * profile.height() * 3).expect("fits")];
-        all.extend(encode(
-            &protocol,
-            rgb_payload(profile.width(), profile.height(), &frame),
-        ));
+        let frame = vec![0xA5; 320 * 240 * 3];
+        all.extend(encode(&protocol, rgb_payload(320, 240, &frame)));
         std::thread::sleep(HID_LCD_KEEPALIVE_SILENCE + Duration::from_millis(50));
         let mut pumped = Vec::new();
         protocol.pump_frame_into(&mut pumped);
@@ -639,10 +584,50 @@ fn no_command_ever_encodes_a_firmware_update() {
 
 // --- Registration ---
 
+/// The descriptor a scan of a unit on `release` resolves to.
+fn claimed_at(release: u16) -> Option<&'static DeviceDescriptor> {
+    ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+        THERMALRIGHT_VENDOR_ID,
+        THERMALRIGHT_HID_LCD_PID,
+        Some("USBDISPLAY"),
+        Some(release),
+        None,
+    )
+}
+
+#[test]
+fn firmware_4_07_units_are_never_claimed() {
+    assert_eq!(THERMALRIGHT_STREAMING_FIRMWARE_RELEASE, 0x0407);
+    assert!(claimed_at(0x0407).is_none(), "4.07 stays unclaimed");
+    for release in [0x0001, 0x0100, 0x0200, 0x0406, 0x0408, 0x0500] {
+        let descriptor = claimed_at(release).expect("every other release is claimed");
+        assert_eq!(
+            descriptor.protocol.id, "thermalright/hid-lcd",
+            "{release:#06X}"
+        );
+    }
+    assert!(
+        ProtocolDatabase::lookup(THERMALRIGHT_VENDOR_ID, THERMALRIGHT_HID_LCD_PID).is_none(),
+        "a unit whose release is unknown is not claimed either"
+    );
+
+    let enabled = BTreeSet::from(["thermalright".to_owned()]);
+    assert!(
+        ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+            THERMALRIGHT_VENDOR_ID,
+            THERMALRIGHT_HID_LCD_PID,
+            None,
+            Some(0x0407),
+            Some(&enabled),
+        )
+        .is_none(),
+        "enabling the driver does not claim 4.07"
+    );
+}
+
 #[test]
 fn one_experimental_descriptor_claims_the_hid_interface() {
-    let descriptor = ProtocolDatabase::lookup(THERMALRIGHT_VENDOR_ID, THERMALRIGHT_HID_LCD_PID)
-        .expect("0416:5302 is registered");
+    let descriptor = claimed_at(0x0100).expect("0416:5302 is registered");
     assert_eq!(descriptor.name, "Thermalright LCD");
     assert_eq!(descriptor.protocol.id, "thermalright/hid-lcd");
     assert_eq!(descriptor.driver_id(), "thermalright");

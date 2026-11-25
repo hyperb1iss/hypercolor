@@ -356,7 +356,7 @@ If you run an unverified device and it works, [open an issue](https://github.com
 | Razer | Tiamat 7.1 V2 | 0x0F03 | Headset | `razer` | Unverified | USB HID | — | — |
 | Razer | Tomahawk ATX | 0x0F17 | Case | `razer` | Unverified | USB HID | 20 | OpenRazer facts: 0x1F transaction ID, extended matrix 1x20 on HID interface 0. |
 | Razer | Viper 8kHz | 0x0091 | Mouse | `razer` | Unverified | USB HID | — | — |
-| Thermalright | Frozen Warframe LCD (320x240) | 0x5302 | LCD module | `thermalright` | Unverified | USB HID | — | Frozen Warframe 240, 360, and SE cooler LCDs and other 320x240 panels on this ID (panel models 49 to 53 and 58). RGB565 frames as 301 HID reports of 512 bytes, turned a quarter clockwise into a 240x320 raster, resent each second so the panel keeps the picture. Spec 96. |
+| Thermalright | Frozen Warframe LCD (320x240) | 0x5302 | LCD module | `thermalright` | Unverified | USB HID | — | Frozen Warframe 240, 360, and SE cooler LCDs and other 320x240 panels on this ID (panel models 49 to 53 and 58). RGB565 frames as 301 HID reports of 512 bytes, turned a quarter clockwise into a 240x320 raster, resent each second so the panel keeps the picture. Units on firmware 4.07 (bcdDevice 0x0407) are left unclaimed: the streaming Frozen Warframe SE on that release reboots on the handshake and wedges when reopened, and the release alone does not tell it apart from other panels. Spec 96. |
 | Twinkly | Twinkly Curtain and Wall | — | Other | `twinkly` | Unverified | UDP | — | Parallel-string curtains such as the 210-LED RGBW Special Edition. The 2D layout from the Twinkly app sets each LED's position. Experimental, unverified on hardware. |
 | Twinkly | Twinkly Flex and Line | — | LED strip | `twinkly` | Unverified | UDP | — | Flexible tubes and light lines, streamed per LED in wiring order or along the mapped layout. Experimental, unverified on hardware. |
 | Twinkly | Twinkly Matrix and Tree | — | Other | `twinkly` | Unverified | UDP | — | Matrix lights and pre-lit trees; 3D tree layouts are viewed from the front. Experimental, unverified on hardware. |
@@ -1597,7 +1597,7 @@ _Source: [`data/drivers/vendors/steelseries.toml`](https://github.com/hyperb1iss
 
 | Device | PID | Type | Driver | Verified | Transport | Notes |
 |---|---|---|---|---|---|---|
-| Frozen Warframe LCD (320x240) | 0x5302 | LCD module | `thermalright` | Unverified | USB HID | Frozen Warframe 240, 360, and SE cooler LCDs and other 320x240 panels on this ID (panel models 49 to 53 and 58). RGB565 frames as 301 HID reports of 512 bytes, turned a quarter clockwise into a 240x320 raster, resent each second so the panel keeps the picture. Spec 96. |
+| Frozen Warframe LCD (320x240) | 0x5302 | LCD module | `thermalright` | Unverified | USB HID | Frozen Warframe 240, 360, and SE cooler LCDs and other 320x240 panels on this ID (panel models 49 to 53 and 58). RGB565 frames as 301 HID reports of 512 bytes, turned a quarter clockwise into a 240x320 raster, resent each second so the panel keeps the picture. Units on firmware 4.07 (bcdDevice 0x0407) are left unclaimed: the streaming Frozen Warframe SE on that release reboots on the handshake and wedges when reopened, and the release alone does not tell it apart from other panels. Spec 96. |
 
 #### Researched (2)
 

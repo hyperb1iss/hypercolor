@@ -14,6 +14,9 @@
 //!
 //! The panel falls back to its own logo once frames stop, so the frame pump
 //! resends the last frame after a second without one.
+//!
+//! Units on firmware 4.07 are never claimed (see the descriptor): some of
+//! them reboot on the handshake and wedge when reopened.
 
 use std::sync::{Mutex, PoisonError, RwLock};
 use std::time::Duration;
@@ -63,6 +66,10 @@ pub const HID_LCD_KEEPALIVE_SILENCE: Duration = Duration::from_secs(1);
 /// How often the frame pump checks for that silence.
 pub const HID_LCD_PUMP_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Width of the display surface the daemon composes, in pixels.
+pub const HID_LCD_WIDTH: u32 = 320;
+/// Height of the display surface the daemon composes, in pixels.
+pub const HID_LCD_HEIGHT: u32 = 240;
 /// Long edge of the glass, in pixels.
 const GLASS_LONG_EDGE: u16 = 320;
 /// Short edge of the glass, in pixels.
@@ -75,10 +82,11 @@ const HANDSHAKE_SETTLE: Duration = Duration::from_millis(200);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Settle after the last report of a frame.
 const FRAME_SETTLE: Duration = Duration::from_millis(1);
-/// Shortest reply that carries a panel model.
-const MIN_REPLY_LEN: usize = 6;
-/// Shortest reply in the standard shape; anything under it is the short one.
-const STANDARD_REPLY_LEN: usize = 20;
+/// Shortest reply the panel identifies itself with.
+const MIN_REPLY_LEN: usize = 20;
+/// Reply bytes past which a firmware 4.07 streaming unit's short reply is
+/// zero: the magic, SUB, and PM.
+const SHORT_REPLY_LEN: usize = 6;
 /// Marker at reply byte 16 that says a serial follows.
 const SERIAL_MARKER: u8 = 0x10;
 /// Where a standard reply carries the serial.
@@ -100,6 +108,10 @@ const _: () = assert!(
 const _: () = assert!(
     PIXEL_BYTES_FIELD as usize == HID_LCD_PIXEL_BYTES,
     "the header length field must match the framebuffer"
+);
+const _: () = assert!(
+    HID_LCD_WIDTH == GLASS_LONG_EDGE as u32 && HID_LCD_HEIGHT == GLASS_SHORT_EDGE as u32,
+    "the surface is the landscape glass"
 );
 const _: () = assert!(
     HID_LCD_FRAME_REPORTS == 301,
@@ -172,22 +184,9 @@ const FRAME_HEADER: FrameHeader = FrameHeader {
     payload_len: U32::new(PIXEL_BYTES_FIELD),
 };
 
-/// Which of the two reply shapes the panel answered with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplyShape {
-    /// A full report echoing [`HidLcdCommand::DeviceInfo`] at byte 12.
-    Standard,
-    /// Magic, SUB, and PM and nothing else: eight bytes, or a report that is
-    /// zero past them. Firmware 4.07 streaming units answer this way, and
-    /// their raster is upright portrait.
-    Short,
-}
-
 /// A handshake reply the panel accepted the session with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandshakeReply {
-    /// Which reply shape arrived.
-    pub shape: ReplyShape,
     /// Panel model (reply byte 5).
     pub pm: u8,
     /// Sub-model (reply byte 4).
@@ -200,143 +199,74 @@ pub struct HandshakeReply {
 ///
 /// # Errors
 ///
-/// Returns [`ProtocolError::MalformedResponse`] when the reply is too short
-/// to carry a panel model, does not open with [`HID_LCD_MAGIC`], or is a
-/// full report that does not echo the device-info command.
+/// Returns [`ProtocolError::MalformedResponse`] when the reply does not
+/// open with [`HID_LCD_MAGIC`], is shorter than a full reply, or does not
+/// echo the device-info command at byte 12. The short reply of a firmware
+/// 4.07 streaming unit is refused with its own message.
 pub fn parse_handshake_reply(data: &[u8]) -> Result<HandshakeReply, ProtocolError> {
-    if data.len() < MIN_REPLY_LEN {
-        return Err(ProtocolError::MalformedResponse {
-            detail: format!(
-                "Thermalright LCD handshake reply is {} bytes, too short to carry a panel model",
-                data.len()
-            ),
-        });
-    }
-    if data[..HID_LCD_MAGIC.len()] != HID_LCD_MAGIC {
+    if data.get(..HID_LCD_MAGIC.len()) != Some(HID_LCD_MAGIC.as_slice()) {
         return Err(ProtocolError::MalformedResponse {
             detail: format!(
                 "Thermalright LCD handshake reply opens with {}, not the DA DB DC DD magic",
-                format_hex_preview(&data[..HID_LCD_MAGIC.len()], HID_LCD_MAGIC.len())
+                format_hex_preview(data, HID_LCD_MAGIC.len())
             ),
         });
     }
 
-    let sub = data[4];
-    let pm = data[5];
-    let shape = if data.len() < STANDARD_REPLY_LEN {
-        ReplyShape::Short
-    } else if data[12] == HidLcdCommand::DeviceInfo.code() {
-        ReplyShape::Standard
-    } else if data[MIN_REPLY_LEN..].iter().all(|byte| *byte == 0) {
-        ReplyShape::Short
-    } else {
-        return Err(ProtocolError::MalformedResponse {
-            detail: format!(
-                "Thermalright LCD handshake reply carries 0x{:02X} at byte 12, not the device-info echo",
-                data[12]
-            ),
-        });
-    };
+    let echoed = data.len() >= MIN_REPLY_LEN && data[12] == HidLcdCommand::DeviceInfo.code();
+    if !echoed {
+        let short =
+            data.len() >= SHORT_REPLY_LEN && data[SHORT_REPLY_LEN..].iter().all(|byte| *byte == 0);
+        let detail = if short {
+            format!(
+                "Thermalright LCD answered with the short handshake of the firmware 4.07 \
+                 streaming variant (panel model {}, sub {}), which this driver does not drive",
+                data[5], data[4]
+            )
+        } else {
+            format!(
+                "Thermalright LCD handshake reply is {} bytes and does not echo the \
+                 device-info command at byte 12",
+                data.len()
+            )
+        };
+        return Err(ProtocolError::MalformedResponse { detail });
+    }
 
-    let serial = match shape {
-        ReplyShape::Standard if data.get(16) == Some(&SERIAL_MARKER) => data
-            .get(SERIAL_RANGE)
-            .and_then(|serial| <[u8; 16]>::try_from(serial).ok()),
-        ReplyShape::Standard | ReplyShape::Short => None,
-    };
+    let serial = (data[16] == SERIAL_MARKER)
+        .then(|| data.get(SERIAL_RANGE))
+        .flatten()
+        .and_then(|serial| <[u8; 16]>::try_from(serial).ok());
 
     Ok(HandshakeReply {
-        shape,
-        pm,
-        sub,
+        pm: data[5],
+        sub: data[4],
         serial,
     })
 }
 
-/// How the composed image maps onto the wire raster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanelRaster {
-    /// The 320x240 glass scans portrait: each landscape frame is turned a
-    /// quarter clockwise into the 240x320 raster. Every standard reply.
-    TurnedLandscape,
-    /// The firmware turns the image itself, so the surface is 240x320 and
-    /// goes out as composed. Short replies only.
-    PortraitNative,
+/// Pixel byte order for a panel model, or `None` for a model this driver
+/// does not drive. Models 50 to 53 and 58 send little-endian RGB565; the
+/// vendor software sends model 49 high byte first.
+#[must_use]
+pub const fn model_pixel_format(pm: u8) -> Option<Packed16Format> {
+    match pm {
+        49 => Some(Packed16Format::Rgb565BigEndian),
+        50..=53 | 58 => Some(Packed16Format::Rgb565),
+        _ => None,
+    }
 }
 
-/// What a handshake says about pixels: byte order and orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PanelProfile {
-    /// Packed pixel layout on the wire.
-    pub format: Packed16Format,
-    /// How the surface maps onto the wire raster.
-    pub raster: PanelRaster,
-}
-
-impl PanelProfile {
-    /// The profile before a handshake: the most common panel, landscape,
-    /// little-endian.
-    pub const DEFAULT: Self = Self {
-        format: Packed16Format::Rgb565,
-        raster: PanelRaster::TurnedLandscape,
-    };
-
-    /// The profile for a panel model, or `None` for a model this driver
-    /// does not drive. Models 50 to 53 and 58 send little-endian RGB565;
-    /// the vendor software sends model 49 high byte first.
-    #[must_use]
-    pub const fn for_model(pm: u8, raster: PanelRaster) -> Option<Self> {
-        let format = match pm {
-            49 => Packed16Format::Rgb565BigEndian,
-            50..=53 | 58 => Packed16Format::Rgb565,
-            _ => return None,
-        };
-        Some(Self { format, raster })
-    }
-
-    /// The profile a reply describes, or `None` for an unsupported model.
-    #[must_use]
-    pub const fn for_reply(reply: &HandshakeReply) -> Option<Self> {
-        let raster = match reply.shape {
-            ReplyShape::Standard => PanelRaster::TurnedLandscape,
-            ReplyShape::Short => PanelRaster::PortraitNative,
-        };
-        Self::for_model(reply.pm, raster)
-    }
-
-    const fn edges(self) -> (u16, u16) {
-        match self.raster {
-            PanelRaster::TurnedLandscape => (GLASS_LONG_EDGE, GLASS_SHORT_EDGE),
-            PanelRaster::PortraitNative => (GLASS_SHORT_EDGE, GLASS_LONG_EDGE),
-        }
-    }
-
-    /// Width of the display surface the daemon composes, in pixels.
-    #[must_use]
-    pub fn width(self) -> u32 {
-        u32::from(self.edges().0)
-    }
-
-    /// Height of the display surface the daemon composes, in pixels.
-    #[must_use]
-    pub fn height(self) -> u32 {
-        u32::from(self.edges().1)
-    }
-
-    fn repack(self) -> LineRepack<'static> {
-        let (width, height) = self.edges();
-        LineRepack {
-            width: usize::from(width),
-            height: usize::from(height),
-            format: self.format,
-            line_len: usize::from(GLASS_SHORT_EDGE) * 2,
-            filler: 0,
-            xor_mask: &[],
-            turn: match self.raster {
-                PanelRaster::TurnedLandscape => QuarterTurn::Clockwise,
-                PanelRaster::PortraitNative => QuarterTurn::None,
-            },
-        }
+/// The landscape surface turned a quarter clockwise into the 240x320 raster.
+const fn repack(format: Packed16Format) -> LineRepack<'static> {
+    LineRepack {
+        width: GLASS_LONG_EDGE as usize,
+        height: GLASS_SHORT_EDGE as usize,
+        format,
+        line_len: GLASS_SHORT_EDGE as usize * 2,
+        filler: 0,
+        xor_mask: &[],
+        turn: QuarterTurn::Clockwise,
     }
 }
 
@@ -407,14 +337,13 @@ impl HidLcdProtocol {
         *self.panel.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The pixel profile in force: the identified panel's, or
-    /// [`PanelProfile::DEFAULT`] before the handshake.
+    /// The pixel byte order in force: the identified panel's, or
+    /// little-endian RGB565, the most common, before the handshake.
     #[must_use]
-    pub fn profile(&self) -> PanelProfile {
+    pub fn pixel_format(&self) -> Packed16Format {
         self.handshake()
-            .as_ref()
-            .and_then(PanelProfile::for_reply)
-            .unwrap_or(PanelProfile::DEFAULT)
+            .and_then(|reply| model_pixel_format(reply.pm))
+            .unwrap_or(Packed16Format::Rgb565)
     }
 
     fn handshake_command() -> ProtocolCommand {
@@ -437,15 +366,13 @@ impl HidLcdProtocol {
 
     /// Write the header and the packed pixels into `stream`.
     fn fill_stream(
-        profile: PanelProfile,
+        format: Packed16Format,
         pixels: &[u8],
         stream: &mut Vec<u8>,
     ) -> Result<(), DisplayEncodeError> {
         stream.resize(HID_LCD_FRAME_HEADER_LEN + HID_LCD_PIXEL_BYTES, 0);
         stream[..HID_LCD_FRAME_HEADER_LEN].copy_from_slice(FRAME_HEADER.as_bytes());
-        profile
-            .repack()
-            .repack_rgb888_into(pixels, &mut stream[HID_LCD_FRAME_HEADER_LEN..])?;
+        repack(format).repack_rgb888_into(pixels, &mut stream[HID_LCD_FRAME_HEADER_LEN..])?;
         Ok(())
     }
 }
@@ -518,11 +445,10 @@ impl Protocol for HidLcdProtocol {
             "Thermalright LCD handshake reply"
         );
         let reply = parse_handshake_reply(data)?;
-        let Some(profile) = PanelProfile::for_reply(&reply) else {
+        let Some(format) = model_pixel_format(reply.pm) else {
             warn!(
                 pm = reply.pm,
                 sub = reply.sub,
-                shape = ?reply.shape,
                 "Thermalright LCD reports a panel model this driver does not drive yet; \
                  only the 320x240 panels (models 49 to 53 and 58) are supported, so the \
                  panel is left alone"
@@ -538,11 +464,7 @@ impl Protocol for HidLcdProtocol {
         info!(
             pm = reply.pm,
             sub = reply.sub,
-            shape = ?reply.shape,
-            format = ?profile.format,
-            raster = ?profile.raster,
-            width = profile.width(),
-            height = profile.height(),
+            format = ?format,
             serial = serial.as_deref().unwrap_or("<none>"),
             "Thermalright LCD identified"
         );
@@ -564,18 +486,17 @@ impl Protocol for HidLcdProtocol {
                 format: payload.format,
             });
         }
-        let profile = self.profile();
-        if payload.width != profile.width() || payload.height != profile.height() {
+        if payload.width != HID_LCD_WIDTH || payload.height != HID_LCD_HEIGHT {
             return Err(DisplayEncodeError::WrongGeometry {
-                expected_width: profile.width(),
-                expected_height: profile.height(),
+                expected_width: HID_LCD_WIDTH,
+                expected_height: HID_LCD_HEIGHT,
                 width: payload.width,
                 height: payload.height,
             });
         }
 
         let mut stream = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
-        let framed = Self::fill_stream(profile, payload.data, &mut stream)
+        let framed = Self::fill_stream(self.pixel_format(), payload.data, &mut stream)
             .and_then(|()| encode_chunked_display_frame(&HidReportLayout, &stream, commands));
         if framed.is_ok() {
             self.keepalive.mark_sent();
@@ -587,13 +508,12 @@ impl Protocol for HidLcdProtocol {
     }
 
     fn zones(&self) -> Vec<SegmentInfo> {
-        let profile = self.profile();
         vec![SegmentInfo {
             name: "Display".to_owned(),
             led_count: 0,
             topology: DeviceTopologyHint::Display {
-                width: profile.width(),
-                height: profile.height(),
+                width: HID_LCD_WIDTH,
+                height: HID_LCD_HEIGHT,
                 circular: false,
                 format: DisplayFrameFormat::Rgb,
             },
