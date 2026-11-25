@@ -50,14 +50,6 @@ env:
   RUST_TOOLCHAIN: "1.99.0"
   XCODE_VERSION: "26.5"
   MACOSX_DEPLOYMENT_TARGET: "15.2"
-  # The windows-latest image's MSVC STL 14.52 refuses any Clang older than
-  # 22, and bindgen parses those headers with the image's older libclang to
-  # build mozangle's shader bindings, so every Servo build for Windows fails
-  # with STL1000. Bindgen only reads the headers, never compiles against
-  # them, so the STL's own mismatch escape is safe here. The variable is
-  # scoped to the MSVC target, so no other build sees it. Drop it once the
-  # image's LLVM reaches 22.
-  BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_msvc: "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
   APT_STEP_TIMEOUT: 35m
   APT_HTTP_TIMEOUT: "20"
   APT_RETRIES: "5"
