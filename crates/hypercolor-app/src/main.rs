@@ -113,6 +113,9 @@ fn main() -> anyhow::Result<()> {
                         !cli.start_minimized,
                     ))
                     .on_new_window(hypercolor_app::window::open_new_window_in_system_browser)
+                    .on_page_load(|window, payload| {
+                        hypercolor_app::window::sync_loaded_page(&window, &payload);
+                    })
                     .on_navigation(|url| {
                         let trusted = hypercolor_app::window::navigation_is_trusted(url);
                         if !trusted {

@@ -103,7 +103,9 @@ fn window_background_reports_only_real_transitions() {
         !state.transition(true),
         "a second hide while already hidden changes nothing"
     );
+    assert!(state.is_backgrounded());
     assert!(state.transition(false), "showing brings it forward");
+    assert!(!state.is_backgrounded());
     for _ in 0..3 {
         assert!(
             !state.transition(false),

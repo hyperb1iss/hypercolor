@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{
     AppHandle, Manager, Runtime, WebviewWindow, Window,
-    webview::{NewWindowFeatures, NewWindowResponse},
+    webview::{NewWindowFeatures, NewWindowResponse, PageLoadEvent, PageLoadPayload},
 };
 use url::Url;
 
@@ -283,6 +283,27 @@ impl WindowBackground {
     pub fn transition(&self, backgrounded: bool) -> bool {
         self.backgrounded.swap(backgrounded, Ordering::AcqRel) != backgrounded
     }
+
+    /// The state last handed to the webview.
+    #[must_use]
+    pub fn is_backgrounded(&self) -> bool {
+        self.backgrounded.load(Ordering::Acquire)
+    }
+}
+
+/// Re-send the window's visibility to a page that just finished loading.
+///
+/// The initialization script carries the visibility from launch, so a
+/// reload would otherwise leave the web UI with whatever was true then, and
+/// a deduplicated show would never correct it.
+pub fn sync_loaded_page<R: Runtime>(window: &WebviewWindow<R>, payload: &PageLoadPayload<'_>) {
+    if !matches!(payload.event(), PageLoadEvent::Finished) {
+        return;
+    }
+    let backgrounded = window
+        .try_state::<WindowBackground>()
+        .is_some_and(|state| state.is_backgrounded());
+    notify_visibility(window, !backgrounded);
 }
 
 /// Move the webview into or out of the background.
@@ -329,31 +350,47 @@ fn set_webview2_background(
 ) -> windows_core::Result<()> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
-        ICoreWebView2_19,
     };
+
+    if backgrounded {
+        // SAFETY: Tauri hands this controller to `with_webview` closures on
+        // the UI thread that owns it and keeps it alive for the call.
+        unsafe { controller.SetIsVisible(false)? };
+    }
+    // The memory target needs WebView2 runtime 114 or later. Visibility must
+    // come back on an older runtime too, so a failure here is reported only
+    // after the controller is visible again.
+    let trimmed = set_webview2_memory_target(
+        controller,
+        if backgrounded {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        },
+    );
+    if !backgrounded {
+        // SAFETY: as above, on the same live controller and thread.
+        unsafe { controller.SetIsVisible(true)? };
+    }
+    trimmed
+}
+
+#[cfg(target_os = "windows")]
+fn set_webview2_memory_target(
+    controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller,
+    level: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL,
+) -> windows_core::Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_19;
     use windows_core::Interface;
 
-    let level = if backgrounded {
-        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
-    } else {
-        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
-    };
-    // SAFETY: Tauri hands this controller to `with_webview` closures on the
-    // UI thread that owns it and keeps it alive for the call. Each call is a
-    // plain COM method on that live interface.
+    // SAFETY: the caller runs on the UI thread that owns this live
+    // controller; the cast checks the interface before the call.
     unsafe {
-        if backgrounded {
-            controller.SetIsVisible(false)?;
-        }
         controller
             .CoreWebView2()?
             .cast::<ICoreWebView2_19>()?
-            .SetMemoryUsageTargetLevel(level)?;
-        if !backgrounded {
-            controller.SetIsVisible(true)?;
-        }
+            .SetMemoryUsageTargetLevel(level)
     }
-    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
