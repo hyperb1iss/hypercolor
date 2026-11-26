@@ -132,9 +132,10 @@ stdenv.mkDerivation {
     # <prefix>/share/hypercolor discovery keeps working unchanged.
     cp -R share/. $out/share/
 
-    # The desktop entry is stamped with the install prefix at dist time.
+    # The tarball's desktop entry names the bare command; point it at the
+    # store path so menus launch it even when the profile is not on PATH.
     substituteInPlace $out/share/applications/hypercolor.desktop \
-      --replace-fail "Exec=/usr/bin/hypercolor-open" "Exec=$out/bin/hypercolor-open"
+      --replace-fail "Exec=hypercolor-open" "Exec=$out/bin/hypercolor-open"
 
     cp lib/udev/rules.d/*.rules $out/lib/udev/rules.d/
 
