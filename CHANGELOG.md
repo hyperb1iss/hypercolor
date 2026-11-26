@@ -72,10 +72,12 @@ Add six new lighting drivers (LIFX, Twinkly, WiZ, Yeelight, Adalight, and a gene
 - **Every REST collection route now returns `ListResponse`** (721b9b1)
   - Clients must read items from `data.items` instead of a bare array
 - **The Python client decodes the new collection shapes** (0552064)
-  - The generated `*_list_item` models are replaced by `*_list_response` models (for example `DisplaySummaryListResponse` and `SimulatedDisplayListResponse`)
+  - `ControlSurfaceListResponse` becomes `ControlSurfaceDocumentListResponse` and `DisplaySummaryListItem` becomes `DisplaySummary`
 - **The Python client merges enum union branches into one tolerant enum** for `ApplyImpact`, `ComponentCategory`, `ControlKind`, and `DriverTransportKind` (8ff1b42, 6d1194a)
   - The higher-numbered variant modules (`*_type_2` and up) are deleted. The `*_type_0` and `*_type_1` modules still exist
   - Imports of the deleted modules must switch to the merged enums. Enum values that a newer daemon adds are now kept instead of failing to decode
+- **Scenes move to storage schema 3** to carry layer scope, and the runtime session gains a schema version (97ddca0)
+  - 0.9.0 reads scene schema 2, so export a backup from 0.9.0 before upgrading for a path back
 - **udev rules are narrower** (2e0fe72)
   - Linux users upgrading from 0.9.0 must reinstall `99-hypercolor.rules` so devices stay accessible
 
