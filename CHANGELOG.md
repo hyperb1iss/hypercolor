@@ -5,6 +5,88 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-11-26
+
+Add six new lighting drivers (LIFX, Twinkly, WiZ, Yeelight, Adalight, and a generic sACN/Art-Net/DDP pixel driver), native NZXT, Wooting, Thermalright, and more Razer and Corsair hardware, and transactional Windows and macOS installers with update services. Every REST collection route now answers with `ListResponse`, and drivers now share bounded I/O, a session table, and a single delivery-receipt contract.
+
+### Added
+
+- ✨ Add **LIFX** LAN driver with discovery, pacing, and emulator-backed tests (`hypercolor-driver-lifx`) (f1ddac8, 1a11244)
+- ✨ Add **Twinkly** network driver that gives up its login when another app takes over and restores the device mode afterward (a2ebe0d, 88b0092, 581e711)
+- ✨ Add **WiZ** and **Yeelight** network drivers with limits on discovery and reply sizes (4d71b47, b94bc57)
+- ✨ Add **Adalight/AWA** serial LED driver that authorizes every port open against the live config (a495ba8, a77bff8)
+- ✨ Add generic **sACN, Art-Net, and DDP pixel driver** on a new `hypercolor-pixel-protocols` crate that now holds the DDP and E1.31 encoders (20306321, 3a2b427)
+- ✨ Add native **NZXT** Gen2 and Kraken Elite v2 lighting protocols, plus **Wooting** per-key RGB encoders behind scoped udev rules (7e4c3c0, b167dbd, 189f1b9)
+- ✨ Add **Thermalright** HID LCD driver for `0416:5302` (#609) and the **Razer Chroma Addressable RGB Controller** (096dd38, e1e7312)
+- ✨ Register Razer Tomahawk ATX, Raptor 27, Core X Chroma, and more Kraken headsets; register Corsair NXP/CUE peripherals on input-safe HID interfaces (0b139a2, 1ba5079, 218c01f)
+- ✨ Label drivers and protocols as **stable or experimental**, show tiers in the CLI and UI, and record how each device was verified (aeb2e0a, c03595a, 592d973, 52cea86)
+- ✨ Add **Windows release units**, an NSIS installer, a stable launcher, a recovery bootstrap, and an update service that the app quits for when asked (a7e6bb0, 2dbca96, a403449, 7b629e3)
+- ✨ Add **macOS app bundle** releases that swap with `RENAME_SWAP` on APFS, keep launchd gated during the swap, and adopt a bundle dragged out of the DMG (c1de4fe, 86270fc, 7a11b81, 185cc87)
+- ✨ Add an Artifact Signing script and a separate CI job that signs Windows binaries and the installer (2f26a25, 0b01e6a)
+- ✨ Add **layer scope** so a layer can target some of a zone's outputs, and make a screen's face a layer of the zone that places it (#571, #572, #573)
+- ✨ Add undo and redo for layer add, remove, and reorder in Studio, reset/type/step on every inspector slider (#596), and a docked composition panel (e2340ad, ba4e12f)
+- ✨ Render CSS `backdrop-filter` in effects and faces, and give each screen a backdrop from its own zone (#568) (af32e58)
+- ✨ Add Nanoleaf panel geometry and touch input streaming (a802304)
+- ✨ Generate the REST reference docs from the OpenAPI document, with a CI check that fails when they drift (b8cf8b9, 626ea60)
+- ✨ Read older backup schemas and refuse newer ones by name; publish the 1.x stability and versioning policy (0b313fd, db329fd)
+
+### Changed
+
+- ♻️ Move every network and serial driver onto shared **bounded HTTP and framing primitives** and a revocable **session table**, and add a `cargo deny` ban that keeps drivers off raw `reqwest` (86578de, 61bbdab, c62c0d4)
+- ♻️ Build backends from a required `DriverContext`, make disconnect and retirement one contract, and return one exact receipt per submission (c8dfb97, 871c0b4, cc9ffa3)
+- ♻️ Replace output cadence with a single output policy, and let a backend require identical sends before suppression (b09ddff, f0da24a)
+- ♻️ Bound discovery admission and probing in one place, and separate observations from permission to infer that a device is gone (87141b9, 501463c)
+- ♻️ Register built-in drivers from one table, and make default-disabled a descriptor fact (6d3f944, 63ebcbf)
+- 🔄 Move to Servo 0.8.0 with `servo-script` vendored unmodified (c9fa6ed)
+- 🔄 Withhold natively driven NZXT and Wooting devices from OpenRGB (99d62af, 14e3cc2)
+- 🔄 Ship the Dygma driver disabled until the Defy can light (7ef4b42)
+- 🔄 Rebuild the Studio output properties panel as a single bar and replace sidebar zone rows with a compact selector (13dc68e, 25bf945)
+
+### Fixed
+
+- 🐛 Send sRGB bytes to devices that apply their own gamma (#575)
+- 🐛 Reach Razer Blade lighting through HID feature reports and drive the K95 Platinum light bar (a46dc87, 04087e7)
+- 🐛 Stop the serial transport from parking runtime workers, and report a failed serial send as a disconnect (e7f5ca1, 620a64e)
+- 🐛 Fix PawnIO broker pipe crashes and dropped requests on Windows 26H2 (#607)
+- 🐛 Keep untouched LEDs lit when the LED shape changes, and keep an effect running when its layer is replaced (#597) (c042bcc)
+- 🐛 Stop a composition from binding another zone's compose params (#595), and write member edits through to the layout a zone follows (#587)
+- 🐛 Release Servo's extra reference to every script private and collect garbage after sustained script evaluation (d03b905, 26bd309)
+- 🐛 Move WebView2 to the background when the window is hidden or minimized (#605)
+- 🐛 Keep a failed Windows install from costing the user anything, and recover from a power loss or lost firewall rule (4b9b289, 6dc983c)
+
+### Security
+
+- 🔒 Scope udev grants to each product's lighting interface for Razer, ASUS Aura, QMK, Corsair, Wooting, Nollie, PrismRGB, and Lian Li, and stop granting Dygma HID and USB nodes (2ea7267, cf966c6, fcc8e02, 2751274, e03f999)
+- 🔒 Bump `libz-sys` for a zlib overflow (#602) and patch the `url` and `cookie` advisories RUSTSEC-2026-0592 and 0594 (#606)
+- 🔒 Keep the Nanoleaf auth token, the WiZ signing key, and HTTP URLs out of errors and logs (b38ba1d, 3e818a5, 2e87f19)
+- 🔒 Verify the Windows update service before trusting its pipe, and hold vendor binaries to their exact signatures and bytes (9992055, 763c630)
+
+### Removed
+
+- 🔥 Remove the `RawKeyPrefix` alias for `HostScanCodePrefix` (dcc3eca)
+- 🔥 Remove the unused legacy launcher claim check from the daemon (ae12f14)
+- 🔥 Remove the WLED driver's own `ddp.rs` and `e131.rs` encoders, which now live in `hypercolor-pixel-protocols` (20306321)
+
+### Breaking Changes
+
+- **Every REST collection route now returns `ListResponse`** (721b9b1)
+  - Clients must read items from `data.items` instead of a bare array
+- **The Python client decodes the new collection shapes** (0552064)
+  - The generated `*_list_item` models are replaced by `*_list_response` models (for example `DisplaySummaryListResponse` and `SimulatedDisplayListResponse`)
+- **The Python client merges enum union branches into one tolerant enum** for `ApplyImpact`, `ComponentCategory`, `ControlKind`, and `DriverTransportKind` (8ff1b42, 6d1194a)
+  - The higher-numbered variant modules (`*_type_2` and up) are deleted. The `*_type_0` and `*_type_1` modules still exist
+  - Imports of the deleted modules must switch to the merged enums. Enum values that a newer daemon adds are now kept instead of failing to decode
+- **udev rules are narrower** (2e0fe72)
+  - Linux users upgrading from 0.9.0 must reinstall `99-hypercolor.rules` so devices stay accessible
+
+### Metrics
+
+- Total Commits: 418
+- Files Changed: 1,916
+- Insertions: +229,978
+- Deletions: -62,839
+<!-- -------------------------------------------------------------- -->
+
 ## [0.9.0] - 2026-11-03
 
 Portable setup backup and restore lands end to end: export a full configuration as a verified archive, preview it, and restore it through durable transactions with device remapping. The release also brings a phone-first UI pass, Lian Li wireless driver correctness work, and a move to Servo 0.7.0.

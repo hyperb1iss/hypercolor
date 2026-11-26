@@ -29,7 +29,7 @@ yeelight = ["dep:hypercolor-driver-yeelight"]
 wled = ["dep:hypercolor-driver-wled"]
 
 [dependencies]
-hypercolor-core = { path = "../hypercolor-core", version = "0.9.0", default-features = false }
+hypercolor-core = { path = "../hypercolor-core", version = "0.10.0", default-features = false }
 hypercolor-driver-adalight = { workspace = true, optional = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-support = { workspace = true }
